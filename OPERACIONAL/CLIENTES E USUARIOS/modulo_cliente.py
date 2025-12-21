@@ -61,12 +61,11 @@ def app_clientes():
     if 'id_cli' not in st.session_state: st.session_state['id_cli'] = None
 
     c1, c2 = st.columns([6,1])
-    filtro = c1.text_input("🔍 Buscar Cliente (Nome, Email ou Telefone)", key="busca_cli")
+    filtro = c1.text_input("🔍 Buscar Cliente (Nome, Email, Telefone ou Grupo)", key="busca_cli")
     if c2.button("+ Novo Cliente", type="primary"):
         st.session_state['modo_cliente'] = 'novo'
         st.rerun()
 
-    # --- FORMULÁRIO DE CADASTRO (Mantido conforme original) ---
     if st.session_state['modo_cliente'] in ['novo', 'editar']:
         st.divider()
         titulo = "📝 Novo Cliente" if st.session_state['modo_cliente'] == 'novo' else "✏️ Editar Cliente"
@@ -74,28 +73,46 @@ def app_clientes():
         d = {}
         if st.session_state['modo_cliente'] == 'editar':
             conn = get_conn()
-            # Busca na tabela admin para edição
+            # Busca na tabela admin.clientes conforme print SQL
             df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['id_cli']}", conn)
             conn.close()
             if not df.empty: d = df.iloc[0]
 
         with st.form("form_cliente"):
             nome = st.text_input("Nome Completo *", value=d.get('nome', ''))
+            
             c1, c2 = st.columns(2)
             email = c1.text_input("E-mail *", value=d.get('email', ''))
             telefone = c2.text_input("Telefone", value=d.get('telefone', ''))
             
+            # --- CAMPO GRUPO WHATSAPP (SITUAÇÃO: RESTAURADO) ---
+            id_val = d.get('id_grupo_whats', '') if d.get('id_grupo_whats') else ''
+            if id_val: id_val = id_val.replace('@g.us', '') # Remove sufixo para edição
+            id_grupo_input = st.text_input("ID do Grupo WhatsApp", value=id_val, help="Digite apenas o código numérico do grupo")
+            
             c_b1, c_b2 = st.columns([1,6])
             if c_b1.form_submit_button("💾 Salvar"):
+                # Regra: Aplicação interna do sufixo @g.us
+                id_final = None
+                if id_grupo_input:
+                    id_limpo = re.sub(r'[^0-9-]', '', id_grupo_input) # Limpa caracteres extras
+                    id_final = f"{id_limpo}@g.us" # Adiciona sufixo
+
                 conn = get_conn()
                 cur = conn.cursor()
                 try:
+                    # Garante que a coluna existe na tabela admin
+                    cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
+                    
                     if st.session_state['modo_cliente'] == 'novo':
-                        sql = "INSERT INTO admin.clientes (nome, email, telefone) VALUES (%s,%s,%s)"
-                        cur.execute(sql, (nome, email, telefone))
+                        sql = """INSERT INTO admin.clientes (nome, email, telefone, id_grupo_whats) 
+                                 VALUES (%s,%s,%s,%s)"""
+                        cur.execute(sql, (nome, email, telefone, id_final))
                     else:
-                        sql = "UPDATE admin.clientes SET nome=%s, email=%s, telefone=%s WHERE id=%s"
-                        cur.execute(sql, (nome, email, telefone, st.session_state['id_cli']))
+                        sql = """UPDATE admin.clientes SET nome=%s, email=%s, telefone=%s, id_grupo_whats=%s 
+                                 WHERE id=%s"""
+                        cur.execute(sql, (nome, email, telefone, id_final, st.session_state['id_cli']))
+                    
                     conn.commit()
                     st.success("Dados salvos com sucesso!")
                     st.session_state['modo_cliente'] = None
@@ -109,15 +126,11 @@ def app_clientes():
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # --- CONSULTA DE DADOS (CORRIGIDA PARA SCHEMA ADMIN) ---
+    # --- LISTAGEM DE DADOS (SCHEMA ADMIN) ---
     conn = get_conn()
-    # SQL Alterado para buscar da tabela admin.clientes conforme print SQL
-    sql = "SELECT id, nome, email, telefone FROM admin.clientes"
-    
-    # Aplicação de filtro
+    sql = "SELECT id, nome, email, telefone, id_grupo_whats FROM admin.clientes"
     if filtro: 
-        sql += f" WHERE (nome ILIKE '%%{filtro}%%' OR email ILIKE '%%{filtro}%%' OR telefone ILIKE '%%{filtro}%%')"
-    
+        sql += f" WHERE (nome ILIKE '%%{filtro}%%' OR email ILIKE '%%{filtro}%%' OR telefone ILIKE '%%{filtro}%%' OR id_grupo_whats ILIKE '%%{filtro}%%')"
     sql += " ORDER BY id DESC"
     
     try:
@@ -129,17 +142,18 @@ def app_clientes():
         conn.close()
 
     if not df.empty:
-        # Cabeçalho da tabela ajustado para Nome / E-mail / Telefone
-        st.markdown("""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px 5px 0 0; border: 1px solid #ddd; display: flex; font-weight: bold;"><div style="flex: 3;">Nome</div><div style="flex: 2;">E-mail</div><div style="flex: 2;">Telefone</div><div style="flex: 1.5;">Ações</div></div>""", unsafe_allow_html=True)
+        st.markdown("""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px 5px 0 0; border: 1px solid #ddd; display: flex; font-weight: bold;"><div style="flex: 3;">Nome</div><div style="flex: 2;">E-mail</div><div style="flex: 2;">Telefone / Grupo</div><div style="flex: 1.5;">Ações</div></div>""", unsafe_allow_html=True)
         for i, row in df.iterrows():
             with st.container():
                 c = st.columns([3, 2, 2, 1.5])
                 c[0].markdown(f"<div style='padding-top: 5px;'>{row['nome']}</div>", unsafe_allow_html=True)
                 c[1].markdown(f"<div style='padding-top: 5px;'>{row['email']}</div>", unsafe_allow_html=True)
-                c[2].markdown(f"<div style='padding-top: 5px;'>{row['telefone'] if row['telefone'] else '---'}</div>", unsafe_allow_html=True)
+                
+                contato_str = row['telefone'] if row['telefone'] else "---"
+                if row['id_grupo_whats']: contato_str += f" | {row['id_grupo_whats']}"
+                c[2].markdown(f"<div style='padding-top: 5px;'>{contato_str}</div>", unsafe_allow_html=True)
                 
                 col_botoes = c[3].columns([1, 1])
-                # Botão de edição
                 if col_botoes[0].button("✏️", key=f"btn_e_{row['id']}"):
                     st.session_state['modo_cliente'] = 'editar'
                     st.session_state['id_cli'] = row['id']
