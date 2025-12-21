@@ -12,11 +12,61 @@ import bcrypt  # Biblioteca para criptografia de senhas
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
+<<<<<<< HEAD
 # --- FUNÇÕES DE SEGURANÇA (CRIPTOGRAFIA) ---
 def hash_senha(senha):
     """Criptografa a senha para salvar no banco."""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(senha.encode('utf-8'), salt).decode('utf-8')
+=======
+# --- ESTILOS VISUAIS GERAIS (OCULTAÇÃO TOTAL E AGRESSIVA) ---
+st.markdown("""
+<style>
+    /* Ocultar Menu, Rodapé e Cabeçalho padrão */
+    #MainMenu {visibility: hidden !important;}
+    footer {display: none !important; visibility: hidden !important;}
+    header {display: none !important; visibility: hidden !important;}
+    
+    /* Ocultar especificamente o ícone vermelho e o texto do Streamlit Cloud (Viewer Badge) */
+    .viewerBadge_container__1S137 {display: none !important;}
+    .viewerBadge_link__1S137 {display: none !important;}
+    div[class^="viewerBadge"] {display: none !important;}
+    #tabs-bop-container {display: none !important;}
+    
+    /* Ocultar botões de Deploy e decorações de sistema */
+    .stAppDeployButton {display: none !important;}
+    [data-testid="stHeader"] {display: none !important;}
+    [data-testid="stFooter"] {display: none !important;}
+    [data-testid="stDecoration"] {display: none !important;}
+    
+    /* Ajustes de fundo e containers */
+    .stApp { background-color: #f8f9fa; }
+    .titulo-empresa {
+        font-size: 22px !important;
+        font-weight: 800;
+        color: #333333;
+        font-family: 'Arial', sans-serif;
+        margin-bottom: -5px;
+        line-height: 1.1;
+    }
+    .subtitulo-empresa {
+        font-size: 11px !important;
+        color: #888888;
+        font-family: 'Arial', sans-serif;
+        font-weight: 400;
+    }
+    .block-container { padding-top: 1rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- IMPORTAÇÃO DOS MÓDULOS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS"))
+sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_W-API")) 
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS"))
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS"))
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS")) 
+>>>>>>> 11b701a1634b4b30126fa428a85e906c4fc78f1d
 
 def verificar_senha(senha_plana, senha_hash):
     """Verifica se a senha digitada confere com o hash do banco."""
@@ -29,6 +79,7 @@ def verificar_senha(senha_plana, senha_hash):
     except:
         return False
 
+<<<<<<< HEAD
 # --- ESTILOS VISUAIS GERAIS (OCULTAÇÃO TOTAL E AGRESSIVA) ---
 st.markdown("""
 <style>
@@ -92,6 +143,21 @@ try:
 except ImportError as e:
     modulo_cliente = modulo_usuario = modulo_wapi = modulo_produtos = modulo_pedidos = modulo_tarefas = None
     st.error(f"Erro ao carregar os módulos do sistema. Por favor, contate o administrador.")
+=======
+    try:
+        import modulo_tarefas
+    except ImportError:
+        modulo_tarefas = None
+        
+except ImportError as e:
+    modulo_cliente = None
+    modulo_usuario = None
+    modulo_wapi = None
+    modulo_produtos = None
+    modulo_pedidos = None
+    modulo_tarefas = None
+    st.error(f"Erro crítico ao importar módulos: {e}")
+>>>>>>> 11b701a1634b4b30126fa428a85e906c4fc78f1d
 
 # --- GERENCIAMENTO DE SESSÃO E SEGURANÇA (DB) ---
 def get_conn():
