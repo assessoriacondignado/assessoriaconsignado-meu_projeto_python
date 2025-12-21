@@ -10,6 +10,7 @@ Copie e cole a linha abaixo inteira e aperte Enter:
 
 git add . && git commit -m "ajustes gerais" && git push origin main
 
+git add . && git commit -m "fatualizar menu" && git push origin main
 ------------------------------------------------------------
 
 2️⃣ O QUE CADA PARTE FAZ:
@@ -25,3 +26,7 @@ git add . && git commit -m "ajustes gerais" && git push origin main
 • Verifique se o terminal exibiu "Everything up-to-date" ao final.
 
 ============================================================
+
+git add .
+git commit --amend -m "Ajuste layout lateral e remoção de token"
+git push origin main

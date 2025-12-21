@@ -4,19 +4,12 @@ from datetime import datetime, timedelta
 import os
 import sys
 import psycopg2
-import uuid
-import random
-import string
 import bcrypt 
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
-# --- 2. FUNÇÕES DE SEGURANÇA (CRIPTOGRAFIA) ---
-def hash_senha(senha):
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(senha.encode('utf-8'), salt).decode('utf-8')
-
+# --- 2. FUNÇÕES DE SEGURANÇA ---
 def verificar_senha(senha_plana, senha_hash):
     try:
         if senha_hash == senha_plana:
@@ -30,14 +23,21 @@ st.markdown("""
 <style>
     #MainMenu {visibility: hidden !important;}
     footer {display: none !important; visibility: hidden !important;}
-    /* Ajuste Situação 1: Removida a ocultação total do header para permitir acesso à sidebar */
-    .viewerBadge_container__1S137 {display: none !important;}
     .stAppDeployButton {display: none !important;}
     [data-testid="stFooter"], [data-testid="stDecoration"] {display: none !important;}
     .stApp { background-color: #f8f9fa; }
-    .titulo-empresa { font-size: 22px !important; font-weight: 800; color: #333333; line-height: 1.1; }
-    .subtitulo-empresa { font-size: 11px !important; color: #888888; }
+    .titulo-empresa { font-size: 18px !important; font-weight: 800; color: #333333; margin-top: 10px; }
     .block-container { padding-top: 1rem !important; }
+    
+    /* Aproximação e ajuste dos botões na sidebar */
+    [data-testid="stSidebar"] .stButton button { 
+        width: 100%; 
+        padding: 5px; 
+        height: 38px; 
+        font-size: 14px;
+    }
+    /* Estilo para o menu lateral */
+    .nav-link { margin: 2px 0px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -60,22 +60,9 @@ try:
 except ImportError as e:
     st.error(f"Erro crítico ao carregar módulos: {e}")
 
-# --- 5. GERENCIAMENTO DE CONEXÃO E SESSÃO ---
+# --- 5. GERENCIAMENTO DE CONEXÃO E LOGIN ---
 def get_conn():
     return psycopg2.connect(host=conexao.host, port=conexao.port, database=conexao.database, user=conexao.user, password=conexao.password)
-
-def init_session_db():
-    try:
-        conn = get_conn(); cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sessoes_ativas (
-                token VARCHAR(50) PRIMARY KEY, id_usuario INTEGER,
-                nome_usuario VARCHAR(100), data_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ultimo_clique TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        conn.commit(); conn.close()
-    except: pass
 
 def validar_login_db(usuario_input, senha_input):
     try:
@@ -100,64 +87,89 @@ def tela_login():
                 user_data = validar_login_db(usuario, senha)
                 if user_data:
                     st.session_state['logado'] = True
-                    st.session_state['usuario_id'] = user_data['id']
                     st.session_state['usuario_nome'] = user_data['nome']
                     st.session_state['usuario_cargo'] = user_data['cargo']
                     st.rerun()
                 else: st.error("Dados incorretos.")
 
-# --- 7. BARRA SUPERIOR (SINCROZINADA COM CARGO) ---
-def barra_superior():
-    caminho_logo = os.path.join(BASE_DIR, "OPERACIONAL/MODULO_TELA_PRINCIPAL/logo.png")
-    c_marca, c_menu, c_perfil = st.columns([2.5, 6.5, 3])
-    with c_marca:
-        if os.path.exists(caminho_logo): st.image(caminho_logo, width=45)
-        st.markdown('<div class="titulo-empresa">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
-
-    with c_menu:
-        # Ajuste Situação 2: Liberação baseada no cargo salvo na sessão
-        cargo = st.session_state.get('usuario_cargo', 'Cliente')
-        opcoes = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"] if cargo in ["Admin", "Gerente"] else ["OPERACIONAL"]
-        selected = option_menu(menu_title=None, options=opcoes, icons=["cart", "folder", "gear"], orientation="horizontal")
-    
-    with c_perfil:
-        st.write(f"👤 {st.session_state['usuario_nome']}")
-        if st.button("Sair"):
-            st.session_state.clear(); st.rerun()
-    return selected
-
-# --- 8. FUNÇÃO PRINCIPAL ---
+# --- 7. FUNÇÃO PRINCIPAL (LAYOUT LATERAL) ---
 def main():
-    init_session_db()
     if not st.session_state.get('logado', False):
         tela_login()
     else:
-        modulo = barra_superior()
-        st.divider()
-        
-        # Ajuste Situação 4: Padronização da Sidebar com botões Home e Atualizar
+        # --- CONFIGURAÇÃO DA SIDEBAR ---
         with st.sidebar:
-            if st.button("🏠 Home", use_container_width=True):
-                st.rerun()
-            if st.button("🔄 Atualizar Página", use_container_width=True):
-                st.rerun()
+            # Logo e Identificação da Empresa
+            caminho_logo = os.path.join(BASE_DIR, "OPERACIONAL/MODULO_TELA_PRINCIPAL/logo.png")
+            if os.path.exists(caminho_logo): 
+                st.image(caminho_logo, width=100)
+            st.markdown('<div class="titulo-empresa">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
+            
+            # Dados do Usuário
+            st.markdown(f"**👤 Usuário:** {st.session_state['usuario_nome']}")
+            
+            # Botões de Ação Rápida (Aproximados em colunas)
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🏠 Home"): st.rerun()
+            with c2:
+                if st.button("🔄 Atualizar"): st.rerun()
+            
             st.divider()
 
-        if modulo == "COMERCIAL":
-            with st.sidebar:
-                st.markdown("### 🛒 Comercial")
-                menu = option_menu(None, ["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"], icons=["box", "list-check", "calendar-event"])
-            if menu == "Produtos e Serviços" and modulo_produtos: modulo_produtos.app_produtos()
-            elif menu == "Gestão de Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
-            elif menu == "Controle de Tarefas" and modulo_tarefas: modulo_tarefas.app_tarefas()
+            # Menu Principal (Módulos)
+            cargo = st.session_state.get('usuario_cargo', 'Cliente')
+            opcoes_modulos = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"] if cargo in ["Admin", "Gerente"] else ["OPERACIONAL"]
             
-        elif modulo == "OPERACIONAL":
-            with st.sidebar:
-                st.markdown("### ⚙️ Operacional")
-                menu = option_menu(None, ["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)"], icons=["people", "person-vcard", "whatsapp"])
-            if menu == "Gestão de Clientes" and modulo_cliente: modulo_cliente.app_clientes()
-            elif menu == "Usuários e Permissões" and modulo_usuario: modulo_usuario.app_usuarios()
-            elif menu == "W-API (WhatsApp)" and modulo_wapi: modulo_wapi.app_wapi()
+            modulo_atual = option_menu(
+                menu_title="MÓDULOS",
+                options=opcoes_modulos,
+                icons=["cart", "folder", "gear"],
+                menu_icon="app-indicator",
+                default_index=0,
+                styles={
+                    "container": {"padding": "5px !important", "background-color": "#ffffff"},
+                    "nav-link": {"font-size": "14px", "text-align": "left", "margin": "0px"},
+                    "nav-link-selected": {"background-color": "#FF4B4B"}, # Cor primaryColor
+                }
+            )
+
+            st.divider()
+
+            # Submenus Dinâmicos
+            menu_sub = None
+            if modulo_atual == "COMERCIAL":
+                menu_sub = option_menu(
+                    menu_title="COMERCIAL",
+                    options=["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"],
+                    icons=["box", "list-check", "calendar-event"],
+                    styles={"nav-link": {"font-size": "13px"}}
+                )
+            elif modulo_atual == "OPERACIONAL":
+                menu_sub = option_menu(
+                    menu_title="OPERACIONAL",
+                    options=["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)"],
+                    icons=["people", "person-vcard", "whatsapp"],
+                    styles={"nav-link": {"font-size": "13px"}}
+                )
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🚪 Sair do Sistema"):
+                st.session_state.clear(); st.rerun()
+
+        # --- ÁREA DE CONTEÚDO ---
+        if modulo_atual == "COMERCIAL":
+            if menu_sub == "Produtos e Serviços" and modulo_produtos: modulo_produtos.app_produtos()
+            elif menu_sub == "Gestão de Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
+            elif menu_sub == "Controle de Tarefas" and modulo_tarefas: modulo_tarefas.app_tarefas()
+            
+        elif modulo_atual == "OPERACIONAL":
+            if menu_sub == "Gestão de Clientes" and modulo_cliente: modulo_cliente.app_clientes()
+            elif menu_sub == "Usuários e Permissões" and modulo_usuario: modulo_usuario.app_usuarios()
+            elif menu_sub == "W-API (WhatsApp)" and modulo_wapi: modulo_wapi.app_wapi()
+            
+        elif modulo_atual == "FINANCEIRO":
+            st.info("O módulo Financeiro está agendado para futuras implementações.")
 
 if __name__ == "__main__":
     main()
