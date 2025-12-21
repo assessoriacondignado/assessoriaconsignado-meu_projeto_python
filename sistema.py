@@ -12,15 +12,21 @@ import string
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
-# --- ESTILOS VISUAIS GERAIS (OCULTAÇÃO TOTAL DE MARCAS DO STREAMLIT) ---
+# --- ESTILOS VISUAIS GERAIS (OCULTAÇÃO TOTAL E AGRESSIVA) ---
 st.markdown("""
 <style>
-    /* Ocultar Menu, Rodapé e Cabeçalho de forma agressiva */
+    /* Ocultar Menu, Rodapé e Cabeçalho padrão */
     #MainMenu {visibility: hidden !important;}
     footer {display: none !important; visibility: hidden !important;}
     header {display: none !important; visibility: hidden !important;}
     
-    /* Ocultar botões de Deploy e marcas d'água específicas do Cloud */
+    /* Ocultar especificamente o ícone vermelho e o texto do Streamlit Cloud (Viewer Badge) */
+    .viewerBadge_container__1S137 {display: none !important;}
+    .viewerBadge_link__1S137 {display: none !important;}
+    div[class^="viewerBadge"] {display: none !important;}
+    #tabs-bop-container {display: none !important;}
+    
+    /* Ocultar botões de Deploy e decorações de sistema */
     .stAppDeployButton {display: none !important;}
     [data-testid="stHeader"] {display: none !important;}
     [data-testid="stFooter"] {display: none !important;}
@@ -279,10 +285,9 @@ else:
 
 # --- TELA DE LOGIN ---
 def tela_login():
-    # Estilo específico para forçar ocultação de elementos na tela de login
     st.markdown("""
     <style>
-        header, footer, [data-testid="stHeader"], [data-testid="stFooter"], [data-testid="stSidebar"] {display: none !important; visibility: hidden !important;}
+        header, footer, [data-testid="stHeader"], [data-testid="stFooter"], [data-testid="stSidebar"], .viewerBadge_container__1S137 {display: none !important; visibility: hidden !important;}
         .stApp { display: flex; justify-content: center; align-items: center; }
         .login-card {
             background-color: white; padding: 40px; border-radius: 15px;
