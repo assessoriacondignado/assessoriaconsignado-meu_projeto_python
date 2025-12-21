@@ -9,6 +9,10 @@ try:
 except: 
     st.error("Erro ao carregar conexao.py")
 
+# --- CONFIGURAÇÕES DE DIRETÓRIO DINÂMICO ---
+# Substituímos caminhos fixos para funcionar em qualquer servidor
+BASE_DIR_ARQUIVOS = os.path.join(os.getcwd(), "OPERACIONAL", "CLIENTES E USUARIOS", "ARQUIVOS_CLIENTES")
+
 def get_conn():
     return psycopg2.connect(host=conexao.host, port=conexao.port, database=conexao.database, user=conexao.user, password=conexao.password)
 
@@ -22,21 +26,30 @@ st.markdown("""
 
 @st.dialog("Arquivos do Cliente")
 def mostrar_arquivos(caminho_pasta):
+    # Verificação robusta de existência da pasta
     if not caminho_pasta or not os.path.exists(caminho_pasta):
-        st.error(f"Pasta não encontrada: {caminho_pasta}")
+        st.error("Pasta não localizada no servidor de nuvem.")
         return
-    arquivos = [f for f in os.listdir(caminho_pasta) if os.path.isfile(os.path.join(caminho_pasta, f))]
-    if not arquivos: st.info("A pasta está vazia.")
-    else:
-        st.write(f"Encontrados {len(arquivos)} arquivo(s):")
-        st.markdown("---")
-        for arquivo in arquivos:
-            caminho_completo = os.path.join(caminho_pasta, arquivo)
-            col_nome, col_btn = st.columns([4, 1])
-            col_nome.text(arquivo)
-            with open(caminho_completo, "rb") as file:
-                col_btn.download_button("⬇️", data=file, file_name=arquivo, mime="application/octet-stream", key=f"down_{arquivo}")
-            st.markdown('<hr style="margin: 5px 0; opacity: 0.2;">', unsafe_allow_html=True)
+    
+    try:
+        arquivos = [f for f in os.listdir(caminho_pasta) if os.path.isfile(os.path.join(caminho_pasta, f))]
+        if not arquivos: 
+            st.info("A pasta está vazia.")
+        else:
+            st.write(f"Encontrados {len(arquivos)} arquivo(s):")
+            st.markdown("---")
+            for arquivo in arquivos:
+                caminho_completo = os.path.join(caminho_pasta, arquivo)
+                col_nome, col_btn = st.columns([4, 1])
+                col_nome.text(arquivo)
+                try:
+                    with open(caminho_completo, "rb") as file:
+                        col_btn.download_button("⬇️", data=file, file_name=arquivo, mime="application/octet-stream", key=f"down_{arquivo}")
+                except Exception:
+                    col_btn.write("⚠️")
+                st.markdown('<hr style="margin: 5px 0; opacity: 0.2;">', unsafe_allow_html=True)
+    except PermissionError:
+        st.error("Permissão negada para ler esta pasta na nuvem.")
 
 def app_clientes():
     st.markdown("## 👥 Cadastro de Clientes")
@@ -61,23 +74,18 @@ def app_clientes():
             if not df.empty: d = df.iloc[0]
 
         with st.form("form_cliente"):
-            # Manutenção do Layout: Tipo e Nome na mesma linha
             c_tipo, c_nome = st.columns([1, 2])
             tipo_contato = c_tipo.selectbox("Tipo de Contato", ["Pessoa Física", "Grupo de WhatsApp"], 
                                           index=1 if d.get('hierarquia') == 'Grupo' else 0)
             nome = c_nome.text_input("Nome Completo / Nome do Grupo *", value=d.get('nome', ''))
             
-            # Linha de Documento e Telefone
             c1, c2 = st.columns(2)
             cpf = c1.text_input("CPF *", value=d.get('cpf', ''))
             telefone = c2.text_input("Telefone *", value=d.get('telefone', ''))
             
-            # --- NOVO CAMPO: ID GRUPO ---
-            # Posicionado conforme sua solicitação
             c_id_email, c_id_grupo = st.columns(2)
             email = c_id_email.text_input("E-mail (Contato)", value=d.get('email', ''))
             
-            # Lógica para exibir ID sem o sufixo no campo de edição
             id_val = d.get('id_grupo_whats', '') if d.get('id_grupo_whats') else ''
             if id_val: id_val = id_val.replace('@g.us', '')
             id_grupo_input = c_id_grupo.text_input("ID do Grupo WhatsApp", value=id_val, help="Digite apenas o código numérico do grupo")
@@ -86,7 +94,6 @@ def app_clientes():
 
             c_b1, c_b2 = st.columns([1,6])
             if c_b1.form_submit_button("💾 Salvar"):
-                # Tratamento do ID do Grupo para salvar sempre com @g.us
                 id_final = None
                 if id_grupo_input:
                     id_limpo = re.sub(r'[^0-9-]', '', id_grupo_input)
@@ -97,12 +104,19 @@ def app_clientes():
                 conn = get_conn()
                 cur = conn.cursor()
                 try:
-                    # Garante que a coluna existe no banco (Executa apenas se necessário)
                     cur.execute("ALTER TABLE clientes_usuarios ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
                     
                     if st.session_state['modo_cliente'] == 'novo':
-                        pasta = f"OPERACIONAL/CLIENTES E USUARIOS/ARQUIVOS_CLIENTES/{nome}"
-                        if not os.path.exists(pasta): os.makedirs(pasta)
+                        # Lógica de criação de pasta protegida para Nuvem
+                        pasta = os.path.join(BASE_DIR_ARQUIVOS, nome)
+                        try:
+                            if not os.path.exists(pasta): 
+                                os.makedirs(pasta, exist_ok=True)
+                        except PermissionError:
+                            # Se falhar na nuvem, usa a pasta temporária permitida
+                            pasta = os.path.join("/tmp", nome)
+                            if not os.path.exists(pasta): os.makedirs(pasta, exist_ok=True)
+                        
                         sql = """INSERT INTO clientes_usuarios 
                                  (nome, cpf, telefone, email, observacao, pasta_caminho, hierarquia, id_grupo_whats) 
                                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"""
@@ -141,8 +155,7 @@ def app_clientes():
                 c[0].markdown(f"<div style='padding-top: 5px;'>{icon}{row['nome']}</div>", unsafe_allow_html=True)
                 c[1].markdown(f"<div style='padding-top: 5px;'>{row['cpf']}</div>", unsafe_allow_html=True)
                 
-                # Exibe Telefone e ID (se houver) na mesma coluna
-                contato_str = row['telefone']
+                contato_str = row['telefone'] if row['telefone'] else "---"
                 if row['id_grupo_whats']: contato_str += f" | {row['id_grupo_whats']}"
                 c[2].markdown(f"<div style='padding-top: 5px;'>{contato_str}</div>", unsafe_allow_html=True)
                 

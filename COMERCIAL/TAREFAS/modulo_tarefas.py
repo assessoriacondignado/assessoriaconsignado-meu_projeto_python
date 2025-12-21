@@ -5,12 +5,24 @@ import os
 import requests
 import re
 from datetime import datetime, date
-import conexao
 
-# --- CONFIGURAÇÕES DE DIRETÓRIO ---
-BASE_DIR = "/root/meu_sistema/COMERCIAL/TAREFAS"
-if not os.path.exists(BASE_DIR):
-    os.makedirs(BASE_DIR, exist_ok=True)
+# --- IMPORTAÇÃO ROBUSTA ---
+try: 
+    import conexao
+except ImportError: 
+    st.error("Erro crítico: conexao.py não encontrado.")
+
+# --- CONFIGURAÇÕES DE DIRETÓRIO DINÂMICO ---
+# Ajustado para funcionar tanto no servidor SSH quanto na nuvem
+BASE_DIR = os.path.join(os.getcwd(), "COMERCIAL", "TAREFAS")
+
+try:
+    if not os.path.exists(BASE_DIR):
+        os.makedirs(BASE_DIR, exist_ok=True)
+except PermissionError:
+    # Fallback para pasta temporária no Streamlit Cloud
+    BASE_DIR = "/tmp"
+    st.info("Operando em modo Nuvem: Registros locais salvos temporariamente.")
 
 # --- CONEXÃO COM BANCO ---
 def get_conn():
@@ -42,26 +54,30 @@ def buscar_instancia_ativa():
 def buscar_configuracao_tarefa():
     conn = get_conn()
     if conn:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM config_tarefas WHERE id = 1")
-        colunas = [desc[0] for desc in cur.description]
-        res = cur.fetchone()
-        conn.close()
-        if res: return dict(zip(colunas, res))
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM config_tarefas WHERE id = 1")
+            colunas = [desc[0] for desc in cur.description]
+            res = cur.fetchone()
+            conn.close()
+            if res: return dict(zip(colunas, res))
+        except: return {}
     return {}
 
 def salvar_configuracao(grupo_id, templates):
     conn = get_conn()
     if conn:
-        cur = conn.cursor()
-        sql = """UPDATE config_tarefas SET 
-                 grupo_aviso_id=%s, msg_solicitado=%s, msg_registro=%s, msg_entregue=%s, 
-                 msg_em_processamento=%s, msg_em_execucao=%s, msg_pendente=%s, msg_cancelado=%s 
-                 WHERE id=1"""
-        cur.execute(sql, (grupo_id, templates['Solicitado'], templates['Registro'], templates['Entregue'],
-                          templates['Em processamento'], templates['Em execução'], templates['Pendente'], templates['Cancelado']))
-        conn.commit()
-        conn.close()
+        try:
+            cur = conn.cursor()
+            sql = """UPDATE config_tarefas SET 
+                     grupo_aviso_id=%s, msg_solicitado=%s, msg_registro=%s, msg_entregue=%s, 
+                     msg_em_processamento=%s, msg_em_execucao=%s, msg_pendente=%s, msg_cancelado=%s 
+                     WHERE id=1"""
+            cur.execute(sql, (grupo_id, templates['Solicitado'], templates['Registro'], templates['Entregue'],
+                             templates['Em processamento'], templates['Em execução'], templates['Pendente'], templates['Cancelado']))
+            conn.commit()
+            conn.close()
+        except Exception as e: st.error(f"Erro ao salvar config: {e}")
 
 def enviar_whatsapp_tarefa(numero, mensagem):
     dados_instancia = buscar_instancia_ativa()
@@ -90,11 +106,7 @@ def enviar_whatsapp_tarefa(numero, mensagem):
 def buscar_pedidos_para_tarefa():
     conn = get_conn()
     if conn:
-        query = """
-            SELECT p.id, p.codigo, p.nome_cliente, p.nome_produto, p.categoria_produto, p.observacao as obs_pedido, p.status as status_pedido
-            FROM pedidos p
-            ORDER BY p.data_criacao DESC
-        """
+        query = "SELECT id, codigo, nome_cliente, nome_produto, categoria_produto, observacao as obs_pedido, status as status_pedido FROM pedidos ORDER BY data_criacao DESC"
         df = pd.read_sql(query, conn)
         conn.close()
         return df
@@ -121,18 +133,15 @@ def criar_tarefa(id_pedido, data_prev, obs_tarefa, dados_pedido, avisar_cli):
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO tarefas (id_pedido, data_previsao, observacao_tarefa, status)
-                VALUES (%s, %s, %s, 'Solicitado') RETURNING id
-            """, (int(id_pedido), data_prev, obs_tarefa))
+            cur.execute("INSERT INTO tarefas (id_pedido, data_previsao, observacao_tarefa, status) VALUES (%s, %s, %s, 'Solicitado') RETURNING id", 
+                        (int(id_pedido), data_prev, obs_tarefa))
             id_tarefa = cur.fetchone()[0]
-            
             cur.execute("INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) VALUES (%s, 'Solicitado', 'Tarefa Criada')",(id_tarefa,))
             conn.commit()
             conn.close()
             
-            config = buscar_configuracao_tarefa()
             if avisar_cli and dados_pedido.get('telefone_cliente'):
+                config = buscar_configuracao_tarefa()
                 tpl = config.get('msg_solicitado', '')
                 if tpl:
                     msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
@@ -156,7 +165,6 @@ def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos,
             
             if avisar and dados_completos.get('telefone_cliente'):
                 config = buscar_configuracao_tarefa()
-                # Ajuste para chaves de banco
                 chave = f"msg_{novo_status.lower().replace(' ', '_')}"
                 if "execução" in chave: chave = "msg_em_execucao"
                 
@@ -186,221 +194,110 @@ def editar_tarefa_dados(id_tarefa, nova_data, nova_obs):
 def excluir_tarefa(id_tarefa):
     conn = get_conn()
     if conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM tarefas WHERE id=%s", (id_tarefa,))
-        conn.commit()
-        conn.close()
-        return True
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM tarefas WHERE id=%s", (id_tarefa,))
+            conn.commit()
+            conn.close()
+            return True
+        except: return False
     return False
 
 # --- POP-UPS (DIALOGS) ---
 
-@st.dialog("👤 Dados do Cliente (Via Pedido)")
+@st.dialog("👤 Dados do Cliente")
 def ver_cliente(nome, cpf, tel):
-    st.write(f"**Nome:** {nome}")
-    st.write(f"**CPF:** {cpf}")
-    st.write(f"**Telefone:** {tel}")
+    st.write(f"**Nome:** {nome}"); st.write(f"**CPF:** {cpf}"); st.write(f"**Telefone:** {tel}")
 
-@st.dialog("📦 Dados do Produto (Via Pedido)")
+@st.dialog("📦 Dados do Produto")
 def ver_produto(nome, cat):
-    st.write(f"**Produto:** {nome}")
-    st.write(f"**Categoria:** {cat}")
+    st.write(f"**Produto:** {nome}"); st.write(f"**Categoria:** {cat}")
 
-@st.dialog("📄 Dados do Pedido Original")
+@st.dialog("📄 Dados do Pedido")
 def ver_pedido(codigo, obs):
-    st.write(f"**Cód. Pedido:** {codigo}")
-    st.info(f"**Obs. do Pedido:** {obs}")
+    st.write(f"**Cód. Pedido:** {codigo}"); st.info(f"**Obs. do Pedido:** {obs}")
 
 @st.dialog("✏️ Editar Tarefa")
 def dialog_editar(tarefa):
-    st.write(f"Editando Tarefa do Pedido: **{tarefa['codigo_pedido']}**")
+    st.write(f"Editando Tarefa: **{tarefa['codigo_pedido']}**")
     with st.form("form_edit_tar"):
-        # DATA NO FORMATO PT-BR
         n_data = st.date_input("Nova Previsão", value=pd.to_datetime(tarefa['data_previsao']), format="DD/MM/YYYY")
         n_obs = st.text_area("Observação da Tarefa", value=tarefa['observacao_tarefa'])
         if st.form_submit_button("Salvar"):
             if editar_tarefa_dados(tarefa['id'], n_data, n_obs):
                 st.success("Editado!"); st.rerun()
 
-@st.dialog("🔄 Atualizar Status da Tarefa")
+@st.dialog("🔄 Atualizar Status")
 def dialog_status(tarefa):
-    # LISTA CORRIGIDA - Removido o status "Em" solto
     lst_status = ["Solicitado", "Registro", "Entregue", "Em processamento", "Em execução", "Pendente", "Cancelado"]
-    idx = 0
-    if tarefa['status'] in lst_status: idx = lst_status.index(tarefa['status'])
-    
+    idx = lst_status.index(tarefa['status']) if tarefa['status'] in lst_status else 0
     with st.form("form_st_tar"):
         novo_st = st.selectbox("Novo Status", lst_status, index=idx)
-        obs_st = st.text_area("Observação do Status", placeholder="Motivo da mudança...")
+        obs_st = st.text_area("Observação")
         avisar = st.checkbox("Avisar Cliente?", value=True)
         if st.form_submit_button("Atualizar"):
             if atualizar_status_tarefa(tarefa['id'], novo_st, obs_st, tarefa, avisar):
                 st.success("Atualizado!"); st.rerun()
 
-# NOVO POP-UP DE CONFIRMAÇÃO DE EXCLUSÃO
-@st.dialog("⚠️ Confirmar Exclusão")
+@st.dialog("⚠️ Excluir Tarefa")
 def dialog_confirmar_exclusao(id_tarefa):
-    st.warning("Tem certeza que deseja excluir esta tarefa? Essa ação não pode ser desfeita.")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Sim, Excluir", type="primary"):
-            if excluir_tarefa(id_tarefa):
-                st.success("Tarefa excluída!")
-                st.rerun()
-    with col2:
-        if st.button("Cancelar"):
-            st.rerun()
+    st.warning("Confirmar exclusão desta tarefa?")
+    if st.button("Confirmar Exclusão", type="primary"):
+        if excluir_tarefa(id_tarefa): st.rerun()
 
-@st.dialog("⚙️ Configuração de Tarefa")
+@st.dialog("⚙️ Configurações")
 def dialog_config():
     c = buscar_configuracao_tarefa()
     with st.form("cfg_tar"):
-        st.write("Configuração W-API para TAREFAS")
         grp = st.text_input("ID Grupo Aviso", value=c.get('grupo_aviso_id',''))
-        st.info("Tags: {nome}, {pedido}, {status}, {obs_status}, {data_previsao}")
-        
-        m1 = st.text_area("Status: Solicitado (Criação)", value=c.get('msg_solicitado',''))
-        m2 = st.text_area("Status: Registro", value=c.get('msg_registro',''))
-        m3 = st.text_area("Status: Entregue", value=c.get('msg_entregue',''))
-        m4 = st.text_area("Status: Em processamento", value=c.get('msg_em_processamento',''))
-        m5 = st.text_area("Status: Em execução", value=c.get('msg_em_execucao',''))
-        m6 = st.text_area("Status: Pendente", value=c.get('msg_pendente',''))
-        m7 = st.text_area("Status: Cancelado", value=c.get('msg_cancelado',''))
-        
-        if st.form_submit_button("Salvar Configurações"):
-            tpls = {'Solicitado': m1, 'Registro': m2, 'Entregue': m3, 'Em processamento': m4, 'Em execução': m5, 'Pendente': m6, 'Cancelado': m7}
-            salvar_configuracao(grp, tpls)
-            st.success("Salvo!"); st.rerun()
+        tpls = {
+            'Solicitado': st.text_area("Solicitado", value=c.get('msg_solicitado','')),
+            'Registro': st.text_area("Registro", value=c.get('msg_registro','')),
+            'Entregue': st.text_area("Entregue", value=c.get('msg_entregue','')),
+            'Em processamento': st.text_area("Em processamento", value=c.get('msg_em_processamento','')),
+            'Em execução': st.text_area("Em execução", value=c.get('msg_em_execucao','')),
+            'Pendente': st.text_area("Pendente", value=c.get('msg_pendente','')),
+            'Cancelado': st.text_area("Cancelado", value=c.get('msg_cancelado',''))
+        }
+        if st.form_submit_button("Salvar"):
+            salvar_configuracao(grp, tpls); st.rerun()
 
-# --- NOVO POP-UP DE CRIAÇÃO ---
 @st.dialog("➕ Nova Tarefa")
 def dialog_nova_tarefa():
     df_ped = buscar_pedidos_para_tarefa()
-    
-    if df_ped.empty:
-        st.warning("Não há pedidos disponíveis.")
-        return
-
-    # Selectbox começando vazio
+    if df_ped.empty: return st.warning("Sem pedidos.")
     opcoes = df_ped.apply(lambda x: f"{x['codigo']} | {x['nome_cliente']}", axis=1)
-    idx_ped = st.selectbox(
-        "Buscar Pedido (Selecione o Cliente)", 
-        range(len(df_ped)), 
-        format_func=lambda x: opcoes[x],
-        index=None,
-        placeholder="Escolha uma opção..."
-    )
-
-    # Lógica para mostrar dados SÓ DEPOIS de selecionar
+    idx_ped = st.selectbox("Selecione o Pedido", range(len(df_ped)), format_func=lambda x: opcoes[x], index=None)
     if idx_ped is not None:
-        sel_ped = df_ped.iloc[idx_ped]
-        
-        st.markdown("---")
-        # Informações do Produto
-        c_prod1, c_prod2 = st.columns([2, 1])
-        with c_prod1:
-            st.write(f"📦 **Produto:** {sel_ped['nome_produto']}")
-            st.caption(f"Categoria: {sel_ped['categoria_produto']}")
-        with c_prod2:
-            st.info(f"Obs Pedido: {sel_ped['obs_pedido'] if sel_ped['obs_pedido'] else 'Nenhuma'}")
-        
-        # Formulário
+        sel = df_ped.iloc[idx_ped]
         with st.form("form_create_task"):
-            label_data = "Data Previsão Entrega"
-            if "SERVIÇO" in str(sel_ped['categoria_produto']).upper():
-                label_data = "Data Previsão Início"
-            
-            # DATA FORMATO BR
-            d_prev = st.date_input(label_data, value=date.today(), format="DD/MM/YYYY")
-            obs_tar = st.text_area("Observação da Tarefa", height=100)
-            av_cli = st.checkbox("Enviar aviso de início ao cliente?", value=True)
-            
+            d_prev = st.date_input("Data Previsão", value=date.today(), format="DD/MM/YYYY")
+            obs_tar = st.text_area("Observação")
             if st.form_submit_button("Criar Tarefa"):
-                conn = get_conn()
-                dados_msg = {}
-                if conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT codigo, nome_cliente, telefone_cliente, nome_produto FROM pedidos WHERE id=%s", (int(sel_ped['id']),))
-                    res = cur.fetchone()
-                    conn.close()
-                    if res:
-                         dados_msg = {'codigo_pedido': res[0], 'nome_cliente': res[1], 'telefone_cliente': res[2], 'nome_produto': res[3]}
-                
-                if criar_tarefa(sel_ped['id'], d_prev, obs_tar, dados_msg, av_cli):
-                    st.success("Tarefa criada com sucesso!")
+                if criar_tarefa(sel['id'], d_prev, obs_tar, {'codigo_pedido': sel['codigo'], 'nome_cliente': sel['nome_cliente'], 'telefone_cliente': None, 'nome_produto': sel['nome_produto']}, True):
                     st.rerun()
 
 # --- APP PRINCIPAL ---
 def app_tarefas():
-    # LAYOUT DO TOPO
     c_title, c_btn = st.columns([4, 1])
-    with c_title:
-        st.markdown("## ✅ CONTROLE DE TAREFAS")
-    with c_btn:
-        if st.button("➕ Nova Tarefa", type="primary"):
-            dialog_nova_tarefa()
+    c_title.markdown("## ✅ CONTROLE DE TAREFAS")
+    if c_btn.button("➕ Nova Tarefa", type="primary"): dialog_nova_tarefa()
     
-    st.divider()
-    
-    # ABAS
-    tab1, tab2 = st.tabs(["📋 Gerenciar Tarefas", "⚙️ Configurações"])
-
-    # ABA 1: GERENCIAR
+    tab1, tab2 = st.tabs(["📋 Gerenciar", "⚙️ Config"])
     with tab1:
         df_tar = buscar_tarefas_lista()
         if not df_tar.empty:
-            # FORMATAR DATA NA TABELA (VISUAL)
             df_tar['Data Prev.'] = pd.to_datetime(df_tar['data_previsao']).dt.strftime('%d/%m/%Y')
-            
-            c1, c2 = st.columns(2)
-            with c1: txt_bus = st.text_input("🔎 Buscar (Pedido, Cliente, Produto)")
-            with c2: sel_st = st.multiselect("Filtrar Status", df_tar['status'].unique())
-            
-            if txt_bus:
-                df_tar = df_tar[df_tar['codigo_pedido'].str.contains(txt_bus, case=False) | 
-                                df_tar['nome_cliente'].str.contains(txt_bus, case=False) |
-                                df_tar['nome_produto'].str.contains(txt_bus, case=False)]
-            if sel_st:
-                df_tar = df_tar[df_tar['status'].isin(sel_st)]
-            
-            # Tabela simplificada
-            st.dataframe(
-                df_tar[['codigo_pedido', 'status', 'Data Prev.', 'nome_cliente', 'nome_produto']], 
-                use_container_width=True, 
-                hide_index=True
-            )
-            
-            st.markdown("### Ações da Tarefa")
+            st.dataframe(df_tar[['codigo_pedido', 'status', 'Data Prev.', 'nome_cliente']], use_container_width=True, hide_index=True)
             for i, row in df_tar.iterrows():
-                with st.expander(f"📌 {row['codigo_pedido']} | {row['nome_cliente']} ({row['status']})"):
-                    c_info, c_btns = st.columns([2, 1])
-                    with c_info:
-                        st.write(f"**Produto:** {row['nome_produto']}")
-                        st.write(f"**Previsão:** {row['Data Prev.']}") # Usa a data formatada
-                        st.info(f"**Obs Tarefa:** {row['observacao_tarefa']}")
-                    
-                    with c_btns:
-                        # BOTÕES RENOMEADOS
-                        c_b1, c_b2, c_b3 = st.columns(3)
-                        if c_b1.button("Cliente", key=f"vc_{row['id']}", help="Ver Cliente"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'])
-                        if c_b2.button("Produção", key=f"vp_{row['id']}", help="Ver Produto"): ver_produto(row['nome_produto'], row['categoria_produto'])
-                        if c_b3.button("Pedido", key=f"vpe_{row['id']}", help="Ver Pedido"): ver_pedido(row['codigo_pedido'], row['obs_pedido'])
-                        
-                        st.divider()
-                        
-                        if st.button("🔄 Atualizar Status", key=f"st_{row['id']}", use_container_width=True): dialog_status(row)
-                        if st.button("✏️ Editar Tarefa", key=f"ed_{row['id']}", use_container_width=True): dialog_editar(row)
-                        
-                        # BOTÃO EXCLUIR COM CONFIRMAÇÃO DUPLA
-                        if st.button("🗑️ Excluir", key=f"del_{row['id']}", use_container_width=True):
-                            dialog_confirmar_exclusao(row['id'])
-        else:
-            st.info("Nenhuma tarefa encontrada.")
-
-    # ABA 2: CONFIG
+                with st.expander(f"📌 {row['codigo_pedido']} | {row['nome_cliente']}"):
+                    c1, c2, c3 = st.columns(3)
+                    if c1.button("Status", key=f"st_{row['id']}"): dialog_status(row)
+                    if c2.button("Editar", key=f"ed_{row['id']}"): dialog_editar(row)
+                    if c3.button("🗑️", key=f"del_{row['id']}"): dialog_confirmar_exclusao(row['id'])
+        else: st.info("Sem tarefas.")
     with tab2:
-        st.write("Ajuste as mensagens automáticas enviadas via WhatsApp.")
-        if st.button("Abrir Configuração de Tarefa"): dialog_config()
+        if st.button("Abrir Configuração"): dialog_config()
 
 if __name__ == "__main__":
     app_tarefas()

@@ -8,10 +8,17 @@ from datetime import datetime
 import conexao
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
-BASE_DIR = "/root/meu_sistema/COMERCIAL/PRODUTOS E SERVICOS"
+# Usamos caminhos relativos para funcionar tanto no servidor SSH quanto no Streamlit Cloud
+BASE_DIR = os.path.join(os.getcwd(), "COMERCIAL", "PRODUTOS E SERVICOS")
 
-if not os.path.exists(BASE_DIR):
-    os.makedirs(BASE_DIR, exist_ok=True)
+# Bloco de segurança para evitar travamento por falta de permissão
+try:
+    if not os.path.exists(BASE_DIR):
+        os.makedirs(BASE_DIR, exist_ok=True)
+except PermissionError:
+    # Fallback para pasta temporária permitida no Streamlit Cloud
+    BASE_DIR = "/tmp" 
+    st.info("Sistema operando em modo de nuvem (Arquivos locais desativados).")
 
 # --- CONEXÃO COM BANCO ---
 def get_conn():
@@ -39,16 +46,24 @@ def criar_pasta_produto(codigo, nome):
     nome_pasta = f"{codigo} - {nome} - {data_str}"
     nome_pasta = "".join(c for c in nome_pasta if c.isalnum() or c in (' ', '-', '_')).strip()
     caminho_completo = os.path.join(BASE_DIR, nome_pasta)
-    if not os.path.exists(caminho_completo):
-        os.makedirs(caminho_completo)
+    
+    try:
+        if not os.path.exists(caminho_completo):
+            os.makedirs(caminho_completo)
+    except PermissionError:
+        # Apenas ignora se não puder criar a pasta na nuvem
+        pass 
     return caminho_completo
 
 def salvar_arquivos(uploaded_files, caminho_destino):
     if uploaded_files:
         for file in uploaded_files:
             file_path = os.path.join(caminho_destino, file.name)
-            with open(file_path, "wb") as f:
-                f.write(file.getbuffer())
+            try:
+                with open(file_path, "wb") as f:
+                    f.write(file.getbuffer())
+            except PermissionError:
+                st.warning(f"Atenção: O arquivo {file.name} não foi salvo localmente (Restrição de Nuvem).")
 
 # --- FUNÇÕES DE CRUD (BANCO) ---
 def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
@@ -69,7 +84,6 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
             return False
     return False
 
-# NOVA FUNÇÃO: ATUALIZAR (PARA O BOTÃO EDITAR)
 def atualizar_produto_db(id_prod, nome, tipo, resumo, preco):
     conn = get_conn()
     if conn:
@@ -122,8 +136,12 @@ def excluir_produto(id_prod, caminho_pasta):
             cur.execute("DELETE FROM produtos_servicos WHERE id = %s", (id_prod,))
             conn.commit()
             conn.close()
+            # Só tenta excluir a pasta se ela existir e houver permissão
             if caminho_pasta and os.path.exists(caminho_pasta):
-                shutil.rmtree(caminho_pasta)
+                try:
+                    shutil.rmtree(caminho_pasta)
+                except PermissionError:
+                    pass
             return True
         except Exception as e:
             st.error(f"Erro ao excluir: {e}")
@@ -145,25 +163,23 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
                 with col_ico: st.write("📄")
                 with col_nome: st.write(arquivo)
                 with col_down:
-                    with open(caminho_completo, "rb") as f:
-                        st.download_button("⬇️ Baixar", data=f, file_name=arquivo, key=f"d_{arquivo}")
+                    try:
+                        with open(caminho_completo, "rb") as f:
+                            st.download_button("⬇️ Baixar", data=f, file_name=arquivo, key=f"d_{arquivo}_{uuid.uuid4().hex}")
+                    except:
+                        st.write("Indisponível")
         else:
             st.warning("Pasta vazia.")
     else:
-        st.error("Pasta não encontrada.")
+        st.error("Arquivos não localizados no servidor de nuvem.")
 
 @st.dialog("✏️ Editar Item")
 def dialog_editar_produto(dados_atuais):
     st.write(f"Editando: **{dados_atuais['codigo']}**")
     with st.form("form_editar", clear_on_submit=False):
         novo_nome = st.text_input("Nome", value=dados_atuais['nome'])
-        
-        # Define o índice correto para o selectbox
         opcoes_tipo = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
-        idx_tipo = 0
-        if dados_atuais['tipo'] in opcoes_tipo:
-            idx_tipo = opcoes_tipo.index(dados_atuais['tipo'])
-            
+        idx_tipo = opcoes_tipo.index(dados_atuais['tipo']) if dados_atuais['tipo'] in opcoes_tipo else 0
         novo_tipo = st.selectbox("Categoria", opcoes_tipo, index=idx_tipo)
         novo_preco = st.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
         novo_resumo = st.text_area("Resumo", value=dados_atuais['resumo'], height=100)
@@ -191,14 +207,13 @@ def dialog_novo_cadastro():
                 if cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho):
                     st.success(f"Criado: {codigo_auto}")
                     st.rerun()
-                else: st.error("Erro ao salvar.")
+                else: st.error("Erro ao salvar no banco.")
             else: st.warning("Nome obrigatório.")
 
 # --- INTERFACE PRINCIPAL ---
 def app_produtos():
     st.markdown("## 📦 Módulo Produtos e Serviços")
     
-    # Botão de Cadastro no topo direito
     col_head1, col_head2 = st.columns([6, 1])
     with col_head2:
         if st.button("➕ Novo", help="Cadastrar novo item"):
@@ -208,7 +223,6 @@ def app_produtos():
     
     df = listar_produtos()
     if not df.empty:
-        # Filtros
         col_f1, col_f2 = st.columns(2)
         with col_f1: filtro_nome = st.text_input("🔎 Pesquisar")
         with col_f2: filtro_tipo = st.multiselect("Filtrar Categoria", df['tipo'].unique())
@@ -218,51 +232,34 @@ def app_produtos():
         if filtro_tipo:
             df = df[df['tipo'].isin(filtro_tipo)]
 
-        # Lista de Itens
         for index, row in df.iterrows():
             status_cor = "🟢" if row['ativo'] else "🔴"
             with st.expander(f"{status_cor} {row['nome']} ({row['codigo']})"):
-                
-                # Layout interno do Card
                 st.markdown(f"**Categoria:** {row['tipo']} | **Preço:** R$ {row['preco']:.2f}")
                 st.markdown(f"**Resumo:** {row['resumo']}")
-                
                 st.markdown("---")
                 
-                # RODAPÉ DOS BOTÕES
                 col_folder, col_actions = st.columns([1, 1])
-                
-                # Lado Esquerdo: Pasta de Arquivos
                 with col_folder:
                      if st.button(f"📂 Arquivos", key=f"f_{row['id']}"):
                         dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
 
-                # Lado Direito: Ações (Editar, Status, Excluir) com Ícones
                 with col_actions:
-                    # Cria colunas internas para os ícones ficarem lado a lado
                     b1, b2, b3 = st.columns(3)
-                    
                     with b1:
-                        # Botão EDITAR (Lápis)
                         if st.button("✏️", key=f"ed_{row['id']}", help="Editar"):
                             dialog_editar_produto(row)
-                    
                     with b2:
-                        # Botão STATUS (Toggle)
-                        lbl_st = "🔄" 
-                        help_txt = "Desativar" if row['ativo'] else "Ativar"
-                        if st.button(lbl_st, key=f"st_{row['id']}", help=help_txt):
+                        if st.button("🔄", key=f"st_{row['id']}", help="Alterar Status"):
                             if alternar_status(row['id'], row['ativo']):
                                 st.rerun()
-                    
                     with b3:
-                        # Botão EXCLUIR (Lixeira)
                         if st.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
                             if excluir_produto(row['id'], row['caminho_pasta']):
                                 st.warning("Item removido.")
                                 st.rerun()
     else:
-        st.info("Nenhum item encontrado.")
+        st.info("Nenhum item encontrado no banco de dados.")
 
 if __name__ == "__main__":
     app_produtos()
