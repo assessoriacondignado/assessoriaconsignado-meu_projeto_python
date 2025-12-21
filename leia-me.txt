@@ -1,0 +1,27 @@
+============================================================
+🚀 GUIA DE ATUALIZAÇÃO RÁPIDA - CRM AC
+============================================================
+
+Sempre que editar o código no editor (Codespaces), siga os 
+passos abaixo no terminal para as mudanças aparecerem no site:
+
+1️⃣ COMANDO TUDO-EM-UM (RECOMENDADO):
+Copie e cole a linha abaixo inteira e aperte Enter:
+
+git add . && git commit -m "ajustes gerais" && git push origin main
+
+------------------------------------------------------------
+
+2️⃣ O QUE CADA PARTE FAZ:
+• git add .          -> Seleciona todos os arquivos alterados.
+• git commit -m ".." -> Cria um ponto de salvamento com uma nota.
+• git push origin main -> Envia tudo para o GitHub/Streamlit.
+
+------------------------------------------------------------
+
+3️⃣ DICAS IMPORTANTES:
+• Se o site não atualizar na hora, use CTRL + F5 no navegador.
+• Use sempre aspas duplas "" na mensagem do commit.
+• Verifique se o terminal exibiu "Everything up-to-date" ao final.
+
+============================================================
