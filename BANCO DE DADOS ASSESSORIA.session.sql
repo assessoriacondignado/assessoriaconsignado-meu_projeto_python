@@ -1,4 +1,4 @@
--- COMANDO PARA ATUALIZAR A SENHA PARA O FORMATO SEGURO (BCRYPT)
+-- DEFINE A SENHA COMO '1234' EM TEXTO COMUM (PARA RECUPERAR ACESSO)
 UPDATE clientes_usuarios 
-SET senha = '$2b$12$K1.fE8HwzOQY6x.tZ7v0E.f6Kx7v0E.f6Kx7v0E.f6Kx7v0E.' 
+SET senha = '1234' 
 WHERE email = 'admin' OR email = 'atendimento@assessoriaconsignado.com';
