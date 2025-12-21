@@ -134,7 +134,7 @@ def app_clientes():
 
     st.markdown("<br>", unsafe_allow_html=True)
     conn = get_conn()
-    # SINCRONIA: Mostra tudo que não for Staff (Admin/Gerente) para não sumir dados
+    # SINCRONIA: Mostra tudo que não for Staff (Admin/Gerente) para evitar que dados desapareçam
     sql = "SELECT id, nome, cpf, telefone, hierarquia, pasta_caminho, id_grupo_whats FROM clientes_usuarios WHERE hierarquia NOT IN ('Admin', 'Gerente', 'Supervisor')"
     if filtro: sql += f" AND (nome ILIKE '%{filtro}%' OR cpf ILIKE '%{filtro}%' OR telefone ILIKE '%{filtro}%')"
     sql += " ORDER BY id DESC"
