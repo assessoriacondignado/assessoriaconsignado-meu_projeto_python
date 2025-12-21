@@ -13,7 +13,6 @@ import string
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
 # --- IMPORTAÇÃO DOS MÓDULOS ---
-# Garante que o Python encontre suas pastas de módulos no servidor Linux
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS"))
 sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_W-API")) 
@@ -51,9 +50,14 @@ except ImportError as e:
     modulo_tarefas = None
     st.error(f"Erro crítico ao importar módulos: {e}")
 
-# --- ESTILOS VISUAIS GERAIS ---
+# --- ESTILOS VISUAIS GERAIS (Ajustado para ocultar marcas do Streamlit) ---
 st.markdown("""
 <style>
+    /* Oculta o Menu, o Rodapé (marca d'água) e o Cabeçalho */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
     .stApp { background-color: #f8f9fa; }
     .titulo-empresa {
         font-size: 22px !important;
@@ -75,7 +79,6 @@ st.markdown("""
 
 # --- GERENCIAMENTO DE SESSÃO E SEGURANÇA (DB) ---
 def get_conn():
-    # Certifique-se que o arquivo conexao.py existe na raiz do GitHub
     return psycopg2.connect(
         host=conexao.host, 
         port=conexao.port, 
