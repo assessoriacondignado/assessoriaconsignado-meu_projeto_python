@@ -57,6 +57,18 @@ def mostrar_arquivos(caminho_pasta):
 
 def app_clientes():
     st.markdown("## 👥 Cadastro de Clientes")
+    
+    # --- CORREÇÃO: GARANTE A COLUNA ANTES DE QUALQUER LEITURA ---
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        st.error(f"Erro ao validar estrutura da tabela: {e}")
+
     if 'modo_cliente' not in st.session_state: st.session_state['modo_cliente'] = None
     if 'id_cli' not in st.session_state: st.session_state['id_cli'] = None
 
@@ -73,7 +85,6 @@ def app_clientes():
         d = {}
         if st.session_state['modo_cliente'] == 'editar':
             conn = get_conn()
-            # Busca na tabela admin.clientes conforme print SQL
             df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['id_cli']}", conn)
             conn.close()
             if not df.empty: d = df.iloc[0]
@@ -85,25 +96,21 @@ def app_clientes():
             email = c1.text_input("E-mail *", value=d.get('email', ''))
             telefone = c2.text_input("Telefone", value=d.get('telefone', ''))
             
-            # --- CAMPO GRUPO WHATSAPP (SITUAÇÃO: RESTAURADO) ---
+            # Campo Grupo WhatsApp com regra de sufixo @g.us
             id_val = d.get('id_grupo_whats', '') if d.get('id_grupo_whats') else ''
-            if id_val: id_val = id_val.replace('@g.us', '') # Remove sufixo para edição
+            if id_val: id_val = id_val.replace('@g.us', '')
             id_grupo_input = st.text_input("ID do Grupo WhatsApp", value=id_val, help="Digite apenas o código numérico do grupo")
             
             c_b1, c_b2 = st.columns([1,6])
             if c_b1.form_submit_button("💾 Salvar"):
-                # Regra: Aplicação interna do sufixo @g.us
                 id_final = None
                 if id_grupo_input:
-                    id_limpo = re.sub(r'[^0-9-]', '', id_grupo_input) # Limpa caracteres extras
-                    id_final = f"{id_limpo}@g.us" # Adiciona sufixo
+                    id_limpo = re.sub(r'[^0-9-]', '', id_grupo_input)
+                    id_final = f"{id_limpo}@g.us"
 
                 conn = get_conn()
                 cur = conn.cursor()
                 try:
-                    # Garante que a coluna existe na tabela admin
-                    cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
-                    
                     if st.session_state['modo_cliente'] == 'novo':
                         sql = """INSERT INTO admin.clientes (nome, email, telefone, id_grupo_whats) 
                                  VALUES (%s,%s,%s,%s)"""
@@ -136,7 +143,8 @@ def app_clientes():
     try:
         df = pd.read_sql(sql, conn)
     except Exception as e:
-        st.error(f"Erro ao acessar tabela admin.clientes: {e}")
+        # Erro de leitura caso a coluna não exista (prevenido pelo ALTER TABLE no início)
+        st.error(f"Erro ao aceder à tabela admin.clientes: {e}")
         df = pd.DataFrame()
     finally:
         conn.close()
