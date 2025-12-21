@@ -13,12 +13,13 @@ import string
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
 # --- IMPORTAÇÃO DOS MÓDULOS ---
-# Adiciona os caminhos das pastas onde estão os módulos
-sys.path.append("OPERACIONAL/CLIENTES E USUARIOS")
-sys.path.append("OPERACIONAL/MODULO_W-API") 
-sys.path.append("COMERCIAL/PRODUTOS E SERVICOS")
-sys.path.append("COMERCIAL/PEDIDOS")
-sys.path.append("COMERCIAL/TAREFAS") 
+# Garante que o Python encontre suas pastas de módulos no servidor Linux
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS"))
+sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_W-API")) 
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS"))
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS"))
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS")) 
 
 try:
     import modulo_cliente
@@ -48,14 +49,12 @@ except ImportError as e:
     modulo_produtos = None
     modulo_pedidos = None
     modulo_tarefas = None
-    print(f"Erro ao importar módulos: {e}")
+    st.error(f"Erro crítico ao importar módulos: {e}")
 
 # --- ESTILOS VISUAIS GERAIS ---
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
-    
-    /* Título da empresa reduzido para o menu principal */
     .titulo-empresa {
         font-size: 22px !important;
         font-weight: 800;
@@ -76,7 +75,14 @@ st.markdown("""
 
 # --- GERENCIAMENTO DE SESSÃO E SEGURANÇA (DB) ---
 def get_conn():
-    return psycopg2.connect(host=conexao.host, port=conexao.port, database=conexao.database, user=conexao.user, password=conexao.password)
+    # Certifique-se que o arquivo conexao.py existe na raiz do GitHub
+    return psycopg2.connect(
+        host=conexao.host, 
+        port=conexao.port, 
+        database=conexao.database, 
+        user=conexao.user, 
+        password=conexao.password
+    )
 
 def init_session_db():
     try:
@@ -102,9 +108,7 @@ def init_session_db():
         print(f"Erro DB Sessão: {e}")
 
 # --- FUNÇÕES DE RESET DE SENHA ---
-
 def gerar_senha_aleatoria():
-    """Gera senha aleatória: 3 letras + 1 caractere + 3 números"""
     letras = "".join(random.choices(string.ascii_letters, k=3))
     caractere = random.choice("!@#$%&*")
     numeros = "".join(random.choices(string.digits, k=3))
@@ -114,8 +118,6 @@ def processar_reset_senha(email_input):
     try:
         conn = get_conn()
         cur = conn.cursor()
-        
-        # Busca o usuário pelo e-mail
         cur.execute("SELECT id, nome, telefone FROM clientes_usuarios WHERE email = %s", (email_input,))
         usuario = cur.fetchone()
         
@@ -124,8 +126,6 @@ def processar_reset_senha(email_input):
             return "erro_email"
         
         user_id, nome_user, tel_user = usuario
-        
-        # Validação de segurança: limite de 5 tentativas em 12 horas
         cur.execute("""
             SELECT count(*) FROM logs_reset_senha 
             WHERE id_usuario = %s AND data_solicitacao > NOW() - INTERVAL '12 hours'
@@ -138,7 +138,6 @@ def processar_reset_senha(email_input):
             conn.close()
             return "usuario_bloqueado"
         
-        # Localiza uma instância de WhatsApp configurada para o disparo
         cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
         instancia = cur.fetchone()
         
@@ -147,17 +146,13 @@ def processar_reset_senha(email_input):
             return "erro_configuracao"
 
         inst_id, inst_token = instancia
-        
-        # Gera e atualiza a nova senha
         nova_senha = gerar_senha_aleatoria()
         cur.execute("UPDATE clientes_usuarios SET senha = %s WHERE id = %s", (nova_senha, user_id))
         cur.execute("INSERT INTO logs_reset_senha (id_usuario) VALUES (%s)", (user_id,))
         
-        # Disparo via Módulo W-API
         if modulo_wapi:
             msg = f"Olá {nome_user}, sua nova senha de acesso é: {nova_senha}"
             res = modulo_wapi.enviar_msg_api(inst_id, inst_token, tel_user, msg)
-            
             if res.get('messageId') or res.get('success') is True:
                 conn.commit()
                 conn.close()
@@ -167,7 +162,7 @@ def processar_reset_senha(email_input):
         conn.close()
         return "erro_envio"
     except Exception as e:
-        print(f"Erro Reset: {e}")
+        st.error(f"Erro Reset: {e}")
         return "erro_geral"
 
 @st.dialog("Solicitação de Redefinição de Senha")
@@ -191,8 +186,7 @@ def popup_reset_senha():
         else:
             st.warning("Por favor, digite o e-mail.")
 
-# --- NAVEGAÇÃO E LOGIN ---
-
+# --- LOGIN E SESSÃO ---
 def criar_sessao_db(id_user, nome_user):
     token = str(uuid.uuid4())
     try:
@@ -273,7 +267,7 @@ else:
     st.session_state['logado'] = False
     if token_atual: st.query_params.clear() 
 
-# --- TELA DE LOGIN (LAYOUT CENTRALIZADO) ---
+# --- TELA DE LOGIN ---
 def tela_login():
     st.markdown("""
     <style>
@@ -286,26 +280,21 @@ def tela_login():
             position: fixed; top: 50%; left: 50%;
             transform: translate(-50%, -50%); z-index: 999;
         }
-        .login-title { font-family: 'Arial', sans-serif; font-size: 28px; font-weight: bold; color: #444; margin-bottom: 5px; }
-        .login-subtitle { font-family: 'Arial', sans-serif; font-size: 14px; color: #888; margin-bottom: 35px; }
-        div[data-testid="stTextInput"] input { border-radius: 8px !important; height: 48px !important; border: 1px solid #ddd !important; }
-        div.stButton > button { background-color: #007bff !important; color: white !important; width: 100%; border-radius: 8px !important; height: 50px !important; font-weight: bold !important; border: none !important; margin-top: 10px !important; }
     </style>
     """, unsafe_allow_html=True)
 
     st.markdown("""
         <div class="login-card">
-            <div class="login-title">Assessoria Consignado</div>
-            <div class="login-subtitle">Portal Integrado</div>
+            <div style="font-size: 28px; font-weight: bold; color: #444;">Assessoria Consignado</div>
+            <div style="font-size: 14px; color: #888; margin-bottom: 20px;">Portal Integrado</div>
     """, unsafe_allow_html=True)
 
-    empty, col_login, empty = st.columns([1, 2, 1])
-    with col_login:
-        st.markdown("<br><br><br><br><br><br>", unsafe_allow_html=True)
-        usuario = st.text_input("E-mail", placeholder="E-mail", label_visibility="collapsed")
-        senha = st.text_input("Senha", type="password", placeholder="Senha", label_visibility="collapsed")
+    col_login_central = st.container()
+    with col_login_central:
+        usuario = st.text_input("E-mail", placeholder="Seu e-mail ou CPF", key="user_in")
+        senha = st.text_input("Senha", type="password", placeholder="Sua senha", key="pass_in")
         
-        if st.button("ENTRAR", use_container_width=True):
+        if st.button("ENTRAR", use_container_width=True, type="primary"):
             user_data = validar_login_db(usuario, senha)
             if user_data:
                 token = criar_sessao_db(user_data['id'], user_data['nome'])
@@ -323,10 +312,11 @@ def tela_login():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# --- BARRA SUPERIOR (NAVBAR STYLE) ---
+# --- BARRA SUPERIOR ---
 def barra_superior():
-    caminho_logo = "OPERACIONAL/MODULO_TELA_PRINCIPAL/logo.png"
+    caminho_logo = os.path.join(BASE_DIR, "OPERACIONAL/MODULO_TELA_PRINCIPAL/logo.png")
     c_marca, c_menu, c_perfil = st.columns([2.5, 6.5, 3])
+    
     with c_marca:
         col_img, col_txt = st.columns([1, 3])
         with col_img:
@@ -371,19 +361,22 @@ def barra_superior():
     return selected
 
 def main():
-    if not st.session_state['logado']:
+    if not st.session_state.get('logado', False):
         tela_login()
     else:
         modulo = barra_superior()
         st.markdown("<hr style='margin-top:-10px; margin-bottom:20px; opacity:0.1;'>", unsafe_allow_html=True) 
+        
         if modulo == "COMERCIAL":
             with st.sidebar:
                 menu_com = option_menu("Comercial", ["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"], icons=['box-seam', 'cart-check', 'list-check'], default_index=0)
             if menu_com == "Produtos e Serviços" and modulo_produtos: modulo_produtos.app_produtos()
             elif menu_com == "Gestão de Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
             elif menu_com == "Controle de Tarefas" and modulo_tarefas: modulo_tarefas.app_tarefas()
+            
         elif modulo == "FINANCEIRO":
             st.subheader("💰 Módulo Financeiro"); st.info("Em desenvolvimento")
+            
         elif modulo == "OPERACIONAL":
             with st.sidebar:
                 menu_ops = option_menu("Operacional", ["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)", "Configurações"], icons=['people', 'shield-lock', 'whatsapp', 'gear'], default_index=0)
