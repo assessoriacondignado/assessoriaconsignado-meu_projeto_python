@@ -6,15 +6,20 @@ import re
 
 try: 
     import conexao
-except: 
-    st.error("Erro ao carregar conexao.py")
+except ImportError: 
+    st.error("Erro crítico: Arquivo conexao.py não encontrado no servidor.")
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO DINÂMICO ---
-# Substituímos caminhos fixos para funcionar em qualquer servidor
 BASE_DIR_ARQUIVOS = os.path.join(os.getcwd(), "OPERACIONAL", "CLIENTES E USUARIOS", "ARQUIVOS_CLIENTES")
 
 def get_conn():
-    return psycopg2.connect(host=conexao.host, port=conexao.port, database=conexao.database, user=conexao.user, password=conexao.password)
+    return psycopg2.connect(
+        host=conexao.host, 
+        port=conexao.port, 
+        database=conexao.database, 
+        user=conexao.user, 
+        password=conexao.password
+    )
 
 # --- CSS PARA VISUAL COMPACTO ---
 st.markdown("""
@@ -26,7 +31,6 @@ st.markdown("""
 
 @st.dialog("Arquivos do Cliente")
 def mostrar_arquivos(caminho_pasta):
-    # Verificação robusta de existência da pasta
     if not caminho_pasta or not os.path.exists(caminho_pasta):
         st.error("Pasta não localizada no servidor de nuvem.")
         return
@@ -48,8 +52,8 @@ def mostrar_arquivos(caminho_pasta):
                 except Exception:
                     col_btn.write("⚠️")
                 st.markdown('<hr style="margin: 5px 0; opacity: 0.2;">', unsafe_allow_html=True)
-    except PermissionError:
-        st.error("Permissão negada para ler esta pasta na nuvem.")
+    except Exception as e:
+        st.error(f"Erro ao ler pasta: {e}")
 
 def app_clientes():
     st.markdown("## 👥 Cadastro de Clientes")
@@ -62,16 +66,19 @@ def app_clientes():
         st.session_state['modo_cliente'] = 'novo'
         st.rerun()
 
+    # --- FORMULÁRIO (NOVO/EDITAR) ---
     if st.session_state['modo_cliente'] in ['novo', 'editar']:
         st.divider()
         titulo = "📝 Novo Cliente" if st.session_state['modo_cliente'] == 'novo' else "✏️ Editar Cliente"
         st.markdown(f"### {titulo}")
         d = {}
         if st.session_state['modo_cliente'] == 'editar':
-            conn = get_conn()
-            df = pd.read_sql(f"SELECT * FROM clientes_usuarios WHERE id = {st.session_state['id_cli']}", conn)
-            conn.close()
-            if not df.empty: d = df.iloc[0]
+            try:
+                conn = get_conn()
+                df = pd.read_sql(f"SELECT * FROM clientes_usuarios WHERE id = {st.session_state['id_cli']}", conn)
+                conn.close()
+                if not df.empty: d = df.iloc[0]
+            except Exception as e: st.error(f"Erro ao carregar dados: {e}")
 
         with st.form("form_cliente"):
             c_tipo, c_nome = st.columns([1, 2])
@@ -101,21 +108,11 @@ def app_clientes():
 
                 h_tipo = 'Grupo' if tipo_contato == "Grupo de WhatsApp" else 'Cliente'
 
-                conn = get_conn()
-                cur = conn.cursor()
                 try:
-                    cur.execute("ALTER TABLE clientes_usuarios ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
-                    
+                    conn = get_conn(); cur = conn.cursor()
                     if st.session_state['modo_cliente'] == 'novo':
-                        # Lógica de criação de pasta protegida para Nuvem
                         pasta = os.path.join(BASE_DIR_ARQUIVOS, nome)
-                        try:
-                            if not os.path.exists(pasta): 
-                                os.makedirs(pasta, exist_ok=True)
-                        except PermissionError:
-                            # Se falhar na nuvem, usa a pasta temporária permitida
-                            pasta = os.path.join("/tmp", nome)
-                            if not os.path.exists(pasta): os.makedirs(pasta, exist_ok=True)
+                        if not os.path.exists(pasta): os.makedirs(pasta, exist_ok=True)
                         
                         sql = """INSERT INTO clientes_usuarios 
                                  (nome, cpf, telefone, email, observacao, pasta_caminho, hierarquia, id_grupo_whats) 
@@ -127,42 +124,52 @@ def app_clientes():
                                  WHERE id=%s"""
                         cur.execute(sql, (nome, cpf, telefone, email, obs, h_tipo, id_final, st.session_state['id_cli']))
                     
-                    conn.commit()
+                    conn.commit(); conn.close()
                     st.success("Dados salvos com sucesso!")
                     st.session_state['modo_cliente'] = None
                     st.rerun()
                 except Exception as e: st.error(f"Erro ao salvar: {e}")
-                finally: conn.close()
             
             if c_b2.form_submit_button("Cancelar"):
                 st.session_state['modo_cliente'] = None
                 st.rerun()
 
+    # --- LISTAGEM DE CLIENTES ---
     st.markdown("<br>", unsafe_allow_html=True)
-    conn = get_conn()
-    sql = "SELECT id, nome, cpf, telefone, hierarquia, pasta_caminho, id_grupo_whats FROM clientes_usuarios WHERE hierarquia IN ('Cliente', 'Grupo')"
-    if filtro: sql += f" AND (nome ILIKE '%{filtro}%' OR cpf ILIKE '%{filtro}%' OR telefone ILIKE '%{filtro}%' OR id_grupo_whats ILIKE '%{filtro}%')"
-    sql += " ORDER BY id DESC"
-    df = pd.read_sql(sql, conn)
-    conn.close()
+    try:
+        conn = get_conn()
+        # Removido o filtro rígido de hierarquia para garantir que os dados apareçam
+        sql = "SELECT id, nome, cpf, telefone, hierarquia, pasta_caminho, id_grupo_whats FROM clientes_usuarios WHERE 1=1"
+        
+        if filtro: 
+            sql += f" AND (nome ILIKE '%{filtro}%' OR cpf ILIKE '%{filtro}%' OR telefone ILIKE '%{filtro}%')"
+        
+        sql += " ORDER BY id DESC"
+        df = pd.read_sql(sql, conn)
+        conn.close()
 
-    if not df.empty:
-        st.markdown("""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px 5px 0 0; border: 1px solid #ddd; display: flex; font-weight: bold;"><div style="flex: 3;">Nome</div><div style="flex: 2;">CPF</div><div style="flex: 2;">Telefone / ID Grupo</div><div style="flex: 1.5;">Ações</div></div>""", unsafe_allow_html=True)
-        for i, row in df.iterrows():
-            with st.container():
-                c = st.columns([3, 2, 2, 1.5])
-                icon = "👥 " if row['hierarquia'] == 'Grupo' else ""
-                c[0].markdown(f"<div style='padding-top: 5px;'>{icon}{row['nome']}</div>", unsafe_allow_html=True)
-                c[1].markdown(f"<div style='padding-top: 5px;'>{row['cpf']}</div>", unsafe_allow_html=True)
-                
-                contato_str = row['telefone'] if row['telefone'] else "---"
-                if row['id_grupo_whats']: contato_str += f" | {row['id_grupo_whats']}"
-                c[2].markdown(f"<div style='padding-top: 5px;'>{contato_str}</div>", unsafe_allow_html=True)
-                
-                col_botoes = c[3].columns([1, 1])
-                if col_botoes[0].button("📂", key=f"btn_p_{row['id']}"): mostrar_arquivos(row['pasta_caminho'])
-                if col_botoes[1].button("✏️", key=f"btn_e_{row['id']}"):
-                    st.session_state['modo_cliente'] = 'editar'
-                    st.session_state['id_cli'] = row['id']
-                    st.rerun()
-                st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 2px;'></div>", unsafe_allow_html=True)
+        if not df.empty:
+            st.markdown("""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px 5px 0 0; border: 1px solid #ddd; display: flex; font-weight: bold;"><div style="flex: 3;">Nome</div><div style="flex: 2;">CPF</div><div style="flex: 2;">Telefone / ID Grupo</div><div style="flex: 1.5;">Ações</div></div>""", unsafe_allow_html=True)
+            for i, row in df.iterrows():
+                with st.container():
+                    c = st.columns([3, 2, 2, 1.5])
+                    icon = "👥 " if row['hierarquia'] == 'Grupo' else ""
+                    c[0].markdown(f"<div style='padding-top: 5px;'>{icon}{row['nome']}</div>", unsafe_allow_html=True)
+                    c[1].markdown(f"<div style='padding-top: 5px;'>{row['cpf']}</div>", unsafe_allow_html=True)
+                    
+                    contato_str = row['telefone'] if row['telefone'] else "---"
+                    if row['id_grupo_whats']: contato_str += f" | {row['id_grupo_whats']}"
+                    c[2].markdown(f"<div style='padding-top: 5px;'>{contato_str}</div>", unsafe_allow_html=True)
+                    
+                    col_botoes = c[3].columns([1, 1])
+                    if col_botoes[0].button("📂", key=f"btn_p_{row['id']}"): mostrar_arquivos(row['pasta_caminho'])
+                    if col_botoes[1].button("✏️", key=f"btn_e_{row['id']}"):
+                        st.session_state['modo_cliente'] = 'editar'
+                        st.session_state['id_cli'] = row['id']
+                        st.rerun()
+                    st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 2px;'></div>", unsafe_allow_html=True)
+        else:
+            st.info("Nenhum cliente localizado com os filtros atuais.")
+            
+    except Exception as e:
+        st.error(f"Erro ao conectar ao banco de dados: {e}")
