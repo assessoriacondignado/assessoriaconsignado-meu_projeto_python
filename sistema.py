@@ -26,18 +26,25 @@ st.markdown("""
     .stAppDeployButton {display: none !important;}
     [data-testid="stFooter"], [data-testid="stDecoration"] {display: none !important;}
     .stApp { background-color: #f8f9fa; }
-    .titulo-empresa { font-size: 18px !important; font-weight: 800; color: #333333; margin-top: 10px; }
+    .titulo-empresa { font-size: 16px !important; font-weight: 800; color: #333333; margin-top: 5px; }
     .block-container { padding-top: 1rem !important; }
     
-    /* Aproximação e ajuste dos botões na sidebar */
+    /* Ajuste 1: Botões compactos para apenas ícones */
     [data-testid="stSidebar"] .stButton button { 
         width: 100%; 
-        padding: 5px; 
-        height: 38px; 
-        font-size: 14px;
+        padding: 0px; 
+        height: 35px; 
+        font-size: 18px;
     }
-    /* Estilo para o menu lateral */
-    .nav-link { margin: 2px 0px !important; }
+
+    /* Ajuste 3 e 4: Aproximação de itens na Sidebar e redução de gaps */
+    [data-testid="stSidebarContent"] div.stVerticalBlock {
+        gap: 0.2rem !important;
+    }
+    hr { margin: 0.5rem 0px !important; }
+
+    /* Estilo para títulos dos menus (Ajuste 2) */
+    .menu-title { font-size: 12px !important; font-weight: bold; color: #666; text-transform: uppercase; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,72 +99,74 @@ def tela_login():
                     st.rerun()
                 else: st.error("Dados incorretos.")
 
-# --- 7. FUNÇÃO PRINCIPAL (LAYOUT LATERAL) ---
+# --- 7. FUNÇÃO PRINCIPAL ---
 def main():
     if not st.session_state.get('logado', False):
         tela_login()
     else:
-        # --- CONFIGURAÇÃO DA SIDEBAR ---
         with st.sidebar:
-            # Logo e Identificação da Empresa
+            # Logo e Identificação
             caminho_logo = os.path.join(BASE_DIR, "OPERACIONAL/MODULO_TELA_PRINCIPAL/logo.png")
             if os.path.exists(caminho_logo): 
-                st.image(caminho_logo, width=100)
+                st.image(caminho_logo, width=80)
             st.markdown('<div class="titulo-empresa">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
+            st.caption(f"👤 {st.session_state['usuario_nome']}")
             
-            # Dados do Usuário
-            st.markdown(f"**👤 Usuário:** {st.session_state['usuario_nome']}")
-            
-            # Botões de Ação Rápida (Aproximados em colunas)
+            # Ajuste 1: Botões apenas com ícones
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("🏠 Home"): st.rerun()
+                if st.button("🏠"): st.rerun()
             with c2:
-                if st.button("🔄 Atualizar"): st.rerun()
+                if st.button("🔄"): st.rerun()
             
             st.divider()
 
-            # Menu Principal (Módulos)
+            # Ajuste 2: Substituir "MÓDULOS" por "MENU" e reduzir fonte
             cargo = st.session_state.get('usuario_cargo', 'Cliente')
             opcoes_modulos = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"] if cargo in ["Admin", "Gerente"] else ["OPERACIONAL"]
             
             modulo_atual = option_menu(
-                menu_title="MÓDULOS",
+                menu_title="MENU", # Nome alterado
                 options=opcoes_modulos,
                 icons=["cart", "folder", "gear"],
-                menu_icon="app-indicator",
+                menu_icon=None,
                 default_index=0,
                 styles={
-                    "container": {"padding": "5px !important", "background-color": "#ffffff"},
-                    "nav-link": {"font-size": "14px", "text-align": "left", "margin": "0px"},
-                    "nav-link-selected": {"background-color": "#FF4B4B"}, # Cor primaryColor
+                    "container": {"padding": "0px !important", "background-color": "transparent"},
+                    "menu-title": {"font-size": "12px", "text-transform": "uppercase", "font-weight": "bold"}, # Fonte reduzida
+                    "nav-link": {"font-size": "13px", "text-align": "left", "margin": "0px"},
+                    "nav-link-selected": {"background-color": "#FF4B4B"},
                 }
             )
 
-            st.divider()
-
-            # Submenus Dinâmicos
+            # Ajuste 3 e 4: Remover nome do módulo no submenu e aproximar itens
             menu_sub = None
             if modulo_atual == "COMERCIAL":
                 menu_sub = option_menu(
-                    menu_title="COMERCIAL",
+                    menu_title=None, # Nome do módulo retirado
                     options=["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"],
                     icons=["box", "list-check", "calendar-event"],
-                    styles={"nav-link": {"font-size": "13px"}}
+                    styles={
+                        "container": {"padding": "0px !important"},
+                        "nav-link": {"font-size": "12px", "margin": "0px"}
+                    }
                 )
             elif modulo_atual == "OPERACIONAL":
                 menu_sub = option_menu(
-                    menu_title="OPERACIONAL",
+                    menu_title=None, # Nome do módulo retirado
                     options=["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)"],
                     icons=["people", "person-vcard", "whatsapp"],
-                    styles={"nav-link": {"font-size": "13px"}}
+                    styles={
+                        "container": {"padding": "0px !important"},
+                        "nav-link": {"font-size": "12px", "margin": "0px"}
+                    }
                 )
             
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🚪 Sair do Sistema"):
+            if st.button("Sair do Sistema", type="secondary"):
                 st.session_state.clear(); st.rerun()
 
-        # --- ÁREA DE CONTEÚDO ---
+        # ÁREA DE CONTEÚDO
         if modulo_atual == "COMERCIAL":
             if menu_sub == "Produtos e Serviços" and modulo_produtos: modulo_produtos.app_produtos()
             elif menu_sub == "Gestão de Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
@@ -169,7 +178,7 @@ def main():
             elif menu_sub == "W-API (WhatsApp)" and modulo_wapi: modulo_wapi.app_wapi()
             
         elif modulo_atual == "FINANCEIRO":
-            st.info("O módulo Financeiro está agendado para futuras implementações.")
+            st.info("Módulo Financeiro em desenvolvimento.")
 
 if __name__ == "__main__":
     main()
