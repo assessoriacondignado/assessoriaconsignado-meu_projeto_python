@@ -14,12 +14,10 @@ st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
 # --- 2. FUNÇÕES DE SEGURANÇA (CRIPTOGRAFIA) ---
 def hash_senha(senha):
-    """Criptografa a senha para salvar no banco."""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(senha.encode('utf-8'), salt).decode('utf-8')
 
 def verificar_senha(senha_plana, senha_hash):
-    """Verifica se a senha digitada confere com o hash do banco."""
     try:
         if senha_hash == senha_plana:
             return True
@@ -27,15 +25,15 @@ def verificar_senha(senha_plana, senha_hash):
     except:
         return False
 
-# --- 3. ESTILOS VISUAIS GERAIS (OCULTAÇÃO STREAMLIT) ---
+# --- 3. ESTILOS VISUAIS GERAIS ---
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden !important;}
     footer {display: none !important; visibility: hidden !important;}
-    header {display: none !important; visibility: hidden !important;}
+    /* Ajuste Situação 1: Removida a ocultação total do header para permitir acesso à sidebar */
     .viewerBadge_container__1S137 {display: none !important;}
     .stAppDeployButton {display: none !important;}
-    [data-testid="stHeader"], [data-testid="stFooter"], [data-testid="stDecoration"] {display: none !important;}
+    [data-testid="stFooter"], [data-testid="stDecoration"] {display: none !important;}
     .stApp { background-color: #f8f9fa; }
     .titulo-empresa { font-size: 22px !important; font-weight: 800; color: #333333; line-height: 1.1; }
     .subtitulo-empresa { font-size: 11px !important; color: #888888; }
@@ -86,7 +84,6 @@ def validar_login_db(usuario_input, senha_input):
         cursor.execute(sql, (usuario_input, usuario_input))
         resultado = cursor.fetchone(); conn.close()
         if resultado and verificar_senha(senha_input, resultado[3]):
-            # Retorna o cargo (hierarquia) para controle de acesso
             return {"id": resultado[0], "nome": resultado[1], "cargo": resultado[2]}
         return None
     except: return None
@@ -105,31 +102,23 @@ def tela_login():
                     st.session_state['logado'] = True
                     st.session_state['usuario_id'] = user_data['id']
                     st.session_state['usuario_nome'] = user_data['nome']
-                    # Armazena o cargo para liberar os menus
                     st.session_state['usuario_cargo'] = user_data['cargo']
                     st.rerun()
                 else: st.error("Dados incorretos.")
 
-# --- 7. BARRA SUPERIOR (MENU PRINCIPAL) ---
+# --- 7. BARRA SUPERIOR (SINCROZINADA COM CARGO) ---
 def barra_superior():
     caminho_logo = os.path.join(BASE_DIR, "OPERACIONAL/MODULO_TELA_PRINCIPAL/logo.png")
     c_marca, c_menu, c_perfil = st.columns([2.5, 6.5, 3])
     with c_marca:
         if os.path.exists(caminho_logo): st.image(caminho_logo, width=45)
         st.markdown('<div class="titulo-empresa">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
-        st.markdown('<div class="subtitulo-empresa">Sistema de Gestão</div>', unsafe_allow_html=True)
 
     with c_menu:
-        # Liberação de menus baseada no CARGO (hierarquia)
+        # Ajuste Situação 2: Liberação baseada no cargo salvo na sessão
         cargo = st.session_state.get('usuario_cargo', 'Cliente')
-        if cargo in ["Admin", "Gerente"]:
-            opcoes = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"]
-            icones = ["cart", "currency-dollar", "gear"]
-        else:
-            opcoes = ["OPERACIONAL"]
-            icones = ["gear"]
-            
-        selected = option_menu(menu_title=None, options=opcoes, icons=icones, orientation="horizontal")
+        opcoes = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"] if cargo in ["Admin", "Gerente"] else ["OPERACIONAL"]
+        selected = option_menu(menu_title=None, options=opcoes, icons=["cart", "folder", "gear"], orientation="horizontal")
     
     with c_perfil:
         st.write(f"👤 {st.session_state['usuario_nome']}")
@@ -146,27 +135,26 @@ def main():
         modulo = barra_superior()
         st.divider()
         
+        # Ajuste Situação 4: Padronização da Sidebar com botões Home e Atualizar
+        with st.sidebar:
+            if st.button("🏠 Home", use_container_width=True):
+                st.rerun()
+            if st.button("🔄 Atualizar Página", use_container_width=True):
+                st.rerun()
+            st.divider()
+
         if modulo == "COMERCIAL":
             with st.sidebar:
-                st.markdown("### 🛒 Menu Comercial")
-                menu = option_menu(None, ["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"], 
-                                   icons=["box", "list-check", "calendar3"])
+                st.markdown("### 🛒 Comercial")
+                menu = option_menu(None, ["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"], icons=["box", "list-check", "calendar-event"])
             if menu == "Produtos e Serviços" and modulo_produtos: modulo_produtos.app_produtos()
             elif menu == "Gestão de Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
             elif menu == "Controle de Tarefas" and modulo_tarefas: modulo_tarefas.app_tarefas()
             
-        elif modulo == "FINANCEIRO":
-            with st.sidebar:
-                st.markdown("### 💰 Menu Financeiro")
-                # Placeholder para o menu lateral financeiro
-                menu_fin = option_menu(None, ["Fluxo de Caixa", "Contas a Pagar"], icons=["graph-up", "wallet2"])
-            st.info("O módulo Financeiro está sendo preparado e será vinculado em breve.")
-            
         elif modulo == "OPERACIONAL":
             with st.sidebar:
-                st.markdown("### ⚙️ Menu Operacional")
-                menu = option_menu(None, ["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)"],
-                                   icons=["people", "person-vcard", "whatsapp"])
+                st.markdown("### ⚙️ Operacional")
+                menu = option_menu(None, ["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)"], icons=["people", "person-vcard", "whatsapp"])
             if menu == "Gestão de Clientes" and modulo_cliente: modulo_cliente.app_clientes()
             elif menu == "Usuários e Permissões" and modulo_usuario: modulo_usuario.app_usuarios()
             elif menu == "W-API (WhatsApp)" and modulo_wapi: modulo_wapi.app_wapi()
