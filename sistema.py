@@ -12,6 +12,40 @@ import string
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
+# --- ESTILOS VISUAIS GERAIS (OCULTAÇÃO TOTAL DE MARCAS DO STREAMLIT) ---
+st.markdown("""
+<style>
+    /* Ocultar Menu, Rodapé e Cabeçalho de forma agressiva */
+    #MainMenu {visibility: hidden !important;}
+    footer {display: none !important; visibility: hidden !important;}
+    header {display: none !important; visibility: hidden !important;}
+    
+    /* Ocultar botões de Deploy e marcas d'água específicas do Cloud */
+    .stAppDeployButton {display: none !important;}
+    [data-testid="stHeader"] {display: none !important;}
+    [data-testid="stFooter"] {display: none !important;}
+    [data-testid="stDecoration"] {display: none !important;}
+    
+    /* Ajustes de fundo e containers */
+    .stApp { background-color: #f8f9fa; }
+    .titulo-empresa {
+        font-size: 22px !important;
+        font-weight: 800;
+        color: #333333;
+        font-family: 'Arial', sans-serif;
+        margin-bottom: -5px;
+        line-height: 1.1;
+    }
+    .subtitulo-empresa {
+        font-size: 11px !important;
+        color: #888888;
+        font-family: 'Arial', sans-serif;
+        font-weight: 400;
+    }
+    .block-container { padding-top: 1rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- IMPORTAÇÃO DOS MÓDULOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS"))
@@ -49,33 +83,6 @@ except ImportError as e:
     modulo_pedidos = None
     modulo_tarefas = None
     st.error(f"Erro crítico ao importar módulos: {e}")
-
-# --- ESTILOS VISUAIS GERAIS (Ajustado para ocultar marcas do Streamlit) ---
-st.markdown("""
-<style>
-    /* Oculta o Menu, o Rodapé (marca d'água) e o Cabeçalho */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    .stApp { background-color: #f8f9fa; }
-    .titulo-empresa {
-        font-size: 22px !important;
-        font-weight: 800;
-        color: #333333;
-        font-family: 'Arial', sans-serif;
-        margin-bottom: -5px;
-        line-height: 1.1;
-    }
-    .subtitulo-empresa {
-        font-size: 11px !important;
-        color: #888888;
-        font-family: 'Arial', sans-serif;
-        font-weight: 400;
-    }
-    .block-container { padding-top: 1rem !important; }
-</style>
-""", unsafe_allow_html=True)
 
 # --- GERENCIAMENTO DE SESSÃO E SEGURANÇA (DB) ---
 def get_conn():
@@ -272,9 +279,10 @@ else:
 
 # --- TELA DE LOGIN ---
 def tela_login():
+    # Estilo específico para forçar ocultação de elementos na tela de login
     st.markdown("""
     <style>
-        header, footer, [data-testid="stSidebar"] {display: none !important;}
+        header, footer, [data-testid="stHeader"], [data-testid="stFooter"], [data-testid="stSidebar"] {display: none !important; visibility: hidden !important;}
         .stApp { display: flex; justify-content: center; align-items: center; }
         .login-card {
             background-color: white; padding: 40px; border-radius: 15px;
