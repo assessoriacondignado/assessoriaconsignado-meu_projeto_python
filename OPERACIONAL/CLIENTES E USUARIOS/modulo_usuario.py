@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
+import bcrypt  # Importação adicionada para segurança
 
 # Tentativa robusta de importar a conexão
 try: 
@@ -18,6 +19,15 @@ def get_conn():
         user=conexao.user, 
         password=conexao.password
     )
+
+# --- NOVA FUNÇÃO DE SEGURANÇA ---
+def hash_senha(senha):
+    """Criptografa a senha para salvar no banco."""
+    # Se a senha já for um hash (começa com $2b$), não criptografamos novamente
+    if senha.startswith('$2b$'):
+        return senha
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(senha.encode('utf-8'), salt).decode('utf-8')
 
 # --- FUNÇÕES DE PERMISSÃO ---
 def salvar_perms(id_user, mods):
@@ -121,11 +131,14 @@ def app_usuarios():
 
                     c_b1, c_b2 = st.columns([1, 6])
                     if c_b1.form_submit_button("💾 Salvar"):
+                        # --- CRIPTOGRAFIA APLICADA AQUI ---
+                        senha_final = hash_senha(senha)
+                        
                         conn = get_conn()
                         cur = conn.cursor()
-                        # Atualiza dados de login e status
+                        # Atualiza dados de login e status com a senha protegida
                         cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", 
-                                    (login, senha, cargo, ativo, st.session_state['id_user']))
+                                    (login, senha_final, cargo, ativo, st.session_state['id_user']))
                         conn.commit()
                         conn.close()
                         
