@@ -61,11 +61,12 @@ def app_clientes():
     if 'id_cli' not in st.session_state: st.session_state['id_cli'] = None
 
     c1, c2 = st.columns([6,1])
-    filtro = c1.text_input("🔍 Buscar Cliente (Nome, CPF, Telefone ou Email)", key="busca_cli")
+    filtro = c1.text_input("🔍 Buscar Cliente (Nome, Email ou Telefone)", key="busca_cli")
     if c2.button("+ Novo Cliente", type="primary"):
         st.session_state['modo_cliente'] = 'novo'
         st.rerun()
 
+    # --- FORMULÁRIO DE CADASTRO (Mantido conforme original) ---
     if st.session_state['modo_cliente'] in ['novo', 'editar']:
         st.divider()
         titulo = "📝 Novo Cliente" if st.session_state['modo_cliente'] == 'novo' else "✏️ Editar Cliente"
@@ -73,54 +74,28 @@ def app_clientes():
         d = {}
         if st.session_state['modo_cliente'] == 'editar':
             conn = get_conn()
-            df = pd.read_sql(f"SELECT * FROM clientes_usuarios WHERE id = {st.session_state['id_cli']}", conn)
+            # Busca na tabela admin para edição
+            df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['id_cli']}", conn)
             conn.close()
             if not df.empty: d = df.iloc[0]
 
         with st.form("form_cliente"):
-            c_tipo, c_nome = st.columns([1, 2])
-            tipo_contato = c_tipo.selectbox("Tipo de Contato", ["Pessoa Física", "Grupo de WhatsApp"], 
-                                          index=1 if d.get('hierarquia') == 'Grupo' else 0)
-            nome = c_nome.text_input("Nome Completo / Nome do Grupo *", value=d.get('nome', ''))
-            
+            nome = st.text_input("Nome Completo *", value=d.get('nome', ''))
             c1, c2 = st.columns(2)
-            cpf = c1.text_input("CPF *", value=d.get('cpf', ''))
-            telefone = c2.text_input("Telefone *", value=d.get('telefone', ''))
+            email = c1.text_input("E-mail *", value=d.get('email', ''))
+            telefone = c2.text_input("Telefone", value=d.get('telefone', ''))
             
-            c_id_email, c_id_grupo = st.columns(2)
-            email = c_id_email.text_input("E-mail (Contato)", value=d.get('email', ''))
-            
-            id_val = d.get('id_grupo_whats', '') if d.get('id_grupo_whats') else ''
-            if id_val: id_val = id_val.replace('@g.us', '')
-            id_grupo_input = c_id_grupo.text_input("ID do Grupo WhatsApp", value=id_val, help="Digite apenas o código numérico do grupo")
-            
-            obs = st.text_area("Observação", value=d.get('observacao', ''))
-
             c_b1, c_b2 = st.columns([1,6])
             if c_b1.form_submit_button("💾 Salvar"):
-                id_final = None
-                if id_grupo_input:
-                    id_limpo = re.sub(r'[^0-9-]', '', id_grupo_input)
-                    id_final = f"{id_limpo}@g.us"
-
-                h_tipo = 'Grupo' if tipo_contato == "Grupo de WhatsApp" else 'Cliente'
-
                 conn = get_conn()
                 cur = conn.cursor()
                 try:
-                    cur.execute("ALTER TABLE clientes_usuarios ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
                     if st.session_state['modo_cliente'] == 'novo':
-                        pasta = os.path.join(BASE_DIR_ARQUIVOS, nome)
-                        if not os.path.exists(pasta): os.makedirs(pasta, exist_ok=True)
-                        sql = """INSERT INTO clientes_usuarios 
-                                 (nome, cpf, telefone, email, observacao, pasta_caminho, hierarquia, id_grupo_whats) 
-                                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"""
-                        cur.execute(sql, (nome, cpf, telefone, email, obs, pasta, h_tipo, id_final))
+                        sql = "INSERT INTO admin.clientes (nome, email, telefone) VALUES (%s,%s,%s)"
+                        cur.execute(sql, (nome, email, telefone))
                     else:
-                        sql = """UPDATE clientes_usuarios SET 
-                                 nome=%s, cpf=%s, telefone=%s, email=%s, observacao=%s, hierarquia=%s, id_grupo_whats=%s 
-                                 WHERE id=%s"""
-                        cur.execute(sql, (nome, cpf, telefone, email, obs, h_tipo, id_final, st.session_state['id_cli']))
+                        sql = "UPDATE admin.clientes SET nome=%s, email=%s, telefone=%s WHERE id=%s"
+                        cur.execute(sql, (nome, email, telefone, st.session_state['id_cli']))
                     conn.commit()
                     st.success("Dados salvos com sucesso!")
                     st.session_state['modo_cliente'] = None
@@ -133,29 +108,42 @@ def app_clientes():
                 st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
+    
+    # --- CONSULTA DE DADOS (CORRIGIDA PARA SCHEMA ADMIN) ---
     conn = get_conn()
-    # SINCRONIA: Mostra tudo que não for Staff (Admin/Gerente) para evitar que dados desapareçam
-    sql = "SELECT id, nome, cpf, telefone, hierarquia, pasta_caminho, id_grupo_whats FROM clientes_usuarios WHERE hierarquia NOT IN ('Admin', 'Gerente', 'Supervisor')"
-    if filtro: sql += f" AND (nome ILIKE '%{filtro}%' OR cpf ILIKE '%{filtro}%' OR telefone ILIKE '%{filtro}%')"
+    # SQL Alterado para buscar da tabela admin.clientes conforme print SQL
+    sql = "SELECT id, nome, email, telefone FROM admin.clientes"
+    
+    # Aplicação de filtro
+    if filtro: 
+        sql += f" WHERE (nome ILIKE '%%{filtro}%%' OR email ILIKE '%%{filtro}%%' OR telefone ILIKE '%%{filtro}%%')"
+    
     sql += " ORDER BY id DESC"
-    df = pd.read_sql(sql, conn)
-    conn.close()
+    
+    try:
+        df = pd.read_sql(sql, conn)
+    except Exception as e:
+        st.error(f"Erro ao acessar tabela admin.clientes: {e}")
+        df = pd.DataFrame()
+    finally:
+        conn.close()
 
     if not df.empty:
-        st.markdown("""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px 5px 0 0; border: 1px solid #ddd; display: flex; font-weight: bold;"><div style="flex: 3;">Nome</div><div style="flex: 2;">CPF</div><div style="flex: 2;">Telefone / ID Grupo</div><div style="flex: 1.5;">Ações</div></div>""", unsafe_allow_html=True)
+        # Cabeçalho da tabela ajustado para Nome / E-mail / Telefone
+        st.markdown("""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px 5px 0 0; border: 1px solid #ddd; display: flex; font-weight: bold;"><div style="flex: 3;">Nome</div><div style="flex: 2;">E-mail</div><div style="flex: 2;">Telefone</div><div style="flex: 1.5;">Ações</div></div>""", unsafe_allow_html=True)
         for i, row in df.iterrows():
             with st.container():
                 c = st.columns([3, 2, 2, 1.5])
-                icon = "👥 " if row['hierarquia'] == 'Grupo' else ""
-                c[0].markdown(f"<div style='padding-top: 5px;'>{icon}{row['nome']}</div>", unsafe_allow_html=True)
-                c[1].markdown(f"<div style='padding-top: 5px;'>{row['cpf']}</div>", unsafe_allow_html=True)
-                contato_str = row['telefone'] if row['telefone'] else "---"
-                if row['id_grupo_whats']: contato_str += f" | {row['id_grupo_whats']}"
-                c[2].markdown(f"<div style='padding-top: 5px;'>{contato_str}</div>", unsafe_allow_html=True)
+                c[0].markdown(f"<div style='padding-top: 5px;'>{row['nome']}</div>", unsafe_allow_html=True)
+                c[1].markdown(f"<div style='padding-top: 5px;'>{row['email']}</div>", unsafe_allow_html=True)
+                c[2].markdown(f"<div style='padding-top: 5px;'>{row['telefone'] if row['telefone'] else '---'}</div>", unsafe_allow_html=True)
+                
                 col_botoes = c[3].columns([1, 1])
-                if col_botoes[0].button("📂", key=f"btn_p_{row['id']}"): mostrar_arquivos(row['pasta_caminho'])
-                if col_botoes[1].button("✏️", key=f"btn_e_{row['id']}"):
+                # Botão de edição
+                if col_botoes[0].button("✏️", key=f"btn_e_{row['id']}"):
                     st.session_state['modo_cliente'] = 'editar'
                     st.session_state['id_cli'] = row['id']
                     st.rerun()
                 st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 2px;'></div>", unsafe_allow_html=True)
+    else:
+        st.info("Nenhum cliente encontrado na base administrativa.")
