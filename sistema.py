@@ -21,6 +21,11 @@ def verificar_senha(senha_plana, senha_hash):
 # --- 3. ESTILOS VISUAIS GERAIS ---
 st.markdown("""
 <style>
+    /* REMOVE A BARRA SUPERIOR (GITHUB, SHARE, EDIT) */
+    [data-testid="stHeader"] {
+        display: none !important;
+    }
+
     #MainMenu {visibility: hidden !important;}
     footer {display: none !important; visibility: hidden !important;}
     .stAppDeployButton {display: none !important;}
@@ -29,7 +34,7 @@ st.markdown("""
     .titulo-empresa { font-size: 16px !important; font-weight: 800; color: #333333; margin-top: 5px; }
     .block-container { padding-top: 1rem !important; }
     
-    /* Ajuste 1: Botões compactos para apenas ícones */
+    /* Botões compactos para apenas ícones */
     [data-testid="stSidebar"] .stButton button { 
         width: 100%; 
         padding: 0px; 
@@ -37,13 +42,13 @@ st.markdown("""
         font-size: 18px;
     }
 
-    /* Ajuste 3 e 4: Aproximação de itens na Sidebar e redução de gaps */
+    /* Aproximação de itens na Sidebar e redução de gaps */
     [data-testid="stSidebarContent"] div.stVerticalBlock {
         gap: 0.2rem !important;
     }
     hr { margin: 0.5rem 0px !important; }
 
-    /* Estilo para títulos dos menus (Ajuste 2) */
+    /* Estilo para títulos dos menus */
     .menu-title { font-size: 12px !important; font-weight: bold; color: #666; text-transform: uppercase; }
 </style>
 """, unsafe_allow_html=True)
@@ -112,7 +117,7 @@ def main():
             st.markdown('<div class="titulo-empresa">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
             st.caption(f"👤 {st.session_state['usuario_nome']}")
             
-            # Ajuste 1: Botões apenas com ícones
+            # Botões apenas com ícones
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("🏠"): st.rerun()
@@ -121,29 +126,29 @@ def main():
             
             st.divider()
 
-            # Ajuste 2: Substituir "MÓDULOS" por "MENU" e reduzir fonte
+            # Menu Principal (Tamanho reduzido)
             cargo = st.session_state.get('usuario_cargo', 'Cliente')
             opcoes_modulos = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"] if cargo in ["Admin", "Gerente"] else ["OPERACIONAL"]
             
             modulo_atual = option_menu(
-                menu_title="MENU", # Nome alterado
+                menu_title="MENU",
                 options=opcoes_modulos,
                 icons=["cart", "folder", "gear"],
                 menu_icon=None,
                 default_index=0,
                 styles={
                     "container": {"padding": "0px !important", "background-color": "transparent"},
-                    "menu-title": {"font-size": "12px", "text-transform": "uppercase", "font-weight": "bold"}, # Fonte reduzida
+                    "menu-title": {"font-size": "12px", "text-transform": "uppercase", "font-weight": "bold"},
                     "nav-link": {"font-size": "13px", "text-align": "left", "margin": "0px"},
                     "nav-link-selected": {"background-color": "#FF4B4B"},
                 }
             )
 
-            # Ajuste 3 e 4: Remover nome do módulo no submenu e aproximar itens
+            # Submenus aproximados e sem título de módulo
             menu_sub = None
             if modulo_atual == "COMERCIAL":
                 menu_sub = option_menu(
-                    menu_title=None, # Nome do módulo retirado
+                    menu_title=None,
                     options=["Produtos e Serviços", "Gestão de Pedidos", "Controle de Tarefas"],
                     icons=["box", "list-check", "calendar-event"],
                     styles={
@@ -153,7 +158,7 @@ def main():
                 )
             elif modulo_atual == "OPERACIONAL":
                 menu_sub = option_menu(
-                    menu_title=None, # Nome do módulo retirado
+                    menu_title=None,
                     options=["Gestão de Clientes", "Usuários e Permissões", "W-API (WhatsApp)"],
                     icons=["people", "person-vcard", "whatsapp"],
                     styles={
@@ -166,7 +171,7 @@ def main():
             if st.button("Sair do Sistema", type="secondary"):
                 st.session_state.clear(); st.rerun()
 
-        # ÁREA DE CONTEÚDO
+        # ÁREA DE CONTEÚDO PRINCIPAL
         if modulo_atual == "COMERCIAL":
             if menu_sub == "Produtos e Serviços" and modulo_produtos: modulo_produtos.app_produtos()
             elif menu_sub == "Gestão de Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
