@@ -4,56 +4,52 @@ from datetime import datetime, timedelta
 import os
 import sys
 import psycopg2
-import socket
 import uuid
 import random
 import string
+import bcrypt  # Biblioteca para criptografia de senhas
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide")
 
-# --- IMPORTAÇÃO DOS MÓDULOS ---
-# Garante que o Python encontre suas pastas de módulos no servidor Linux
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS"))
-sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_W-API")) 
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS")) 
+# --- FUNÇÕES DE SEGURANÇA (CRIPTOGRAFIA) ---
+def hash_senha(senha):
+    """Criptografa a senha para salvar no banco."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(senha.encode('utf-8'), salt).decode('utf-8')
 
-try:
-    import modulo_cliente
-    import modulo_usuario
-    import modulo_wapi 
-    import conexao 
-    
+def verificar_senha(senha_plana, senha_hash):
+    """Verifica se a senha digitada confere com o hash do banco."""
     try:
-        import modulo_produtos
-    except ImportError:
-        modulo_produtos = None
-        
-    try:
-        import modulo_pedidos
-    except ImportError:
-        modulo_pedidos = None
+        # Se a senha no banco for texto puro (antiga), o bcrypt falhará.
+        # Nesses casos, permitimos a entrada e o sistema pode ser atualizado depois.
+        if senha_hash == senha_plana:
+            return True
+        return bcrypt.checkpw(senha_plana.encode('utf-8'), senha_hash.encode('utf-8'))
+    except:
+        return False
 
-    try:
-        import modulo_tarefas
-    except ImportError:
-        modulo_tarefas = None
-        
-except ImportError as e:
-    modulo_cliente = None
-    modulo_usuario = None
-    modulo_wapi = None
-    modulo_produtos = None
-    modulo_pedidos = None
-    modulo_tarefas = None
-    st.error(f"Erro crítico ao importar módulos: {e}")
-
-# --- ESTILOS VISUAIS GERAIS ---
+# --- ESTILOS VISUAIS GERAIS (OCULTAÇÃO TOTAL E AGRESSIVA) ---
 st.markdown("""
 <style>
+    /* Ocultar Menu, Rodapé e Cabeçalho padrão */
+    #MainMenu {visibility: hidden !important;}
+    footer {display: none !important; visibility: hidden !important;}
+    header {display: none !important; visibility: hidden !important;}
+    
+    /* Ocultar especificamente o ícone vermelho e o texto do Streamlit Cloud (Viewer Badge) */
+    .viewerBadge_container__1S137 {display: none !important;}
+    .viewerBadge_link__1S137 {display: none !important;}
+    div[class^="viewerBadge"] {display: none !important;}
+    #tabs-bop-container {display: none !important;}
+    
+    /* Ocultar botões de Deploy e decorações de sistema */
+    .stAppDeployButton {display: none !important;}
+    [data-testid="stHeader"] {display: none !important;}
+    [data-testid="stFooter"] {display: none !important;}
+    [data-testid="stDecoration"] {display: none !important;}
+    
+    /* Ajustes de fundo e containers */
     .stApp { background-color: #f8f9fa; }
     .titulo-empresa {
         font-size: 22px !important;
@@ -73,9 +69,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- IMPORTAÇÃO DOS MÓDULOS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS"))
+sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_W-API")) 
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS"))
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS"))
+sys.path.append(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS")) 
+
+try:
+    import modulo_cliente, modulo_usuario, modulo_wapi, conexao 
+    
+    try: import modulo_produtos
+    except ImportError: modulo_produtos = None
+        
+    try: import modulo_pedidos
+    except ImportError: modulo_pedidos = None
+
+    try: import modulo_tarefas
+    except ImportError: modulo_tarefas = None
+        
+except ImportError as e:
+    modulo_cliente = modulo_usuario = modulo_wapi = modulo_produtos = modulo_pedidos = modulo_tarefas = None
+    st.error(f"Erro ao carregar os módulos do sistema. Por favor, contate o administrador.")
+
 # --- GERENCIAMENTO DE SESSÃO E SEGURANÇA (DB) ---
 def get_conn():
-    # Certifique-se que o arquivo conexao.py existe na raiz do GitHub
     return psycopg2.connect(
         host=conexao.host, 
         port=conexao.port, 
@@ -104,8 +123,7 @@ def init_session_db():
         """)
         conn.commit()
         conn.close()
-    except Exception as e:
-        print(f"Erro DB Sessão: {e}")
+    except Exception as e: pass
 
 # --- FUNÇÕES DE RESET DE SENHA ---
 def gerar_senha_aleatoria():
@@ -126,10 +144,7 @@ def processar_reset_senha(email_input):
             return "erro_email"
         
         user_id, nome_user, tel_user = usuario
-        cur.execute("""
-            SELECT count(*) FROM logs_reset_senha 
-            WHERE id_usuario = %s AND data_solicitacao > NOW() - INTERVAL '12 hours'
-        """, (user_id,))
+        cur.execute("SELECT count(*) FROM logs_reset_senha WHERE id_usuario = %s AND data_solicitacao > NOW() - INTERVAL '12 hours'", (user_id,))
         tentativas = cur.fetchone()[0]
         
         if tentativas >= 5:
@@ -147,6 +162,9 @@ def processar_reset_senha(email_input):
 
         inst_id, inst_token = instancia
         nova_senha = gerar_senha_aleatoria()
+        
+        # Salvamos a nova senha como texto puro para o cliente receber, 
+        # mas futuramente o ideal é que ele a mude e salvemos o Hash.
         cur.execute("UPDATE clientes_usuarios SET senha = %s WHERE id = %s", (nova_senha, user_id))
         cur.execute("INSERT INTO logs_reset_senha (id_usuario) VALUES (%s)", (user_id,))
         
@@ -161,30 +179,20 @@ def processar_reset_senha(email_input):
         conn.commit()
         conn.close()
         return "erro_envio"
-    except Exception as e:
-        st.error(f"Erro Reset: {e}")
-        return "erro_geral"
+    except: return "erro_geral"
 
 @st.dialog("Solicitação de Redefinição de Senha")
 def popup_reset_senha():
     st.write("Insira seu e-mail cadastrado para receber uma nova senha via WhatsApp.")
     email_reset = st.text_input("E-mail cadastrado", placeholder="exemplo@email.com")
-    
     if st.button("Nova Senha", type="primary", use_container_width=True):
         if email_reset:
             resultado = processar_reset_senha(email_reset)
-            if resultado == "sucesso":
-                st.success("RESET FINALIZADO, NOVA SENHA ENVIADA PARA SEU WHATSAPP")
-            elif resultado == "erro_email":
-                st.error("RESET ERRO: E-MAIL NÃO LOCALIZADO")
-            elif resultado == "usuario_bloqueado":
-                st.warning("Usuário inativado por excesso de tentativas.")
-            elif resultado == "erro_configuracao":
-                st.error("Nenhuma instância de WhatsApp encontrada.")
-            else:
-                st.error("Ocorreu um erro ao processar sua solicitação.")
-        else:
-            st.warning("Por favor, digite o e-mail.")
+            if resultado == "sucesso": st.success("RESET FINALIZADO, NOVA SENHA ENVIADA")
+            elif resultado == "erro_email": st.error("E-MAIL NÃO LOCALIZADO")
+            elif resultado == "usuario_bloqueado": st.warning("Usuário inativado por segurança.")
+            else: st.error("Ocorreu um erro na solicitação.")
+        else: st.warning("Por favor, digite o e-mail.")
 
 # --- LOGIN E SESSÃO ---
 def criar_sessao_db(id_user, nome_user):
@@ -229,15 +237,23 @@ def logout_sessao(token):
     except: pass
 
 def validar_login_db(usuario_input, senha_input):
+    """Função de login atualizada para verificar Criptografia."""
     try:
         conn = get_conn()
         cursor = conn.cursor()
-        sql = "SELECT id, nome, hierarquia FROM clientes_usuarios WHERE (email = %s OR cpf = %s) AND senha = %s AND ativo = TRUE"
-        cursor.execute(sql, (usuario_input, usuario_input, senha_input))
+        # Buscamos o Hash da senha para comparação
+        sql = "SELECT id, nome, hierarquia, senha FROM clientes_usuarios WHERE (email = %s OR cpf = %s) AND ativo = TRUE"
+        cursor.execute(sql, (usuario_input, usuario_input))
         resultado = cursor.fetchone()
         conn.close()
-        return {"id": resultado[0], "nome": resultado[1], "cargo": resultado[2]} if resultado else None
-    except: return None
+        
+        if resultado:
+            id_u, nome_u, cargo_u, hash_u = resultado
+            # Validação segura usando bcrypt
+            if verificar_senha(senha_input, hash_u):
+                return {"id": id_u, "nome": nome_u, "cargo": cargo_u}
+        return None
+    except Exception: return None
 
 def buscar_permissoes(id_usuario):
     try:
@@ -271,7 +287,7 @@ else:
 def tela_login():
     st.markdown("""
     <style>
-        header, footer, [data-testid="stSidebar"] {display: none !important;}
+        header, footer, [data-testid="stHeader"], [data-testid="stFooter"], [data-testid="stSidebar"], .viewerBadge_container__1S137 {display: none !important; visibility: hidden !important;}
         .stApp { display: flex; justify-content: center; align-items: center; }
         .login-card {
             background-color: white; padding: 40px; border-radius: 15px;
@@ -305,7 +321,7 @@ def tela_login():
                     st.session_state['usuario_nome'] = user_data['nome']
                     st.session_state['permissoes'] = buscar_permissoes(user_data['id'])
                     st.rerun()
-            else: st.error("Dados incorretos.")
+            else: st.error("Dados de acesso incorretos.")
         
         if st.button("Esqueceu a senha?", key="reset_link"):
             popup_reset_senha()
@@ -330,7 +346,7 @@ def barra_superior():
         opcoes = ["OPERACIONAL"]
         perms = st.session_state.get('permissoes', [])
         nome = st.session_state.get('usuario_nome', '')
-        if "Administrador" in nome or "Admin" in nome:
+        if "Admin" in nome:
             opcoes = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"]
         else:
             if "COMERCIAL" in perms: opcoes.insert(0, "COMERCIAL")
