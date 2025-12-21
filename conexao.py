@@ -1,11 +1,13 @@
 import psycopg2
+import streamlit as st
 
-# Configurações do Banco de Dados Absam
-host = "db-60137.dc-us-1.absamcloud.com"
-port = "27355"
-database = "assessoria"
-user = "admin"
-password = "jdchfbma5b5d"  # <--- Coloque sua senha real do banco aqui
+# Configurações do Banco de Dados Absam via Streamlit Secrets
+# O sistema agora busca os dados diretamente da aba 'Secrets' do Streamlit Cloud
+host = st.secrets["DB_HOST"]
+port = st.secrets["DB_PORT"]
+database = st.secrets["DB_NAME"]
+user = st.secrets["DB_USER"]
+password = st.secrets["DB_PASS"]
 
 # Função de teste (opcional)
 def testar_conexao():
@@ -23,3 +25,10 @@ def testar_conexao():
     except Exception as e:
         print(f"Erro: {e}")
         return False
+
+# Função auxiliar para módulos que usam SQLAlchemy (como o modulo_admin_clientes.py)
+def criar_conexao():
+    from sqlalchemy import create_engine
+    # Constrói a URL de conexão para o SQLAlchemy
+    url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
+    return create_engine(url)
