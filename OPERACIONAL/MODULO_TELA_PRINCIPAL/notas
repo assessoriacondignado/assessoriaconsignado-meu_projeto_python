@@ -1,0 +1,6 @@
+jdchfbma5b5d
+athena.ns.cloudflare.com
+jobs.ns.cloudflare.com
+
+streamlit run sistema.py --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false
+source .venv/bin/activate

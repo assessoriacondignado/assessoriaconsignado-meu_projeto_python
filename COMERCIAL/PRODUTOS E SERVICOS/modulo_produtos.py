@@ -1,0 +1,268 @@
+import streamlit as st
+import pandas as pd
+import psycopg2
+import os
+import shutil
+import uuid
+from datetime import datetime
+import conexao
+
+# --- CONFIGURAÇÕES DE DIRETÓRIO ---
+BASE_DIR = "/root/meu_sistema/COMERCIAL/PRODUTOS E SERVICOS"
+
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR, exist_ok=True)
+
+# --- CONEXÃO COM BANCO ---
+def get_conn():
+    try:
+        return psycopg2.connect(
+            host=conexao.host,
+            port=conexao.port,
+            database=conexao.database,
+            user=conexao.user,
+            password=conexao.password
+        )
+    except Exception as e:
+        st.error(f"Erro ao conectar ao banco: {e}")
+        return None
+
+# --- FUNÇÕES AUXILIARES ---
+def gerar_codigo_automatico():
+    data = datetime.now().strftime("%y%m%d")
+    sufixo = str(uuid.uuid4())[:4].upper()
+    return f"ITEM-{data}-{sufixo}"
+
+# --- FUNÇÕES DE ARQUIVO E PASTA ---
+def criar_pasta_produto(codigo, nome):
+    data_str = datetime.now().strftime("%Y-%m-%d")
+    nome_pasta = f"{codigo} - {nome} - {data_str}"
+    nome_pasta = "".join(c for c in nome_pasta if c.isalnum() or c in (' ', '-', '_')).strip()
+    caminho_completo = os.path.join(BASE_DIR, nome_pasta)
+    if not os.path.exists(caminho_completo):
+        os.makedirs(caminho_completo)
+    return caminho_completo
+
+def salvar_arquivos(uploaded_files, caminho_destino):
+    if uploaded_files:
+        for file in uploaded_files:
+            file_path = os.path.join(caminho_destino, file.name)
+            with open(file_path, "wb") as f:
+                f.write(file.getbuffer())
+
+# --- FUNÇÕES DE CRUD (BANCO) ---
+def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            query = """
+                INSERT INTO produtos_servicos (codigo, nome, tipo, resumo, preco, caminho_pasta, data_criacao, ativo)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW(), TRUE)
+            """
+            cur.execute(query, (codigo, nome, tipo, resumo, preco, caminho_pasta))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao salvar no banco: {e}")
+            return False
+    return False
+
+# NOVA FUNÇÃO: ATUALIZAR (PARA O BOTÃO EDITAR)
+def atualizar_produto_db(id_prod, nome, tipo, resumo, preco):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            query = """
+                UPDATE produtos_servicos 
+                SET nome=%s, tipo=%s, resumo=%s, preco=%s, data_atualizacao=NOW() 
+                WHERE id=%s
+            """
+            cur.execute(query, (nome, tipo, resumo, preco, id_prod))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao atualizar: {e}")
+            return False
+    return False
+
+def listar_produtos():
+    conn = get_conn()
+    if conn:
+        try:
+            query = "SELECT id, codigo, nome, tipo, preco, data_criacao, caminho_pasta, ativo, resumo FROM produtos_servicos ORDER BY data_criacao DESC"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df
+        except:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+def alternar_status(id_prod, status_atual):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            novo_status = not status_atual
+            cur.execute("UPDATE produtos_servicos SET ativo = %s WHERE id = %s", (novo_status, id_prod))
+            conn.commit()
+            conn.close()
+            return True
+        except: return False
+    return False
+
+def excluir_produto(id_prod, caminho_pasta):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM produtos_servicos WHERE id = %s", (id_prod,))
+            conn.commit()
+            conn.close()
+            if caminho_pasta and os.path.exists(caminho_pasta):
+                shutil.rmtree(caminho_pasta)
+            return True
+        except Exception as e:
+            st.error(f"Erro ao excluir: {e}")
+            return False
+    return False
+
+# --- POP-UPS (DIALOGS) ---
+
+@st.dialog("📂 Arquivos do Item")
+def dialog_visualizar_arquivos(caminho_pasta, nome_item):
+    st.write(f"Arquivos de: **{nome_item}**")
+    if caminho_pasta and os.path.exists(caminho_pasta):
+        arquivos = os.listdir(caminho_pasta)
+        if arquivos:
+            st.markdown("---")
+            for arquivo in arquivos:
+                col_ico, col_nome, col_down = st.columns([0.5, 3, 1.5])
+                caminho_completo = os.path.join(caminho_pasta, arquivo)
+                with col_ico: st.write("📄")
+                with col_nome: st.write(arquivo)
+                with col_down:
+                    with open(caminho_completo, "rb") as f:
+                        st.download_button("⬇️ Baixar", data=f, file_name=arquivo, key=f"d_{arquivo}")
+        else:
+            st.warning("Pasta vazia.")
+    else:
+        st.error("Pasta não encontrada.")
+
+@st.dialog("✏️ Editar Item")
+def dialog_editar_produto(dados_atuais):
+    st.write(f"Editando: **{dados_atuais['codigo']}**")
+    with st.form("form_editar", clear_on_submit=False):
+        novo_nome = st.text_input("Nome", value=dados_atuais['nome'])
+        
+        # Define o índice correto para o selectbox
+        opcoes_tipo = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
+        idx_tipo = 0
+        if dados_atuais['tipo'] in opcoes_tipo:
+            idx_tipo = opcoes_tipo.index(dados_atuais['tipo'])
+            
+        novo_tipo = st.selectbox("Categoria", opcoes_tipo, index=idx_tipo)
+        novo_preco = st.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
+        novo_resumo = st.text_area("Resumo", value=dados_atuais['resumo'], height=100)
+        
+        if st.form_submit_button("💾 Salvar Alterações"):
+            if atualizar_produto_db(dados_atuais['id'], novo_nome, novo_tipo, novo_resumo, novo_preco):
+                st.success("Atualizado com sucesso!")
+                st.rerun()
+
+@st.dialog("📝 Novo Cadastro")
+def dialog_novo_cadastro():
+    st.write("Novo item")
+    with st.form("form_cadastro_popup", clear_on_submit=True):
+        nome = st.text_input("Nome")
+        tipo = st.selectbox("Categoria", ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"])
+        preco = st.number_input("Preço (R$) (Opcional)", min_value=0.0, format="%.2f")
+        arquivos = st.file_uploader("Arquivos", accept_multiple_files=True)
+        resumo = st.text_area("Resumo", height=100)
+        
+        if st.form_submit_button("💾 Salvar"):
+            if nome:
+                codigo_auto = gerar_codigo_automatico()
+                caminho = criar_pasta_produto(codigo_auto, nome)
+                if arquivos: salvar_arquivos(arquivos, caminho)
+                if cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho):
+                    st.success(f"Criado: {codigo_auto}")
+                    st.rerun()
+                else: st.error("Erro ao salvar.")
+            else: st.warning("Nome obrigatório.")
+
+# --- INTERFACE PRINCIPAL ---
+def app_produtos():
+    st.markdown("## 📦 Módulo Produtos e Serviços")
+    
+    # Botão de Cadastro no topo direito
+    col_head1, col_head2 = st.columns([6, 1])
+    with col_head2:
+        if st.button("➕ Novo", help="Cadastrar novo item"):
+            dialog_novo_cadastro()
+
+    st.markdown("---")
+    
+    df = listar_produtos()
+    if not df.empty:
+        # Filtros
+        col_f1, col_f2 = st.columns(2)
+        with col_f1: filtro_nome = st.text_input("🔎 Pesquisar")
+        with col_f2: filtro_tipo = st.multiselect("Filtrar Categoria", df['tipo'].unique())
+
+        if filtro_nome:
+            df = df[df['nome'].str.contains(filtro_nome, case=False) | df['codigo'].str.contains(filtro_nome, case=False)]
+        if filtro_tipo:
+            df = df[df['tipo'].isin(filtro_tipo)]
+
+        # Lista de Itens
+        for index, row in df.iterrows():
+            status_cor = "🟢" if row['ativo'] else "🔴"
+            with st.expander(f"{status_cor} {row['nome']} ({row['codigo']})"):
+                
+                # Layout interno do Card
+                st.markdown(f"**Categoria:** {row['tipo']} | **Preço:** R$ {row['preco']:.2f}")
+                st.markdown(f"**Resumo:** {row['resumo']}")
+                
+                st.markdown("---")
+                
+                # RODAPÉ DOS BOTÕES
+                col_folder, col_actions = st.columns([1, 1])
+                
+                # Lado Esquerdo: Pasta de Arquivos
+                with col_folder:
+                     if st.button(f"📂 Arquivos", key=f"f_{row['id']}"):
+                        dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
+
+                # Lado Direito: Ações (Editar, Status, Excluir) com Ícones
+                with col_actions:
+                    # Cria colunas internas para os ícones ficarem lado a lado
+                    b1, b2, b3 = st.columns(3)
+                    
+                    with b1:
+                        # Botão EDITAR (Lápis)
+                        if st.button("✏️", key=f"ed_{row['id']}", help="Editar"):
+                            dialog_editar_produto(row)
+                    
+                    with b2:
+                        # Botão STATUS (Toggle)
+                        lbl_st = "🔄" 
+                        help_txt = "Desativar" if row['ativo'] else "Ativar"
+                        if st.button(lbl_st, key=f"st_{row['id']}", help=help_txt):
+                            if alternar_status(row['id'], row['ativo']):
+                                st.rerun()
+                    
+                    with b3:
+                        # Botão EXCLUIR (Lixeira)
+                        if st.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
+                            if excluir_produto(row['id'], row['caminho_pasta']):
+                                st.warning("Item removido.")
+                                st.rerun()
+    else:
+        st.info("Nenhum item encontrado.")
+
+if __name__ == "__main__":
+    app_produtos()
