@@ -1,54 +1,107 @@
--- CRIAÇÃO DAS TABELAS DO MÓDULO W-API
+import sys
+import os
+from flask import Flask, request, jsonify
+import psycopg2
+import re
+import json
 
--- 1. Tabela de Instâncias (Conexão com a API)
-CREATE TABLE IF NOT EXISTS wapi_instancias (
-    id SERIAL PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL,
-    api_instance_id VARCHAR(100) NOT NULL UNIQUE,
-    api_token VARCHAR(255) NOT NULL,
-    status VARCHAR(50) DEFAULT 'Desconectado',
-    tipo VARCHAR(50) DEFAULT 'W-API',
-    data_vencimento DATE
-);
+# --- CONFIGURAÇÃO DE CAMINHO DINÂMICO ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
 
--- 2. Tabela de Modelos de Mensagem (Templates)
-CREATE TABLE IF NOT EXISTS wapi_modelos (
-    id SERIAL PRIMARY KEY,
-    nome VARCHAR(100),
-    objetivo VARCHAR(100), -- Ex: Vendas, Cobrança
-    conteudo TEXT NOT NULL
-);
+try:
+    import conexao
+    print("✅ Conexão importada com sucesso no Webhook!")
+except Exception as e:
+    print(f"❌ Erro crítico no conexao.py: {e}")
 
--- 3. Tabela de Logs (Histórico de Envios e Recebimentos)
-CREATE TABLE IF NOT EXISTS wapi_logs (
-    id SERIAL PRIMARY KEY,
-    data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    instance_id VARCHAR(100),
-    telefone VARCHAR(20),
-    nome_contato VARCHAR(100),
-    mensagem TEXT,
-    tipo VARCHAR(20), -- 'ENVIADA' ou 'RECEBIDA'
-    status VARCHAR(50), -- 'Sucesso', 'Erro'
-    cpf_cliente VARCHAR(20)
-);
+app = Flask(__name__)
 
--- 4. Configurações do Chatbot (Para guardar o JSON dos blocos e horários)
-CREATE TABLE IF NOT EXISTS wapi_chatbot_config (
-    instance_id VARCHAR(100) PRIMARY KEY,
-    ativo BOOLEAN DEFAULT FALSE,
-    json_agendamento JSONB, -- Horários de funcionamento
-    json_fluxo JSONB,       -- Blocos do robô (Menu, Perguntas)
-    mensagem_offline TEXT,
-    grupo_aviso VARCHAR(100)
-);
-CREATE TABLE IF NOT EXISTS wapi_logs (
-    id SERIAL PRIMARY KEY,
-    data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    instancia TEXT,
-    destinatario TEXT,
-    mensagem TEXT,
-    status TEXT
-);
--- Adiciona colunas extras caso elas não existam na tabela wapi_logs
-ALTER TABLE wapi_logs ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'ENVIADA';
-ALTER TABLE wapi_logs ADD COLUMN IF NOT EXISTS nome_contato VARCHAR(100);
+def get_conn():
+    return psycopg2.connect(
+        host=conexao.host, 
+        port=conexao.port, 
+        database=conexao.database, 
+        user=conexao.user, 
+        password=conexao.password
+    )
+
+def salvar_log_recebido(instance_id, telefone, mensagem, nome=""):
+    if mensagem is None:
+        mensagem = ""
+        
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        sql = """
+            INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato) 
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        valores = (instance_id, telefone, mensagem, 'RECEBIDA', 'Sucesso', nome)
+        
+        cur.execute(sql, valores)
+        conn.commit()
+        print(f"💾 DADOS GRAVADOS -> Nome: {nome} | Tel: {telefone} | Msg: '{mensagem}'")
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Erro ao gravar no banco: {e}")
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    dados = request.json
+    
+    # --- LOG DE DIAGNÓSTICO (Aparecerá no seu terminal) ---
+    print("--- NOVA REQUISIÇÃO RECEBIDA ---")
+    # print(json.dumps(dados, indent=2)) # Opcional: descomente para ver o JSON completo
+    
+    # Processa eventos de recebimento de mensagens
+    if dados and dados.get("event") in ["webhookReceived", "message.received"]:
+        instance_id = dados.get("instanceId")
+        sender = dados.get("sender", {})
+        remetente = sender.get("id", "") 
+        nome_push = sender.get("pushName", "Contato via Whats")
+
+        # --- CAPTURA ROBUSTA DO CONTEÚDO (MELHORIA) ---
+        msg_content = dados.get("msgContent", {})
+        
+        # Tenta encontrar o texto em múltiplos campos possíveis
+        mensagem = (
+            msg_content.get("text") or 
+            msg_content.get("conversation") or 
+            msg_content.get("body") or 
+            msg_content.get("caption") or 
+            ""
+        )
+        
+        # Caso seja uma mensagem estendida (como respostas)
+        if not mensagem:
+            extended = msg_content.get("extendedTextMessage", {})
+            mensagem = extended.get("text") or extended.get("body") or ""
+            
+        # ---------------------------------------------
+
+        # Filtro de Grupos (Mantido conforme regra atual)
+        if dados.get("isGroup") is True:
+            print(f"ℹ️ Mensagem de grupo ignorada: {remetente}")
+            return jsonify({"status": "ignorado"}), 200
+
+        # Limpeza e normalização do telefone
+        telefone_limpo = re.sub(r'[^0-9]', '', str(remetente))
+        
+        if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
+            try:
+                primeiro_digito = int(telefone_limpo[4])
+                if primeiro_digito >= 6:
+                    telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
+            except: pass 
+
+        salvar_log_recebido(instance_id, telefone_limpo, mensagem, nome_push)
+        return jsonify({"status": "sucesso"}), 200
+
+    return jsonify({"status": "evento_ignorado"}), 200
+
+if __name__ == '__main__':
+    # Execute com: python3 OPERACIONAL/MODULO_W-API/webhook_wapi.py
+    app.run(host='0.0.0.0', port=5000)
