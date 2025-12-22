@@ -30,3 +30,9 @@ VALUES ('Administrador', '00000000000', 'admin', '1234', 'Admin', '000000000')
 ON CONFLICT (cpf) DO NOTHING;
 ALTER TABLE clientes_usuarios ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;
 ALTER TABLE clientes_usuarios ADD COLUMN IF NOT EXISTS hierarquia TEXT;
+
+-- 1. Cria a regra de e-mail único para permitir o funcionamento do "ON CONFLICT"
+ALTER TABLE clientes_usuarios ADD CONSTRAINT unique_email_user UNIQUE (email);
+
+-- 2. Adiciona a coluna CPF na tabela de clientes (que está em falta no seu print)
+ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS cpf TEXT;
