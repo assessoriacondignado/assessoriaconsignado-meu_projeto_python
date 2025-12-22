@@ -62,7 +62,6 @@ def validar_login_db(usuario_input, senha_input):
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
         
-        # Busca usuário e tentativas (garante coluna tentativas_falhas)
         sql = """SELECT id, nome, hierarquia, senha, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(email) = %s OR cpf = %s OR telefone = %s) AND ativo = TRUE"""
@@ -71,8 +70,6 @@ def validar_login_db(usuario_input, senha_input):
         
         if res:
             id_user, nome, cargo, senha_hash, falhas = res
-            
-            # Bloqueio após 5 tentativas (ajuste 2)
             if falhas >= 5:
                 return {"status": "bloqueado"}
             
@@ -85,11 +82,10 @@ def validar_login_db(usuario_input, senha_input):
                 conn.commit()
                 return {"status": "erro_senha", "restantes": 4 - falhas}
     except Exception as e:
-        st.warning("Nota: Coluna 'tentativas_falhas' não encontrada. Bloqueio persistente desativado.")
         return None
     return None
 
-# --- 5. MENSAGEM RÁPIDA (AJUSTE 3) ---
+# --- 5. MENSAGEM RÁPIDA (AJUSTE CORRIGIDO) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
     try:
@@ -102,21 +98,36 @@ def dialog_mensagem_rapida():
             st.error("Nenhuma instância de WhatsApp configurada.")
             return
 
-        opcao = st.selectbox("Destinatário", ["Número Manual", "ID Grupo Manual", "Meu Telefone", "Meu Grupo"])
+        opcao = st.selectbox("Destinatário", ["Selecionar Cliente", "Número Manual", "ID Grupo Manual"])
         destino = ""
         
         if opcao == "Número Manual":
             destino = st.text_input("Digite o número (DDI+DDD+Número)")
         elif opcao == "ID Grupo Manual":
             destino = st.text_input("Digite o ID do Grupo (@g.us)")
-        elif opcao == "Meu Telefone":
-            destino = st.session_state.get('usuario_telefone', '')
-            st.info(f"Destino: {destino}")
-        elif opcao == "Meu Grupo":
-            cur.execute("SELECT id_grupo_whats FROM clientes_usuarios WHERE id = %s", (st.session_state.get('usuario_id'),))
-            res_g = cur.fetchone()
-            destino = res_g[0] if res_g else ""
-            st.info(f"Destino Grupo: {destino}")
+        elif opcao == "Selecionar Cliente":
+            # Busca clientes na base administrativa
+            cur.execute("SELECT nome, telefone, id_grupo_whats FROM admin.clientes ORDER BY nome")
+            dados_clis = cur.fetchall()
+            if dados_clis:
+                nomes = [cli[0] for cli in dados_clis]
+                nome_sel = st.selectbox("Buscar Cliente", nomes)
+                
+                # Localiza os dados do cliente escolhido
+                cli_info = next(item for item in dados_clis if item[0] == nome_sel)
+                tel, grp = cli_info[1], cli_info[2]
+                
+                opcoes_contato = []
+                if tel: opcoes_contato.append(f"Telefone: {tel}")
+                if grp: opcoes_contato.append(f"Grupo WhatsApp: {grp}")
+                
+                if opcoes_contato:
+                    contato_sel = st.radio("Enviar para:", opcoes_contato)
+                    destino = contato_sel.split(": ")[1]
+                else:
+                    st.warning("Este cliente não possui telefone ou grupo cadastrado.")
+            else:
+                st.warning("Nenhum cliente localizado na base administrativa.")
 
         msg = st.text_area("Mensagem")
         
@@ -124,10 +135,12 @@ def dialog_mensagem_rapida():
             if destino and msg:
                 res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
                 if res.get('success') or res.get('messageId'):
-                    st.success("Mensagem enviada!")
+                    st.success("Mensagem enviada com sucesso!")
                     time.sleep(1); st.rerun()
-                else: st.error("Falha no envio.")
-            else: st.warning("Preencha todos os campos.")
+                else:
+                    st.error(f"Falha no envio: {res}")
+            else:
+                st.warning("Certifique-se de definir o destino e o conteúdo da mensagem.")
     finally:
         if 'cur' in locals(): cur.close()
 
@@ -166,7 +179,6 @@ def dialog_reset_senha():
 st.markdown("""
 <style>
     [data-testid="stHeader"] { display: none !important; }
-    .btn-fast-msg { position: fixed; top: 15px; right: 80px; z-index: 1000; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -208,10 +220,11 @@ def main():
                 else: st.error("Acesso negado.")
             if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
     else:
-        # Botão Mensagem Rápida (Ajuste 3)
-        col_msg_rapida = st.columns([10, 2])
-        if col_msg_rapida[1].button("🟢 Mensagem Rápida", use_container_width=True):
-            dialog_mensagem_rapida()
+        # Botão Mensagem Rápida no Topo
+        col_m1, col_m2 = st.columns([10, 2])
+        with col_m2:
+            if st.button("🟢 Mensagem Rápida", use_container_width=True):
+                dialog_mensagem_rapida()
 
         with st.sidebar:
             st.markdown('<div style="font-size:16px; font-weight:800; color:#333;">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
@@ -227,7 +240,8 @@ def main():
             elif mod == "OPERACIONAL": sub = option_menu(None, ["Clientes", "Usuários", "WhatsApp"], icons=["people", "lock", "whatsapp"])
             else: sub = None
             
-            if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
+            if st.sidebar.button("Sair"):
+                st.session_state.clear(); st.rerun()
 
         if mod == "COMERCIAL":
             if sub == "Produtos" and modulo_produtos: modulo_produtos.app_produtos()
