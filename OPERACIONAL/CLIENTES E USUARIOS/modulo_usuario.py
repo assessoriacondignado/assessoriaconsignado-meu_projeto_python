@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
-import bcrypt  # Importação para encriptação segura
+import bcrypt  
+import modulo_wapi  # Importação necessária para o envio de mensagens
 
 # Tentativa robusta de importar a conexão
 try: 
@@ -19,8 +20,17 @@ def get_conn():
         password=conexao.password
     )
 
+def buscar_instancia_ativa():
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+        res = cur.fetchone()
+        conn.close()
+        return res 
+    except: return None
+
 def hash_senha(senha):
-    # Verifica se já é um hash para evitar encriptar o código novamente
     if senha.startswith('$2b$'):
         return senha
     salt = bcrypt.gensalt()
@@ -74,7 +84,7 @@ def app_usuarios():
 
                 with st.form("form_acesso"):
                     c1, c2, c3 = st.columns(3)
-                    login_input = c1.text_input("Login (Email/User)", value=d.get('email', ''))
+                    login = c1.text_input("Login (Email/User)", value=d.get('email', ''))
                     senha = c2.text_input("Senha de Acesso", value=d.get('senha', ''), type="password")
                     
                     hierarquia_atual = d.get('hierarquia', 'Cliente')
@@ -88,31 +98,41 @@ def app_usuarios():
                     p_fin = cp2.checkbox("Acesso FINANCEIRO", value="FINANCEIRO" in perms)
                     ativo = st.checkbox("Usuário Ativo?", value=d.get('ativo', True))
 
-                    c_b1, c_b2 = st.columns([1, 6])
+                    c_b1, c_b2, c_b3 = st.columns([1, 1.5, 4.5])
+                    
                     if c_b1.form_submit_button("💾 Salvar"):
-                        # TRAVA DE SEGURANÇA: Limpa espaços e força minúsculas no login
-                        login_final = str(login_input).strip().lower()
                         senha_final = hash_senha(senha)
-                        
                         conn = get_conn(); cur = conn.cursor()
-                        cur.execute("""UPDATE clientes_usuarios 
-                                       SET email=%s, senha=%s, hierarquia=%s, ativo=%s 
-                                       WHERE id=%s""", 
-                                    (login_final, senha_final, cargo, ativo, st.session_state['id_user']))
+                        cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login, senha_final, cargo, ativo, st.session_state['id_user']))
                         conn.commit(); conn.close()
-                        
                         novas = []
                         if p_com: novas.append("COMERCIAL")
                         if p_fin: novas.append("FINANCEIRO")
                         salvar_perms(st.session_state['id_user'], novas)
-                        
-                        st.success(f"Acesso de {login_final} atualizado!")
-                        st.session_state['modo_user'] = None
-                        st.rerun()
-                        
-                    if c_b2.form_submit_button("Cancelar"): 
-                        st.session_state['modo_user'] = None
-                        st.rerun()
+                        st.success("Acesso atualizado!"); st.session_state['modo_user'] = None; st.rerun()
+
+                    # NOVA FUNÇÃO: Reset de Senha com envio via WhatsApp
+                    if c_b2.form_submit_button("🔐 Reset de Senha"):
+                        if not d.get('telefone'):
+                            st.error("Erro: Usuário não possui telefone cadastrado para o envio.")
+                        else:
+                            instancia = buscar_instancia_ativa()
+                            if not instancia:
+                                st.error("Erro: Nenhuma instância de WhatsApp ativa localizada.")
+                            else:
+                                senha_final = hash_senha(senha)
+                                conn = get_conn(); cur = conn.cursor()
+                                cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login, senha_final, cargo, ativo, st.session_state['id_user']))
+                                conn.commit(); conn.close()
+                                
+                                # Envio via WhatsApp
+                                msg = f"Olá {st.session_state.get('nome_user', '').split()[0]}! 🔐\nSua senha de acesso foi atualizada por um administrador.\n\nLogin: {login}\nNova Senha: {senha}\n\nRecomendamos alterar sua senha após o acesso."
+                                res = modulo_wapi.enviar_msg_api(instancia[0], instancia[1], d.get('telefone'), msg)
+                                
+                                st.success("✅ Senha atualizada e enviada com sucesso para o WhatsApp do usuário!")
+                                st.session_state['modo_user'] = None; st.rerun()
+
+                    if c_b3.form_submit_button("Cancelar"): st.session_state['modo_user'] = None; st.rerun()
             except Exception as e: st.error(f"Erro: {e}")
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -128,10 +148,7 @@ def app_usuarios():
                         c[0].write(row['nome']); c[1].write(row['email']); c[2].write(row['hierarquia'])
                         c[3].write("✅" if row['ativo'] else "❌")
                         if c[4].button("🔓 Configurar", key=f"user_{row['id']}"):
-                            st.session_state['modo_user'] = 'editar_acesso'
-                            st.session_state['id_user'] = row['id']
-                            st.session_state['nome_user'] = row['nome']
-                            st.rerun()
+                            st.session_state['modo_user'] = 'editar_acesso'; st.session_state['id_user'] = row['id']; st.session_state['nome_user'] = row['nome']; st.rerun()
                         st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 2px;'></div>", unsafe_allow_html=True)
         except Exception as e: st.error(f"Erro: {e}")
 
