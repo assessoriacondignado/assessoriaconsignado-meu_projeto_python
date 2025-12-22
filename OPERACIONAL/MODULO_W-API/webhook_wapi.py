@@ -12,9 +12,9 @@ if BASE_DIR not in sys.path:
 
 try:
     import conexao
-    print("✅ Conexão importada com sucesso no Webhook!")
+    print("✅ Conexão importada com sucesso no Webhook!", flush=True)
 except Exception as e:
-    print(f"❌ Erro crítico no conexao.py: {e}")
+    print(f"❌ Erro crítico no conexao.py: {e}", flush=True)
 
 app = Flask(__name__)
 
@@ -28,9 +28,6 @@ def get_conn():
     )
 
 def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
-    if mensagem is None:
-        mensagem = ""
-        
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -38,78 +35,74 @@ def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
             INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato) 
             VALUES (%s, %s, %s, %s, %s, %s)
         """
-        valores = (instance_id, telefone, mensagem, tipo, 'Sucesso', nome)
-        
+        # Garante que campos nulos não quebrem o banco
+        valores = (instance_id, telefone, mensagem or "", tipo, 'Sucesso', nome or "")
         cur.execute(sql, valores)
         conn.commit()
-        print(f"💾 DADOS GRAVADOS ({tipo}) -> Nome: {nome} | Tel: {telefone} | Msg: '{mensagem}'")
+        print(f"💾 DADOS GRAVADOS ({tipo}) -> Tel: {telefone} | Msg: '{mensagem}'", flush=True)
         cur.close()
         conn.close()
-        
     except Exception as e:
-        print(f"❌ Erro ao gravar no banco: {e}")
+        print(f"❌ Erro ao gravar no banco: {e}", flush=True)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     dados = request.json
     
     # --- DIAGNÓSTICO ---
-    print("\n" + "="*40)
-    print("🔍 EVENTO RECEBIDO NO WEBHOOK")
-    # print(json.dumps(dados, indent=2)) 
-    print("="*40 + "\n")
+    print("\n" + "="*40, flush=True)
+    print("🔍 EVENTO RECEBIDO NO WEBHOOK", flush=True)
+    if dados:
+        print(f"Evento: {dados.get('event')} | FromMe: {dados.get('fromMe')}", flush=True)
     
     event = dados.get("event")
+    instance_id = dados.get("instanceId")
     
-    # Define eventos permitidos para RECEBIDAS e ENVIADAS
-    eventos_recebidos = ["webhookReceived", "message.received", "messages.upsert"]
-    eventos_enviados = ["message.sent"]
+    # 1. Identifica se é envio ou recebimento
+    # Agora aceita 'webhookDelivery' conforme capturado no Webhook.site
+    is_from_me = dados.get("fromMe") is True or event in ["message.sent", "webhookDelivery"]
+    tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
-    if dados and (event in eventos_recebidos or event in eventos_enviados or "event" not in dados):
-        instance_id = dados.get("instanceId")
-        
-        # Determina o tipo do log
-        tipo_log = "RECEBIDA"
-        if event in eventos_enviados:
-            tipo_log = "ENVIADA"
-            
-        # Captura remetente/destinatário
-        sender = dados.get("sender", {})
-        remetente = sender.get("id", "") 
-        nome_push = sender.get("pushName") or sender.get("name") or "Contato WhatsApp"
+    # 2. Captura o Telefone (Lógica aprimorada para envios)
+    # Se for envio, o telefone do cliente está em 'chat'['id']
+    telefone_bruto = ""
+    if is_from_me:
+        telefone_bruto = dados.get("chat", {}).get("id") or dados.get("to")
+    else:
+        telefone_bruto = dados.get("sender", {}).get("id") or dados.get("remoteJid")
 
-        # --- CAPTURA DO CONTEÚDO ---
-        msg_content = dados.get("msgContent", {})
-        mensagem = (
-            msg_content.get("text") or 
-            msg_content.get("conversation") or 
-            msg_content.get("body") or 
-            msg_content.get("caption") or 
-            dados.get("content") or 
-            ""
-        )
-        
-        if not mensagem:
-            extended = msg_content.get("extendedTextMessage", {})
-            mensagem = extended.get("text") or extended.get("body") or ""
+    # 3. Captura o Nome
+    nome_contato = "Contato WhatsApp"
+    if is_from_me:
+        # No envio, costumamos usar o nome da sua instância ou deixar vazio
+        nome_contato = "Assessoria Consignado"
+    else:
+        nome_contato = dados.get("sender", {}).get("pushName") or "Cliente"
 
-        # Ignora grupos para log limpo
-        if dados.get("isGroup") is True:
-            return jsonify({"status": "ignorado_grupo"}), 200
+    # 4. Captura a Mensagem (Lógica para texto simples ou estendido)
+    msg_content = dados.get("msgContent") or {}
+    mensagem = (
+        msg_content.get("text") or 
+        msg_content.get("conversation") or 
+        msg_content.get("body") or 
+        msg_content.get("extendedTextMessage", {}).get("text") or
+        dados.get("content") or ""
+    )
 
-        # Normalização do telefone
-        telefone_limpo = re.sub(r'[^0-9]', '', str(remetente))
+    if dados.get("isGroup") is True:
+        return jsonify({"status": "ignorado_grupo"}), 200
+
+    if telefone_bruto:
+        telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
+        # Ajuste para o nono dígito em números brasileiros
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
-            try:
-                if int(telefone_limpo[4]) >= 6:
-                    telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
-            except: pass 
+            if int(telefone_limpo[4]) >= 6:
+                telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
+        
+        salvar_log_webhook(instance_id, telefone_limpo, mensagem, tipo_log, nome_contato)
+        return jsonify({"status": "sucesso", "tipo": tipo_log}), 200
 
-        # Grava o log (Seja entrada ou saída)
-        salvar_log_webhook(instance_id, telefone_limpo, mensagem, tipo_log, nome_push)
-        return jsonify({"status": "sucesso"}), 200
-
-    return jsonify({"status": "evento_ignorado"}), 200
+    return jsonify({"status": "erro_identificacao"}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
