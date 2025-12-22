@@ -13,7 +13,6 @@ except ImportError:
     st.error("Erro crítico: Arquivo conexao.py não localizado no servidor.")
 
 def get_conn():
-    # Retorna a conexão com o banco de dados PostgreSQL
     return psycopg2.connect(
         host=conexao.host, 
         port=conexao.port, 
@@ -23,7 +22,7 @@ def get_conn():
     )
 
 # ==========================================================
-# 1. FUNÇÕES DE API E LOGS (DATABASE ONLY)
+# 1. FUNÇÕES DE API (REGISTO REMOVIDO - AGORA VIA WEBHOOK)
 # ==========================================================
 BASE_URL = "https://api.w-api.app/v1"
 
@@ -38,21 +37,7 @@ def enviar_msg_api(instance_id, token, to, message):
     except Exception as e: 
         return {"success": False, "error": str(e)}
 
-def salvar_log(instance_id, telefone, mensagem, tipo="ENVIADA", status="Sucesso", nome=""):
-    # Gravação direta no banco, sem arquivos .log locais
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato) 
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (instance_id, telefone, mensagem, tipo, status, nome))
-        conn.commit()
-        conn.close()
-    except:
-        pass
-
-# --- FUNÇÕES DE INSTÂNCIA (API) ---
+# --- FUNÇÕES DE INSTÂNCIA ---
 def obter_qrcode_api(instance_id, token):
     url = f"{BASE_URL}/instance/qr-code"
     headers = {"Authorization": f"Bearer {token}"}
@@ -81,7 +66,7 @@ def checar_status_api(instance_id, token):
     except: return {"state": "erro"}
 
 # ==========================================================
-# 2. POP-UPS (DIÁLOGOS)
+# 2. DIÁLOGOS E INTERFACE
 # ==========================================================
 @st.dialog("📷 Conectar QR Code")
 def dialog_qrcode(inst_id, token):
@@ -119,9 +104,6 @@ def dialog_editar(id_db, nome, inst_id, token):
         except Exception as e:
             st.error(f"Erro ao salvar: {e}")
 
-# ==========================================================
-# 4. INTERFACE PRINCIPAL
-# ==========================================================
 def app_wapi():
     st.markdown("## 📱 Módulo W-API")
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Disparador", "🤖 Instâncias", "📝 Modelos", "📋 Registros"])
@@ -140,11 +122,9 @@ def app_wapi():
                 tipo_envio = st.radio("Tipo de Destino", ["Para Cliente", "Manual"], horizontal=True)
                 
                 destino_final = ""
-                nome_cli = ""
                 if tipo_envio == "Para Cliente":
                     cli_sel = st.selectbox("Selecione o Cliente", df_cli['nome'].tolist())
                     row_cli = df_cli[df_cli['nome'] == cli_sel].iloc[0]
-                    nome_cli = row_cli['nome']
                     opcoes = ["Telefone Pessoal"]
                     if row_cli['id_grupo_whats']: opcoes.append("Grupo do Cliente")
                     escolha = st.radio("Enviar para:", opcoes, horizontal=True)
@@ -159,15 +139,15 @@ def app_wapi():
                         res = enviar_msg_api(row_inst['api_instance_id'], row_inst['api_token'], destino_final, msg)
                         if res.get('messageId') or res.get('success') is True:
                             st.success("Mensagem enviada com sucesso!")
-                            salvar_log(inst_sel, destino_final, msg, "ENVIADA", "Sucesso", nome_cli)
+                            # REGISTO MANUAL REMOVIDO: O Webhook agora trata o log de saída.
                         else:
                             st.error(f"Falha no envio: {res}")
-                            salvar_log(inst_sel, destino_final, msg, "ENVIADA", "Erro", nome_cli)
                     else: st.warning("Preencha o destino e a mensagem.")
             else: st.warning("Nenhuma instância configurada.")
         except: st.error("Erro ao carregar dados do disparador.")
 
     with tab2:
+        # (Código das instâncias permanece igual conforme o original)
         st.markdown("### 🤖 Gerenciar Instâncias")
         try:
             conn = get_conn()
@@ -177,8 +157,6 @@ def app_wapi():
             if not df_list.empty:
                 for _, inst in df_list.iterrows():
                     with st.expander(f"Instância: **{inst['nome']}**"):
-                        st.write(f"**ID:** `{inst['api_instance_id']}`")
-                        
                         col_bt1, col_bt2, col_bt3 = st.columns(3)
                         with col_bt1:
                             if st.button("📷 QR Code", key=f"qr_{inst['id']}"):
@@ -186,50 +164,33 @@ def app_wapi():
                             if st.button("📊 Status", key=f"st_{inst['id']}"):
                                 res_st = checar_status_api(inst['api_instance_id'], inst['api_token'])
                                 st.write(f"Estado Atual: **{res_st.get('state')}**")
-                        
                         with col_bt2:
                             if st.button("🔢 Código OTP", key=f"otp_{inst['id']}"):
                                 dialog_otp(inst['api_instance_id'], inst['api_token'])
                             if st.button("📝 Editar", key=f"ed_{inst['id']}"):
                                 dialog_editar(inst['id'], inst['nome'], inst['api_instance_id'], inst['api_token'])
-                        
                         with col_bt3:
                             if st.button("❌ Excluir", key=f"del_{inst['id']}"):
-                                conn = get_conn()
-                                cur = conn.cursor()
+                                conn = get_conn(); cur = conn.cursor()
                                 cur.execute("DELETE FROM wapi_instancias WHERE id=%s", (inst['id'],))
-                                conn.commit()
-                                conn.close()
-                                st.warning("Instância removida.")
-                                time.sleep(1)
-                                st.rerun()
-            else: st.info("Nenhuma instância de WhatsApp cadastrada.")
+                                conn.commit(); conn.close()
+                                st.warning("Instância removida."); time.sleep(1); st.rerun()
+            else: st.info("Nenhuma instância cadastrada.")
         except: pass
 
     with tab4:
         st.markdown("### 📋 Histórico de Mensagens")
         try:
             conn = get_conn()
-            query = """
-                SELECT data_hora, tipo, nome_contato, telefone, mensagem, status 
-                FROM wapi_logs 
-                ORDER BY data_hora DESC 
-                LIMIT 50
-            """
+            query = "SELECT data_hora, tipo, nome_contato, telefone, mensagem, status FROM wapi_logs ORDER BY data_hora DESC LIMIT 50"
             df_logs = pd.read_sql(query, conn)
             conn.close()
-            
             if not df_logs.empty:
                 df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M')
                 df_logs['Fluxo'] = df_logs['tipo'].apply(lambda x: "📥 RECEBIDA" if x == 'RECEBIDA' else "📤 ENVIADA")
-                
-                st.dataframe(
-                    df_logs[['data_hora', 'Fluxo', 'nome_contato', 'telefone', 'mensagem', 'status']], 
-                    use_container_width=True, 
-                    hide_index=True
-                )
-            else: st.info("Histórico de mensagens vazio.")
-        except: st.error("Erro ao carregar histórico de logs.")
+                st.dataframe(df_logs[['data_hora', 'Fluxo', 'nome_contato', 'telefone', 'mensagem', 'status']], use_container_width=True, hide_index=True)
+            else: st.info("Histórico vazio.")
+        except: st.error("Erro ao carregar histórico.")
 
 if __name__ == "__main__":
     app_wapi()

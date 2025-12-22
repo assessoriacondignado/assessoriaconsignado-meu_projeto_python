@@ -3,7 +3,7 @@ import os
 from flask import Flask, request, jsonify
 import psycopg2
 import re
-import json # Adicionado para formatar os logs de diagnóstico
+import json
 
 # --- CONFIGURAÇÃO DE CAMINHO DINÂMICO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +27,7 @@ def get_conn():
         password=conexao.password
     )
 
-def salvar_log_recebido(instance_id, telefone, mensagem, nome=""):
+def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
     if mensagem is None:
         mensagem = ""
         
@@ -38,11 +38,11 @@ def salvar_log_recebido(instance_id, telefone, mensagem, nome=""):
             INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato) 
             VALUES (%s, %s, %s, %s, %s, %s)
         """
-        valores = (instance_id, telefone, mensagem, 'RECEBIDA', 'Sucesso', nome)
+        valores = (instance_id, telefone, mensagem, tipo, 'Sucesso', nome)
         
         cur.execute(sql, valores)
         conn.commit()
-        print(f"💾 DADOS GRAVADOS -> Nome: {nome} | Tel: {telefone} | Msg: '{mensagem}'")
+        print(f"💾 DADOS GRAVADOS ({tipo}) -> Nome: {nome} | Tel: {telefone} | Msg: '{mensagem}'")
         cur.close()
         conn.close()
         
@@ -53,25 +53,33 @@ def salvar_log_recebido(instance_id, telefone, mensagem, nome=""):
 def webhook():
     dados = request.json
     
-    # --- DIAGNÓSTICO: VERIFICAÇÃO DO CÓDIGO RECEBIDO ---
-    # Isso permite que você identifique erros de estrutura no terminal do VS Code
+    # --- DIAGNÓSTICO ---
     print("\n" + "="*40)
-    print("🔍 DIAGNÓSTICO: CONTEÚDO BRUTO RECEBIDO")
-    print(json.dumps(dados, indent=2)) 
+    print("🔍 EVENTO RECEBIDO NO WEBHOOK")
+    # print(json.dumps(dados, indent=2)) 
     print("="*40 + "\n")
     
-    # Valida eventos de mensagem (Expandido para capturar diferentes tipos da W-API)
-    eventos_permitidos = ["webhookReceived", "message.received", "messages.upsert"]
-    if dados and (dados.get("event") in eventos_permitidos or "event" not in dados):
+    event = dados.get("event")
+    
+    # Define eventos permitidos para RECEBIDAS e ENVIADAS
+    eventos_recebidos = ["webhookReceived", "message.received", "messages.upsert"]
+    eventos_enviados = ["message.sent"]
+
+    if dados and (event in eventos_recebidos or event in eventos_enviados or "event" not in dados):
         instance_id = dados.get("instanceId")
+        
+        # Determina o tipo do log
+        tipo_log = "RECEBIDA"
+        if event in eventos_enviados:
+            tipo_log = "ENVIADA"
+            
+        # Captura remetente/destinatário
         sender = dados.get("sender", {})
         remetente = sender.get("id", "") 
-        nome_push = sender.get("pushName") or sender.get("name") or "Contato via Whats"
+        nome_push = sender.get("pushName") or sender.get("name") or "Contato WhatsApp"
 
-        # --- CAPTURA ROBUSTA DO CONTEÚDO (EVITA MENSAGENS VAZIAS) ---
+        # --- CAPTURA DO CONTEÚDO ---
         msg_content = dados.get("msgContent", {})
-        
-        # Tenta extrair o texto de todos os locais possíveis onde ele pode estar escondido
         mensagem = (
             msg_content.get("text") or 
             msg_content.get("conversation") or 
@@ -81,27 +89,24 @@ def webhook():
             ""
         )
         
-        # Caso especial para mensagens citadas ou textos estendidos
         if not mensagem:
             extended = msg_content.get("extendedTextMessage", {})
             mensagem = extended.get("text") or extended.get("body") or ""
-        # -----------------------------------------------------------
 
+        # Ignora grupos para log limpo
         if dados.get("isGroup") is True:
-            print(f"ℹ️ Grupo ignorado: {remetente}")
-            return jsonify({"status": "ignorado"}), 200
+            return jsonify({"status": "ignorado_grupo"}), 200
 
+        # Normalização do telefone
         telefone_limpo = re.sub(r'[^0-9]', '', str(remetente))
-        
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             try:
-                primeiro_digito = int(telefone_limpo[4])
-                if primeiro_digito >= 6:
+                if int(telefone_limpo[4]) >= 6:
                     telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
-            except:
-                pass 
+            except: pass 
 
-        salvar_log_recebido(instance_id, telefone_limpo, mensagem, nome_push)
+        # Grava o log (Seja entrada ou saída)
+        salvar_log_webhook(instance_id, telefone_limpo, mensagem, tipo_log, nome_push)
         return jsonify({"status": "sucesso"}), 200
 
     return jsonify({"status": "evento_ignorado"}), 200
