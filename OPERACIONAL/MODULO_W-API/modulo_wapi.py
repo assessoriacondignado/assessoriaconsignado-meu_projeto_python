@@ -1,16 +1,22 @@
-import streamlit as st
-import pandas as pd
+import sys
+import os
+from flask import Flask, request, jsonify
 import psycopg2
-import requests
 import re
-import time
-from datetime import datetime
+import json
 
-# --- IMPORTAÇÃO ROBUSTA DA CONEXÃO ---
-try: 
+# --- CONFIGURAÇÃO DE CAMINHO DINÂMICO ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+try:
     import conexao
-except ImportError:
-    st.error("Erro crítico: Arquivo conexao.py não localizado no servidor.")
+    print("✅ Conexão importada com sucesso no Webhook!", flush=True)
+except Exception as e:
+    print(f"❌ Erro crítico no conexao.py: {e}", flush=True)
+
+app = Flask(__name__)
 
 def get_conn():
     return psycopg2.connect(
@@ -21,176 +27,76 @@ def get_conn():
         password=conexao.password
     )
 
-# ==========================================================
-# 1. FUNÇÕES DE API (REGISTO REMOVIDO - AGORA VIA WEBHOOK)
-# ==========================================================
-BASE_URL = "https://api.w-api.app/v1"
-
-def enviar_msg_api(instance_id, token, to, message):
-    url = f"{BASE_URL}/message/send-text?instanceId={instance_id}"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    contato_limpo = to if "@g.us" in to else re.sub(r'[^0-9]', '', str(to))
-    payload = {"phone": contato_limpo, "message": message, "delayMessage": 3}
+def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        return res.json()
-    except Exception as e: 
-        return {"success": False, "error": str(e)}
+        conn = get_conn()
+        cur = conn.cursor()
+        sql = """
+            INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato) 
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        valores = (instance_id, telefone, mensagem or "", tipo, 'Sucesso', nome or "")
+        cur.execute(sql, valores)
+        conn.commit()
+        print(f"💾 DADOS GRAVADOS ({tipo}) -> Tel: {telefone} | Msg: '{mensagem}'", flush=True)
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Erro ao gravar no banco: {e}", flush=True)
 
-# --- FUNÇÕES DE INSTÂNCIA ---
-def obter_qrcode_api(instance_id, token):
-    url = f"{BASE_URL}/instance/qr-code"
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {"instanceId": instance_id, "image": "enable"}
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=10)
-        return res.content if res.status_code == 200 else None
-    except: return None
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    dados = request.json
+    
+    # --- DIAGNÓSTICO FORÇADO ---
+    print("\n" + "="*40, flush=True)
+    print("🔍 EVENTO RECEBIDO NO WEBHOOK", flush=True)
+    
+    if not dados:
+        print("⚠️ Aviso: Corpo da requisição vazio.", flush=True)
+        return jsonify({"status": "vazio"}), 200
 
-def obter_otp_api(instance_id, token, phone):
-    url = f"{BASE_URL}/instance/connect-phone"
-    headers = {"Authorization": f"Bearer {token}"}
-    payload = {"instanceId": instance_id, "phone": phone}
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        return res.json()
-    except: return None
+    event = dados.get("event")
+    instance_id = dados.get("instanceId")
+    
+    # --- DETECÇÃO INTELIGENTE DE FLUXO ---
+    # Se 'fromMe' for True, a mensagem saiu do Robô (ENVIADA)
+    is_from_me = (
+        dados.get("fromMe") is True or 
+        dados.get("data", {}).get("key", {}).get("fromMe") is True or
+        event == "message.sent"
+    )
+    
+    tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
+    
+    # Captura o telefone (remetente ou destinatário)
+    sender_id = dados.get("sender", {}).get("id") or dados.get("to") or dados.get("remoteJid")
+    if not sender_id and dados.get("data"):
+        sender_id = dados.get("data", {}).get("key", {}).get("remoteJid")
 
-def checar_status_api(instance_id, token):
-    url = f"{BASE_URL}/instance/status-instance"
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {"instanceId": instance_id}
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=10)
-        return res.json() if res.status_code == 200 else {"state": "erro"}
-    except: return {"state": "erro"}
+    nome_contato = dados.get("sender", {}).get("pushName") or dados.get("pushName") or "Contato"
 
-# ==========================================================
-# 2. DIÁLOGOS E INTERFACE
-# ==========================================================
-@st.dialog("📷 Conectar QR Code")
-def dialog_qrcode(inst_id, token):
-    img = obter_qrcode_api(inst_id, token)
-    if img: 
-        st.image(img, width=300)
-        st.info("Escaneie para conectar a instância.")
-    else: st.error("Erro ao carregar QR Code da API.")
+    # --- CAPTURA DE MENSAGEM ---
+    msg_content = dados.get("msgContent") or dados.get("data", {}).get("message") or {}
+    mensagem = (
+        msg_content.get("text") or 
+        msg_content.get("conversation") or 
+        msg_content.get("body") or 
+        dados.get("content") or 
+        ""
+    )
 
-@st.dialog("🔢 Conectar via Código (OTP)")
-def dialog_otp(inst_id, token):
-    phone = st.text_input("Número com DDI (Ex: 5511999999999)")
-    if st.button("Gerar Código"):
-        res = obter_otp_api(inst_id, token, phone)
-        if res and res.get('code'):
-            st.code(res['code'], language="text")
-            st.success("Insira este código no seu aparelho WhatsApp.")
-        else: st.error("Erro ao gerar código OTP.")
+    if dados.get("isGroup") is True:
+        print(f"ℹ️ Grupo ignorado.", flush=True)
+        return jsonify({"status": "ignorado"}), 200
 
-@st.dialog("📝 Editar Instância")
-def dialog_editar(id_db, nome, inst_id, token):
-    new_nome = st.text_input("Nome Identificador", value=nome)
-    new_id = st.text_input("Instance ID", value=inst_id)
-    new_token = st.text_input("Token de Acesso", value=token)
-    if st.button("Salvar Alterações"):
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("UPDATE wapi_instancias SET nome=%s, api_instance_id=%s, api_token=%s WHERE id=%s", (new_nome, new_id, new_token, id_db))
-            conn.commit()
-            conn.close()
-            st.success("Configurações atualizadas!")
-            time.sleep(1)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Erro ao salvar: {e}")
+    if sender_id:
+        telefone_limpo = re.sub(r'[^0-9]', '', str(sender_id))
+        salvar_log_webhook(instance_id, telefone_limpo, mensagem, tipo_log, nome_contato)
+        return jsonify({"status": "sucesso", "tipo": tipo_log}), 200
 
-def app_wapi():
-    st.markdown("## 📱 Módulo W-API")
-    tab1, tab2, tab3, tab4 = st.tabs(["📤 Disparador", "🤖 Instâncias", "📝 Modelos", "📋 Registros"])
+    print("⚠️ Não foi possível identificar o telefone no JSON.", flush=True)
+    return jsonify({"status": "erro_identificacao"}), 200
 
-    with tab1:
-        st.markdown("### 📤 Disparar Mensagem")
-        try:
-            conn = get_conn()
-            df_inst = pd.read_sql("SELECT nome, api_instance_id, api_token FROM wapi_instancias", conn)
-            df_cli = pd.read_sql("SELECT nome, telefone, id_grupo_whats FROM clientes_usuarios", conn)
-            conn.close()
-
-            if not df_inst.empty:
-                inst_sel = st.selectbox("Selecione a Instância Emissora", df_inst['nome'].tolist())
-                row_inst = df_inst[df_inst['nome'] == inst_sel].iloc[0]
-                tipo_envio = st.radio("Tipo de Destino", ["Para Cliente", "Manual"], horizontal=True)
-                
-                destino_final = ""
-                if tipo_envio == "Para Cliente":
-                    cli_sel = st.selectbox("Selecione o Cliente", df_cli['nome'].tolist())
-                    row_cli = df_cli[df_cli['nome'] == cli_sel].iloc[0]
-                    opcoes = ["Telefone Pessoal"]
-                    if row_cli['id_grupo_whats']: opcoes.append("Grupo do Cliente")
-                    escolha = st.radio("Enviar para:", opcoes, horizontal=True)
-                    destino_final = row_cli['id_grupo_whats'] if escolha == "Grupo do Cliente" else row_cli['telefone']
-                    st.info(f"📍 Destino detectado: {destino_final}")
-                else:
-                    destino_final = st.text_input("Número (com DDI) ou ID do Grupo")
-
-                msg = st.text_area("Conteúdo da Mensagem")
-                if st.button("🚀 Enviar Agora"):
-                    if destino_final and msg:
-                        res = enviar_msg_api(row_inst['api_instance_id'], row_inst['api_token'], destino_final, msg)
-                        if res.get('messageId') or res.get('success') is True:
-                            st.success("Mensagem enviada com sucesso!")
-                            # REGISTO MANUAL REMOVIDO: O Webhook agora trata o log de saída.
-                        else:
-                            st.error(f"Falha no envio: {res}")
-                    else: st.warning("Preencha o destino e a mensagem.")
-            else: st.warning("Nenhuma instância configurada.")
-        except: st.error("Erro ao carregar dados do disparador.")
-
-    with tab2:
-        # (Código das instâncias permanece igual conforme o original)
-        st.markdown("### 🤖 Gerenciar Instâncias")
-        try:
-            conn = get_conn()
-            df_list = pd.read_sql("SELECT id, nome, api_instance_id, api_token FROM wapi_instancias", conn)
-            conn.close()
-
-            if not df_list.empty:
-                for _, inst in df_list.iterrows():
-                    with st.expander(f"Instância: **{inst['nome']}**"):
-                        col_bt1, col_bt2, col_bt3 = st.columns(3)
-                        with col_bt1:
-                            if st.button("📷 QR Code", key=f"qr_{inst['id']}"):
-                                dialog_qrcode(inst['api_instance_id'], inst['api_token'])
-                            if st.button("📊 Status", key=f"st_{inst['id']}"):
-                                res_st = checar_status_api(inst['api_instance_id'], inst['api_token'])
-                                st.write(f"Estado Atual: **{res_st.get('state')}**")
-                        with col_bt2:
-                            if st.button("🔢 Código OTP", key=f"otp_{inst['id']}"):
-                                dialog_otp(inst['api_instance_id'], inst['api_token'])
-                            if st.button("📝 Editar", key=f"ed_{inst['id']}"):
-                                dialog_editar(inst['id'], inst['nome'], inst['api_instance_id'], inst['api_token'])
-                        with col_bt3:
-                            if st.button("❌ Excluir", key=f"del_{inst['id']}"):
-                                conn = get_conn(); cur = conn.cursor()
-                                cur.execute("DELETE FROM wapi_instancias WHERE id=%s", (inst['id'],))
-                                conn.commit(); conn.close()
-                                st.warning("Instância removida."); time.sleep(1); st.rerun()
-            else: st.info("Nenhuma instância cadastrada.")
-        except: pass
-
-    with tab4:
-        st.markdown("### 📋 Histórico de Mensagens")
-        try:
-            conn = get_conn()
-            query = "SELECT data_hora, tipo, nome_contato, telefone, mensagem, status FROM wapi_logs ORDER BY data_hora DESC LIMIT 50"
-            df_logs = pd.read_sql(query, conn)
-            conn.close()
-            if not df_logs.empty:
-                df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M')
-                df_logs['Fluxo'] = df_logs['tipo'].apply(lambda x: "📥 RECEBIDA" if x == 'RECEBIDA' else "📤 ENVIADA")
-                st.dataframe(df_logs[['data_hora', 'Fluxo', 'nome_contato', 'telefone', 'mensagem', 'status']], use_container_width=True, hide_index=True)
-            else: st.info("Histórico vazio.")
-        except: st.error("Erro ao carregar histórico.")
-
-if __name__ == "__main__":
-    app_wapi()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
