@@ -3,9 +3,9 @@ import os
 from flask import Flask, request, jsonify
 import psycopg2
 import re
+import json # Adicionado para formatar os logs de diagnóstico
 
 # --- CONFIGURAÇÃO DE CAMINHO DINÂMICO ---
-# Garante que o Python localize o conexao.py independente de onde o script é chamado
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
@@ -19,7 +19,6 @@ except Exception as e:
 app = Flask(__name__)
 
 def get_conn():
-    # Retorna a conexão com o banco de dados PostgreSQL
     return psycopg2.connect(
         host=conexao.host, 
         port=conexao.port, 
@@ -29,7 +28,6 @@ def get_conn():
     )
 
 def salvar_log_recebido(instance_id, telefone, mensagem, nome=""):
-    # Garante que mensagem nunca seja None para evitar erros de inserção no banco
     if mensagem is None:
         mensagem = ""
         
@@ -55,43 +53,53 @@ def salvar_log_recebido(instance_id, telefone, mensagem, nome=""):
 def webhook():
     dados = request.json
     
-    # Valida se o evento recebido é de mensagem
-    if dados and dados.get("event") == "webhookReceived":
+    # --- DIAGNÓSTICO: VERIFICAÇÃO DO CÓDIGO RECEBIDO ---
+    # Isso permite que você identifique erros de estrutura no terminal do VS Code
+    print("\n" + "="*40)
+    print("🔍 DIAGNÓSTICO: CONTEÚDO BRUTO RECEBIDO")
+    print(json.dumps(dados, indent=2)) 
+    print("="*40 + "\n")
+    
+    # Valida eventos de mensagem (Expandido para capturar diferentes tipos da W-API)
+    eventos_permitidos = ["webhookReceived", "message.received", "messages.upsert"]
+    if dados and (dados.get("event") in eventos_permitidos or "event" not in dados):
         instance_id = dados.get("instanceId")
         sender = dados.get("sender", {})
         remetente = sender.get("id", "") 
-        nome_push = sender.get("pushName", "Contato via Whats")
+        nome_push = sender.get("pushName") or sender.get("name") or "Contato via Whats"
 
-        # --- CAPTURA DO CONTEÚDO ---
+        # --- CAPTURA ROBUSTA DO CONTEÚDO (EVITA MENSAGENS VAZIAS) ---
         msg_content = dados.get("msgContent", {})
-        mensagem = msg_content.get("text")
         
+        # Tenta extrair o texto de todos os locais possíveis onde ele pode estar escondido
+        mensagem = (
+            msg_content.get("text") or 
+            msg_content.get("conversation") or 
+            msg_content.get("body") or 
+            msg_content.get("caption") or 
+            dados.get("content") or 
+            ""
+        )
+        
+        # Caso especial para mensagens citadas ou textos estendidos
         if not mensagem:
             extended = msg_content.get("extendedTextMessage", {})
-            mensagem = extended.get("text", "")
-            
-        if not mensagem:
-            mensagem = msg_content.get("conversation", "")
-        # ---------------------------
+            mensagem = extended.get("text") or extended.get("body") or ""
+        # -----------------------------------------------------------
 
-        # Ignora mensagens de grupos para não sobrecarregar o banco
         if dados.get("isGroup") is True:
+            print(f"ℹ️ Grupo ignorado: {remetente}")
             return jsonify({"status": "ignorado"}), 200
 
-        # Limpa caracteres não numéricos
         telefone_limpo = re.sub(r'[^0-9]', '', str(remetente))
         
-        # --- NORMALIZAÇÃO DO 9º DÍGITO ---
-        # Adiciona o 9 extra para celulares brasileiros com 12 dígitos (55 + DDD + Numero)
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             try:
                 primeiro_digito = int(telefone_limpo[4])
-                # Se o número após o DDD começar com 6, 7, 8 ou 9, é celular
                 if primeiro_digito >= 6:
                     telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
             except:
                 pass 
-        # ---------------------------------
 
         salvar_log_recebido(instance_id, telefone_limpo, mensagem, nome_push)
         return jsonify({"status": "sucesso"}), 200
@@ -99,5 +107,4 @@ def webhook():
     return jsonify({"status": "evento_ignorado"}), 200
 
 if __name__ == '__main__':
-    # No servidor Ubuntu, você deve rodar este script em background (ex: com PM2 ou screen)
     app.run(host='0.0.0.0', port=5000)
