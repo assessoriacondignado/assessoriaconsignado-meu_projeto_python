@@ -1,12 +1,9 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-import os
-import re
-from datetime import datetime, date
 import modulo_wapi
+from datetime import date
 
-# --- IMPORTAÇÃO DA CONEXÃO ---
 try: 
     import conexao
 except ImportError: 
@@ -20,7 +17,6 @@ def get_conn():
         )
     except: return None
 
-# --- FUNÇÕES DE BUSCA ---
 def buscar_pedidos_disponiveis():
     conn = get_conn()
     if conn:
@@ -44,8 +40,6 @@ def listar_rf():
         conn.close()
         return df
     return pd.DataFrame()
-
-# --- POP-UPS (DIALOGS) ---
 
 @st.dialog("➕ Novo Registro")
 def dialog_novo_rf():
@@ -99,9 +93,15 @@ def dialog_status(rf):
             conn.commit(); conn.close()
             
             if enviar_whats and rf['telefone_cliente']:
-                msg = f"Olá {rf['nome_cliente'].split()[0]}! 📄 O status da sua renovação/feedback foi atualizado para: *{novo}*."
-                # Aqui você pode integrar com buscar_instancia_ativa() se desejar
-                st.info("Simulação: Mensagem enviada via WhatsApp.")
+                instancia = modulo_wapi.buscar_instancia_ativa()
+                if instancia:
+                    chave = novo.lower().replace(" ", "_")
+                    template = modulo_wapi.buscar_template("RENOVACAO", chave)
+                    if template:
+                        msg = template.replace("{nome}", str(rf['nome_cliente']).split()[0]) \
+                                      .replace("{pedido}", str(rf['codigo_pedido'])) \
+                                      .replace("{status}", novo)
+                        modulo_wapi.enviar_msg_api(instancia[0], instancia[1], rf['telefone_cliente'], msg)
             
             st.success("Status atualizado!"); st.rerun()
 
@@ -122,32 +122,23 @@ def app_renovacao_feedback():
     with c_b:
         if st.button("➕ Novo Registro", type="primary"): dialog_novo_rf()
 
-    tab1, tab2 = st.tabs(["📋 Gerenciar", "⚙️ Configurações"])
+    df = listar_rf()
+    if not df.empty:
+        # Filtros
+        f_txt = st.text_input("🔍 Filtrar por Cliente ou Pedido")
+        if f_txt:
+            df = df[df['nome_cliente'].str.contains(f_txt, case=False) | df['codigo_pedido'].str.contains(f_txt, case=False)]
 
-    with tab1:
-        df = listar_rf()
-        if not df.empty:
-            # Filtros
-            f_txt = st.text_input("🔍 Filtrar por Cliente ou Pedido")
-            if f_txt:
-                df = df[df['nome_cliente'].str.contains(f_txt, case=False) | df['codigo_pedido'].str.contains(f_txt, case=False)]
-
-            for _, row in df.iterrows():
-                cor = "🔵" if row['status'] == 'Entrada' else "🟢"
-                with st.expander(f"{cor} {row['codigo_pedido']} - {row['nome_cliente']} ({row['status']})"):
-                    st.write(f"**Previsão:** {row['data_previsao']} | **Produto:** {row['nome_produto']}")
-                    c1, c2, c3, c4 = st.columns(4)
-                    if c1.button("👁️ Ver", key=f"v_{row['id']}"): dialog_visualizar(row)
-                    if c2.button("🔄 Status", key=f"s_{row['id']}"): dialog_status(row)
-                    if c3.button("🗑️", key=f"d_{row['id']}"): dialog_excluir(row['id'])
-        else:
-            st.info("Nenhum registro encontrado.")
-
-    with tab2:
-        st.subheader("Modelos de Mensagem")
-        st.caption("Ajuste as mensagens automáticas enviadas via WhatsApp.")
-        st.text_area("Mensagem Entrada")
-        st.button("Salvar Modelos")
+        for _, row in df.iterrows():
+            cor = "🔵" if row['status'] == 'Entrada' else "🟢"
+            with st.expander(f"{cor} {row['codigo_pedido']} - {row['nome_cliente']} ({row['status']})"):
+                st.write(f"**Previsão:** {row['data_previsao']} | **Produto:** {row['nome_produto']}")
+                c1, c2, c3, c4 = st.columns(4)
+                if c1.button("👁️ Ver", key=f"v_{row['id']}"): dialog_visualizar(row)
+                if c2.button("🔄 Status", key=f"s_{row['id']}"): dialog_status(row)
+                if c3.button("🗑️", key=f"d_{row['id']}"): dialog_excluir(row['id'])
+    else:
+        st.info("Nenhum registro encontrado.")
 
 if __name__ == "__main__":
     app_renovacao_feedback()

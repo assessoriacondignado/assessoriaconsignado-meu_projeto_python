@@ -2,93 +2,27 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
-import requests
-import json
 import re
 from datetime import datetime
+import modulo_wapi  # Integração centralizada
 
-# Tentativa de importação robusta da conexão
 try:
     import conexao
 except ImportError:
     st.error("Erro crítico: Arquivo conexao.py não localizado.")
 
-# --- CONFIGURAÇÕES DE DIRETÓRIO DINÂMICO ---
-# Substituímos o caminho fixo /root/ para funcionar na nuvem
-BASE_DIR = os.path.join(os.getcwd(), "COMERCIAL", "PEDIDOS")
-
-try:
-    if not os.path.exists(BASE_DIR):
-        os.makedirs(BASE_DIR, exist_ok=True)
-except PermissionError:
-    # Se falhar no Streamlit Cloud, usa o diretório temporário padrão do Linux
-    BASE_DIR = "/tmp"
-
 # --- CONEXÃO COM BANCO ---
 def get_conn():
     try:
         return psycopg2.connect(
-            host=conexao.host,
-            port=conexao.port,
-            database=conexao.database,
-            user=conexao.user,
-            password=conexao.password
+            host=conexao.host, port=conexao.port, database=conexao.database,
+            user=conexao.user, password=conexao.password
         )
     except Exception as e:
         st.error(f"Erro ao conectar ao banco: {e}")
         return None
 
-# --- INTEGRAÇÃO W-API ---
-def buscar_instancia_ativa():
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
-            res = cur.fetchone()
-            conn.close()
-            return res 
-        except: return None
-    return None
-
-def enviar_whatsapp(numero, mensagem):
-    dados_instancia = buscar_instancia_ativa()
-    if not dados_instancia:
-        return False, "Sem instância cadastrada."
-    
-    instance_id, token = dados_instancia
-    BASE_URL = "https://api.w-api.app/v1"
-    url = f"{BASE_URL}/message/send-text?instanceId={instance_id}"
-    
-    if "@g.us" in str(numero):
-        numero_limpo = str(numero)
-    else:
-        numero_limpo = re.sub(r'\D', '', str(numero)) 
-        if len(numero_limpo) < 12 and not numero_limpo.startswith("55"):
-             numero_limpo = "55" + numero_limpo
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "phone": numero_limpo, 
-        "message": mensagem,
-        "delayMessage": 3
-    }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        if response.status_code in [200, 201]:
-            return True, "Enviado"
-        else:
-            return False, str(response.json())
-    except Exception as e:
-        return False, f"Erro Requisição: {str(e)}"
-
 # --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
-
 def buscar_clientes():
     conn = get_conn()
     if conn:
@@ -104,32 +38,6 @@ def buscar_produtos():
         conn.close()
         return df
     return pd.DataFrame()
-
-def buscar_configuracao():
-    conn = get_conn()
-    if conn:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM config_pedidos WHERE id = 1")
-        colunas = [desc[0] for desc in cur.description]
-        res = cur.fetchone()
-        conn.close()
-        if res:
-            return dict(zip(colunas, res))
-    return {}
-
-def salvar_configuracao(grupo_id, templates):
-    conn = get_conn()
-    if conn:
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE config_pedidos SET 
-                grupo_aviso_id = %s, msg_criacao = %s, msg_pago = %s, 
-                msg_registrar = %s, msg_pendente = %s, msg_cancelado = %s
-            WHERE id = 1
-        """, (grupo_id, templates['msg_criacao'], templates['msg_pago'], 
-              templates['msg_registrar'], templates['msg_pendente'], templates['msg_cancelado']))
-        conn.commit()
-        conn.close()
 
 def criar_pedido(cliente, produto, qtd, valor_total, avisar_cliente, avisar_grupo):
     codigo = f"PEDIDO-{datetime.now().strftime('%y%m%d%H%M')}"
@@ -150,19 +58,24 @@ def criar_pedido(cliente, produto, qtd, valor_total, avisar_cliente, avisar_grup
             conn.commit()
             conn.close()
             
-            # --- NOTIFICAÇÕES ---
-            config = buscar_configuracao()
-            if avisar_grupo and config.get('grupo_aviso_id'):
-                grupo_destino = str(config['grupo_aviso_id']).strip()
-                if "@" not in grupo_destino: grupo_destino += "@g.us"
-                msg_grupo = f"🔔 *NOVO PEDIDO NO SITE*\n\n📄 Cód: {codigo}\n👤 Cliente: {cliente['nome']}\n📦 Item: {produto['nome']}\n💰 Valor: R$ {valor_total:.2f}"
-                enviar_whatsapp(grupo_destino, msg_grupo)
-            
-            if avisar_cliente and cliente['telefone']:
-                template = config.get('msg_criacao', '')
-                if template:
-                    msg_final = template.replace("{nome}", str(cliente['nome']).split()[0]).replace("{pedido}", codigo).replace("{produto}", str(produto['nome']))
-                    enviar_whatsapp(cliente['telefone'], msg_final)
+            # --- NOTIFICAÇÕES VIA W-API CENTRALIZADO ---
+            instancia = modulo_wapi.buscar_instancia_ativa()
+            if instancia:
+                inst_id, inst_token = instancia
+                
+                # Aviso Grupo (Opcional: Pode ser configurado via template também futuramente)
+                if avisar_grupo: 
+                    # Simples hardcode ou busca template 'grupo_novo_pedido' se desejar
+                    pass 
+
+                # Aviso Cliente
+                if avisar_cliente and cliente['telefone']:
+                    template = modulo_wapi.buscar_template("PEDIDOS", "criacao")
+                    if template:
+                        msg_final = template.replace("{nome}", str(cliente['nome']).split()[0]) \
+                                            .replace("{pedido}", codigo) \
+                                            .replace("{produto}", str(produto['nome']))
+                        modulo_wapi.enviar_msg_api(inst_id, inst_token, cliente['telefone'], msg_final)
             
             return True, codigo
         except Exception as e:
@@ -205,31 +118,24 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente
             conn.commit()
             conn.close()
             
-            if avisar_cliente:
-                config = buscar_configuracao()
-                campo_msg = "msg_registrar" if novo_status == "Registro" else f"msg_{novo_status.lower()}"
-                template = config.get(campo_msg, '')
-                if template and dados_pedido['telefone_cliente']:
-                    msg_final = template.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
-                                        .replace("{pedido}", str(dados_pedido['codigo'])) \
-                                        .replace("{status}", novo_status) \
-                                        .replace("{obs_status}", obs_status_texto) \
-                                        .replace("{produto}", str(dados_pedido['nome_produto']))
-                    enviar_whatsapp(dados_pedido['telefone_cliente'], msg_final)
+            if avisar_cliente and dados_pedido['telefone_cliente']:
+                instancia = modulo_wapi.buscar_instancia_ativa()
+                if instancia:
+                    # Busca template centralizado: chaves ex: 'pago', 'registro', 'pendente'
+                    chave_msg = novo_status.lower().replace(" ", "_")
+                    template = modulo_wapi.buscar_template("PEDIDOS", chave_msg)
+                    
+                    if template:
+                        msg_final = template.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
+                                            .replace("{pedido}", str(dados_pedido['codigo'])) \
+                                            .replace("{status}", novo_status) \
+                                            .replace("{obs_status}", obs_status_texto) \
+                                            .replace("{produto}", str(dados_pedido['nome_produto']))
+                        modulo_wapi.enviar_msg_api(instancia[0], instancia[1], dados_pedido['telefone_cliente'], msg_final)
             return True
         except Exception as e:
             st.error(f"Erro ao atualizar status: {e}")
             return False
-    return False
-
-def excluir_pedido(id_pedido):
-    conn = get_conn()
-    if conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM pedidos WHERE id = %s", (int(id_pedido),))
-        conn.commit()
-        conn.close()
-        return True
     return False
 
 def buscar_historico_pedido(id_pedido):
@@ -242,36 +148,11 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 # --- POP-UPS (DIALOGS) ---
-
 @st.dialog("👤 Detalhes do Cliente")
 def ver_cliente(nome, cpf, tel):
     st.write(f"**Nome:** {nome}")
     st.write(f"**CPF:** {cpf}")
     st.write(f"**Telefone:** {tel}")
-
-@st.dialog("📦 Detalhes do Produto")
-def ver_produto(nome, cat):
-    st.write(f"**Produto:** {nome}")
-    st.write(f"**Categoria:** {cat}")
-
-@st.dialog("⚙️ Configurar Mensagens")
-def dialog_configuracao():
-    conf = buscar_configuracao()
-    with st.form("form_config_pedidos"):
-        st.subheader("Integração W-API")
-        grupo = st.text_input("ID do Grupo (Apenas números)", value=conf.get('grupo_aviso_id', ''))
-        st.caption("Tags: {nome}, {pedido}, {produto}, {obs_status}")
-        tpls = {
-            'msg_criacao': st.text_area("Novo Pedido", value=conf.get('msg_criacao', '')),
-            'msg_pago': st.text_area("Pago", value=conf.get('msg_pago', '')),
-            'msg_registrar': st.text_area("Registro", value=conf.get('msg_registrar', '')),
-            'msg_pendente': st.text_area("Pendente", value=conf.get('msg_pendente', '')),
-            'msg_cancelado': st.text_area("Cancelado", value=conf.get('msg_cancelado', ''))
-        }
-        if st.form_submit_button("Salvar Configurações"):
-            salvar_configuracao(grupo, tpls)
-            st.success("Salvo!")
-            st.rerun()
 
 @st.dialog("✏️ Editar Pedido")
 def dialog_editar_dados(pedido):
@@ -312,7 +193,7 @@ def dialog_historico(id_pedido, codigo_pedido):
 # --- APP PRINCIPAL ---
 def app_pedidos():
     st.markdown("## 🛒 Módulo de Pedidos") 
-    tab1, tab2, tab3 = st.tabs(["📝 Novo", "🔎 Gerenciar", "⚙️ Config"])
+    tab1, tab2 = st.tabs(["📝 Novo", "🔎 Gerenciar"])
     
     with tab1:
         df_c = buscar_clientes()
@@ -344,9 +225,6 @@ def app_pedidos():
                         if c2.button("✏️ Dados", key=f"e_{row['id']}"): dialog_editar_dados(row)
                         if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status_pedido(row)
                         if c4.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'], row['codigo'])
-
-    with tab3:
-        if st.button("⚙️ Configurar Mensagens"): dialog_configuracao()
 
 if __name__ == "__main__":
     app_pedidos()

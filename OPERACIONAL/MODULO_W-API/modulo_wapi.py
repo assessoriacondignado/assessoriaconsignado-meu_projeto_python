@@ -65,7 +65,59 @@ def checar_status_api(instance_id, token):
     except: return {"state": "erro"}
 
 # ==========================================================
-# 2. POP-UPS (DIÁLOGOS)
+# 2. FUNÇÕES DE SUPORTE E TEMPLATES (NOVO)
+# ==========================================================
+
+def buscar_instancia_ativa():
+    """Retorna (instance_id, token) da primeira instância cadastrada"""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+            res = cur.fetchone()
+            conn.close()
+            return res 
+        except: 
+            conn.close()
+            return None
+    return None
+
+def buscar_template(modulo, chave):
+    """Busca o texto configurado para um status específico"""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT conteudo_mensagem FROM wapi_templates WHERE modulo = %s AND chave_status = %s", (modulo, chave))
+            res = cur.fetchone()
+            conn.close()
+            return res[0] if res else ""
+        except:
+            conn.close()
+            return ""
+    return ""
+
+def salvar_template(modulo, chave, texto):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO wapi_templates (modulo, chave_status, conteudo_mensagem) 
+                VALUES (%s, %s, %s) 
+                ON CONFLICT (modulo, chave_status) DO UPDATE SET conteudo_mensagem = EXCLUDED.conteudo_mensagem
+            """, (modulo, chave, texto))
+            conn.commit()
+            conn.close()
+            return True
+        except: 
+            conn.close()
+            return False
+    return False
+
+# ==========================================================
+# 3. POP-UPS (DIÁLOGOS)
 # ==========================================================
 @st.dialog("📷 Conectar QR Code")
 def dialog_qrcode(inst_id, token):
@@ -99,8 +151,20 @@ def dialog_editar(id_db, nome, inst_id, token):
             time.sleep(1); st.rerun()
         except Exception as e: st.error(f"Erro ao salvar: {e}")
 
+@st.dialog("✏️ Editar Modelo de Mensagem")
+def dialog_editar_template_msg(modulo, chave, texto_atual):
+    st.write(f"Módulo: **{modulo}** | Status: **{chave}**")
+    novo_texto = st.text_area("Mensagem", value=texto_atual, height=200)
+    st.info("Tags comuns: {nome}, {pedido}, {produto}, {status}, {obs_status}")
+    if st.button("💾 Salvar Modelo"):
+        if salvar_template(modulo, chave, novo_texto):
+            st.success("Modelo salvo com sucesso!")
+            time.sleep(1); st.rerun()
+        else:
+            st.error("Erro ao salvar.")
+
 # ==========================================================
-# 3. INTERFACE PRINCIPAL
+# 4. INTERFACE PRINCIPAL
 # ==========================================================
 def app_wapi():
     st.markdown("## 📱 Módulo W-API")
@@ -165,6 +229,43 @@ def app_wapi():
                                 st.warning("Removida."); time.sleep(1); st.rerun()
             else: st.info("Nenhuma instância cadastrada.")
         except: pass
+
+    with tab3:
+        st.markdown("### 📝 Gestão de Modelos de Mensagem")
+        st.caption("Configure aqui as mensagens automáticas usadas pelos outros módulos.")
+        
+        col_filtro, col_add = st.columns([3, 1])
+        mod_sel = col_filtro.selectbox("Filtrar por Módulo", ["PEDIDOS", "TAREFAS", "RENOVACAO"])
+        
+        # Carregar templates do banco
+        conn = get_conn()
+        try:
+            df_tpl = pd.read_sql(f"SELECT chave_status, conteudo_mensagem FROM wapi_templates WHERE modulo = '{mod_sel}' ORDER BY chave_status", conn)
+        except:
+            df_tpl = pd.DataFrame()
+        conn.close()
+        
+        if not df_tpl.empty:
+            for _, row in df_tpl.iterrows():
+                with st.expander(f"Status: {row['chave_status'].upper()}"):
+                    st.text(row['conteudo_mensagem'])
+                    if st.button("✏️ Editar", key=f"edt_{mod_sel}_{row['chave_status']}"):
+                        dialog_editar_template_msg(mod_sel, row['chave_status'], row['conteudo_mensagem'])
+        else:
+            st.info(f"Nenhum modelo cadastrado para {mod_sel}.")
+        
+        st.divider()
+        with st.expander("➕ Adicionar Novo Modelo"):
+            with st.form("form_add_tpl"):
+                novo_chave = st.text_input("Nome do Status (chave)", help="Ex: cancelado, pago, em_analise")
+                novo_txt = st.text_area("Texto da Mensagem")
+                if st.form_submit_button("Criar Modelo"):
+                    if novo_chave and novo_txt:
+                        clean_chave = novo_chave.strip().lower().replace(" ", "_")
+                        salvar_template(mod_sel, clean_chave, novo_txt)
+                        st.success("Criado!"); time.sleep(1); st.rerun()
+                    else:
+                        st.warning("Preencha todos os campos.")
 
     with tab4:
         st.markdown("### 📋 Histórico de Mensagens (Webhook)")
