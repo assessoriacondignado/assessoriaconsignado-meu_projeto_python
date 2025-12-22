@@ -68,14 +68,23 @@ def validar_login_db(usuario_input, senha_input):
     conn = get_conn()
     if not conn: return None
     try:
+        # ATUALIZAÇÃO: Limpeza de espaços e padronização para minúsculas
+        usuario_limpo = str(usuario_input).strip().lower()
+        
         cursor = conn.cursor()
-        sql = "SELECT id, nome, hierarquia, senha FROM clientes_usuarios WHERE (email = %s OR cpf = %s) AND ativo = TRUE"
-        cursor.execute(sql, (usuario_input, usuario_input))
+        # ATUALIZAÇÃO: Uso de LOWER() no SQL para busca case-insensitive
+        sql = """SELECT id, nome, hierarquia, senha 
+                 FROM clientes_usuarios 
+                 WHERE (LOWER(email) = %s OR cpf = %s) AND ativo = TRUE"""
+        cursor.execute(sql, (usuario_limpo, usuario_limpo))
         resultado = cursor.fetchone()
         conn.close()
+        
         if resultado and verificar_senha(senha_input, resultado[3]):
             return {"id": resultado[0], "nome": resultado[1], "cargo": resultado[2]}
-    except: return None
+    except Exception as e: 
+        print(f"Erro no login: {e}")
+        return None
     return None
 
 # --- 6. ESTILOS VISUAIS ---

@@ -30,12 +30,12 @@ st.markdown("""
 def app_clientes():
     st.markdown("## 👥 Cadastro de Clientes")
     
-    # --- GARANTE ESTRUTURA DAS TABELAS (CONFORME PRINTS) ---
+    # --- GARANTE ESTRUTURA DAS TABELAS ---
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
-        cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS cpf TEXT;") # Adicionado conforme necessidade do print
+        cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS cpf TEXT;")
         conn.commit()
         cur.close()
         conn.close()
@@ -53,33 +53,34 @@ def app_clientes():
             st.session_state['modo_cliente'] = 'novo'
             st.rerun()
         
-        # --- LÓGICA DE CRIAÇÃO DE USUÁRIO CORRIGIDA ---
+        # --- LÓGICA DE CRIAÇÃO DE USUÁRIO COM TRAVAS DE SEGURANÇA ---
         if st.button("👤 Criar Usuário", use_container_width=True):
             if st.session_state.get('id_cli'):
                 try:
                     conn = get_conn()
                     cur = conn.cursor()
-                    # Busca dados do cliente selecionado (incluindo o novo campo CPF)
                     cur.execute("SELECT nome, email, telefone, COALESCE(cpf, '') FROM admin.clientes WHERE id = %s", (st.session_state['id_cli'],))
                     res = cur.fetchone()
                     if res:
                         nome_cli, email_cli, tel_cli, cpf_cli = res
                         
-                        if not cpf_cli:
+                        # APLICAÇÃO DAS TRAVAS: Limpeza de dados vindo do banco antes de criar o usuário
+                        email_limpo = str(email_cli).strip().lower()
+                        cpf_limpo = str(cpf_cli).strip()
+                        
+                        if not cpf_limpo:
                             st.error("⚠️ O cliente selecionado não possui CPF. Preencha o CPF no cadastro do cliente antes de criar o usuário.")
                         else:
-                            # Gera senha padrão '1234'
                             senha_hash = bcrypt.hashpw('1234'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                             
-                            # SQL Corrigido: Agora o ON CONFLICT funcionará pois adicionamos a CONSTRAINT no passo 1
                             sql_user = """INSERT INTO clientes_usuarios (nome, email, cpf, senha, hierarquia, telefone, ativo) 
                                          VALUES (%s, %s, %s, %s, 'Cliente', %s, TRUE)
                                          ON CONFLICT (email) DO NOTHING"""
-                            cur.execute(sql_user, (nome_cli, email_cli, cpf_cli, senha_hash, tel_cli))
+                            cur.execute(sql_user, (nome_cli, email_limpo, cpf_limpo, senha_hash, tel_cli))
                             
                             if cur.rowcount > 0:
                                 conn.commit()
-                                st.success(f"✅ Usuário criado para {nome_cli}! Login: {email_cli} | Senha: 1234")
+                                st.success(f"✅ Usuário criado para {nome_cli}! Login: {email_limpo} | Senha: 1234")
                             else:
                                 st.warning("ℹ️ Este e-mail já possui um acesso cadastrado.")
                     else:
@@ -91,7 +92,7 @@ def app_clientes():
             else:
                 st.warning("Selecione um cliente (clique no ✏️) antes de criar o usuário.")
 
-    # --- FORMULÁRIO DE CADASTRO/EDIÇÃO ---
+    # --- FORMULÁRIO DE CADASTRO/EDIÇÃO COM LIMPEZA DE DADOS ---
     if st.session_state['modo_cliente'] in ['novo', 'editar']:
         st.divider()
         titulo = "📝 Novo Cliente" if st.session_state['modo_cliente'] == 'novo' else "✏️ Editar Cliente"
@@ -107,8 +108,8 @@ def app_clientes():
             nome = st.text_input("Nome Completo *", value=d.get('nome', ''))
             
             c1, c2, c3 = st.columns(3)
-            email = c1.text_input("E-mail *", value=d.get('email', ''))
-            cpf = c2.text_input("CPF *", value=d.get('cpf', '')) # Campo CPF adicionado ao formulário
+            email_input = c1.text_input("E-mail *", value=d.get('email', ''))
+            cpf_input = c2.text_input("CPF *", value=d.get('cpf', ''))
             telefone = c3.text_input("Telefone", value=d.get('telefone', ''))
             
             id_val = d.get('id_grupo_whats', '') if d.get('id_grupo_whats') else ''
@@ -117,23 +118,27 @@ def app_clientes():
             
             c_b1, c_b2 = st.columns([1,6])
             if c_b1.form_submit_button("💾 Salvar"):
-                id_final = None
+                # APLICAÇÃO DAS TRAVAS: Limpeza no momento do salvamento
+                email_final = str(email_input).strip().lower()
+                cpf_final = str(cpf_input).strip()
+                
+                id_whats_final = None
                 if id_grupo_input:
                     id_limpo = re.sub(r'[^0-9-]', '', id_grupo_input)
-                    id_final = f"{id_limpo}@g.us"
+                    id_whats_final = f"{id_limpo}@g.us"
 
                 conn = get_conn()
                 cur = conn.cursor()
                 try:
                     if st.session_state['modo_cliente'] == 'novo':
                         sql = "INSERT INTO admin.clientes (nome, email, cpf, telefone, id_grupo_whats) VALUES (%s,%s,%s,%s,%s)"
-                        cur.execute(sql, (nome, email, cpf, telefone, id_final))
+                        cur.execute(sql, (nome, email_final, cpf_final, telefone, id_whats_final))
                     else:
                         sql = "UPDATE admin.clientes SET nome=%s, email=%s, cpf=%s, telefone=%s, id_grupo_whats=%s WHERE id=%s"
-                        cur.execute(sql, (nome, email, cpf, telefone, id_final, st.session_state['id_cli']))
+                        cur.execute(sql, (nome, email_final, cpf_final, telefone, id_whats_final, st.session_state['id_cli']))
                     
                     conn.commit()
-                    st.success("Dados salvos!")
+                    st.success("Dados salvos com sucesso!")
                     st.session_state['modo_cliente'] = None
                     st.rerun()
                 except Exception as e: st.error(f"Erro ao salvar: {e}")
