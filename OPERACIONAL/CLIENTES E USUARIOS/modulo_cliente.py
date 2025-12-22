@@ -3,15 +3,12 @@ import pandas as pd
 import psycopg2
 import os
 import re
-import bcrypt # Importado para suporte à criação de usuários
+import bcrypt
 
 try: 
     import conexao
 except ImportError: 
     st.error("Erro crítico: Arquivo conexao.py não encontrado no servidor.")
-
-# --- CONFIGURAÇÕES DE DIRETÓRIO DINÂMICO ---
-BASE_DIR_ARQUIVOS = os.path.join(os.getcwd(), "OPERACIONAL", "CLIENTES E USUARIOS", "ARQUIVOS_CLIENTES")
 
 def get_conn():
     return psycopg2.connect(
@@ -30,40 +27,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.dialog("Arquivos do Cliente")
-def mostrar_arquivos(caminho_pasta):
-    if not caminho_pasta or not os.path.exists(caminho_pasta):
-        st.error("Pasta não localizada no servidor de nuvem.")
-        return
-    
-    try:
-        arquivos = [f for f in os.listdir(caminho_pasta) if os.path.isfile(os.path.join(caminho_pasta, f))]
-        if not arquivos: 
-            st.info("A pasta está vazia.")
-        else:
-            st.write(f"Encontrados {len(arquivos)} arquivo(s):")
-            st.markdown("---")
-            for arquivo in arquivos:
-                caminho_completo = os.path.join(caminho_pasta, arquivo)
-                col_nome, col_btn = st.columns([4, 1])
-                col_nome.text(arquivo)
-                try:
-                    with open(caminho_completo, "rb") as file:
-                        col_btn.download_button("⬇️", data=file, file_name=arquivo, mime="application/octet-stream", key=f"down_{arquivo}")
-                except Exception:
-                    col_btn.write("⚠️")
-                st.markdown('<hr style="margin: 5px 0; opacity: 0.2;">', unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Erro ao ler pasta: {e}")
-
 def app_clientes():
     st.markdown("## 👥 Cadastro de Clientes")
     
-    # --- CORREÇÃO: GARANTE A COLUNA ANTES DE QUALQUER LEITURA ---
+    # --- GARANTE ESTRUTURA DAS TABELAS (CONFORME PRINTS) ---
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS id_grupo_whats TEXT;")
+        cur.execute("ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS cpf TEXT;") # Adicionado conforme necessidade do print
         conn.commit()
         cur.close()
         conn.close()
@@ -81,27 +53,35 @@ def app_clientes():
             st.session_state['modo_cliente'] = 'novo'
             st.rerun()
         
-        # ATUALIZAÇÃO: Botão para criar usuário com base nos dados do cliente selecionado
+        # --- LÓGICA DE CRIAÇÃO DE USUÁRIO CORRIGIDA ---
         if st.button("👤 Criar Usuário", use_container_width=True):
             if st.session_state.get('id_cli'):
                 try:
                     conn = get_conn()
                     cur = conn.cursor()
-                    # Busca dados atuais do cliente
-                    cur.execute("SELECT nome, email, telefone FROM admin.clientes WHERE id = %s", (st.session_state['id_cli'],))
+                    # Busca dados do cliente selecionado (incluindo o novo campo CPF)
+                    cur.execute("SELECT nome, email, telefone, COALESCE(cpf, '') FROM admin.clientes WHERE id = %s", (st.session_state['id_cli'],))
                     res = cur.fetchone()
                     if res:
-                        nome_cli, email_cli, tel_cli = res
-                        # Gera senha padrão '1234'
-                        senha_hash = bcrypt.hashpw('1234'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                        nome_cli, email_cli, tel_cli, cpf_cli = res
                         
-                        # Insere na tabela de usuários do sistema
-                        sql_user = """INSERT INTO clientes_usuarios (nome, email, senha, hierarquia, telefone, ativo) 
-                                     VALUES (%s, %s, %s, 'Cliente', %s, TRUE)
-                                     ON CONFLICT (email) DO NOTHING"""
-                        cur.execute(sql_user, (nome_cli, email_cli, senha_hash, tel_cli))
-                        conn.commit()
-                        st.success(f"✅ Usuário criado para {nome_cli}! Login: {email_cli} | Senha: 1234")
+                        if not cpf_cli:
+                            st.error("⚠️ O cliente selecionado não possui CPF. Preencha o CPF no cadastro do cliente antes de criar o usuário.")
+                        else:
+                            # Gera senha padrão '1234'
+                            senha_hash = bcrypt.hashpw('1234'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                            
+                            # SQL Corrigido: Agora o ON CONFLICT funcionará pois adicionamos a CONSTRAINT no passo 1
+                            sql_user = """INSERT INTO clientes_usuarios (nome, email, cpf, senha, hierarquia, telefone, ativo) 
+                                         VALUES (%s, %s, %s, %s, 'Cliente', %s, TRUE)
+                                         ON CONFLICT (email) DO NOTHING"""
+                            cur.execute(sql_user, (nome_cli, email_cli, cpf_cli, senha_hash, tel_cli))
+                            
+                            if cur.rowcount > 0:
+                                conn.commit()
+                                st.success(f"✅ Usuário criado para {nome_cli}! Login: {email_cli} | Senha: 1234")
+                            else:
+                                st.warning("ℹ️ Este e-mail já possui um acesso cadastrado.")
                     else:
                         st.error("Cliente não localizado.")
                     cur.close()
@@ -109,8 +89,9 @@ def app_clientes():
                 except Exception as e:
                     st.error(f"Erro ao criar usuário: {e}")
             else:
-                st.warning("Selecione um cliente na lista abaixo (clicando em ✏️) para criar o acesso.")
+                st.warning("Selecione um cliente (clique no ✏️) antes de criar o usuário.")
 
+    # --- FORMULÁRIO DE CADASTRO/EDIÇÃO ---
     if st.session_state['modo_cliente'] in ['novo', 'editar']:
         st.divider()
         titulo = "📝 Novo Cliente" if st.session_state['modo_cliente'] == 'novo' else "✏️ Editar Cliente"
@@ -125,11 +106,11 @@ def app_clientes():
         with st.form("form_cliente"):
             nome = st.text_input("Nome Completo *", value=d.get('nome', ''))
             
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             email = c1.text_input("E-mail *", value=d.get('email', ''))
-            telefone = c2.text_input("Telefone", value=d.get('telefone', ''))
+            cpf = c2.text_input("CPF *", value=d.get('cpf', '')) # Campo CPF adicionado ao formulário
+            telefone = c3.text_input("Telefone", value=d.get('telefone', ''))
             
-            # Campo Grupo WhatsApp com regra de sufixo @g.us
             id_val = d.get('id_grupo_whats', '') if d.get('id_grupo_whats') else ''
             if id_val: id_val = id_val.replace('@g.us', '')
             id_grupo_input = st.text_input("ID do Grupo WhatsApp", value=id_val, help="Digite apenas o código numérico do grupo")
@@ -145,16 +126,14 @@ def app_clientes():
                 cur = conn.cursor()
                 try:
                     if st.session_state['modo_cliente'] == 'novo':
-                        sql = """INSERT INTO admin.clientes (nome, email, telefone, id_grupo_whats) 
-                                 VALUES (%s,%s,%s,%s)"""
-                        cur.execute(sql, (nome, email, telefone, id_final))
+                        sql = "INSERT INTO admin.clientes (nome, email, cpf, telefone, id_grupo_whats) VALUES (%s,%s,%s,%s,%s)"
+                        cur.execute(sql, (nome, email, cpf, telefone, id_final))
                     else:
-                        sql = """UPDATE admin.clientes SET nome=%s, email=%s, telefone=%s, id_grupo_whats=%s 
-                                 WHERE id=%s"""
-                        cur.execute(sql, (nome, email, telefone, id_final, st.session_state['id_cli']))
+                        sql = "UPDATE admin.clientes SET nome=%s, email=%s, cpf=%s, telefone=%s, id_grupo_whats=%s WHERE id=%s"
+                        cur.execute(sql, (nome, email, cpf, telefone, id_final, st.session_state['id_cli']))
                     
                     conn.commit()
-                    st.success("Dados salvos com sucesso!")
+                    st.success("Dados salvos!")
                     st.session_state['modo_cliente'] = None
                     st.rerun()
                 except Exception as e: st.error(f"Erro ao salvar: {e}")
@@ -164,9 +143,8 @@ def app_clientes():
                 st.session_state['modo_cliente'] = None
                 st.rerun()
 
+    # --- LISTAGEM ---
     st.markdown("<br>", unsafe_allow_html=True)
-    
-    # --- LISTAGEM DE DADOS (SCHEMA ADMIN) ---
     conn = get_conn()
     sql = "SELECT id, nome, email, telefone, id_grupo_whats FROM admin.clientes"
     if filtro: 
@@ -176,7 +154,7 @@ def app_clientes():
     try:
         df = pd.read_sql(sql, conn)
     except Exception as e:
-        st.error(f"Erro ao aceder à tabela admin.clientes: {e}")
+        st.error(f"Erro na leitura: {e}")
         df = pd.DataFrame()
     finally:
         conn.close()
@@ -186,12 +164,11 @@ def app_clientes():
         for i, row in df.iterrows():
             with st.container():
                 c = st.columns([3, 2, 2, 1.5])
-                c[0].markdown(f"<div style='padding-top: 5px;'>{row['nome']}</div>", unsafe_allow_html=True)
-                c[1].markdown(f"<div style='padding-top: 5px;'>{row['email']}</div>", unsafe_allow_html=True)
-                
+                c[0].write(row['nome'])
+                c[1].write(row['email'])
                 contato_str = row['telefone'] if row['telefone'] else "---"
                 if row['id_grupo_whats']: contato_str += f" | {row['id_grupo_whats']}"
-                c[2].markdown(f"<div style='padding-top: 5px;'>{contato_str}</div>", unsafe_allow_html=True)
+                c[2].write(contato_str)
                 
                 col_botoes = c[3].columns([1, 1])
                 if col_botoes[0].button("✏️", key=f"btn_e_{row['id']}"):
@@ -200,4 +177,4 @@ def app_clientes():
                     st.rerun()
                 st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 2px;'></div>", unsafe_allow_html=True)
     else:
-        st.info("Nenhum cliente encontrado na base administrativa.") 
+        st.info("Nenhum cliente na base administrativa.")
