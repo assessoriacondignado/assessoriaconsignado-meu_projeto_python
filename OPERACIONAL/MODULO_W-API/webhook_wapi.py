@@ -20,14 +20,48 @@ app = Flask(__name__)
 
 def get_conn():
     return psycopg2.connect(
-        host=conexao.host, 
-        port=conexao.port, 
-        database=conexao.database, 
-        user=conexao.user, 
+        host=conexao.host, port=conexao.port, 
+        database=conexao.database, user=conexao.user, 
         password=conexao.password
     )
 
-def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
+def buscar_nomes_sistema(instance_id_api, telefone, is_enviada, push_name_json):
+    """Busca o nome amigável da instância e do contato no banco de dados"""
+    nome_instancia = instance_id_api
+    nome_contato = push_name_json or "Contato WhatsApp"
+    
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # 1. Busca nome amigável da Instância
+        cur.execute("SELECT nome FROM wapi_instancias WHERE api_instance_id = %s", (instance_id_api,))
+        res_inst = cur.fetchone()
+        if res_inst: nome_instancia = res_inst[0]
+        
+        # 2. Se for mensagem enviada, busca o nome do destinatário nas tabelas do sistema
+        if is_enviada:
+            tel_limpo = re.sub(r'[^0-9]', '', str(telefone))
+            if len(tel_limpo) > 8:
+                busca_tel = f"%{tel_limpo[-8:]}"
+                # Busca na tabela de clientes administrativos
+                cur.execute("SELECT nome FROM admin.clientes WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
+                res_cli = cur.fetchone()
+                if res_cli: 
+                    nome_contato = res_cli[0]
+                else:
+                    # Busca na tabela de usuários do sistema
+                    cur.execute("SELECT nome FROM clientes_usuarios WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
+                    res_user = cur.fetchone()
+                    if res_user: nome_contato = res_user[0]
+        
+        cur.close()
+        conn.close()
+    except: pass
+    
+    return nome_instancia, nome_contato
+
+def salvar_log_webhook(instancia_nome, telefone, mensagem, tipo, nome_contato):
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -35,11 +69,10 @@ def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
             INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato) 
             VALUES (%s, %s, %s, %s, %s, %s)
         """
-        # Garante que campos nulos não quebrem o banco
-        valores = (instance_id, telefone, mensagem or "", tipo, 'Sucesso', nome or "")
+        valores = (instancia_nome, telefone, mensagem or "", tipo, 'Sucesso', nome_contato)
         cur.execute(sql, valores)
         conn.commit()
-        print(f"💾 DADOS GRAVADOS ({tipo}) -> Tel: {telefone} | Msg: '{mensagem}'", flush=True)
+        print(f"💾 GRAVADO -> Instância: {instancia_nome} | Contato: {nome_contato} | Fluxo: {tipo}", flush=True)
         cur.close()
         conn.close()
     except Exception as e:
@@ -48,61 +81,54 @@ def salvar_log_webhook(instance_id, telefone, mensagem, tipo, nome=""):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     dados = request.json
-    
-    # --- DIAGNÓSTICO ---
+    if not dados: return jsonify({"status": "vazio"}), 200
+
     print("\n" + "="*40, flush=True)
-    print("🔍 EVENTO RECEBIDO NO WEBHOOK", flush=True)
-    if dados:
-        print(f"Evento: {dados.get('event')} | FromMe: {dados.get('fromMe')}", flush=True)
+    print(f"🔍 EVENTO RECEBIDO: {dados.get('event')}", flush=True)
     
     event = dados.get("event")
-    instance_id = dados.get("instanceId")
+    instance_id_api = dados.get("instanceId")
     
-    # 1. Identifica se é envio ou recebimento
-    # Agora aceita 'webhookDelivery' conforme capturado no Webhook.site
+    # Identifica se a mensagem é enviada (saída) ou recebida (entrada)
     is_from_me = dados.get("fromMe") is True or event in ["message.sent", "webhookDelivery"]
     tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
-    # 2. Captura o Telefone (Lógica aprimorada para envios)
-    # Se for envio, o telefone do cliente está em 'chat'['id']
+    # Captura dados brutos do JSON
     telefone_bruto = ""
+    push_name_json = ""
+    
     if is_from_me:
         telefone_bruto = dados.get("chat", {}).get("id") or dados.get("to")
+        push_name_json = dados.get("sender", {}).get("pushName")
     else:
         telefone_bruto = dados.get("sender", {}).get("id") or dados.get("remoteJid")
+        push_name_json = dados.get("sender", {}).get("pushName")
 
-    # 3. Captura o Nome
-    nome_contato = "Contato WhatsApp"
-    if is_from_me:
-        # No envio, costumamos usar o nome da sua instância ou deixar vazio
-        nome_contato = "Assessoria Consignado"
-    else:
-        nome_contato = dados.get("sender", {}).get("pushName") or "Cliente"
+    # Resolve os nomes amigáveis consultando o Banco de Dados
+    nome_instancia, nome_contato = buscar_nomes_sistema(instance_id_api, telefone_bruto, is_from_me, push_name_json)
 
-    # 4. Captura a Mensagem (Lógica para texto simples ou estendido)
+    # Extração robusta do conteúdo da mensagem
     msg_content = dados.get("msgContent") or {}
     mensagem = (
-        msg_content.get("text") or 
-        msg_content.get("conversation") or 
-        msg_content.get("body") or 
-        msg_content.get("extendedTextMessage", {}).get("text") or
+        msg_content.get("text") or msg_content.get("conversation") or 
+        msg_content.get("body") or msg_content.get("extendedTextMessage", {}).get("text") or
         dados.get("content") or ""
     )
 
-    if dados.get("isGroup") is True:
-        return jsonify({"status": "ignorado_grupo"}), 200
+    # Filtro para ignorar logs de grupos
+    if dados.get("isGroup") is True: return jsonify({"status": "ignorado"}), 200
 
     if telefone_bruto:
         telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
-        # Ajuste para o nono dígito em números brasileiros
+        # Normalização para o nono dígito brasileiro
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             if int(telefone_limpo[4]) >= 6:
                 telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
         
-        salvar_log_webhook(instance_id, telefone_limpo, mensagem, tipo_log, nome_contato)
-        return jsonify({"status": "sucesso", "tipo": tipo_log}), 200
+        salvar_log_webhook(nome_instancia, telefone_limpo, mensagem, tipo_log, nome_contato)
+        return jsonify({"status": "sucesso"}), 200
 
-    return jsonify({"status": "erro_identificacao"}), 200
+    return jsonify({"status": "erro"}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

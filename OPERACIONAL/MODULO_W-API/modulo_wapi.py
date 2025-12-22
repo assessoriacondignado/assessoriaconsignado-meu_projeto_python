@@ -132,7 +132,6 @@ def app_wapi():
                         res = enviar_msg_api(row_inst['api_instance_id'], row_inst['api_token'], destino, msg)
                         if res.get('messageId') or res.get('success'):
                             st.success("Solicitação enviada! O log será gerado automaticamente pelo Webhook.")
-                            # ATUALIZAÇÃO APLICADA: Registo manual removido.
                         else:
                             st.error(f"Falha no envio: {res}")
                     else: st.warning("Preencha o destino e a mensagem.")
@@ -171,7 +170,14 @@ def app_wapi():
         st.markdown("### 📋 Histórico de Mensagens (Webhook)")
         try:
             conn = get_conn()
-            query = "SELECT data_hora, tipo, telefone, mensagem, status FROM wapi_logs ORDER BY data_hora DESC LIMIT 50"
+            # Query otimizada para mostrar Instância e Contato com nomes resolvidos pelo Webhook
+            query = """
+                SELECT data_hora, instance_id as "Instância", nome_contato as "Contato", 
+                       tipo as "Fluxo", telefone, mensagem, status 
+                FROM wapi_logs 
+                ORDER BY data_hora DESC 
+                LIMIT 50
+            """
             df_logs = pd.read_sql(query, conn)
             conn.close()
             if not df_logs.empty:
