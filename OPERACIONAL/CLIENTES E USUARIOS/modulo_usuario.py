@@ -12,7 +12,9 @@ def get_conn():
     except: return None
 
 def hash_senha(senha):
+    # Se já for um hash (começa com $2b$), retorna ele mesmo para evitar dupla criptografia
     if senha.startswith('$2b$'): return senha
+    # Se for senha nova, cria o hash
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def salvar_perms(id_user, mods):
@@ -43,7 +45,10 @@ def app_usuarios():
             with st.form("form_acesso"):
                 c1, c2, c3 = st.columns(3)
                 login = c1.text_input("Login", value=d.get('email', ''))
-                senha = c2.text_input("Senha", value=d.get('senha', ''), type="password")
+                
+                # --- CORREÇÃO DE SEGURANÇA ---
+                # O campo vem vazio para não carregar o hash. O placeholder avisa o usuário.
+                senha_nova = c2.text_input("Nova Senha", value="", type="password", placeholder="Deixe vazio para manter a atual")
                 
                 opcoes_h = ["Cliente", "Grupo", "Gerente", "Admin"]
                 idx_h = opcoes_h.index(d.get('hierarquia', 'Cliente')) if d.get('hierarquia') in opcoes_h else 0
@@ -59,15 +64,21 @@ def app_usuarios():
                 login_limpo = str(login).strip().lower()
 
                 if b1.form_submit_button("💾 Salvar"):
-                    senha_f = hash_senha(senha)
+                    # Lógica inteligente: Só atualiza a senha se o usuário digitou algo novo
+                    if senha_nova:
+                        senha_final = hash_senha(senha_nova)
+                    else:
+                        senha_final = d.get('senha') # Mantém a senha antiga do banco
+
                     conn = get_conn(); cur = conn.cursor()
-                    cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login_limpo, senha_f, cargo, ativo, st.session_state['id_user']))
+                    cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login_limpo, senha_final, cargo, ativo, st.session_state['id_user']))
                     conn.commit(); conn.close()
+                    
                     novas = []
                     if p_com: novas.append("COMERCIAL")
                     if p_fin: novas.append("FINANCEIRO")
                     salvar_perms(st.session_state['id_user'], novas)
-                    st.success("Atualizado!"); st.session_state['modo_user'] = None; st.rerun()
+                    st.success("Atualizado com sucesso!"); st.session_state['modo_user'] = None; st.rerun()
 
                 if b2.form_submit_button("🔐 Reset via WhatsApp"):
                     if d.get('telefone'):
@@ -75,14 +86,19 @@ def app_usuarios():
                         cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
                         inst = cur.fetchone()
                         if inst:
-                            senha_f = hash_senha(senha)
+                            # Se não digitou nada, usa 1234. Se digitou, usa a digitada.
+                            senha_reset = senha_nova if senha_nova else "1234"
+                            senha_f = hash_senha(senha_reset)
+                            
                             cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login_limpo, senha_f, cargo, ativo, st.session_state['id_user']))
                             conn.commit()
-                            msg = f"Olá! 🔐 Sua senha foi resetada.\nLogin: {login_limpo}\nNova Senha: {senha}"
+                            
+                            msg = f"Olá! 🔐 Sua senha foi resetada pelo administrador.\nLogin: {login_limpo}\nNova Senha: {senha_reset}"
                             modulo_wapi.enviar_msg_api(inst[0], inst[1], d.get('telefone'), msg)
-                            st.success("Senha enviada!"); st.session_state['modo_user'] = None; st.rerun()
+                            st.success(f"Senha enviada para o WhatsApp!"); st.session_state['modo_user'] = None; st.rerun()
+                        else: st.error("Instância W-API não configurada.")
                         conn.close()
-                    else: st.error("Sem telefone.")
+                    else: st.error("Usuário sem telefone cadastrado.")
 
                 if b3.form_submit_button("Cancelar"): st.session_state['modo_user'] = None; st.rerun()
 
@@ -98,7 +114,10 @@ def app_usuarios():
                     st.rerun()
 
     with t2:
-        conn = get_conn(); df_l = pd.read_sql("SELECT nome_usuario, data_hora, local_acesso FROM logs_acesso ORDER BY id DESC LIMIT 50", conn); conn.close()
-        st.dataframe(df_l, use_container_width=True)
+        # Logs de acesso
+        try:
+            conn = get_conn(); df_l = pd.read_sql("SELECT nome_usuario, data_hora, local_acesso FROM logs_acesso ORDER BY id DESC LIMIT 50", conn); conn.close()
+            st.dataframe(df_l, use_container_width=True)
+        except: st.info("Sem logs ainda.")
 
 if __name__ == "__main__": app_usuarios()
