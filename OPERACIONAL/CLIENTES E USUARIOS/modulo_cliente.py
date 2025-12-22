@@ -3,6 +3,7 @@ import pandas as pd
 import psycopg2
 import os
 import re
+import bcrypt # Importado para suporte à criação de usuários
 
 try: 
     import conexao
@@ -74,9 +75,41 @@ def app_clientes():
 
     c1, c2 = st.columns([6,1])
     filtro = c1.text_input("🔍 Buscar Cliente (Nome, Email, Telefone ou Grupo)", key="busca_cli")
-    if c2.button("+ Novo Cliente", type="primary"):
-        st.session_state['modo_cliente'] = 'novo'
-        st.rerun()
+    
+    with c2:
+        if st.button("+ Novo Cliente", type="primary", use_container_width=True):
+            st.session_state['modo_cliente'] = 'novo'
+            st.rerun()
+        
+        # ATUALIZAÇÃO: Botão para criar usuário com base nos dados do cliente selecionado
+        if st.button("👤 Criar Usuário", use_container_width=True):
+            if st.session_state.get('id_cli'):
+                try:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    # Busca dados atuais do cliente
+                    cur.execute("SELECT nome, email, telefone FROM admin.clientes WHERE id = %s", (st.session_state['id_cli'],))
+                    res = cur.fetchone()
+                    if res:
+                        nome_cli, email_cli, tel_cli = res
+                        # Gera senha padrão '1234'
+                        senha_hash = bcrypt.hashpw('1234'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                        
+                        # Insere na tabela de usuários do sistema
+                        sql_user = """INSERT INTO clientes_usuarios (nome, email, senha, hierarquia, telefone, ativo) 
+                                     VALUES (%s, %s, %s, 'Cliente', %s, TRUE)
+                                     ON CONFLICT (email) DO NOTHING"""
+                        cur.execute(sql_user, (nome_cli, email_cli, senha_hash, tel_cli))
+                        conn.commit()
+                        st.success(f"✅ Usuário criado para {nome_cli}! Login: {email_cli} | Senha: 1234")
+                    else:
+                        st.error("Cliente não localizado.")
+                    cur.close()
+                    conn.close()
+                except Exception as e:
+                    st.error(f"Erro ao criar usuário: {e}")
+            else:
+                st.warning("Selecione um cliente na lista abaixo (clicando em ✏️) para criar o acesso.")
 
     if st.session_state['modo_cliente'] in ['novo', 'editar']:
         st.divider()
@@ -143,7 +176,6 @@ def app_clientes():
     try:
         df = pd.read_sql(sql, conn)
     except Exception as e:
-        # Erro de leitura caso a coluna não exista (prevenido pelo ALTER TABLE no início)
         st.error(f"Erro ao aceder à tabela admin.clientes: {e}")
         df = pd.DataFrame()
     finally:
