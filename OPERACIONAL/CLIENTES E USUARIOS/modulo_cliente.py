@@ -200,4 +200,4 @@ def app_clientes():
                     st.rerun()
                 st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 2px;'></div>", unsafe_allow_html=True)
     else:
-        st.info("Nenhum cliente encontrado na base administrativa.")
+        st.info("Nenhum cliente encontrado na base administrativa.") 
