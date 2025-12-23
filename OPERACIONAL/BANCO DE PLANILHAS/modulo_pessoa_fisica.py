@@ -401,10 +401,12 @@ def app_pessoa_fisica():
                 filtros['nome'] = c1.text_input("Nome")
                 filtros['cpf'] = c2.text_input("CPF")
                 filtros['rg'] = c3.text_input("RG")
-                filtros['nascimento'] = c4.date_input("Nascimento", value=None)
+                # AJUSTE 1.1: Formato data_input
+                filtros['nascimento'] = c4.date_input("Nascimento", value=None, format="DD/MM/YYYY")
             
             with t2:
-                c_uf, c_cid, c_bai, c_rua = st.columns(4)
+                # AJUSTE 1.2: Redução largura UF
+                c_uf, c_cid, c_bai, c_rua = st.columns([1, 3, 3, 3])
                 lista_ufs = buscar_opcoes_filtro('uf', 'pf_enderecos')
                 sel_uf = c_uf.selectbox("UF", [""] + lista_ufs)
                 if sel_uf: filtros['uf'] = sel_uf
@@ -413,7 +415,8 @@ def app_pessoa_fisica():
                 filtros['rua'] = c_rua.text_input("Rua")
             
             with t3:
-                c_ddd, c_tel, c_email = st.columns([1, 2, 3])
+                # AJUSTE 1.3: Redução largura DDD
+                c_ddd, c_tel, c_email = st.columns([0.5, 1.5, 4])
                 filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
                 filtros['telefone'] = c_tel.text_input("Telefone")
                 filtros['email'] = c_email.text_input("E-mail")
@@ -592,9 +595,7 @@ def app_pessoa_fisica():
         dados_db = carregar_dados_completos(cpf_atual) if modo == 'editar' and cpf_atual else {}
         geral = dados_db.get('geral')
         
-        # PREENCHIMENTO AUTOMÁTICO NA EDIÇÃO (Lógica unificada)
         if modo == 'editar' and cpf_atual and f"edit_ready_{cpf_atual}" not in st.session_state:
-            # Telefones
             df_t = dados_db.get('telefones')
             if df_t is not None and not df_t.empty:
                 st.session_state['count_tel'] = len(df_t)
@@ -602,14 +603,12 @@ def app_pessoa_fisica():
                     st.session_state[f"new_tel_n_{idx}"] = row['numero']
                     st.session_state[f"new_tel_t_{idx}"] = row['tag_whats']
             
-            # Emails
             df_m = dados_db.get('emails')
             if df_m is not None and not df_m.empty:
                 st.session_state['count_email'] = len(df_m)
                 for idx, row in df_m.iterrows():
                     st.session_state[f"new_email_{idx}"] = row['email']
 
-            # Endereços
             df_e = dados_db.get('enderecos')
             if df_e is not None and not df_e.empty:
                 st.session_state['count_end'] = len(df_e)
@@ -620,7 +619,6 @@ def app_pessoa_fisica():
                     st.session_state[f"end_uf_{idx}"] = row['uf']
                     st.session_state[f"end_cep_{idx}"] = row['cep']
 
-            # Empregos
             df_em = dados_db.get('empregos')
             if df_em is not None and not df_em.empty:
                 st.session_state['count_emp'] = len(df_em)
@@ -629,7 +627,6 @@ def app_pessoa_fisica():
                     st.session_state[f"emp_matr_{idx}"] = row['matricula']
                     st.session_state[f"emp_ext_{idx}"] = row['dados_extras']
 
-            # Contratos
             df_c = dados_db.get('contratos')
             if df_c is not None and not df_c.empty:
                 st.session_state['count_ctr'] = len(df_c)
@@ -681,7 +678,9 @@ def app_pessoa_fisica():
 
             with t3:
                 for i in range(st.session_state['count_email']):
-                    val_email = st.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
+                    # AJUSTE 2.1: Redução largura E-mail
+                    ce1, ce2 = st.columns([4, 2])
+                    val_email = ce1.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
                     if val_email: collected_emails.append({"email": val_email})
                 
                 if st.form_submit_button("➕ Adicionar E-mail"):
@@ -692,7 +691,8 @@ def app_pessoa_fisica():
                 for i in range(st.session_state['count_end']):
                     st.markdown(f"**Endereço {i+1}**")
                     c_rua, c_bairro = st.columns(2)
-                    c_cid, c_uf, c_cep = st.columns([2, 1, 1])
+                    # AJUSTE 2.2: Redução largura UF
+                    c_cid, c_uf, c_cep = st.columns([3, 1, 1.5])
                     
                     rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
                     bairro = c_bairro.text_input("Bairro", key=f"end_bairro_{i}")
@@ -740,10 +740,8 @@ def app_pessoa_fisica():
         if confirmar:
             if nome and cpf:
                 
-                # VERIFICAÇÃO DE DUPLICIDADE (NOVA REGRA)
                 cpf_limpo_verif = limpar_normalizar_cpf(cpf)
                 
-                # Só verifica se estiver no modo NOVO e clicou em salvar
                 if modo == 'novo':
                     nome_existente = verificar_cpf_existente(cpf_limpo_verif)
                     if nome_existente:
@@ -758,7 +756,6 @@ def app_pessoa_fisica():
 
                 dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
                 
-                # Prepara DataFrames
                 df_final_tel = pd.DataFrame(collected_tels) if collected_tels else pd.DataFrame(columns=["numero", "tag_whats"])
                 df_final_email = pd.DataFrame(collected_emails) if collected_emails else pd.DataFrame(columns=["email"])
                 df_final_end = pd.DataFrame(collected_ends) if collected_ends else pd.DataFrame(columns=["rua", "bairro", "cidade", "uf", "cep"])
@@ -777,4 +774,4 @@ def app_pessoa_fisica():
             else: st.warning("Nome e CPF obrigatórios.")
 
 if __name__ == "__main__":
-    app_pessoa_fisica() 
+    app_pessoa_fisica()
