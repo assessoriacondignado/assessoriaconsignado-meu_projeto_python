@@ -328,10 +328,18 @@ def dialog_imprimir(dados):
 def app_pessoa_fisica():
     st.markdown("## 👤 Banco de Dados Pessoa Física")
     
+    # Inicialização de contadores para campos dinâmicos
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'pf_cpf_selecionado' not in st.session_state: st.session_state['pf_cpf_selecionado'] = None
     if 'import_step' not in st.session_state: st.session_state['import_step'] = 1
     if 'pesquisa_pag' not in st.session_state: st.session_state['pesquisa_pag'] = 1
+    
+    # Contadores para campos múltiplos
+    if 'count_tel' not in st.session_state: st.session_state['count_tel'] = 1
+    if 'count_email' not in st.session_state: st.session_state['count_email'] = 1
+    if 'count_end' not in st.session_state: st.session_state['count_end'] = 1
+    if 'count_emp' not in st.session_state: st.session_state['count_emp'] = 1
+    if 'count_ctr' not in st.session_state: st.session_state['count_ctr'] = 1
 
     # ==========================
     # 1. MODO PESQUISA AMPLA
@@ -475,6 +483,13 @@ def app_pessoa_fisica():
     # 3. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
+        # Reset counters when returning to list
+        st.session_state['count_tel'] = 1
+        st.session_state['count_email'] = 1
+        st.session_state['count_end'] = 1
+        st.session_state['count_emp'] = 1
+        st.session_state['count_ctr'] = 1
+
         c1, c2 = st.columns([2, 2])
         with c2: busca = st.text_input("🔎 Pesquisar Rápida (CPF / Nome / Telefone)", key="pf_busca")
         
@@ -538,47 +553,109 @@ def app_pessoa_fisica():
                     st.caption(f"Idade: {a} anos, {m} meses, {d} dias")
                 rg = st.text_input("RG", value=geral['rg'] if geral is not None else "").upper()
 
+            # --- DADOS DE COLETA MANUAL (Substituindo data_editor) ---
+            collected_tels = []
+            collected_emails = []
+            collected_ends = []
+            collected_emps = []
+            collected_ctrs = []
+
             with t2:
-                # --- ATUALIZAÇÃO SOLICITADA: VALIDAÇÃO CELULAR + TAG WHATS (SIM/NÃO) ---
-                df_tel = dados_db.get('telefones') if modo=='editar' else pd.DataFrame(columns=["numero", "tag_whats"])
+                # Se for EDITAR, carrega os dados do banco inicialmente (apenas visualização/edição manual se necessário)
+                # NOTA: Para simplificar, no modo NOVO usamos inputs limpos. No modo EDITAR, 
+                # a lógica ideal seria carregar e permitir adicionar mais. Aqui focamos na estrutura de inputs.
                 
-                cfg_tel = {
-                    "numero": st.column_config.TextColumn(
-                        "Número",
-                        help="Celular com DDD (Ex: 11999999999)",
-                        width="medium", 
-                        required=True,
-                        validate=r"^\d{2}9\d{8}$" # Valida apenas números: 2 dígitos DDD + 9 + 8 dígitos
-                    ),
-                    "tag_whats": st.column_config.SelectboxColumn(
-                        "WhatsApp?",
-                        options=["Sim", "Não"],
-                        required=True,
-                        width="small"
-                    )
-                }
-                
-                ed_tel = st.data_editor(df_tel, column_config=cfg_tel, num_rows="dynamic", use_container_width=True)
+                if modo == 'editar':
+                    # Mantém data_editor para edição em massa rápida se for editar
+                    df_tel = dados_db.get('telefones')
+                    cfg_tel = {
+                        "numero": st.column_config.TextColumn("Número", help="Celular com DDD", width="medium", required=True, validate=r"^\d{11}$"),
+                        "tag_whats": st.column_config.SelectboxColumn("WhatsApp?", options=["Sim", "Não"], required=True, width="small")
+                    }
+                    ed_tel = st.data_editor(df_tel, column_config=cfg_tel, num_rows="dynamic", use_container_width=True, key="editor_tel")
+                else:
+                    # MODO NOVO: Inputs Individuais
+                    for i in range(st.session_state['count_tel']):
+                        c_num, c_tag = st.columns([3, 1])
+                        val_num = c_num.text_input(f"Celular {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
+                        val_tag = c_tag.selectbox(f"WhatsApp? {i+1}", ["Sim", "Não"], key=f"new_tel_t_{i}")
+                        if val_num: collected_tels.append({"numero": val_num, "tag_whats": val_tag})
+                    
+                    if st.form_submit_button("➕ Adicionar Telefone"):
+                        st.session_state['count_tel'] += 1
+                        st.rerun()
 
             with t3:
-                df_email = dados_db.get('emails') if modo=='editar' else pd.DataFrame(columns=["email"])
-                ed_email = st.data_editor(df_email, num_rows="dynamic", use_container_width=True)
+                if modo == 'editar':
+                    df_email = dados_db.get('emails')
+                    ed_email = st.data_editor(df_email, num_rows="dynamic", use_container_width=True, key="editor_email")
+                else:
+                    for i in range(st.session_state['count_email']):
+                        val_email = st.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
+                        if val_email: collected_emails.append({"email": val_email})
+                    
+                    if st.form_submit_button("➕ Adicionar E-mail"):
+                        st.session_state['count_email'] += 1
+                        st.rerun()
 
             with t4:
-                df_end = dados_db.get('enderecos') if modo=='editar' else pd.DataFrame(columns=["rua", "cidade", "uf", "cep"])
-                ed_end = st.data_editor(df_end, num_rows="dynamic", use_container_width=True)
+                if modo == 'editar':
+                    df_end = dados_db.get('enderecos')
+                    ed_end = st.data_editor(df_end, num_rows="dynamic", use_container_width=True, key="editor_end")
+                else:
+                    for i in range(st.session_state['count_end']):
+                        st.markdown(f"**Endereço {i+1}**")
+                        c_rua, c_bairro = st.columns(2)
+                        c_cid, c_uf, c_cep = st.columns([2, 1, 1])
+                        
+                        rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
+                        bairro = c_bairro.text_input("Bairro", key=f"end_bairro_{i}")
+                        cidade = c_cid.text_input("Cidade", key=f"end_cid_{i}")
+                        uf = c_uf.text_input("UF", key=f"end_uf_{i}", max_chars=2)
+                        cep = c_cep.text_input("CEP", key=f"end_cep_{i}")
+                        
+                        if rua or city: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
+                        st.divider()
+                    
+                    if st.form_submit_button("➕ Adicionar Endereço"):
+                        st.session_state['count_end'] += 1
+                        st.rerun()
 
             with t5:
-                st.markdown("##### Dados Profissionais")
                 lista_conv = buscar_referencias('CONVENIO')
-                df_emp = dados_db.get('empregos') if modo=='editar' else pd.DataFrame(columns=["convenio", "matricula", "dados_extras"])
-                col_emp = {"convenio": st.column_config.SelectboxColumn("Convênio", options=lista_conv, required=True), "matricula": st.column_config.TextColumn("Matrícula", required=True)}
-                ed_emp = st.data_editor(df_emp, column_config=col_emp, num_rows="dynamic", use_container_width=True)
+                if modo == 'editar':
+                    df_emp = dados_db.get('empregos')
+                    col_emp = {"convenio": st.column_config.SelectboxColumn("Convênio", options=lista_conv, required=True), "matricula": st.column_config.TextColumn("Matrícula", required=True)}
+                    ed_emp = st.data_editor(df_emp, column_config=col_emp, num_rows="dynamic", use_container_width=True, key="editor_emp")
+                else:
+                    st.markdown("##### Dados Profissionais")
+                    for i in range(st.session_state['count_emp']):
+                        c_conv, c_matr = st.columns(2)
+                        conv = c_conv.selectbox(f"Convênio {i+1}", [""] + lista_conv, key=f"emp_conv_{i}")
+                        matr = c_matr.text_input(f"Matrícula {i+1}", key=f"emp_matr_{i}")
+                        extras = st.text_area(f"Dados Extras {i+1}", height=60, key=f"emp_ext_{i}")
+                        if conv and matr: collected_emps.append({"convenio": conv, "matricula": matr, "dados_extras": extras})
+                        st.divider()
+                    
+                    if st.form_submit_button("➕ Adicionar Emprego"):
+                        st.session_state['count_emp'] += 1
+                        st.rerun()
 
             with t6:
-                st.markdown("##### Contratos")
-                df_ctr = dados_db.get('contratos') if modo=='editar' else pd.DataFrame(columns=["matricula_ref", "contrato", "dados_extras"])
-                ed_ctr = st.data_editor(df_ctr, num_rows="dynamic", use_container_width=True)
+                if modo == 'editar':
+                    df_ctr = dados_db.get('contratos')
+                    ed_ctr = st.data_editor(df_ctr, num_rows="dynamic", use_container_width=True, key="editor_ctr")
+                else:
+                    st.markdown("##### Contratos")
+                    for i in range(st.session_state['count_ctr']):
+                        c_mref, c_ctr = st.columns(2)
+                        mref = c_mref.text_input(f"Matrícula Referência {i+1}", key=f"ctr_mref_{i}")
+                        ctr = c_ctr.text_input(f"Contrato {i+1}", key=f"ctr_num_{i}")
+                        if ctr: collected_ctrs.append({"matricula_ref": mref, "contrato": ctr, "dados_extras": ""})
+                    
+                    if st.form_submit_button("➕ Adicionar Contrato"):
+                        st.session_state['count_ctr'] += 1
+                        st.rerun()
 
             st.markdown("---")
             confirmar = st.form_submit_button("💾 Salvar Tudo")
@@ -586,8 +663,34 @@ def app_pessoa_fisica():
         if confirmar:
             if nome and cpf:
                 dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
-                ok, msg = salvar_pf(dg, ed_tel, ed_email, ed_end, ed_emp, ed_ctr, modo, cpf_atual)
-                if ok: st.success(msg); st.session_state['pf_view'] = 'lista'; st.rerun()
+                
+                # Prepara DataFrames para a função de salvamento
+                if modo == 'novo':
+                    df_final_tel = pd.DataFrame(collected_tels) if collected_tels else pd.DataFrame(columns=["numero", "tag_whats"])
+                    df_final_email = pd.DataFrame(collected_emails) if collected_emails else pd.DataFrame(columns=["email"])
+                    df_final_end = pd.DataFrame(collected_ends) if collected_ends else pd.DataFrame(columns=["rua", "bairro", "cidade", "uf", "cep"])
+                    df_final_emp = pd.DataFrame(collected_emps) if collected_emps else pd.DataFrame(columns=["convenio", "matricula", "dados_extras"])
+                    df_final_ctr = pd.DataFrame(collected_ctrs) if collected_ctrs else pd.DataFrame(columns=["matricula_ref", "contrato", "dados_extras"])
+                else:
+                    # No modo edição, usamos os data_editors
+                    df_final_tel = ed_tel
+                    df_final_email = ed_email
+                    df_final_end = ed_end
+                    df_final_emp = ed_emp
+                    df_final_ctr = ed_ctr
+
+                ok, msg = salvar_pf(dg, df_final_tel, df_final_email, df_final_end, df_final_emp, df_final_ctr, modo, cpf_atual)
+                if ok: 
+                    st.success(msg)
+                    # Reset counters
+                    st.session_state['count_tel'] = 1
+                    st.session_state['count_email'] = 1
+                    st.session_state['count_end'] = 1
+                    st.session_state['count_emp'] = 1
+                    st.session_state['count_ctr'] = 1
+                    st.session_state['pf_view'] = 'lista'
+                    time.sleep(1)
+                    st.rerun()
                 else: st.error(msg)
             else: st.warning("Nome e CPF obrigatórios.")
 
