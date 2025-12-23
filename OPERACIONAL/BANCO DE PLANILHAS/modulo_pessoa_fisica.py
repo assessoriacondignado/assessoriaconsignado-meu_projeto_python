@@ -4,6 +4,8 @@ import psycopg2
 from datetime import datetime, date
 import io
 import time
+import math
+import re
 
 try:
     import conexao
@@ -40,7 +42,8 @@ def buscar_referencias(tipo):
             conn.close()
     return []
 
-def buscar_pf(termo):
+# --- FUNÇÕES DE BUSCA SIMPLES ---
+def buscar_pf_simples(termo):
     conn = get_conn()
     if conn:
         try:
@@ -60,6 +63,125 @@ def buscar_pf(termo):
         except:
             conn.close()
     return pd.DataFrame()
+
+# --- FUNÇÕES DE PESQUISA AMPLA ---
+def buscar_opcoes_filtro(coluna, tabela, filtro_pai=None, valor_pai=None):
+    """Busca opções únicas para dropdowns (Ex: UFs, Cidades dado uma UF)"""
+    conn = get_conn()
+    opcoes = []
+    if conn:
+        try:
+            where_clause = ""
+            params = []
+            if filtro_pai and valor_pai:
+                where_clause = f"WHERE {filtro_pai} = %s"
+                params.append(valor_pai)
+            
+            query = f"SELECT DISTINCT {coluna} FROM {tabela} {where_clause} ORDER BY {coluna}"
+            cur = conn.cursor()
+            cur.execute(query, tuple(params))
+            res = cur.fetchall()
+            opcoes = [r[0] for r in res if r[0]]
+            conn.close()
+        except: pass
+    return options if 'options' in locals() else opcoes
+
+def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
+    conn = get_conn()
+    if conn:
+        try:
+            # Base da Query
+            sql = "SELECT DISTINCT d.id, d.nome, d.cpf, d.rg, d.data_nascimento FROM pf_dados d "
+            joins = []
+            conditions = []
+            params = []
+
+            # Filtros de Identificação
+            if filtros.get('nome'):
+                conditions.append("d.nome ILIKE %s")
+                params.append(f"%{filtros['nome']}%")
+            if filtros.get('cpf'):
+                conditions.append("d.cpf ILIKE %s")
+                params.append(f"%{filtros['cpf']}%")
+            if filtros.get('rg'):
+                conditions.append("d.rg ILIKE %s")
+                params.append(f"%{filtros['rg']}%")
+            if filtros.get('nascimento'):
+                conditions.append("d.data_nascimento = %s")
+                params.append(filtros['nascimento'])
+
+            # Filtros de Endereço (Tabela pf_enderecos)
+            if any(k in filtros for k in ['uf', 'cidade', 'bairro', 'rua', 'cep']):
+                joins.append("JOIN pf_enderecos end ON d.cpf = end.cpf_ref")
+                if filtros.get('uf'):
+                    conditions.append("end.uf = %s")
+                    params.append(filtros['uf'])
+                if filtros.get('cidade'):
+                    conditions.append("end.cidade ILIKE %s")
+                    params.append(f"%{filtros['cidade']}%")
+                if filtros.get('bairro'):
+                    conditions.append("end.bairro ILIKE %s")
+                    params.append(f"%{filtros['bairro']}%")
+                if filtros.get('rua'):
+                    conditions.append("end.rua ILIKE %s")
+                    params.append(f"%{filtros['rua']}%")
+
+            # Filtros de Contato (Tabelas pf_telefones e pf_emails)
+            if filtros.get('ddd'):
+                # Lógica para extrair os 2 primeiros digitos numericos
+                joins.append("JOIN pf_telefones tel ON d.cpf = tel.cpf_ref")
+                conditions.append("SUBSTRING(REGEXP_REPLACE(tel.numero, '[^0-9]', '', 'g'), 1, 2) = %s")
+                params.append(filtros['ddd'])
+            
+            if filtros.get('email'):
+                joins.append("JOIN pf_emails em ON d.cpf = em.cpf_ref")
+                conditions.append("em.email ILIKE %s")
+                params.append(f"%{filtros['email']}%")
+
+            # Filtros Profissionais/Contratos
+            if any(k in filtros for k in ['convenio', 'matricula', 'contrato']):
+                # Se tem contrato, faz join com contratos também
+                if filtros.get('contrato'):
+                    joins.append("JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref")
+                    joins.append("JOIN pf_contratos ctr ON emp.matricula = ctr.matricula_ref")
+                    conditions.append("ctr.contrato ILIKE %s")
+                    params.append(f"%{filtros['contrato']}%")
+                else:
+                    joins.append("JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref")
+                
+                if filtros.get('convenio'):
+                    conditions.append("emp.convenio = %s")
+                    params.append(filtros['convenio'])
+                if filtros.get('matricula'):
+                    conditions.append("emp.matricula ILIKE %s")
+                    params.append(f"%{filtros['matricula']}%")
+
+            # Montagem Final
+            # Remove duplicatas dos joins
+            joins = list(set(joins))
+            sql_joins = " ".join(joins)
+            sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            full_sql = f"{sql} {sql_joins} {sql_where} ORDER BY d.nome"
+            
+            # Contagem Total (para paginação)
+            count_sql = f"SELECT COUNT(DISTINCT d.id) FROM pf_dados d {sql_joins} {sql_where}"
+            cur = conn.cursor()
+            cur.execute(count_sql, tuple(params))
+            total_registros = cur.fetchone()[0]
+            
+            # Paginação
+            offset = (pagina - 1) * itens_por_pagina
+            pag_sql = f"{full_sql} LIMIT {itens_por_pagina} OFFSET {offset}"
+            
+            df = pd.read_sql(pag_sql, conn, params=tuple(params))
+            conn.close()
+            
+            return df, total_registros
+        except Exception as e:
+            st.error(f"Erro na pesquisa: {e}")
+            return pd.DataFrame(), 0
+    return pd.DataFrame(), 0
 
 def carregar_dados_completos(cpf):
     conn = get_conn()
@@ -213,11 +335,112 @@ def app_pessoa_fisica():
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'pf_cpf_selecionado' not in st.session_state: st.session_state['pf_cpf_selecionado'] = None
     if 'import_step' not in st.session_state: st.session_state['import_step'] = 1
-    if 'import_df' not in st.session_state: st.session_state['import_df'] = None
-    if 'import_table' not in st.session_state: st.session_state['import_table'] = None
+    if 'pesquisa_pag' not in st.session_state: st.session_state['pesquisa_pag'] = 1
+
+    # ==========================
+    # MODO PESQUISA AMPLA
+    # ==========================
+    if st.session_state['pf_view'] == 'pesquisa_ampla':
+        st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
+        st.markdown("### 🔎 Pesquisa Ampla e Avançada")
+        
+        with st.form("form_pesquisa_ampla"):
+            # ABAS DE FILTRO
+            t1, t2, t3, t4, t5 = st.tabs(["Identificação", "Endereço", "Contatos", "Profissional", "Contratos"])
+            
+            filtros = {}
+            
+            with t1:
+                c1, c2, c3, c4 = st.columns(4)
+                filtros['nome'] = c1.text_input("Nome")
+                filtros['cpf'] = c2.text_input("CPF")
+                filtros['rg'] = c3.text_input("RG")
+                filtros['nascimento'] = c4.date_input("Nascimento", value=None)
+            
+            with t2:
+                c_uf, c_cid, c_bai, c_rua = st.columns(4)
+                
+                # UF (Carrega do Banco)
+                lista_ufs = buscar_opcoes_filtro('uf', 'pf_enderecos')
+                sel_uf = c_uf.selectbox("UF", [""] + lista_ufs)
+                if sel_uf: filtros['uf'] = sel_uf
+                
+                # Cidade (Depende da UF selecionada visualmente, aqui simplificado para carregar tudo se vazio)
+                # Para uma experiência perfeita, seria ideal usar st.rerun() ao mudar UF, 
+                # mas dentro do form o st.rerun só acontece no submit.
+                # Entao deixaremos texto livre ou select global
+                filtros['cidade'] = c_cid.text_input("Cidade")
+                filtros['bairro'] = c_bai.text_input("Bairro")
+                filtros['rua'] = c_rua.text_input("Rua")
+            
+            with t3:
+                c_ddd, c_email = st.columns(2)
+                filtros['ddd'] = c_ddd.text_input("DDD (2 dígitos)", max_chars=2, help="Ex: 11, 21")
+                filtros['email'] = c_email.text_input("E-mail")
+            
+            with t4:
+                c_conv, c_matr = st.columns(2)
+                # Convênios do banco
+                lista_conv = buscar_referencias('CONVENIO')
+                sel_conv = c_conv.selectbox("Convênio", [""] + lista_conv)
+                if sel_conv: filtros['convenio'] = sel_conv
+                
+                filtros['matricula'] = c_matr.text_input("Matrícula")
+                
+            with t5:
+                filtros['contrato'] = st.text_input("Número do Contrato")
+            
+            # Botão de Pesquisar
+            btn_pesquisar = st.form_submit_button("🔎 Executar Pesquisa")
+        
+        # Lógica de Resultado
+        if btn_pesquisar:
+            # Limpa filtros vazios e reseta pagina
+            filtros_limpos = {k: v for k, v in filtros.items() if v}
+            st.session_state['filtros_ativos'] = filtros_limpos
+            st.session_state['pesquisa_pag'] = 1
+        
+        # Exibição
+        if 'filtros_ativos' in st.session_state and st.session_state['filtros_ativos']:
+            pag_atual = st.session_state['pesquisa_pag']
+            df_res, total = executar_pesquisa_ampla(st.session_state['filtros_ativos'], pag_atual)
+            
+            st.divider()
+            st.write(f"**Resultados Encontrados:** {total}")
+            
+            if not df_res.empty:
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
+                
+                # Paginação
+                total_pags = math.ceil(total / 30)
+                col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+                
+                with col_p1:
+                    if pag_atual > 1:
+                        if st.button("⬅️ Anterior"):
+                            st.session_state['pesquisa_pag'] -= 1
+                            st.rerun()
+                with col_p2:
+                    st.markdown(f"<div style='text-align:center'>Página {pag_atual} de {total_pags}</div>", unsafe_allow_html=True)
+                with col_p3:
+                    if pag_atual < total_pags:
+                        if st.button("Próxima ➡️"):
+                            st.session_state['pesquisa_pag'] += 1
+                            st.rerun()
+                
+                # Ações rápidas nos resultados
+                st.markdown("##### Ações Rápidas")
+                col_sel = st.selectbox("Selecionar Cadastro para ver Detalhes", df_res['nome'].tolist())
+                if st.button("Ver Cadastro Selecionado"):
+                    cpf_sel = df_res[df_res['nome'] == col_sel].iloc[0]['cpf']
+                    st.session_state['pf_view'] = 'editar'
+                    st.session_state['pf_cpf_selecionado'] = cpf_sel
+                    st.rerun()
+            else:
+                st.warning("Nenhum registro encontrado com esses filtros.")
 
     # --- MODO IMPORTAÇÃO ---
-    if st.session_state['pf_view'] == 'importacao':
+    elif st.session_state['pf_view'] == 'importacao':
         st.button("⬅️ Cancelar Importação", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'import_step': 1}))
         st.divider()
         
@@ -371,20 +594,24 @@ def app_pessoa_fisica():
     # --- MODO LISTA (PADRÃO) ---
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
-        with c2: busca = st.text_input("🔎 Pesquisar (CPF / Nome / Telefone)", key="pf_busca")
+        with c2: busca = st.text_input("🔎 Pesquisar Rápida (CPF / Nome / Telefone)", key="pf_busca")
         
-        c_btn1, c_btn2 = st.columns([1, 6])
+        # BOTÕES DE AÇÃO
+        c_btn1, c_btn2, c_btn3 = st.columns([1, 1.5, 3.5])
         if c_btn1.button("➕ Novo", type="primary"):
             st.session_state['pf_view'] = 'novo'; st.session_state['pf_cpf_selecionado'] = None; st.rerun()
         
-        # BOTÃO IMPORTAR
-        if c_btn2.button("📥 Importar"):
+        if c_btn2.button("🔍 Pesquisa Ampla"):
+            st.session_state['pf_view'] = 'pesquisa_ampla'
+            st.rerun()
+            
+        if c_btn3.button("📥 Importar"):
             st.session_state['pf_view'] = 'importacao'
             st.session_state['import_step'] = 1
             st.rerun()
 
         if busca:
-            df_lista = buscar_pf(busca)
+            df_lista = buscar_pf_simples(busca)
             if not df_lista.empty:
                 df_lista.insert(0, "Sel", False)
                 edited_df = st.data_editor(df_lista, column_config={"Sel": st.column_config.CheckboxColumn(required=True)}, disabled=["id", "nome", "cpf"], hide_index=True, use_container_width=True)
