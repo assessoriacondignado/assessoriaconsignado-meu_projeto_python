@@ -118,7 +118,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 params.append(f"%{filtros['nome']}%")
             if filtros.get('cpf'):
                 cpf_norm = limpar_normalizar_cpf(filtros['cpf'])
-                conditions.append("d.cpf = %s") # Busca exata pelo normalizado
+                conditions.append("d.cpf = %s") 
                 params.append(cpf_norm)
             if filtros.get('rg'):
                 conditions.append("d.rg ILIKE %s")
@@ -144,10 +144,17 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                     params.append(f"%{filtros['rua']}%")
 
             # Contatos
-            if filtros.get('ddd'):
+            if filtros.get('ddd') or filtros.get('telefone'):
                 joins.append("JOIN pf_telefones tel ON d.cpf = tel.cpf_ref")
+            
+            if filtros.get('ddd'):
                 conditions.append("SUBSTRING(REGEXP_REPLACE(tel.numero, '[^0-9]', '', 'g'), 1, 2) = %s")
                 params.append(filtros['ddd'])
+            
+            if filtros.get('telefone'):
+                conditions.append("tel.numero LIKE %s")
+                params.append(f"%{filtros['telefone']}%")
+
             if filtros.get('email'):
                 joins.append("JOIN pf_emails em ON d.cpf = em.cpf_ref")
                 conditions.append("em.email ILIKE %s")
@@ -201,7 +208,6 @@ def carregar_dados_completos(cpf):
     dados = {}
     if conn:
         try:
-            # Garante busca pelo normalizado
             cpf_norm = limpar_normalizar_cpf(cpf)
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
@@ -228,15 +234,12 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
         try:
             cur = conn.cursor()
             
-            # Normalização de CPF para garantir a regra de 11 dígitos com zeros a esquerda
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
             
-            # Normaliza o cpf original se vier
             if cpf_original:
                 cpf_original = limpar_normalizar_cpf(cpf_original)
 
-            # Converte dados gerais para UPPER
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
             if modo == "novo":
@@ -253,13 +256,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_chave = dados_gerais['cpf']
             
             if modo == "editar":
-                # Limpa filhos para recriar
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emprego_renda WHERE cpf_ref = %s", (cpf_chave,))
             
-            # Helper para UPPER em Dataframes
             def df_upper(df):
                 return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
@@ -375,18 +376,14 @@ def dialog_imprimir(dados):
 def app_pessoa_fisica():
     st.markdown("## 👤 Banco de Dados Pessoa Física")
     
-    # Inicialização de contadores para campos dinâmicos
+    # Inicialização de contadores
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'pf_cpf_selecionado' not in st.session_state: st.session_state['pf_cpf_selecionado'] = None
     if 'import_step' not in st.session_state: st.session_state['import_step'] = 1
     if 'pesquisa_pag' not in st.session_state: st.session_state['pesquisa_pag'] = 1
     
-    # Contadores para campos múltiplos
-    if 'count_tel' not in st.session_state: st.session_state['count_tel'] = 1
-    if 'count_email' not in st.session_state: st.session_state['count_email'] = 1
-    if 'count_end' not in st.session_state: st.session_state['count_end'] = 1
-    if 'count_emp' not in st.session_state: st.session_state['count_emp'] = 1
-    if 'count_ctr' not in st.session_state: st.session_state['count_ctr'] = 1
+    for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
+        if k not in st.session_state: st.session_state[k] = 1
 
     # ==========================
     # 1. MODO PESQUISA AMPLA
@@ -395,7 +392,6 @@ def app_pessoa_fisica():
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### 🔎 Pesquisa Ampla e Avançada")
         
-        # enter_to_submit=False para evitar submissão com ENTER
         with st.form("form_pesquisa_ampla", enter_to_submit=False):
             t1, t2, t3, t4, t5 = st.tabs(["Identificação", "Endereço", "Contatos", "Profissional", "Contratos"])
             filtros = {}
@@ -417,8 +413,9 @@ def app_pessoa_fisica():
                 filtros['rua'] = c_rua.text_input("Rua")
             
             with t3:
-                c_ddd, c_email = st.columns(2)
-                filtros['ddd'] = c_ddd.text_input("DDD (2 dígitos)", max_chars=2)
+                c_ddd, c_tel, c_email = st.columns([1, 2, 3])
+                filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
+                filtros['telefone'] = c_tel.text_input("Telefone")
                 filtros['email'] = c_email.text_input("E-mail")
             
             with t4:
@@ -431,7 +428,6 @@ def app_pessoa_fisica():
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
             
-            # Botão de pesquisa sem ícone de lupa
             btn_pesquisar = st.form_submit_button("Pesquisar")
         
         if btn_pesquisar:
@@ -447,21 +443,15 @@ def app_pessoa_fisica():
             st.write(f"**Resultados Encontrados:** {total}")
             
             if not df_res.empty:
-                # Adiciona coluna de seleção (checkbox)
                 df_res.insert(0, "Selecionar", False)
-                
-                # Configuração da tabela interativa
                 edited_df = st.data_editor(
                     df_res,
-                    column_config={
-                        "Selecionar": st.column_config.CheckboxColumn(required=True)
-                    },
+                    column_config={"Selecionar": st.column_config.CheckboxColumn(required=True)},
                     disabled=df_res.columns.drop("Selecionar"),
                     hide_index=True,
                     use_container_width=True
                 )
 
-                # Paginação
                 total_pags = math.ceil(total / 30)
                 col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
                 with col_p1:
@@ -473,11 +463,9 @@ def app_pessoa_fisica():
                     if pag_atual < total_pags and st.button("Próxima ➡️"):
                         st.session_state['pesquisa_pag'] += 1; st.rerun()
 
-                # Lógica de Ação nos Selecionados
                 subset_selecionado = edited_df[edited_df["Selecionar"] == True]
                 if not subset_selecionado.empty:
                     st.divider()
-                    # Pega o primeiro selecionado (caso o usuário marque mais de um, pega o primeiro)
                     registro = subset_selecionado.iloc[0]
                     st.write(f"Registro selecionado: **{registro['nome']}**")
                     
@@ -489,7 +477,6 @@ def app_pessoa_fisica():
                     
                     if c_act2.button("🗑️ Excluir Cadastro", type="primary", use_container_width=True):
                         dialog_excluir_pf(registro['cpf'], registro['nome'])
-
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
@@ -558,7 +545,6 @@ def app_pessoa_fisica():
     # 3. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
-        # Reset counters when returning to list
         st.session_state['count_tel'] = 1
         st.session_state['count_email'] = 1
         st.session_state['count_end'] = 1
@@ -606,6 +592,54 @@ def app_pessoa_fisica():
         dados_db = carregar_dados_completos(cpf_atual) if modo == 'editar' and cpf_atual else {}
         geral = dados_db.get('geral')
         
+        # PREENCHIMENTO AUTOMÁTICO NA EDIÇÃO (Lógica unificada)
+        if modo == 'editar' and cpf_atual and f"edit_ready_{cpf_atual}" not in st.session_state:
+            # Telefones
+            df_t = dados_db.get('telefones')
+            if df_t is not None and not df_t.empty:
+                st.session_state['count_tel'] = len(df_t)
+                for idx, row in df_t.iterrows():
+                    st.session_state[f"new_tel_n_{idx}"] = row['numero']
+                    st.session_state[f"new_tel_t_{idx}"] = row['tag_whats']
+            
+            # Emails
+            df_m = dados_db.get('emails')
+            if df_m is not None and not df_m.empty:
+                st.session_state['count_email'] = len(df_m)
+                for idx, row in df_m.iterrows():
+                    st.session_state[f"new_email_{idx}"] = row['email']
+
+            # Endereços
+            df_e = dados_db.get('enderecos')
+            if df_e is not None and not df_e.empty:
+                st.session_state['count_end'] = len(df_e)
+                for idx, row in df_e.iterrows():
+                    st.session_state[f"end_rua_{idx}"] = row['rua']
+                    st.session_state[f"end_bairro_{idx}"] = row['bairro']
+                    st.session_state[f"end_cid_{idx}"] = row['cidade']
+                    st.session_state[f"end_uf_{idx}"] = row['uf']
+                    st.session_state[f"end_cep_{idx}"] = row['cep']
+
+            # Empregos
+            df_em = dados_db.get('empregos')
+            if df_em is not None and not df_em.empty:
+                st.session_state['count_emp'] = len(df_em)
+                for idx, row in df_em.iterrows():
+                    st.session_state[f"emp_conv_{idx}"] = row['convenio']
+                    st.session_state[f"emp_matr_{idx}"] = row['matricula']
+                    st.session_state[f"emp_ext_{idx}"] = row['dados_extras']
+
+            # Contratos
+            df_c = dados_db.get('contratos')
+            if df_c is not None and not df_c.empty:
+                st.session_state['count_ctr'] = len(df_c)
+                for idx, row in df_c.iterrows():
+                    st.session_state[f"ctr_mref_{idx}"] = row['matricula_ref']
+                    st.session_state[f"ctr_num_{idx}"] = row['contrato']
+
+            st.session_state[f"edit_ready_{cpf_atual}"] = True
+            st.rerun()
+
         st.markdown(f"### {geral['nome'] if geral is not None else 'Novo Cadastro'}")
 
         with st.form("form_pf", enter_to_submit=False):
@@ -628,7 +662,6 @@ def app_pessoa_fisica():
                     st.caption(f"Idade: {a} anos, {m} meses, {d} dias")
                 rg = st.text_input("RG", value=geral['rg'] if geral is not None else "").upper()
 
-            # --- DADOS DE COLETA MANUAL (Substituindo data_editor) ---
             collected_tels = []
             collected_emails = []
             collected_ends = []
@@ -636,101 +669,70 @@ def app_pessoa_fisica():
             collected_ctrs = []
 
             with t2:
-                # Se for EDITAR, carrega os dados do banco inicialmente (apenas visualização/edição manual se necessário)
-                # NOTA: Para simplificar, no modo NOVO usamos inputs limpos. No modo EDITAR, 
-                # a lógica ideal seria carregar e permitir adicionar mais. Aqui focamos na estrutura de inputs.
+                for i in range(st.session_state['count_tel']):
+                    c_num, c_tag, c_vazio = st.columns([2, 1, 4])
+                    val_num = c_num.text_input(f"Telefone {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
+                    val_tag = c_tag.selectbox(f"WhatsApp? {i+1}", ["Sim", "Não"], key=f"new_tel_t_{i}")
+                    if val_num: collected_tels.append({"numero": val_num, "tag_whats": val_tag})
                 
-                if modo == 'editar':
-                    # Mantém data_editor para edição em massa rápida se for editar
-                    df_tel = dados_db.get('telefones')
-                    cfg_tel = {
-                        "numero": st.column_config.TextColumn("Telefone", help="Telefone (DDD+9 digitos)", width="medium", required=True, validate=r"^\d{11}$"),
-                        "tag_whats": st.column_config.SelectboxColumn("WhatsApp?", options=["Sim", "Não"], required=True, width="small")
-                    }
-                    ed_tel = st.data_editor(df_tel, column_config=cfg_tel, num_rows="dynamic", use_container_width=True, key="editor_tel")
-                else:
-                    # MODO NOVO: Inputs Individuais
-                    for i in range(st.session_state['count_tel']):
-                        c_num, c_tag, c_vazio = st.columns([2, 1, 4])
-                        val_num = c_num.text_input(f"Telefone {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
-                        val_tag = c_tag.selectbox(f"WhatsApp? {i+1}", ["Sim", "Não"], key=f"new_tel_t_{i}")
-                        if val_num: collected_tels.append({"numero": val_num, "tag_whats": val_tag})
-                    
-                    if st.form_submit_button("➕ Adicionar Telefone"):
-                        st.session_state['count_tel'] += 1
-                        st.rerun()
+                if st.form_submit_button("➕ Adicionar Telefone"):
+                    st.session_state['count_tel'] += 1
+                    st.rerun()
 
             with t3:
-                if modo == 'editar':
-                    df_email = dados_db.get('emails')
-                    ed_email = st.data_editor(df_email, num_rows="dynamic", use_container_width=True, key="editor_email")
-                else:
-                    for i in range(st.session_state['count_email']):
-                        val_email = st.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
-                        if val_email: collected_emails.append({"email": val_email})
-                    
-                    if st.form_submit_button("➕ Adicionar E-mail"):
-                        st.session_state['count_email'] += 1
-                        st.rerun()
+                for i in range(st.session_state['count_email']):
+                    val_email = st.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
+                    if val_email: collected_emails.append({"email": val_email})
+                
+                if st.form_submit_button("➕ Adicionar E-mail"):
+                    st.session_state['count_email'] += 1
+                    st.rerun()
 
             with t4:
-                if modo == 'editar':
-                    df_end = dados_db.get('enderecos')
-                    ed_end = st.data_editor(df_end, num_rows="dynamic", use_container_width=True, key="editor_end")
-                else:
-                    for i in range(st.session_state['count_end']):
-                        st.markdown(f"**Endereço {i+1}**")
-                        c_rua, c_bairro = st.columns(2)
-                        c_cid, c_uf, c_cep = st.columns([2, 1, 1])
-                        
-                        rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
-                        bairro = c_bairro.text_input("Bairro", key=f"end_bairro_{i}")
-                        cidade = c_cid.text_input("Cidade", key=f"end_cid_{i}")
-                        uf = c_uf.text_input("UF", key=f"end_uf_{i}", max_chars=2)
-                        cep = c_cep.text_input("CEP", key=f"end_cep_{i}")
-                        
-                        if rua or cidade: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
-                        st.divider()
+                for i in range(st.session_state['count_end']):
+                    st.markdown(f"**Endereço {i+1}**")
+                    c_rua, c_bairro = st.columns(2)
+                    c_cid, c_uf, c_cep = st.columns([2, 1, 1])
                     
-                    if st.form_submit_button("➕ Adicionar Endereço"):
-                        st.session_state['count_end'] += 1
-                        st.rerun()
+                    rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
+                    bairro = c_bairro.text_input("Bairro", key=f"end_bairro_{i}")
+                    cidade = c_cid.text_input("Cidade", key=f"end_cid_{i}")
+                    uf = c_uf.text_input("UF", key=f"end_uf_{i}", max_chars=2)
+                    cep = c_cep.text_input("CEP", key=f"end_cep_{i}")
+                    
+                    if rua or cidade: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
+                    st.divider()
+                
+                if st.form_submit_button("➕ Adicionar Endereço"):
+                    st.session_state['count_end'] += 1
+                    st.rerun()
 
             with t5:
                 lista_conv = buscar_referencias('CONVENIO')
-                if modo == 'editar':
-                    df_emp = dados_db.get('empregos')
-                    col_emp = {"convenio": st.column_config.SelectboxColumn("Convênio", options=lista_conv, required=True), "matricula": st.column_config.TextColumn("Matrícula", required=True)}
-                    ed_emp = st.data_editor(df_emp, column_config=col_emp, num_rows="dynamic", use_container_width=True, key="editor_emp")
-                else:
-                    st.markdown("##### Dados Profissionais")
-                    for i in range(st.session_state['count_emp']):
-                        c_conv, c_matr = st.columns(2)
-                        conv = c_conv.selectbox(f"Convênio {i+1}", [""] + lista_conv, key=f"emp_conv_{i}")
-                        matr = c_matr.text_input(f"Matrícula {i+1}", key=f"emp_matr_{i}")
-                        extras = st.text_area(f"Dados Extras {i+1}", height=60, key=f"emp_ext_{i}")
-                        if conv and matr: collected_emps.append({"convenio": conv, "matricula": matr, "dados_extras": extras})
-                        st.divider()
-                    
-                    if st.form_submit_button("➕ Adicionar Emprego"):
-                        st.session_state['count_emp'] += 1
-                        st.rerun()
+                st.markdown("##### Dados Profissionais")
+                for i in range(st.session_state['count_emp']):
+                    c_conv, c_matr = st.columns(2)
+                    conv = c_conv.selectbox(f"Convênio {i+1}", [""] + lista_conv, key=f"emp_conv_{i}")
+                    matr = c_matr.text_input(f"Matrícula {i+1}", key=f"emp_matr_{i}")
+                    extras = st.text_area(f"Dados Extras {i+1}", height=60, key=f"emp_ext_{i}")
+                    if conv and matr: collected_emps.append({"convenio": conv, "matricula": matr, "dados_extras": extras})
+                    st.divider()
+                
+                if st.form_submit_button("➕ Adicionar Emprego"):
+                    st.session_state['count_emp'] += 1
+                    st.rerun()
 
             with t6:
-                if modo == 'editar':
-                    df_ctr = dados_db.get('contratos')
-                    ed_ctr = st.data_editor(df_ctr, num_rows="dynamic", use_container_width=True, key="editor_ctr")
-                else:
-                    st.markdown("##### Contratos")
-                    for i in range(st.session_state['count_ctr']):
-                        c_mref, c_ctr = st.columns(2)
-                        mref = c_mref.text_input(f"Matrícula Referência {i+1}", key=f"ctr_mref_{i}")
-                        ctr = c_ctr.text_input(f"Contrato {i+1}", key=f"ctr_num_{i}")
-                        if ctr: collected_ctrs.append({"matricula_ref": mref, "contrato": ctr, "dados_extras": ""})
-                    
-                    if st.form_submit_button("➕ Adicionar Contrato"):
-                        st.session_state['count_ctr'] += 1
-                        st.rerun()
+                st.markdown("##### Contratos")
+                for i in range(st.session_state['count_ctr']):
+                    c_mref, c_ctr = st.columns(2)
+                    mref = c_mref.text_input(f"Matrícula Referência {i+1}", key=f"ctr_mref_{i}")
+                    ctr = c_ctr.text_input(f"Contrato {i+1}", key=f"ctr_num_{i}")
+                    if ctr: collected_ctrs.append({"matricula_ref": mref, "contrato": ctr, "dados_extras": ""})
+                
+                if st.form_submit_button("➕ Adicionar Contrato"):
+                    st.session_state['count_ctr'] += 1
+                    st.rerun()
 
             st.markdown("---")
             confirmar = st.form_submit_button("💾 Salvar Tudo")
@@ -738,7 +740,7 @@ def app_pessoa_fisica():
         if confirmar:
             if nome and cpf:
                 
-                # --- VERIFICAÇÃO DE DUPLICIDADE (NOVA REGRA) ---
+                # VERIFICAÇÃO DE DUPLICIDADE (NOVA REGRA)
                 cpf_limpo_verif = limpar_normalizar_cpf(cpf)
                 
                 # Só verifica se estiver no modo NOVO e clicou em salvar
@@ -747,42 +749,27 @@ def app_pessoa_fisica():
                     if nome_existente:
                         st.error(f"⚠️ Este CPF já está cadastrado para: **{nome_existente}**")
                         st.warning("Não é permitido cadastros duplicados.")
-                        
                         col_dup1, col_dup2 = st.columns(2)
                         if col_dup1.button("🔄 Editar cadastro existente?"):
                             st.session_state['pf_view'] = 'editar'
                             st.session_state['pf_cpf_selecionado'] = cpf_limpo_verif
                             st.rerun()
-                        # Interrompe a execução para não salvar duplicado
                         st.stop() 
 
-                # --- SE PASSOU NA VERIFICAÇÃO, PROSSEGUE ---
                 dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
                 
-                # Prepara DataFrames para a função de salvamento
-                if modo == 'novo':
-                    df_final_tel = pd.DataFrame(collected_tels) if collected_tels else pd.DataFrame(columns=["numero", "tag_whats"])
-                    df_final_email = pd.DataFrame(collected_emails) if collected_emails else pd.DataFrame(columns=["email"])
-                    df_final_end = pd.DataFrame(collected_ends) if collected_ends else pd.DataFrame(columns=["rua", "bairro", "cidade", "uf", "cep"])
-                    df_final_emp = pd.DataFrame(collected_emps) if collected_emps else pd.DataFrame(columns=["convenio", "matricula", "dados_extras"])
-                    df_final_ctr = pd.DataFrame(collected_ctrs) if collected_ctrs else pd.DataFrame(columns=["matricula_ref", "contrato", "dados_extras"])
-                else:
-                    # No modo edição, usamos os data_editors
-                    df_final_tel = ed_tel
-                    df_final_email = ed_email
-                    df_final_end = ed_end
-                    df_final_emp = ed_emp
-                    df_final_ctr = ed_ctr
+                # Prepara DataFrames
+                df_final_tel = pd.DataFrame(collected_tels) if collected_tels else pd.DataFrame(columns=["numero", "tag_whats"])
+                df_final_email = pd.DataFrame(collected_emails) if collected_emails else pd.DataFrame(columns=["email"])
+                df_final_end = pd.DataFrame(collected_ends) if collected_ends else pd.DataFrame(columns=["rua", "bairro", "cidade", "uf", "cep"])
+                df_final_emp = pd.DataFrame(collected_emps) if collected_emps else pd.DataFrame(columns=["convenio", "matricula", "dados_extras"])
+                df_final_ctr = pd.DataFrame(collected_ctrs) if collected_ctrs else pd.DataFrame(columns=["matricula_ref", "contrato", "dados_extras"])
 
                 ok, msg = salvar_pf(dg, df_final_tel, df_final_email, df_final_end, df_final_emp, df_final_ctr, modo, cpf_atual)
                 if ok: 
                     st.success(msg)
-                    # Reset counters
-                    st.session_state['count_tel'] = 1
-                    st.session_state['count_email'] = 1
-                    st.session_state['count_end'] = 1
-                    st.session_state['count_emp'] = 1
-                    st.session_state['count_ctr'] = 1
+                    for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
+                        st.session_state[k] = 1
                     st.session_state['pf_view'] = 'lista'
                     time.sleep(1)
                     st.rerun()
