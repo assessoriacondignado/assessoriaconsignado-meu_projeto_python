@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
-import re
 from datetime import datetime
 import modulo_wapi  # Integração centralizada
 
@@ -54,7 +53,7 @@ def buscar_produtos():
         return df
     return pd.DataFrame()
 
-def criar_pedido(cliente, produto, qtd, valor_total, avisar_cliente, avisar_grupo):
+def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_cliente):
     codigo = f"PEDIDO-{datetime.now().strftime('%y%m%d%H%M')}"
     conn = get_conn()
     if conn:
@@ -65,7 +64,7 @@ def criar_pedido(cliente, produto, qtd, valor_total, avisar_cliente, avisar_grup
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
-                  int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(produto['preco']), float(valor_total)))
+                  int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total)))
             
             id_novo_pedido = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", 
@@ -75,17 +74,14 @@ def criar_pedido(cliente, produto, qtd, valor_total, avisar_cliente, avisar_grup
             
             # --- NOTIFICAÇÕES VIA W-API CENTRALIZADO ---
             instancia = modulo_wapi.buscar_instancia_ativa()
-            if instancia:
+            if instancia and avisar_cliente and cliente['telefone']:
                 inst_id, inst_token = instancia
-                
-                # Aviso Cliente
-                if avisar_cliente and cliente['telefone']:
-                    template = modulo_wapi.buscar_template("PEDIDOS", "criacao")
-                    if template:
-                        msg_final = template.replace("{nome}", str(cliente['nome']).split()[0]) \
-                                            .replace("{pedido}", codigo) \
-                                            .replace("{produto}", str(produto['nome']))
-                        modulo_wapi.enviar_msg_api(inst_id, inst_token, cliente['telefone'], msg_final)
+                template = modulo_wapi.buscar_template("PEDIDOS", "criacao")
+                if template:
+                    msg_final = template.replace("{nome}", str(cliente['nome']).split()[0]) \
+                                        .replace("{pedido}", codigo) \
+                                        .replace("{produto}", str(produto['nome']))
+                    modulo_wapi.enviar_msg_api(inst_id, inst_token, cliente['telefone'], msg_final)
             
             return True, codigo
         except Exception as e:
@@ -133,10 +129,8 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente
                 if instancia:
                     # Lógica de seleção do modelo
                     if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
-                        # Usa a chave selecionada manualmente
                         chave_msg = modelo_msg_escolhido
                     else:
-                        # Usa o padrão (nome do status convertido para chave)
                         chave_msg = novo_status.lower().replace(" ", "_")
                     
                     template = modulo_wapi.buscar_template("PEDIDOS", chave_msg)
@@ -154,6 +148,20 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente
             return False
     return False
 
+def excluir_pedido_db(id_pedido):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM pedidos WHERE id = %s", (id_pedido,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao excluir: {e}")
+            return False
+    return False
+
 def buscar_historico_pedido(id_pedido):
     conn = get_conn()
     if conn:
@@ -164,6 +172,43 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 # --- POP-UPS (DIALOGS) ---
+@st.dialog("➕ Novo Pedido")
+def dialog_novo_pedido():
+    df_c = buscar_clientes()
+    df_p = buscar_produtos()
+    
+    if df_c.empty or df_p.empty:
+        st.warning("É necessário ter Clientes e Produtos cadastrados.")
+        return
+
+    with st.form("form_novo_pedido"):
+        st.write("Preencha os dados do pedido:")
+        c1, c2 = st.columns(2)
+        idx_cli = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
+        idx_prod = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
+        
+        cli_selecionado = df_c.iloc[idx_cli]
+        prod_selecionado = df_p.iloc[idx_prod]
+        
+        c3, c4 = st.columns(2)
+        qtd = c3.number_input("Quantidade", min_value=1, value=1, step=1)
+        # Permite editar o valor unitário, puxando o padrão do produto
+        valor_unit = c4.number_input("Valor Unitário (R$)", min_value=0.0, value=float(prod_selecionado['preco'] or 0.0), step=0.5, format="%.2f")
+        
+        # Cálculo do total
+        total = qtd * valor_unit
+        st.markdown(f"### 💰 Total: R$ {total:.2f}")
+        
+        avisar = st.checkbox("Enviar confirmação no WhatsApp?", value=True)
+
+        if st.form_submit_button("✅ Confirmar Pedido"):
+            ok, res = criar_pedido(cli_selecionado, prod_selecionado, qtd, valor_unit, total, avisar)
+            if ok:
+                st.success(f"Pedido {res} criado com sucesso!")
+                st.rerun()
+            else:
+                st.error(f"Erro: {res}")
+
 @st.dialog("👤 Detalhes do Cliente")
 def ver_cliente(nome, cpf, tel):
     st.write(f"**Nome:** {nome}")
@@ -181,6 +226,10 @@ def dialog_editar_dados(pedido):
         idx_prod = st.selectbox("Produto", range(len(df_produtos)), format_func=lambda x: df_produtos.iloc[x]['nome'])
         nova_qtd = st.number_input("Quantidade", min_value=1, value=int(pedido['quantidade']))
         novo_preco = st.number_input("Valor Unitário", min_value=0.0, value=float(pedido['valor_unitario']))
+        
+        novo_total = nova_qtd * novo_preco
+        st.write(f"Novo Total: R$ {novo_total:.2f}")
+
         if st.form_submit_button("💾 Salvar"):
             if editar_dados_pedido(pedido['id'], nova_qtd, novo_preco, df_clientes.iloc[idx_cli], df_produtos.iloc[idx_prod]):
                 st.success("Atualizado!")
@@ -196,10 +245,7 @@ def dialog_status_pedido(pedido):
     
     with st.form("form_status_update"):
         novo = st.selectbox("Novo Status", status_opcoes)
-        
-        # Novo campo de seleção de modelo
         modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
-        
         obs = st.text_area("Observação")
         avisar = st.checkbox("Avisar cliente?", value=True)
         
@@ -210,47 +256,103 @@ def dialog_status_pedido(pedido):
 
 @st.dialog("📜 Histórico")
 def dialog_historico(id_pedido, codigo_pedido):
+    st.write(f"Histórico de: **{codigo_pedido}**")
     df_hist = buscar_historico_pedido(id_pedido)
     if not df_hist.empty:
         df_hist.columns = ["Data/Hora", "Status", "Obs"]
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
     else: st.info("Sem registros.")
 
+@st.dialog("⚠️ Excluir Pedido")
+def dialog_excluir(id_pedido):
+    st.error("Tem certeza que deseja excluir este pedido?")
+    st.warning("Esta ação não pode ser desfeita.")
+    if st.button("Confirmar Exclusão", type="primary"):
+        if excluir_pedido_db(id_pedido):
+            st.success("Pedido excluído!")
+            st.rerun()
+
 # --- APP PRINCIPAL ---
 def app_pedidos():
-    st.markdown("## 🛒 Módulo de Pedidos") 
-    tab1, tab2 = st.tabs(["📝 Novo", "🔎 Gerenciar"])
-    
-    with tab1:
-        df_c = buscar_clientes()
-        df_p = buscar_produtos()
-        if not df_c.empty and not df_p.empty:
-            with st.form("form_novo_pedido"):
-                c1, c2 = st.columns(2)
-                cli = df_c.iloc[c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])]
-                prod = df_p.iloc[c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])]
-                q = st.number_input("Qtd", min_value=1, value=1)
-                total = q * float(prod['preco'])
-                st.metric("Total", f"R$ {total:.2f}")
-                if st.form_submit_button("✅ Finalizar"):
-                    ok, res = criar_pedido(cli, prod, q, total, True, True)
-                    if ok: st.success(f"Pedido {res} criado!")
-        else: st.warning("Cadastre clientes e produtos primeiro.")
+    # Cabeçalho com Botão Novo no Topo
+    c_title, c_btn = st.columns([4, 1.5])
+    c_title.markdown("## 🛒 Módulo de Pedidos") 
+    if c_btn.button("➕ Novo Pedido", type="primary", use_container_width=True):
+        dialog_novo_pedido()
 
-    with tab2:
-        conn = get_conn()
-        if conn:
-            df = pd.read_sql("SELECT * FROM pedidos ORDER BY data_criacao DESC", conn)
+    conn = get_conn()
+    if conn:
+        try:
+            # Busca todos os pedidos para filtrar em memória (mais flexível para os filtros solicitados)
+            query = """
+                SELECT * FROM pedidos 
+                ORDER BY data_criacao DESC
+            """
+            df = pd.read_sql(query, conn)
+        except Exception as e:
+            st.error(f"Erro na query: {e}")
+            df = pd.DataFrame()
+        finally:
             conn.close()
+
+        # --- FILTROS DE PESQUISA ---
+        with st.expander("🔍 Filtros de Pesquisa"):
+            cf1, cf2, cf3, cf4 = st.columns(4)
+            f_nome = cf1.text_input("Cliente")
+            f_prod = cf2.text_input("Produto")
+            f_cat = cf3.text_input("Categoria")
+            f_data = cf4.date_input("Data Criação", value=None)
+
+            # Aplica filtros se houver dados
             if not df.empty:
-                for i, row in df.iterrows():
-                    with st.expander(f"📦 {row['codigo']} - {row['nome_cliente']} ({row['status']})"):
-                        st.write(f"Item: {row['nome_produto']} | Total: R$ {row['valor_total']:.2f}")
-                        c1, c2, c3, c4 = st.columns(4)
-                        if c1.button("👤 Cliente", key=f"c_{row['id']}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'])
-                        if c2.button("✏️ Dados", key=f"e_{row['id']}"): dialog_editar_dados(row)
-                        if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status_pedido(row)
-                        if c4.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'], row['codigo'])
+                if f_nome:
+                    df = df[df['nome_cliente'].str.contains(f_nome, case=False, na=False)]
+                if f_prod:
+                    df = df[df['nome_produto'].str.contains(f_prod, case=False, na=False)]
+                if f_cat:
+                    df = df[df['categoria_produto'].str.contains(f_cat, case=False, na=False)]
+                if f_data:
+                    df = df[pd.to_datetime(df['data_criacao']).dt.date == f_data]
+
+        # --- PAGINAÇÃO / LIMITE DE VISUALIZAÇÃO ---
+        st.markdown("---")
+        col_res, col_pag = st.columns([4, 1])
+        with col_pag:
+            qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0)
+        
+        # Fatia o Dataframe conforme a seleção
+        df_exibir = df.copy()
+        if qtd_view != "Todos":
+            df_exibir = df.head(int(qtd_view))
+        
+        with col_res:
+            st.caption(f"Exibindo {len(df_exibir)} de {len(df)} pedidos encontrados.")
+
+        # --- LISTAGEM DOS PEDIDOS ---
+        if not df_exibir.empty:
+            for i, row in df_exibir.iterrows():
+                # Cor do status
+                cor_status = "🔴"
+                if row['status'] == 'Pago': cor_status = "🟢"
+                elif row['status'] == 'Pendente': cor_status = "🟠"
+                elif row['status'] == 'Solicitado': cor_status = "🔵"
+                
+                with st.expander(f"{cor_status} {row['codigo']} - {row['nome_cliente']} | R$ {row['valor_total']:.2f}"):
+                    st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
+                    st.write(f"**Data:** {row['data_criacao']}")
+                    
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    if c1.button("👤 Cliente", key=f"c_{row['id']}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'])
+                    if c2.button("✏️ Dados", key=f"e_{row['id']}"): dialog_editar_dados(row)
+                    if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status_pedido(row)
+                    if c4.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'], row['codigo'])
+                    
+                    # Botão Excluir (Novo)
+                    if c5.button("🗑️ Excluir", key=f"del_{row['id']}"): dialog_excluir(row['id'])
+        else:
+            st.info("Nenhum pedido encontrado com os filtros atuais.")
+    else:
+        st.info("Sem conexão com o banco.")
 
 if __name__ == "__main__":
     app_pedidos()
