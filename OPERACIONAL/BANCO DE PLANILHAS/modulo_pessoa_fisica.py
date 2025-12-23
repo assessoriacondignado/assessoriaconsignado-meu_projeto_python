@@ -755,4 +755,4 @@ def app_pessoa_fisica():
             else: st.warning("Nome e CPF obrigatórios.")
 
 if __name__ == "__main__":
-    app_pessoa_fisica()
+    app_pessoa_fisica() 
