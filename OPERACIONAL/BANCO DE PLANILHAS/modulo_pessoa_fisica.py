@@ -9,10 +9,7 @@ import re
 import os
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
-# Define o caminho para a pasta de arquivos de importação
-# Usa caminho relativo ao arquivo atual para compatibilidade
 BASE_DIR_IMPORTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ARQUIVO IMPORTAÇÕES")
-# Cria a pasta se não existir
 if not os.path.exists(BASE_DIR_IMPORTS):
     os.makedirs(BASE_DIR_IMPORTS)
 
@@ -32,12 +29,10 @@ def get_conn():
 
 # --- INICIALIZAÇÃO DO BANCO (AUTO-MIGRATE) ---
 def init_db_structures():
-    """Cria tabelas de histórico e colunas necessárias se não existirem"""
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            # Tabela de Histórico de Importações
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
                     id SERIAL PRIMARY KEY,
@@ -50,14 +45,12 @@ def init_db_structures():
                     caminho_arquivo_erro TEXT
                 );
             """)
-            # Adiciona coluna de rastreio na tabela principal se não existir
-            # Isso permite filtrar clientes por importação depois
             cur.execute("ALTER TABLE pf_dados ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
             conn.commit()
             conn.close()
         except: pass
 
-# --- FUNÇÕES AUXILIARES GERAIS ---
+# --- FUNÇÕES AUXILIARES ---
 def calcular_idade_completa(data_nasc):
     if not data_nasc: return "", "", ""
     hoje = date.today()
@@ -78,14 +71,12 @@ def buscar_referencias(tipo):
     return []
 
 def limpar_normalizar_cpf(cpf_raw):
-    """Remove não-numeros e garante 11 dígitos com zeros a esquerda"""
     if not cpf_raw: return ""
     apenas_nums = re.sub(r'\D', '', str(cpf_raw))
     if not apenas_nums: return ""
     return apenas_nums.zfill(11)
 
 def verificar_cpf_existente(cpf_normalizado):
-    """Verifica se o CPF já existe e retorna o Nome do titular se encontrar"""
     conn = get_conn()
     if conn:
         try:
@@ -96,6 +87,19 @@ def verificar_cpf_existente(cpf_normalizado):
             return res[0] if res else None
         except: conn.close()
     return None
+
+def converter_data_br_iso(valor):
+    """Converte 20/11/1963 (BR) para 1963-11-20 (ISO/Banco)"""
+    if not valor or pd.isna(valor): return None
+    valor_str = str(valor).strip()
+    # Tenta formatos comuns
+    formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]
+    for fmt in formatos:
+        try:
+            return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None # Retorna None se falhar (deixa o banco tentar ou falhar lá)
 
 # --- FUNÇÕES DE BUSCA ---
 def buscar_pf_simples(termo, filtro_importacao_id=None):
@@ -113,16 +117,13 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             """
             
             if filtro_importacao_id:
-                # Modo Filtro por Importação (Lupa)
-                # Traz todos os registros vinculados àquele ID de importação
                 sql_where = " WHERE d.importacao_id = %s "
-                params = (filtro_importacao_id,)
-                # Se o usuário digitou algo na busca E tem filtro, combinamos
+                params = [filtro_importacao_id]
                 if termo:
                    sql_where += " AND (d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s) "
-                   params = (filtro_importacao_id, param_num, param_nome, param_num)
+                   params.extend([param_num, param_nome, param_num])
+                params = tuple(params)
             else:
-                # Modo Pesquisa Normal
                 sql_where = " WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s "
                 params = (param_num, param_nome, param_num)
             
@@ -381,9 +382,7 @@ def dialog_excluir_pf(cpf, nome):
     if c2.button("Cancelar"): st.rerun()
 
 def app_pessoa_fisica():
-    # Inicializa estruturas do banco (Cria tabela histórico se não existir)
     init_db_structures()
-    
     st.markdown("## 👤 Banco de Dados Pessoa Física")
     
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
@@ -460,15 +459,13 @@ def app_pessoa_fisica():
                 if not subset_selecionado.empty:
                     st.divider()
                     registro = subset_selecionado.iloc[0]
-                    st.write(f"Registro selecionado: **{registro['nome']}**")
                     c1, c2 = st.columns(2)
                     if c1.button("✏️ Editar"): 
                         st.session_state['pf_view'] = 'editar'; st.session_state['pf_cpf_selecionado'] = registro['cpf']; st.rerun()
                     if c2.button("🗑️ Excluir"): dialog_excluir_pf(registro['cpf'], registro['nome'])
-            else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
-    # 2. HISTÓRICO DE IMPORTAÇÕES (NOVO)
+    # 2. HISTÓRICO DE IMPORTAÇÕES
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
@@ -488,16 +485,13 @@ def app_pessoa_fisica():
                         c2.metric("Atualizados", row['qtd_atualizados'])
                         c3.metric("Erros", row['qtd_erros'])
                         
-                        # Botões de Ação no Histórico
                         col_btns = c4.columns(2)
                         
-                        # 1. Filtro LUPA (Redireciona para lista com filtro)
                         if col_btns[0].button("🔎", key=f"src_{row['id']}", help="Ver clientes desta importação"):
                             st.session_state['pf_view'] = 'lista'
                             st.session_state['filtro_importacao_id'] = row['id']
                             st.rerun()
 
-                        # 2. Download Erros
                         if row['qtd_erros'] > 0 and row['caminho_arquivo_erro']:
                             if os.path.exists(row['caminho_arquivo_erro']):
                                 with open(row['caminho_arquivo_erro'], "rb") as f:
@@ -506,7 +500,7 @@ def app_pessoa_fisica():
                 st.info("Nenhum histórico encontrado.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO (ATUALIZADO)
+    # 3. MODO IMPORTAÇÃO
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -582,12 +576,10 @@ def app_pessoa_fisica():
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 orig_name = st.session_state.get('uploaded_file_name', 'importacao')
                 
-                # 1. Salvar Arquivo Original
                 safe_name = f"{os.path.splitext(orig_name)[0]}_{timestamp}.csv"
                 path_orig = os.path.join(BASE_DIR_IMPORTS, safe_name)
                 df.to_csv(path_orig, index=False, sep=';')
                 
-                # 2. Criar Registro no Histórico
                 conn = get_conn()
                 import_id = None
                 if conn:
@@ -596,7 +588,6 @@ def app_pessoa_fisica():
                     import_id = cur.fetchone()[0]
                     conn.commit()
                 
-                # 3. Processar
                 final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
                 
                 qtd_novos = 0
@@ -615,6 +606,12 @@ def app_pessoa_fisica():
                             dados_row = {}
                             for csv_c, db_c in final_map.items():
                                 val = row[csv_c]
+                                
+                                # FIX: Converte Datas para Formato ISO se necessário
+                                if db_c in ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']:
+                                    conv_val = converter_data_br_iso(val)
+                                    if conv_val: val = conv_val
+
                                 if pd.isna(val): val = None
                                 dados_row[db_c] = val
                             
@@ -751,17 +748,45 @@ def app_pessoa_fisica():
         dados_db = carregar_dados_completos(cpf_atual) if modo == 'editar' and cpf_atual else {}
         geral = dados_db.get('geral')
         
-        # PREENCHIMENTO AUTOMÁTICO (Mantido do anterior)
         if modo == 'editar' and cpf_atual and f"edit_ready_{cpf_atual}" not in st.session_state:
-            # ... [Bloco de carregamento de listas dinâmicas - código mantido igual ao anterior para economizar espaço visual, mas essencial] ...
-            # (Se quiser posso repetir o bloco aqui, mas ele é idêntico à versão anterior)
             df_t = dados_db.get('telefones')
             if df_t is not None and not df_t.empty:
                 st.session_state['count_tel'] = len(df_t)
                 for idx, row in df_t.iterrows():
                     st.session_state[f"new_tel_n_{idx}"] = row['numero']
                     st.session_state[f"new_tel_t_{idx}"] = row['tag_whats']
-            # ... (repetir para emails, endereços, etc.) ...
+            
+            df_m = dados_db.get('emails')
+            if df_m is not None and not df_m.empty:
+                st.session_state['count_email'] = len(df_m)
+                for idx, row in df_m.iterrows():
+                    st.session_state[f"new_email_{idx}"] = row['email']
+
+            df_e = dados_db.get('enderecos')
+            if df_e is not None and not df_e.empty:
+                st.session_state['count_end'] = len(df_e)
+                for idx, row in df_e.iterrows():
+                    st.session_state[f"end_rua_{idx}"] = row['rua']
+                    st.session_state[f"end_bairro_{idx}"] = row['bairro']
+                    st.session_state[f"end_cid_{idx}"] = row['cidade']
+                    st.session_state[f"end_uf_{idx}"] = row['uf']
+                    st.session_state[f"end_cep_{idx}"] = row['cep']
+
+            df_em = dados_db.get('empregos')
+            if df_em is not None and not df_em.empty:
+                st.session_state['count_emp'] = len(df_em)
+                for idx, row in df_em.iterrows():
+                    st.session_state[f"emp_conv_{idx}"] = row['convenio']
+                    st.session_state[f"emp_matr_{idx}"] = row['matricula']
+                    st.session_state[f"emp_ext_{idx}"] = row['dados_extras']
+
+            df_c = dados_db.get('contratos')
+            if df_c is not None and not df_c.empty:
+                st.session_state['count_ctr'] = len(df_c)
+                for idx, row in df_c.iterrows():
+                    st.session_state[f"ctr_mref_{idx}"] = row['matricula_ref']
+                    st.session_state[f"ctr_num_{idx}"] = row['contrato']
+
             st.session_state[f"edit_ready_{cpf_atual}"] = True
             st.rerun()
 
@@ -772,28 +797,97 @@ def app_pessoa_fisica():
             
             with t1:
                 c1, c2, c3 = st.columns(3)
-                nome = st.text_input("Nome *", value=geral['nome'] if geral is not None else "").upper()
-                cpf = st.text_input("CPF *", value=geral['cpf'] if geral is not None else "")
+                nome = st.text_input("Nome *", value=geral['nome'] if geral else "").upper()
+                cpf = st.text_input("CPF *", value=geral['cpf'] if geral else "")
                 val_nasc = None
                 if geral is not None and geral['data_nascimento']:
                     try: val_nasc = pd.to_datetime(geral['data_nascimento']).date()
                     except: pass
                 nasc = c3.date_input("Nascimento", value=val_nasc, format="DD/MM/YYYY")
-                rg = st.text_input("RG", value=geral['rg'] if geral is not None else "").upper()
+                rg = st.text_input("RG", value=geral['rg'] if geral else "").upper()
 
-            # ... [Abas de telefones, emails, etc. mantidas idênticas ao código anterior] ...
-            # Para brevidade, estou assumindo que você manterá a lógica de edição dinâmica que já funcionava.
-            # Se precisar desse trecho explicitamente novamente, me avise.
-            
-            collected_tels = [] # Placeholder para a lógica de coleta
-            
+            collected_tels = []
+            collected_emails = []
+            collected_ends = []
+            collected_emps = []
+            collected_ctrs = []
+
+            with t2:
+                for i in range(st.session_state['count_tel']):
+                    c_num, c_tag, c_vazio = st.columns([2, 1, 4])
+                    val_num = c_num.text_input(f"Telefone {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
+                    val_tag = c_tag.selectbox(f"WhatsApp? {i+1}", ["Sim", "Não"], key=f"new_tel_t_{i}")
+                    if val_num: collected_tels.append({"numero": val_num, "tag_whats": val_tag})
+                if st.form_submit_button("➕ Adicionar Telefone"): st.session_state['count_tel'] += 1; st.rerun()
+
+            with t3:
+                for i in range(st.session_state['count_email']):
+                    ce1, ce2 = st.columns([4, 2])
+                    val_email = ce1.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
+                    if val_email: collected_emails.append({"email": val_email})
+                if st.form_submit_button("➕ Adicionar E-mail"): st.session_state['count_email'] += 1; st.rerun()
+
+            with t4:
+                for i in range(st.session_state['count_end']):
+                    st.markdown(f"**Endereço {i+1}**")
+                    c_rua, c_bairro = st.columns(2)
+                    c_cid, c_uf, c_cep = st.columns([3, 1, 1.5])
+                    rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
+                    bairro = c_bairro.text_input("Bairro", key=f"end_bairro_{i}")
+                    cidade = c_cid.text_input("Cidade", key=f"end_cid_{i}")
+                    uf = c_uf.text_input("UF", key=f"end_uf_{i}", max_chars=2)
+                    cep = c_cep.text_input("CEP", key=f"end_cep_{i}")
+                    if rua or cidade: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
+                    st.divider()
+                if st.form_submit_button("➕ Adicionar Endereço"): st.session_state['count_end'] += 1; st.rerun()
+
+            with t5:
+                lista_conv = buscar_referencias('CONVENIO')
+                st.markdown("##### Dados Profissionais")
+                for i in range(st.session_state['count_emp']):
+                    c_conv, c_matr = st.columns(2)
+                    conv = c_conv.selectbox(f"Convênio {i+1}", [""] + lista_conv, key=f"emp_conv_{i}")
+                    matr = c_matr.text_input(f"Matrícula {i+1}", key=f"emp_matr_{i}")
+                    extras = st.text_area(f"Dados Extras {i+1}", height=60, key=f"emp_ext_{i}")
+                    if conv and matr: collected_emps.append({"convenio": conv, "matricula": matr, "dados_extras": extras})
+                    st.divider()
+                if st.form_submit_button("➕ Adicionar Emprego"): st.session_state['count_emp'] += 1; st.rerun()
+
+            with t6:
+                st.markdown("##### Contratos")
+                for i in range(st.session_state['count_ctr']):
+                    c_mref, c_ctr = st.columns(2)
+                    mref = c_mref.text_input(f"Matrícula Referência {i+1}", key=f"ctr_mref_{i}")
+                    ctr = c_ctr.text_input(f"Contrato {i+1}", key=f"ctr_num_{i}")
+                    if ctr: collected_ctrs.append({"matricula_ref": mref, "contrato": ctr, "dados_extras": ""})
+                if st.form_submit_button("➕ Adicionar Contrato"): st.session_state['count_ctr'] += 1; st.rerun()
+
+            st.markdown("---")
             confirmar = st.form_submit_button("💾 Salvar Tudo")
 
         if confirmar:
             if nome and cpf:
-                # ... [Lógica de salvamento mantida] ...
+                cpf_limpo_verif = limpar_normalizar_cpf(cpf)
+                if modo == 'novo':
+                    nome_existente = verificar_cpf_existente(cpf_limpo_verif)
+                    if nome_existente:
+                        st.error(f"⚠️ Este CPF já está cadastrado para: **{nome_existente}**")
+                        st.warning("Não é permitido cadastros duplicados.")
+                        col_dup1, col_dup2 = st.columns(2)
+                        if col_dup1.button("🔄 Editar cadastro existente?"):
+                            st.session_state['pf_view'] = 'editar'
+                            st.session_state['pf_cpf_selecionado'] = cpf_limpo_verif
+                            st.rerun()
+                        st.stop() 
+
                 dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
-                ok, msg = salvar_pf(dg, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), modo, cpf_atual)
+                df_final_tel = pd.DataFrame(collected_tels) if collected_tels else pd.DataFrame(columns=["numero", "tag_whats"])
+                df_final_email = pd.DataFrame(collected_emails) if collected_emails else pd.DataFrame(columns=["email"])
+                df_final_end = pd.DataFrame(collected_ends) if collected_ends else pd.DataFrame(columns=["rua", "bairro", "cidade", "uf", "cep"])
+                df_final_emp = pd.DataFrame(collected_emps) if collected_emps else pd.DataFrame(columns=["convenio", "matricula", "dados_extras"])
+                df_final_ctr = pd.DataFrame(collected_ctrs) if collected_ctrs else pd.DataFrame(columns=["matricula_ref", "contrato", "dados_extras"])
+
+                ok, msg = salvar_pf(dg, df_final_tel, df_final_email, df_final_end, df_final_emp, df_final_ctr, modo, cpf_atual)
                 if ok: st.success(msg); time.sleep(1); st.session_state['pf_view'] = 'lista'; st.rerun()
                 else: st.error(msg)
             else: st.warning("Nome e CPF obrigatórios.")
