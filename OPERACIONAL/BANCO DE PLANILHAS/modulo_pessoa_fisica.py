@@ -68,10 +68,8 @@ def buscar_pf_simples(termo):
     conn = get_conn()
     if conn:
         try:
-            # Tenta normalizar o termo caso seja um CPF digitado parcialmente
             termo_limpo = re.sub(r'\D', '', termo)
             param = f"%{termo}%"
-            
             query = """
                 SELECT d.id, d.nome, d.cpf, d.data_nascimento 
                 FROM pf_dados d
@@ -81,7 +79,7 @@ def buscar_pf_simples(termo):
                 ORDER BY d.nome ASC
                 LIMIT 50
             """
-            df = pd.read_sql(query, conn, params=(f"%{termo_limpo}%", param, param))
+            df = pd.read_sql(query, conn, params=(f"%{termo_limpo}%", param, f"%{termo_limpo}%"))
             conn.close()
             return df
         except:
@@ -89,7 +87,6 @@ def buscar_pf_simples(termo):
     return pd.DataFrame()
 
 def buscar_opcoes_filtro(coluna, tabela):
-    """Busca opções únicas para dropdowns da pesquisa ampla"""
     conn = get_conn()
     opcoes = []
     if conn:
@@ -112,7 +109,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
             conditions = []
             params = []
 
-            # Identificação
             if filtros.get('nome'):
                 conditions.append("d.nome ILIKE %s")
                 params.append(f"%{filtros['nome']}%")
@@ -127,7 +123,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 conditions.append("d.data_nascimento = %s")
                 params.append(filtros['nascimento'])
 
-            # Endereço
             if any(k in filtros for k in ['uf', 'cidade', 'bairro', 'rua']):
                 joins.append("JOIN pf_enderecos end ON d.cpf = end.cpf_ref")
                 if filtros.get('uf'):
@@ -143,14 +138,12 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                     conditions.append("end.rua ILIKE %s")
                     params.append(f"%{filtros['rua']}%")
 
-            # Contatos
             if filtros.get('ddd') or filtros.get('telefone'):
                 joins.append("JOIN pf_telefones tel ON d.cpf = tel.cpf_ref")
             
             if filtros.get('ddd'):
                 conditions.append("SUBSTRING(REGEXP_REPLACE(tel.numero, '[^0-9]', '', 'g'), 1, 2) = %s")
                 params.append(filtros['ddd'])
-            
             if filtros.get('telefone'):
                 tel_clean = re.sub(r'\D', '', filtros['telefone'])
                 conditions.append("tel.numero LIKE %s")
@@ -161,7 +154,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 conditions.append("em.email ILIKE %s")
                 params.append(f"%{filtros['email']}%")
 
-            # Profissional
             if any(k in filtros for k in ['convenio', 'matricula', 'contrato']):
                 if filtros.get('contrato'):
                     joins.append("JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref")
@@ -178,20 +170,16 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                     conditions.append("emp.matricula ILIKE %s")
                     params.append(f"%{filtros['matricula']}%")
 
-            # Montagem
             joins = list(set(joins))
             sql_joins = " ".join(joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
-            
             full_sql = f"{sql} {sql_joins} {sql_where} ORDER BY d.nome"
             
-            # Contagem
             count_sql = f"SELECT COUNT(DISTINCT d.id) FROM pf_dados d {sql_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total_registros = cur.fetchone()[0]
             
-            # Paginação
             offset = (pagina - 1) * itens_por_pagina
             pag_sql = f"{full_sql} LIMIT {itens_por_pagina} OFFSET {offset}"
             
@@ -237,9 +225,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
-            
-            if cpf_original:
-                cpf_original = limpar_normalizar_cpf(cpf_original)
+            if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
 
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
@@ -262,8 +248,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emprego_renda WHERE cpf_ref = %s", (cpf_chave,))
             
-            def df_upper(df):
-                return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
+            def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
             for _, row in df_upper(df_tel).iterrows():
                 if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, data_atualizacao, tag_whats, tag_qualificacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, row['numero'], row.get('data_atualizacao'), row.get('tag_whats'), row.get('tag_qualificacao')))
@@ -274,20 +259,16 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             if not df_emp.empty:
                 for _, row in df_upper(df_emp).iterrows():
-                    conv = row.get('convenio')
-                    matr = row.get('matricula')
-                    if conv:
-                        try:
-                            cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, conv, matr, row.get('dados_extras')))
+                    if row.get('convenio'):
+                        try: cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, row.get('convenio'), row.get('matricula'), row.get('dados_extras')))
                         except: pass
 
             if not df_contr.empty:
                 for _, row in df_upper(df_contr).iterrows():
-                    matr_ref = row.get('matricula_ref')
-                    if matr_ref:
-                        cur.execute("SELECT 1 FROM pf_emprego_renda WHERE matricula = %s", (matr_ref,))
+                    if row.get('matricula_ref'):
+                        cur.execute("SELECT 1 FROM pf_emprego_renda WHERE matricula = %s", (row.get('matricula_ref'),))
                         if cur.fetchone():
-                            cur.execute("INSERT INTO pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (matr_ref, row.get('contrato'), row.get('dados_extras')))
+                            cur.execute("INSERT INTO pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (row.get('matricula_ref'), row.get('contrato'), row.get('dados_extras')))
 
             conn.commit()
             conn.close()
@@ -346,8 +327,7 @@ def add_column_to_table(table_name, col_name, col_type):
         try:
             cur = conn.cursor()
             cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col_name}\" {col_type}")
-            conn.commit()
-            conn.close()
+            conn.commit(); conn.close()
             return True
         except: return False
     return False
@@ -360,29 +340,18 @@ def dialog_excluir_pf(cpf, nome):
     c1, c2 = st.columns(2)
     if c1.button("Confirmar Exclusão", type="primary"):
         if excluir_pf(cpf): 
-            st.success("Apagado!")
-            time.sleep(1)
-            st.rerun()
-    if c2.button("Cancelar"):
-        st.rerun()
-
-@st.dialog("🖨️ Imprimir Dados")
-def dialog_imprimir(dados):
-    d = dados['geral']
-    st.markdown(f"### Ficha Cadastral: {d['nome']}")
-    st.markdown("---")
-    st.write(f"**CPF:** {d['cpf']} | **RG:** {d['rg']}")
-    st.button("Fechar")
+            st.success("Apagado!"); time.sleep(1); st.rerun()
+    if c2.button("Cancelar"): st.rerun()
 
 def app_pessoa_fisica():
     st.markdown("## 👤 Banco de Dados Pessoa Física")
     
-    # Inicialização de contadores
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'pf_cpf_selecionado' not in st.session_state: st.session_state['pf_cpf_selecionado'] = None
     if 'import_step' not in st.session_state: st.session_state['import_step'] = 1
     if 'pesquisa_pag' not in st.session_state: st.session_state['pesquisa_pag'] = 1
     
+    # Estados para contagem de campos múltiplos
     for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
         if k not in st.session_state: st.session_state[k] = 1
 
@@ -396,14 +365,12 @@ def app_pessoa_fisica():
         with st.form("form_pesquisa_ampla", enter_to_submit=False):
             t1, t2, t3, t4, t5 = st.tabs(["Identificação", "Endereço", "Contatos", "Profissional", "Contratos"])
             filtros = {}
-            
             with t1:
                 c1, c2, c3, c4 = st.columns(4)
                 filtros['nome'] = c1.text_input("Nome")
                 filtros['cpf'] = c2.text_input("CPF")
                 filtros['rg'] = c3.text_input("RG")
                 filtros['nascimento'] = c4.date_input("Nascimento", value=None, format="DD/MM/YYYY")
-            
             with t2:
                 c_uf, c_cid, c_bai, c_rua = st.columns([1, 3, 3, 3])
                 lista_ufs = buscar_opcoes_filtro('uf', 'pf_enderecos')
@@ -412,20 +379,17 @@ def app_pessoa_fisica():
                 filtros['cidade'] = c_cid.text_input("Cidade")
                 filtros['bairro'] = c_bai.text_input("Bairro")
                 filtros['rua'] = c_rua.text_input("Rua")
-            
             with t3:
                 c_ddd, c_tel, c_email = st.columns([0.5, 1.5, 4])
                 filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
                 filtros['telefone'] = c_tel.text_input("Telefone", max_chars=9)
                 filtros['email'] = c_email.text_input("E-mail")
-            
             with t4:
                 c_conv, c_matr = st.columns(2)
                 lista_conv = buscar_referencias('CONVENIO')
                 sel_conv = c_conv.selectbox("Convênio", [""] + lista_conv)
                 if sel_conv: filtros['convenio'] = sel_conv
                 filtros['matricula'] = c_matr.text_input("Matrícula")
-                
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
             
@@ -445,95 +409,73 @@ def app_pessoa_fisica():
             
             if not df_res.empty:
                 df_res.insert(0, "Selecionar", False)
-                edited_df = st.data_editor(
-                    df_res,
-                    column_config={"Selecionar": st.column_config.CheckboxColumn(required=True)},
-                    disabled=df_res.columns.drop("Selecionar"),
-                    hide_index=True,
-                    use_container_width=True
-                )
-
+                edited_df = st.data_editor(df_res, column_config={"Selecionar": st.column_config.CheckboxColumn(required=True)}, disabled=df_res.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
+                
                 total_pags = math.ceil(total / 30)
                 col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
                 with col_p1:
-                    if pag_atual > 1 and st.button("⬅️ Anterior"):
-                        st.session_state['pesquisa_pag'] -= 1; st.rerun()
+                    if pag_atual > 1 and st.button("⬅️ Anterior"): st.session_state['pesquisa_pag'] -= 1; st.rerun()
                 with col_p2:
                     st.markdown(f"<div style='text-align:center'>Página {pag_atual} de {total_pags}</div>", unsafe_allow_html=True)
                 with col_p3:
-                    if pag_atual < total_pags and st.button("Próxima ➡️"):
-                        st.session_state['pesquisa_pag'] += 1; st.rerun()
+                    if pag_atual < total_pags and st.button("Próxima ➡️"): st.session_state['pesquisa_pag'] += 1; st.rerun()
 
                 subset_selecionado = edited_df[edited_df["Selecionar"] == True]
                 if not subset_selecionado.empty:
                     st.divider()
                     registro = subset_selecionado.iloc[0]
                     st.write(f"Registro selecionado: **{registro['nome']}**")
-                    
                     c_act1, c_act2 = st.columns(2)
                     if c_act1.button("✏️ Editar Cadastro", use_container_width=True):
                         st.session_state['pf_view'] = 'editar'
                         st.session_state['pf_cpf_selecionado'] = registro['cpf']
                         st.rerun()
-                    
                     if c_act2.button("🗑️ Excluir Cadastro", type="primary", use_container_width=True):
                         dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
-    # 2. MODO IMPORTAÇÃO
+    # 2. MODO IMPORTAÇÃO (ATUALIZADO - MAPEAMENTO VISUAL)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         st.button("⬅️ Cancelar Importação", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'import_step': 1}))
         st.divider()
         
-        # CSS INJECT: Tradução visual forçada do Uploader
         st.markdown("""
             <style>
-                section[data-testid="stFileUploader"] div[role="button"] > div > div > span {
-                    display: none;
-                }
-                section[data-testid="stFileUploader"] div[role="button"] > div > div::after {
-                    content: "Arraste e solte o arquivo CSV aqui";
-                    font-size: 1rem;
-                    visibility: visible;
-                    display: block;
-                }
-                section[data-testid="stFileUploader"] div[role="button"] > div > div > small {
-                    display: none;
-                }
-                section[data-testid="stFileUploader"] div[role="button"] > div > div::before {
-                    content: "Limite 200MB • CSV";
-                    font-size: 0.8em;
-                    visibility: visible;
-                    display: block;
-                    margin-bottom: 10px;
-                }
+                section[data-testid="stFileUploader"] div[role="button"] > div > div > span {display: none;}
+                section[data-testid="stFileUploader"] div[role="button"] > div > div::after {content: "Arraste e solte o arquivo CSV aqui"; font-size: 1rem; visibility: visible; display: block;}
+                section[data-testid="stFileUploader"] div[role="button"] > div > div > small {display: none;}
+                section[data-testid="stFileUploader"] div[role="button"] > div > div::before {content: "Limite 200MB • CSV"; font-size: 0.8em; visibility: visible; display: block; margin-bottom: 10px;}
             </style>
         """, unsafe_allow_html=True)
         
-        mapa_tabelas = {"Dados Cadastrais": "pf_dados", "Telefones": "pf_telefones", "Emails": "pf_emails", "Endereços": "pf_enderecos", "Emprego/Renda": "pf_emprego_renda", "Contratos": "pf_contratos"}
+        # Tabelas reais do sistema
+        opcoes_tabelas = ["Dados Cadastrais (pf_dados)", "Telefones (pf_telefones)", "Emails (pf_emails)", "Endereços (pf_enderecos)", "Emprego/Renda (pf_emprego_renda)", "Contratos (pf_contratos)"]
+        mapa_real = {
+            "Dados Cadastrais (pf_dados)": "pf_dados",
+            "Telefones (pf_telefones)": "pf_telefones",
+            "Emails (pf_emails)": "pf_emails",
+            "Endereços (pf_enderecos)": "pf_enderecos",
+            "Emprego/Renda (pf_emprego_renda)": "pf_emprego_renda",
+            "Contratos (pf_contratos)": "pf_contratos"
+        }
 
         if st.session_state['import_step'] == 1:
             st.markdown("### 📤 Etapa 1: Upload")
-            sel_amigavel = st.selectbox("Selecione a Tabela de Destino", list(mapa_tabelas.keys()))
-            st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
+            sel_amigavel = st.selectbox("Selecione a Tabela de Destino", opcoes_tabelas)
+            st.session_state['import_table'] = mapa_real[sel_amigavel]
             
             uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
-            
             if uploaded_file:
                 try:
-                    # CORREÇÃO DE FORMATAÇÃO: Tenta detectar ponto e vírgula ou vírgula
                     uploaded_file.seek(0)
-                    # Primeiro tenta com ; (padrão BR)
                     try:
                         df = pd.read_csv(uploaded_file, sep=';')
-                        # Se ficou tudo em uma coluna só, provavelmente é vírgula
                         if len(df.columns) <= 1:
                             uploaded_file.seek(0)
                             df = pd.read_csv(uploaded_file, sep=',')
                     except:
-                        # Fallback
                         uploaded_file.seek(0)
                         df = pd.read_csv(uploaded_file, sep=',')
 
@@ -542,46 +484,149 @@ def app_pessoa_fisica():
                     st.dataframe(df.head(5))
                     
                     if st.button("Ir para Mapeamento", type="primary"):
-                        st.session_state['import_step'] = 2; st.rerun()
+                        # Inicializa o mapa vazio na sessão
+                        st.session_state['csv_map'] = {col: None for col in df.columns}
+                        st.session_state['current_csv_idx'] = 0 # Índice da coluna CSV sendo mapeada
+                        st.session_state['import_step'] = 2
+                        st.rerun()
                 except Exception as e: st.error(f"Erro ao ler arquivo: {e}")
 
         elif st.session_state['import_step'] == 2:
-            st.markdown("### 🔗 Etapa 2: Mapeamento")
+            st.markdown("### 🔗 Etapa 2: Mapeamento Visual")
+            
             df = st.session_state['import_df']
+            csv_cols = list(df.columns)
             table_name = st.session_state['import_table']
+            
+            # Busca colunas reais do banco
             db_cols_info = get_table_columns(table_name)
-            db_col_names = [c[0] for c in db_cols_info if c[0] not in ['id', 'data_criacao', 'data_atualizacao']]
+            # Remove colunas de sistema que não devem ser mapeadas manualmente
+            ignore_db = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref']
+            db_fields = [c[0] for c in db_cols_info if c[0] not in ignore_db]
             
-            if table_name in ['pf_emprego_renda', 'pf_contratos']:
-                with st.expander("✨ Criar Nova Coluna"):
-                    new_col = st.text_input("Nome Coluna")
-                    if st.button("Criar") and new_col:
-                        clean = re.sub(r'[^a-zA-Z0-9_]', '', new_col).lower()
-                        if add_column_to_table(table_name, clean, "VARCHAR(255)"): st.success("Criada!"); time.sleep(1); st.rerun()
+            # Grupos para facilitar a visualização (apenas visual, mapeia para campos reais)
+            # Como estamos importando para UMA tabela específica, mostramos os campos dela.
+            # Para ficar bonito como a imagem, agrupamos se for possível, mas aqui é uma tabela só por vez.
             
-            mapping = {}
-            cols_csv = ["(Ignorar)"] + list(df.columns)
-            for db_col in db_col_names:
-                idx = 0
-                for i, c in enumerate(cols_csv):
-                    if c.lower() == db_col.lower(): idx = i
-                mapping[db_col] = st.selectbox(f"Campo Banco: {db_col}", cols_csv, index=idx, key=f"map_{db_col}")
+            # Layout de Colunas
+            col_left, col_right = st.columns([1, 2])
             
-            if st.button("Finalizar Importação", type="primary"):
+            # --- COLUNA ESQUERDA: LISTA CSV ---
+            with col_left:
+                st.markdown("#### Colunas do CSV")
+                # Exibe a lista. A linha ativa é baseada em st.session_state['current_csv_idx']
+                for idx, col_name in enumerate(csv_cols):
+                    mapped_val = st.session_state['csv_map'].get(col_name)
+                    display_text = f"**{idx + 1}. {col_name}**"
+                    
+                    if mapped_val:
+                        display_text += f" -> ✅ `{mapped_val}`"
+                    else:
+                        display_text += " -> ❓ (Selecione ao lado)"
+                    
+                    # Estilo condicional para a linha ativa
+                    if idx == st.session_state['current_csv_idx']:
+                        st.info(display_text, icon="👉")
+                    else:
+                        # Botão para tornar esta linha ativa manualmente
+                        if st.button(f"{idx+1}. {col_name} {('✅' if mapped_val else '')}", key=f"sel_csv_{idx}"):
+                            st.session_state['current_csv_idx'] = idx
+                            st.rerun()
+
+            # --- COLUNA DIREITA: BOTÕES DE CAMPO DB ---
+            with col_right:
+                st.markdown(f"#### Campos de Destino: `{table_name}`")
+                st.caption("Clique no campo abaixo para vincular à coluna selecionada na esquerda.")
+                
+                # Renderiza botões como 'tags'
+                # Cria colunas dinâmicas para os botões ficarem lado a lado
+                cols_b = st.columns(4)
+                
+                # Opção de IGNORAR campo
+                if cols_b[0].button("🚫 IGNORAR CAMPO", type="secondary", use_container_width=True):
+                     curr_col = csv_cols[st.session_state['current_csv_idx']]
+                     st.session_state['csv_map'][curr_col] = "IGNORAR"
+                     # Avança para o próximo
+                     if st.session_state['current_csv_idx'] < len(csv_cols) - 1:
+                         st.session_state['current_csv_idx'] += 1
+                     st.rerun()
+
+                # Botões reais do banco
+                for i, field in enumerate(db_fields):
+                    col_idx = (i + 1) % 4 
+                    if cols_b[col_idx].button(f"📌 {field}", key=f"btn_map_{field}", use_container_width=True):
+                        # AÇÃO: Mapear
+                        curr_col = csv_cols[st.session_state['current_csv_idx']]
+                        st.session_state['csv_map'][curr_col] = field
+                        
+                        # Avança index
+                        if st.session_state['current_csv_idx'] < len(csv_cols) - 1:
+                            st.session_state['current_csv_idx'] += 1
+                        st.rerun()
+                
+                st.divider()
+                st.markdown("##### Criar Novo Campo no Banco")
+                new_col_name = st.text_input("Nome da nova coluna (sem espaços)")
+                if st.button("➕ Criar e Mapear"):
+                    if new_col_name:
+                        clean_name = re.sub(r'[^a-zA-Z0-9_]', '', new_col_name).lower()
+                        if add_column_to_table(table_name, clean_name, "VARCHAR(255)"):
+                            st.success(f"Coluna {clean_name} criada!")
+                            # Mapeia automaticamente
+                            curr_col = csv_cols[st.session_state['current_csv_idx']]
+                            st.session_state['csv_map'][curr_col] = clean_name
+                            if st.session_state['current_csv_idx'] < len(csv_cols) - 1:
+                                st.session_state['current_csv_idx'] += 1
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Erro ao criar coluna.")
+
+            st.divider()
+            
+            # Botão FINAL
+            if st.button("🚀 INICIAR IMPORTAÇÃO", type="primary", use_container_width=True):
                 conn = get_conn()
                 if conn:
                     cur = conn.cursor()
-                    valid_map = {k: v for k, v in mapping.items() if v != "(Ignorar)"}
-                    for i, row in df.iterrows():
-                        try:
-                            cols = list(valid_map.keys())
-                            vals = [row[valid_map[c]] for c in cols]
-                            vals = [None if pd.isna(v) else v for v in vals]
-                            placeholders = ", ".join(["%s"] * len(vals))
-                            cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders})", vals)
-                        except: pass
-                    conn.commit(); conn.close()
-                    st.success("Concluído!"); st.session_state['pf_view'] = 'lista'; st.rerun()
+                    success_count = 0
+                    
+                    # Filtra apenas o que foi mapeado (e não ignorado)
+                    final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
+                    
+                    if not final_map:
+                        st.error("Nenhum campo mapeado!")
+                    else:
+                        progress_bar = st.progress(0)
+                        total_rows = len(df)
+                        
+                        for i, row in df.iterrows():
+                            try:
+                                db_cols = list(final_map.values()) # nomes colunas banco
+                                csv_cols_keys = list(final_map.keys()) # nomes colunas csv
+                                
+                                vals = [row[c] for c in csv_cols_keys]
+                                # Trata NaN
+                                vals = [None if pd.isna(v) else v for v in vals]
+                                
+                                placeholders = ", ".join(["%s"] * len(vals))
+                                str_cols = ", ".join(db_cols)
+                                
+                                sql = f"INSERT INTO {table_name} ({str_cols}) VALUES ({placeholders})"
+                                cur.execute(sql, vals)
+                                success_count += 1
+                            except Exception as e:
+                                pass # Ignora erros de linha individual para não travar tudo
+                            
+                            if i % 10 == 0: progress_bar.progress((i + 1) / total_rows)
+                        
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+                        st.success(f"Importação Concluída! {success_count} registros importados.")
+                        time.sleep(2)
+                        st.session_state['pf_view'] = 'lista'
+                        st.rerun()
 
     # ==========================
     # 3. MODO LISTA (INICIAL)
