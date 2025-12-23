@@ -815,5 +815,4 @@ def app_pessoa_fisica():
     st.caption("Atualizado em: 23/12/2025 16:45")
 
 if __name__ == "__main__":
-    app_pessoa_fisica() 
-    
+    app_pessoa_fisica()
