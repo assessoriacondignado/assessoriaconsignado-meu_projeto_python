@@ -274,19 +274,22 @@ def dialog_excluir(id_pedido):
 
 # --- APP PRINCIPAL ---
 def app_pedidos():
-    # Cabeçalho com Botão Novo no Topo
-    c_title, c_btn = st.columns([4, 1.5])
+    # Cabeçalho com Botão Novo no Topo (Ajustado)
+    c_title, c_btn = st.columns([5, 1])
     c_title.markdown("## 🛒 Módulo de Pedidos") 
-    if c_btn.button("➕ Novo Pedido", type="primary", use_container_width=True):
+    # use_container_width=False para o botão ficar da largura do texto
+    if c_btn.button("➕ Novo Pedido", type="primary", use_container_width=False):
         dialog_novo_pedido()
 
     conn = get_conn()
     if conn:
         try:
-            # Busca todos os pedidos para filtrar em memória (mais flexível para os filtros solicitados)
+            # Query com JOIN para trazer o e-mail do cliente para pesquisa
             query = """
-                SELECT * FROM pedidos 
-                ORDER BY data_criacao DESC
+                SELECT p.*, c.email as email_cliente 
+                FROM pedidos p
+                LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id
+                ORDER BY p.data_criacao DESC
             """
             df = pd.read_sql(query, conn)
         except Exception as e:
@@ -295,24 +298,47 @@ def app_pedidos():
         finally:
             conn.close()
 
-        # --- FILTROS DE PESQUISA ---
-        with st.expander("🔍 Filtros de Pesquisa"):
-            cf1, cf2, cf3, cf4 = st.columns(4)
-            f_nome = cf1.text_input("Cliente")
-            f_prod = cf2.text_input("Produto")
-            f_cat = cf3.text_input("Categoria")
-            f_data = cf4.date_input("Data Criação", value=None)
+        # --- FILTROS DE PESQUISA (Unificado e Melhorado) ---
+        with st.expander("🔍 Filtros de Pesquisa", expanded=True):
+            # Linha 1: Busca Geral e Categorias
+            cf1, cf2 = st.columns([3, 1.5])
+            busca_geral = cf1.text_input("🔍 Buscar (Nome, Email, Telefone, Produto)", placeholder="Comece a digitar...")
+            
+            opcoes_cats = df['categoria_produto'].unique() if not df.empty else []
+            f_cats = cf2.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categorias")
+            
+            # Linha 2: Filtro de Data
+            cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
+            op_data = cd1.selectbox("Filtro de Data", ["Todo o período", "Igual a", "Antes de", "Depois de"])
+            
+            # Formato brasileiro no date_input
+            data_ref = cd2.date_input("Data Referência", value=datetime.today(), format="DD/MM/YYYY")
 
-            # Aplica filtros se houver dados
+            # --- APLICAÇÃO DOS FILTROS ---
             if not df.empty:
-                if f_nome:
-                    df = df[df['nome_cliente'].str.contains(f_nome, case=False, na=False)]
-                if f_prod:
-                    df = df[df['nome_produto'].str.contains(f_prod, case=False, na=False)]
-                if f_cat:
-                    df = df[df['categoria_produto'].str.contains(f_cat, case=False, na=False)]
-                if f_data:
-                    df = df[pd.to_datetime(df['data_criacao']).dt.date == f_data]
+                # 1. Filtro Texto Geral (Unificado)
+                if busca_geral:
+                    mask = (
+                        df['nome_cliente'].str.contains(busca_geral, case=False, na=False) |
+                        df['nome_produto'].str.contains(busca_geral, case=False, na=False) |
+                        df['telefone_cliente'].str.contains(busca_geral, case=False, na=False) |
+                        df['email_cliente'].str.contains(busca_geral, case=False, na=False)
+                    )
+                    df = df[mask]
+                
+                # 2. Filtro de Categoria
+                if f_cats:
+                    df = df[df['categoria_produto'].isin(f_cats)]
+                
+                # 3. Filtro de Data
+                if op_data != "Todo o período":
+                    df_data = pd.to_datetime(df['data_criacao']).dt.date
+                    if op_data == "Igual a":
+                        df = df[df_data == data_ref]
+                    elif op_data == "Antes de":
+                        df = df[df_data < data_ref]
+                    elif op_data == "Depois de":
+                        df = df[df_data > data_ref]
 
         # --- PAGINAÇÃO / LIMITE DE VISUALIZAÇÃO ---
         st.markdown("---")
@@ -339,7 +365,9 @@ def app_pedidos():
                 
                 with st.expander(f"{cor_status} {row['codigo']} - {row['nome_cliente']} | R$ {row['valor_total']:.2f}"):
                     st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
-                    st.write(f"**Data:** {row['data_criacao']}")
+                    # Formata data visualmente
+                    data_fmt = pd.to_datetime(row['data_criacao']).strftime('%d/%m/%Y %H:%M')
+                    st.write(f"**Data:** {data_fmt}")
                     
                     c1, c2, c3, c4, c5 = st.columns(5)
                     if c1.button("👤 Cliente", key=f"c_{row['id']}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'])
@@ -347,7 +375,7 @@ def app_pedidos():
                     if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status_pedido(row)
                     if c4.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'], row['codigo'])
                     
-                    # Botão Excluir (Novo)
+                    # Botão Excluir
                     if c5.button("🗑️ Excluir", key=f"del_{row['id']}"): dialog_excluir(row['id'])
         else:
             st.info("Nenhum pedido encontrado com os filtros atuais.")
