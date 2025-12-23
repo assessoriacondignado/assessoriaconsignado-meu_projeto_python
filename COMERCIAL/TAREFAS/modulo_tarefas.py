@@ -20,6 +20,23 @@ def get_conn():
     except Exception as e:
         return None
 
+# --- FUNÇÕES AUXILIARES ---
+def listar_modelos_mensagens():
+    """Busca os modelos de mensagem cadastrados no W-API para este módulo"""
+    conn = get_conn()
+    if conn:
+        try:
+            # Filtra apenas modelos do módulo TAREFAS
+            query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'TAREFAS' ORDER BY chave_status ASC"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df['chave_status'].tolist()
+        except:
+            conn.close()
+    return []
+
+# --- FUNÇÕES DE BANCO ---
+
 def buscar_pedidos_para_tarefa():
     conn = get_conn()
     if conn:
@@ -32,12 +49,15 @@ def buscar_pedidos_para_tarefa():
 def buscar_tarefas_lista():
     conn = get_conn()
     if conn:
+        # Adicionado JOIN com clientes_usuarios para trazer o email para a pesquisa
         query = """
             SELECT t.id, t.id_pedido, t.data_previsao, t.observacao_tarefa, t.status, t.data_criacao,
                    p.codigo as codigo_pedido, p.nome_cliente, p.cpf_cliente, p.telefone_cliente,
-                   p.nome_produto, p.categoria_produto, p.observacao as obs_pedido
+                   p.nome_produto, p.categoria_produto, p.observacao as obs_pedido,
+                   c.email as email_cliente
             FROM tarefas t
             JOIN pedidos p ON t.id_pedido = p.id
+            LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id
             ORDER BY t.data_criacao DESC
         """
         df = pd.read_sql(query, conn)
@@ -71,7 +91,7 @@ def criar_tarefa(id_pedido, data_prev, obs_tarefa, dados_pedido, avisar_cli):
         except Exception as e: st.error(f"Erro SQL: {e}")
     return False
 
-def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos, avisar):
+def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos, avisar, modelo_msg_escolhido="Automático (Padrão)"):
     conn = get_conn()
     if conn:
         try:
@@ -84,8 +104,12 @@ def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos,
             if avisar and dados_completos.get('telefone_cliente'):
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
-                    # Busca template centralizado
-                    chave = novo_status.lower().replace(' ', '_')
+                    # Lógica de seleção do modelo (igual ao Pedidos)
+                    if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
+                        chave = modelo_msg_escolhido
+                    else:
+                        chave = novo_status.lower().replace(' ', '_')
+                    
                     template = modulo_wapi.buscar_template("TAREFAS", chave)
                     
                     if template:
@@ -137,19 +161,29 @@ def dialog_editar(tarefa):
 def dialog_status(tarefa):
     lst_status = ["Solicitado", "Registro", "Entregue", "Em processamento", "Em execução", "Pendente", "Cancelado"]
     idx = lst_status.index(tarefa['status']) if tarefa['status'] in lst_status else 0
+    
+    # Carrega opções de modelos do W-API
+    lista_modelos = listar_modelos_mensagens()
+    opcoes_msg = ["Automático (Padrão)"] + lista_modelos
+
     with st.form("form_st_tar"):
         novo_st = st.selectbox("Novo Status", lst_status, index=idx)
+        modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
         obs_st = st.text_area("Observação")
         avisar = st.checkbox("Avisar Cliente?", value=True)
+        
         if st.form_submit_button("Atualizar"):
-            if atualizar_status_tarefa(tarefa['id'], novo_st, obs_st, tarefa, avisar):
+            if atualizar_status_tarefa(tarefa['id'], novo_st, obs_st, tarefa, avisar, modelo_escolhido):
                 st.success("Atualizado!"); st.rerun()
 
 @st.dialog("⚠️ Excluir Tarefa")
 def dialog_confirmar_exclusao(id_tarefa):
-    st.warning("Confirmar exclusão desta tarefa?")
+    st.error("Tem certeza que deseja excluir esta tarefa?")
+    st.warning("Esta ação não pode ser desfeita.")
     if st.button("Confirmar Exclusão", type="primary"):
-        if excluir_tarefa(id_tarefa): st.rerun()
+        if excluir_tarefa(id_tarefa): 
+            st.success("Tarefa excluída!")
+            st.rerun()
 
 @st.dialog("➕ Nova Tarefa")
 def dialog_nova_tarefa():
@@ -168,22 +202,92 @@ def dialog_nova_tarefa():
 
 # --- APP PRINCIPAL ---
 def app_tarefas():
-    c_title, c_btn = st.columns([4, 1])
+    # Cabeçalho com Botão Novo no Topo (Estilo Pedidos)
+    c_title, c_btn = st.columns([5, 1])
     c_title.markdown("## ✅ CONTROLE DE TAREFAS")
-    if c_btn.button("➕ Nova Tarefa", type="primary"): dialog_nova_tarefa()
+    if c_btn.button("➕ Nova Tarefa", type="primary", use_container_width=False):
+        dialog_nova_tarefa()
     
-    # Aba única de gerenciamento
     df_tar = buscar_tarefas_lista()
-    if not df_tar.empty:
-        df_tar['Data Prev.'] = pd.to_datetime(df_tar['data_previsao']).dt.strftime('%d/%m/%Y')
-        st.dataframe(df_tar[['codigo_pedido', 'status', 'Data Prev.', 'nome_cliente']], use_container_width=True, hide_index=True)
-        for i, row in df_tar.iterrows():
-            with st.expander(f"📌 {row['codigo_pedido']} | {row['nome_cliente']}"):
+    
+    # --- FILTROS DE PESQUISA (Estilo Pedidos) ---
+    with st.expander("🔍 Filtros de Pesquisa", expanded=True):
+        # Linha 1: Busca Geral e Categorias
+        cf1, cf2 = st.columns([3, 1.5])
+        busca_geral = cf1.text_input("🔍 Buscar (Nome, Email, Produto, Obs)", placeholder="Comece a digitar...")
+        
+        opcoes_cats = df_tar['categoria_produto'].unique() if not df_tar.empty else []
+        f_cats = cf2.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categorias")
+        
+        # Linha 2: Filtro de Data
+        cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
+        op_data = cd1.selectbox("Filtro de Data (Previsão)", ["Todo o período", "Igual a", "Antes de", "Depois de"])
+        
+        # Formato brasileiro no date_input
+        data_ref = cd2.date_input("Data Referência", value=date.today(), format="DD/MM/YYYY")
+
+        # --- APLICAÇÃO DOS FILTROS ---
+        if not df_tar.empty:
+            # 1. Filtro Texto Geral
+            if busca_geral:
+                mask = (
+                    df_tar['nome_cliente'].str.contains(busca_geral, case=False, na=False) |
+                    df_tar['nome_produto'].str.contains(busca_geral, case=False, na=False) |
+                    df_tar['observacao_tarefa'].str.contains(busca_geral, case=False, na=False) |
+                    df_tar['email_cliente'].str.contains(busca_geral, case=False, na=False)
+                )
+                df_tar = df_tar[mask]
+            
+            # 2. Filtro de Categoria
+            if f_cats:
+                df_tar = df_tar[df_tar['categoria_produto'].isin(f_cats)]
+            
+            # 3. Filtro de Data
+            if op_data != "Todo o período":
+                df_data = pd.to_datetime(df_tar['data_previsao']).dt.date
+                if op_data == "Igual a":
+                    df_tar = df_tar[df_data == data_ref]
+                elif op_data == "Antes de":
+                    df_tar = df_tar[df_data < data_ref]
+                elif op_data == "Depois de":
+                    df_tar = df_tar[df_data > data_ref]
+
+    # --- PAGINAÇÃO / LIMITE DE VISUALIZAÇÃO ---
+    st.markdown("---")
+    col_res, col_pag = st.columns([4, 1])
+    with col_pag:
+        qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0)
+    
+    # Fatia o Dataframe conforme a seleção
+    df_exibir = df_tar.copy()
+    if qtd_view != "Todos":
+        df_exibir = df_tar.head(int(qtd_view))
+    
+    with col_res:
+        st.caption(f"Exibindo {len(df_exibir)} de {len(df_tar)} tarefas encontradas.")
+
+    # --- LISTAGEM DAS TAREFAS ---
+    if not df_exibir.empty:
+        for i, row in df_exibir.iterrows():
+            # Cor do Status (Lógica simples visual)
+            cor_status = "🔴"
+            if row['status'] == 'Entregue' or row['status'] == 'Concluído': cor_status = "🟢"
+            elif row['status'] == 'Em execução': cor_status = "🟠"
+            elif row['status'] == 'Solicitado': cor_status = "🔵"
+
+            # Formata data
+            data_fmt = pd.to_datetime(row['data_previsao']).strftime('%d/%m/%Y')
+
+            with st.expander(f"{cor_status} {row['codigo_pedido']} - {row['nome_cliente']} | Prev: {data_fmt}"):
+                st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
+                st.write(f"**Obs:** {row['observacao_tarefa']}")
+                
                 c1, c2, c3 = st.columns(3)
-                if c1.button("Status", key=f"st_{row['id']}"): dialog_status(row)
-                if c2.button("Editar", key=f"ed_{row['id']}"): dialog_editar(row)
-                if c3.button("🗑️", key=f"del_{row['id']}"): dialog_confirmar_exclusao(row['id'])
-    else: st.info("Sem tarefas.")
+                if c1.button("🔄 Status", key=f"st_{row['id']}"): dialog_status(row)
+                if c2.button("✏️ Editar", key=f"ed_{row['id']}"): dialog_editar(row)
+                if c3.button("🗑️ Excluir", key=f"del_{row['id']}"): dialog_confirmar_exclusao(row['id'])
+    else:
+        st.info("Nenhuma tarefa encontrada com os filtros atuais.")
 
 if __name__ == "__main__":
     app_tarefas()
