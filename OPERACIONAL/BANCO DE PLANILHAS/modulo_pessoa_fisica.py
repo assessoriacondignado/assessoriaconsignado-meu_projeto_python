@@ -71,10 +71,15 @@ def buscar_referencias(tipo):
     return []
 
 def limpar_normalizar_cpf(cpf_raw):
+    """
+    Remove não-números e REMOVE zeros à esquerda (Regra: Importar sem zero).
+    Ex: 060... vira 60...
+    """
     if not cpf_raw: return ""
     apenas_nums = re.sub(r'\D', '', str(cpf_raw))
     if not apenas_nums: return ""
-    return apenas_nums.zfill(11)
+    # lstrip('0') remove os zeros do início
+    return apenas_nums.lstrip('0')
 
 def verificar_cpf_existente(cpf_normalizado):
     conn = get_conn()
@@ -102,7 +107,9 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
     conn = get_conn()
     if conn:
         try:
-            termo_limpo = re.sub(r'\D', '', termo)
+            # Normalização para busca: remove não numéricos e zeros a esquerda
+            termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
+            
             param_nome = f"%{termo}%"
             param_num = f"%{termo_limpo}%"
             
@@ -117,6 +124,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                 params = [filtro_importacao_id]
                 if termo:
                    sql_where += " AND (d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s) "
+                   # Para o CPF, usamos o termo limpo (sem zero) para dar match com o banco (sem zero)
                    params.extend([param_num, param_nome, param_num])
                 params = tuple(params)
             else:
@@ -186,7 +194,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 conditions.append("SUBSTRING(REGEXP_REPLACE(tel.numero, '[^0-9]', '', 'g'), 1, 2) = %s")
                 params.append(filtros['ddd'])
             if filtros.get('telefone'):
-                tel_clean = re.sub(r'\D', '', filtros['telefone'])
+                tel_clean = re.sub(r'\D', '', filtros['telefone']).lstrip('0')
                 conditions.append("tel.numero LIKE %s")
                 params.append(f"%{tel_clean}%")
 
@@ -229,7 +237,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD (RESTORED FULL LOGIC) ---
+# --- FUNÇÕES CRUD ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -281,48 +289,35 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_chave = dados_gerais['cpf']
             
             if modo == "editar":
-                # Limpa filhos para recriar (Estratégia Full Refresh)
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
-                # Para empregos e contratos, deletamos apenas se for reescrever tudo. 
-                # Aqui vamos simplificar deletando para garantir integridade com o DF enviado.
                 cur.execute("DELETE FROM pf_contratos WHERE matricula_ref IN (SELECT matricula FROM pf_emprego_renda WHERE cpf_ref = %s)", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emprego_renda WHERE cpf_ref = %s", (cpf_chave,))
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
-            # Salvar Telefones
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): 
-                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
+                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
             
-            # Salvar Emails
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
-                    if row.get('email'): 
-                        cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
+                    if row.get('email'): cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
             
-            # Salvar Endereços
             if not df_end.empty:
                 for _, row in df_upper(df_end).iterrows():
-                    if row.get('rua') or row.get('cidade'): 
-                        cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
+                    if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
             
-            # Salvar Empregos
             if not df_emp.empty:
                 for _, row in df_upper(df_emp).iterrows():
                     if row.get('convenio') and row.get('matricula'):
-                        try: 
-                            cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, row.get('convenio'), row.get('matricula'), row.get('dados_extras')))
+                        try: cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, row.get('convenio'), row.get('matricula'), row.get('dados_extras')))
                         except: pass
 
-            # Salvar Contratos
             if not df_contr.empty:
                 for _, row in df_upper(df_contr).iterrows():
                     if row.get('matricula_ref'):
-                        # Verifica se matrícula existe antes de inserir contrato
                         cur.execute("SELECT 1 FROM pf_emprego_renda WHERE matricula = %s", (row.get('matricula_ref'),))
                         if cur.fetchone():
                             cur.execute("INSERT INTO pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (row.get('matricula_ref'), row.get('contrato'), row.get('dados_extras')))
@@ -353,7 +348,6 @@ def exportar_dados(lista_cpfs):
     if conn and lista_cpfs:
         lista_norm = [limpar_normalizar_cpf(c) for c in lista_cpfs]
         placeholders = ",".join(["%s"] * len(lista_norm))
-        # Query simplificada para exportação
         query = f"SELECT * FROM pf_dados WHERE cpf IN ({placeholders})"
         df = pd.read_sql(query, conn, params=tuple(lista_norm))
         conn.close()
@@ -404,7 +398,6 @@ def app_pessoa_fisica():
     if 'import_stats' not in st.session_state: st.session_state['import_stats'] = {}
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
-    # Inicializa contadores de campos dinâmicos
     for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
         if k not in st.session_state: st.session_state[k] = 1
 
@@ -525,6 +518,7 @@ def app_pessoa_fisica():
             st.markdown("### 📤 Etapa 1: Upload")
             sel_amigavel = st.selectbox("Selecione a Tabela de Destino", opcoes_tabelas)
             st.session_state['import_table'] = mapa_real[sel_amigavel]
+            
             uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
             if uploaded_file:
                 try:
@@ -856,7 +850,7 @@ def app_pessoa_fisica():
                 else: st.error(msg)
             else: st.warning("Nome e CPF obrigatórios.")
     
-    st.caption("Atualizado em: 23/12/2025 17:15")
+    st.caption("Atualizado em: 23/12/2025 18:00")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
