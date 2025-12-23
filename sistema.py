@@ -177,7 +177,8 @@ def main():
                 else: st.error("Acesso negado.")
             if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
     else:
-        st.markdown('<style>[data-testid="stHeader"] { display: none !important; }</style>', unsafe_allow_html=True)
+        # AQUI FOI REMOVIDO O CÓDIGO QUE ESCONDIA O MENU SUPERIOR
+        
         # Botão Mensagem Rápida no Topo Direito
         col_m1, col_m2 = st.columns([10, 2])
         with col_m2:
