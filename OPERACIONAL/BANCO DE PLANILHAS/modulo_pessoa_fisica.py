@@ -354,8 +354,15 @@ def add_column_to_table(table_name, col_name, col_type):
 @st.dialog("⚠️ Excluir Cadastro")
 def dialog_excluir_pf(cpf, nome):
     st.error(f"Apagar **{nome}**?")
-    if st.button("Confirmar", type="primary"):
-        if excluir_pf(cpf): st.success("Apagado!"); st.rerun()
+    st.warning("Esta ação é irreversível.")
+    c1, c2 = st.columns(2)
+    if c1.button("Confirmar Exclusão", type="primary"):
+        if excluir_pf(cpf): 
+            st.success("Apagado!")
+            time.sleep(1)
+            st.rerun()
+    if c2.button("Cancelar"):
+        st.rerun()
 
 @st.dialog("🖨️ Imprimir Dados")
 def dialog_imprimir(dados):
@@ -388,7 +395,8 @@ def app_pessoa_fisica():
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### 🔎 Pesquisa Ampla e Avançada")
         
-        with st.form("form_pesquisa_ampla"):
+        # enter_to_submit=False para evitar submissão com ENTER
+        with st.form("form_pesquisa_ampla", enter_to_submit=False):
             t1, t2, t3, t4, t5 = st.tabs(["Identificação", "Endereço", "Contatos", "Profissional", "Contratos"])
             filtros = {}
             
@@ -423,7 +431,8 @@ def app_pessoa_fisica():
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
             
-            btn_pesquisar = st.form_submit_button("🔎 Executar Pesquisa")
+            # Botão de pesquisa sem ícone de lupa
+            btn_pesquisar = st.form_submit_button("Pesquisar")
         
         if btn_pesquisar:
             filtros_limpos = {k: v for k, v in filtros.items() if v}
@@ -438,8 +447,21 @@ def app_pessoa_fisica():
             st.write(f"**Resultados Encontrados:** {total}")
             
             if not df_res.empty:
-                st.dataframe(df_res, use_container_width=True, hide_index=True)
+                # Adiciona coluna de seleção (checkbox)
+                df_res.insert(0, "Selecionar", False)
                 
+                # Configuração da tabela interativa
+                edited_df = st.data_editor(
+                    df_res,
+                    column_config={
+                        "Selecionar": st.column_config.CheckboxColumn(required=True)
+                    },
+                    disabled=df_res.columns.drop("Selecionar"),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                # Paginação
                 total_pags = math.ceil(total / 30)
                 col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
                 with col_p1:
@@ -450,11 +472,24 @@ def app_pessoa_fisica():
                 with col_p3:
                     if pag_atual < total_pags and st.button("Próxima ➡️"):
                         st.session_state['pesquisa_pag'] += 1; st.rerun()
-                
-                col_sel = st.selectbox("Selecionar Cadastro para ver Detalhes", df_res['nome'].tolist())
-                if st.button("Ver Cadastro Selecionado"):
-                    cpf_sel = df_res[df_res['nome'] == col_sel].iloc[0]['cpf']
-                    st.session_state['pf_view'] = 'editar'; st.session_state['pf_cpf_selecionado'] = cpf_sel; st.rerun()
+
+                # Lógica de Ação nos Selecionados
+                subset_selecionado = edited_df[edited_df["Selecionar"] == True]
+                if not subset_selecionado.empty:
+                    st.divider()
+                    # Pega o primeiro selecionado (caso o usuário marque mais de um, pega o primeiro)
+                    registro = subset_selecionado.iloc[0]
+                    st.write(f"Registro selecionado: **{registro['nome']}**")
+                    
+                    c_act1, c_act2 = st.columns(2)
+                    if c_act1.button("✏️ Editar Cadastro", use_container_width=True):
+                        st.session_state['pf_view'] = 'editar'
+                        st.session_state['pf_cpf_selecionado'] = registro['cpf']
+                        st.rerun()
+                    
+                    if c_act2.button("🗑️ Excluir Cadastro", type="primary", use_container_width=True):
+                        dialog_excluir_pf(registro['cpf'], registro['nome'])
+
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
@@ -755,4 +790,4 @@ def app_pessoa_fisica():
             else: st.warning("Nome e CPF obrigatórios.")
 
 if __name__ == "__main__":
-    app_pessoa_fisica() 
+    app_pessoa_fisica()
