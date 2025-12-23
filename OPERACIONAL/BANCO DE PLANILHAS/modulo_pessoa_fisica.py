@@ -31,70 +31,66 @@ def calcular_idade_completa(data_nasc):
 def buscar_referencias(tipo):
     conn = get_conn()
     if conn:
-        df = pd.read_sql("SELECT nome FROM pf_referencias WHERE tipo = %s ORDER BY nome", conn, params=(tipo,))
-        conn.close()
-        return df['nome'].tolist()
-    return []
-
-def adicionar_referencia(tipo, nome):
-    conn = get_conn()
-    if conn:
         try:
-            cur = conn.cursor()
-            cur.execute("INSERT INTO pf_referencias (tipo, nome) VALUES (%s, %s) ON CONFLICT DO NOTHING", (tipo, nome.upper()))
-            conn.commit(); conn.close()
-            return True
-        except: pass
-    return False
+            df = pd.read_sql("SELECT nome FROM pf_referencias WHERE tipo = %s ORDER BY nome", conn, params=(tipo,))
+            conn.close()
+            return df['nome'].tolist()
+        except: 
+            conn.close()
+    return []
 
 def buscar_pf(termo):
     conn = get_conn()
     if conn:
-        query = """
-            SELECT d.id, d.nome, d.cpf, d.data_nascimento 
-            FROM pf_dados d
-            LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref
-            WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s
-            GROUP BY d.id
-            ORDER BY d.nome ASC
-            LIMIT 50
-        """
-        param = f"%{termo}%"
-        df = pd.read_sql(query, conn, params=(param, param, param))
-        conn.close()
-        return df
+        try:
+            query = """
+                SELECT d.id, d.nome, d.cpf, d.data_nascimento 
+                FROM pf_dados d
+                LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref
+                WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s
+                GROUP BY d.id
+                ORDER BY d.nome ASC
+                LIMIT 50
+            """
+            param = f"%{termo}%"
+            df = pd.read_sql(query, conn, params=(param, param, param))
+            conn.close()
+            return df
+        except:
+            conn.close()
     return pd.DataFrame()
 
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
     if conn:
-        # Dados Cadastrais
-        df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf,))
-        dados['geral'] = df_d.iloc[0] if not df_d.empty else None
-        
-        # Tabelas Filhas
-        dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf,))
-        dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf,))
-        dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf,))
-        
-        # Novas Tabelas Profissionais
-        dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf,))
-        
-        # Carrega contratos de todas as matrículas deste CPF
-        if not dados['empregos'].empty:
-            matr_list = tuple(dados['empregos']['matricula'].tolist())
-            if matr_list:
-                # Ajuste para tupla de 1 elemento no SQL
-                placeholders = ",".join(["%s"] * len(matr_list))
-                q_contratos = f"SELECT matricula_ref, contrato, dados_extras FROM pf_contratos WHERE matricula_ref IN ({placeholders})"
-                dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list)
+        try:
+            # Dados Cadastrais
+            df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf,))
+            dados['geral'] = df_d.iloc[0] if not df_d.empty else None
+            
+            # Tabelas Filhas
+            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf,))
+            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf,))
+            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf,))
+            
+            # Tabelas Profissionais
+            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf,))
+            
+            if not dados['empregos'].empty:
+                matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
+                if matr_list:
+                    placeholders = ",".join(["%s"] * len(matr_list))
+                    q_contratos = f"SELECT matricula_ref, contrato, dados_extras FROM pf_contratos WHERE matricula_ref IN ({placeholders})"
+                    dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list)
+                else:
+                    dados['contratos'] = pd.DataFrame()
             else:
                 dados['contratos'] = pd.DataFrame()
-        else:
-            dados['contratos'] = pd.DataFrame()
-            
-        conn.close()
+        except:
+            pass
+        finally:
+            conn.close()
     return dados
 
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
@@ -117,14 +113,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             cpf_chave = dados_gerais['cpf']
             
-            # 2. Limpar tabelas filhas (estratégia delete/insert simplificada)
+            # 2. Recriar dados dependentes (simples delete/insert para edição)
             if modo == "editar":
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
-                # Nota: Empregos e Contratos requerem cuidado maior para não perder IDs se fosse complexo, 
-                # mas seguiremos o padrão de recriação para garantir consistência com o editor visual.
-                # Como contratos dependem de matricula, deletamos empregos (que deleta contratos via cascade)
                 cur.execute("DELETE FROM pf_emprego_renda WHERE cpf_ref = %s", (cpf_chave,))
             
             # 3. Inserir Contatos/Endereços
@@ -135,35 +128,23 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             for _, row in df_end.iterrows():
                 if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
 
-            # 4. Inserir Empregos e Gerar Matrícula
-            mapa_matriculas = [] # Para vincular contratos depois
+            # 4. Inserir Empregos (Sem autogeração de matrícula)
             if not df_emp.empty:
                 for _, row in df_emp.iterrows():
                     conv = row.get('convenio')
                     matr = row.get('matricula')
-                    
                     if conv:
-                        # Regra: Se matrícula vazia, criar (Produto + CPF)
-                        if not matr:
-                            matr = f"{conv}{cpf_chave}".strip().upper()
-                        
-                        # Salva
                         try:
                             cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)",
                                         (cpf_chave, conv, matr, row.get('dados_extras')))
-                            mapa_matriculas.append(matr)
                         except Exception as e_emp:
                             print(f"Erro ao salvar emprego: {e_emp}")
 
             # 5. Inserir Contratos
-            # AVISO: O editor de contratos precisa saber a qual matrícula vincular.
-            # Nesta interface simplificada, assumimos que o usuário digita a matrícula correta na linha do contrato.
             if not df_contr.empty:
                 for _, row in df_contr.iterrows():
                     matr_ref = row.get('matricula_ref')
-                    # Só salva se a matrícula existir no banco (ou acabou de ser criada)
                     if matr_ref:
-                        # Verifica se matrícula existe (pode ter sido criada agora)
                         cur.execute("SELECT 1 FROM pf_emprego_renda WHERE matricula = %s", (matr_ref,))
                         if cur.fetchone():
                             cur.execute("INSERT INTO pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)",
@@ -191,7 +172,6 @@ def exportar_dados(lista_cpfs):
     conn = get_conn()
     if conn and lista_cpfs:
         placeholders = ",".join(["%s"] * len(lista_cpfs))
-        # Exportação simplificada (focada em dados cadastrais e primeiro telefone)
         query = f"""
             SELECT d.cpf, d.nome, d.data_nascimento, t.numero as telefone_principal, e.email
             FROM pf_dados d
@@ -217,6 +197,7 @@ def app_pessoa_fisica():
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'pf_cpf_selecionado' not in st.session_state: st.session_state['pf_cpf_selecionado'] = None
 
+    # MODO LISTA
     if st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         with c2: busca = st.text_input("🔎 Pesquisar (CPF / Nome / Telefone)", key="pf_busca")
@@ -230,7 +211,6 @@ def app_pessoa_fisica():
                 df_lista.insert(0, "Sel", False)
                 edited_df = st.data_editor(df_lista, column_config={"Sel": st.column_config.CheckboxColumn(required=True)}, disabled=["id", "nome", "cpf"], hide_index=True, use_container_width=True)
                 
-                # Exportar
                 sel = edited_df[edited_df["Sel"]]["cpf"].tolist()
                 if sel and st.button(f"📥 Exportar ({len(sel)})"):
                     csv = exportar_dados(sel).to_csv(index=False).encode('utf-8')
@@ -245,6 +225,7 @@ def app_pessoa_fisica():
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver os cadastros.")
 
+    # MODO NOVO / EDITAR
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         
@@ -256,6 +237,7 @@ def app_pessoa_fisica():
         
         st.markdown(f"### {geral['nome'] if geral is not None else 'Novo Cadastro'}")
 
+        # INÍCIO DO FORMULÁRIO (Atenção à indentação do botão submit no final)
         with st.form("form_pf"):
             t1, t2, t3, t4, t5, t6 = st.tabs(["Dados Pessoais", "Telefones", "Emails", "Endereços", "💼 Emprego/Renda", "📄 Contratos"])
             
@@ -267,7 +249,6 @@ def app_pessoa_fisica():
                 if nasc:
                     a, m, d = calcular_idade_completa(nasc)
                     st.caption(f"Idade: {a} anos, {m} meses, {d} dias")
-                # ... Outros campos cadastrais simplificados para o exemplo ...
                 rg = st.text_input("RG", value=geral['rg'] if geral is not None else "")
 
             with t2:
@@ -282,40 +263,39 @@ def app_pessoa_fisica():
                 df_end = dados_db.get('enderecos') if modo=='editar' else pd.DataFrame(columns=["rua", "cidade", "uf", "cep"])
                 ed_end = st.data_editor(df_end, num_rows="dynamic", use_container_width=True)
 
-            with t5: # Emprego e Renda
+            with t5:
                 st.markdown("##### Dados Profissionais")
-                
-                # Gestão rápida de Referências
-                with st.expander("➕ Adicionar Novo Convênio (Referência)"):
-                    novo_conv = st.text_input("Nome do Convênio")
-                    if st.button("Adicionar"):
-                        if adicionar_referencia('CONVENIO', novo_conv): st.success("Adicionado!")
-                
-                # Carrega opções atualizadas
                 lista_convenios = buscar_referencias('CONVENIO')
-                
                 df_emp = dados_db.get('empregos') if modo=='editar' else pd.DataFrame(columns=["convenio", "matricula", "dados_extras"])
-                
-                # Configura coluna de convênio como dropdown
                 col_config_emp = {
                     "convenio": st.column_config.SelectboxColumn("Convênio", options=lista_convenios, required=True),
-                    "matricula": st.column_config.TextColumn("Matrícula (Vazio = Auto)", help="Deixe vazio para gerar: Convenio+CPF")
+                    "matricula": st.column_config.TextColumn("Matrícula", required=True)
                 }
                 ed_emp = st.data_editor(df_emp, column_config=col_config_emp, num_rows="dynamic", use_container_width=True)
 
-            with t6: # Contratos
+            with t6:
                 st.markdown("##### Contratos e Financiamentos")
-                st.caption("Atenção: A 'Matrícula Referência' deve existir na aba Emprego/Renda.")
+                st.caption("Insira a matrícula vinculada (deve existir na aba Emprego).")
                 df_contr = dados_db.get('contratos') if modo=='editar' else pd.DataFrame(columns=["matricula_ref", "contrato", "dados_extras"])
                 ed_contr = st.data_editor(df_contr, num_rows="dynamic", use_container_width=True)
 
-            if st.form_submit_button("💾 Salvar Tudo"):
-                if nome and cpf:
-                    dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg} # Campos básicos mapeados
-                    ok, msg = salvar_pf(dg, ed_tel, ed_email, ed_end, ed_emp, ed_contr, modo, cpf_atual)
-                    if ok: st.success(msg); st.session_state['pf_view'] = 'lista'; st.rerun()
-                    else: st.error(msg)
-                else: st.warning("Nome e CPF obrigatórios.")
+            # BOTÃO DEVE ESTAR AQUI, DENTRO DO BLOCO 'WITH ST.FORM'
+            st.markdown("---")
+            confirmar = st.form_submit_button("💾 Salvar Tudo")
+
+        # LÓGICA FORA DO CONTEXTO VISUAL DO FORM, MAS USANDO O ESTADO DO BOTÃO
+        if confirmar:
+            if nome and cpf:
+                dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
+                ok, msg = salvar_pf(dg, ed_tel, ed_email, ed_end, ed_emp, ed_contr, modo, cpf_atual)
+                if ok: 
+                    st.success(msg)
+                    st.session_state['pf_view'] = 'lista'
+                    st.rerun()
+                else: 
+                    st.error(msg)
+            else: 
+                st.warning("Nome e CPF obrigatórios.")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
