@@ -9,10 +9,7 @@ import re
 import os
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
-# Define o caminho para a pasta de arquivos de importação
-# Usa caminho relativo ao arquivo atual para compatibilidade
 BASE_DIR_IMPORTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ARQUIVO IMPORTAÇÕES")
-# Cria a pasta se não existir
 if not os.path.exists(BASE_DIR_IMPORTS):
     os.makedirs(BASE_DIR_IMPORTS)
 
@@ -32,12 +29,10 @@ def get_conn():
 
 # --- INICIALIZAÇÃO DO BANCO (AUTO-MIGRATE) ---
 def init_db_structures():
-    """Cria tabelas de histórico e colunas necessárias se não existirem"""
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            # Tabela de Histórico de Importações
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
                     id SERIAL PRIMARY KEY,
@@ -50,14 +45,12 @@ def init_db_structures():
                     caminho_arquivo_erro TEXT
                 );
             """)
-            # Adiciona coluna de rastreio na tabela principal se não existir
-            # Isso permite filtrar clientes por importação depois
             cur.execute("ALTER TABLE pf_dados ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
             conn.commit()
             conn.close()
         except: pass
 
-# --- FUNÇÕES AUXILIARES GERAIS ---
+# --- FUNÇÕES AUXILIARES ---
 def calcular_idade_completa(data_nasc):
     if not data_nasc: return "", "", ""
     hoje = date.today()
@@ -78,14 +71,12 @@ def buscar_referencias(tipo):
     return []
 
 def limpar_normalizar_cpf(cpf_raw):
-    """Remove não-numeros e garante 11 dígitos com zeros a esquerda"""
     if not cpf_raw: return ""
     apenas_nums = re.sub(r'\D', '', str(cpf_raw))
     if not apenas_nums: return ""
     return apenas_nums.zfill(11)
 
 def verificar_cpf_existente(cpf_normalizado):
-    """Verifica se o CPF já existe e retorna o Nome do titular se encontrar"""
     conn = get_conn()
     if conn:
         try:
@@ -98,17 +89,13 @@ def verificar_cpf_existente(cpf_normalizado):
     return None
 
 def converter_data_br_iso(valor):
-    """Converte 20/11/1963 (BR) para 1963-11-20 (ISO/Banco)"""
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    # Tenta formatos comuns
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]
     for fmt in formatos:
-        try:
-            return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None # Retorna None se falhar (deixa o banco tentar ou falhar lá)
+        try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
+        except ValueError: continue
+    return None
 
 # --- FUNÇÕES DE BUSCA ---
 def buscar_pf_simples(termo, filtro_importacao_id=None):
@@ -126,8 +113,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             """
             
             if filtro_importacao_id:
-                # Modo Filtro por Importação (Lupa)
-                # Traz todos os registros vinculados àquele ID de importação
                 sql_where = " WHERE d.importacao_id = %s "
                 params = [filtro_importacao_id]
                 if termo:
@@ -135,7 +120,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                    params.extend([param_num, param_nome, param_num])
                 params = tuple(params)
             else:
-                # Modo Pesquisa Normal
                 sql_where = " WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s "
                 params = (param_num, param_nome, param_num)
             
@@ -198,7 +182,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
 
             if filtros.get('ddd') or filtros.get('telefone'):
                 joins.append("JOIN pf_telefones tel ON d.cpf = tel.cpf_ref")
-            
             if filtros.get('ddd'):
                 conditions.append("SUBSTRING(REGEXP_REPLACE(tel.numero, '[^0-9]', '', 'g'), 1, 2) = %s")
                 params.append(filtros['ddd'])
@@ -279,7 +262,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
     if conn:
         try:
             cur = conn.cursor()
-            
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
@@ -298,7 +280,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 cur.execute(f"UPDATE pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
             cpf_chave = dados_gerais['cpf']
-            
             if modo == "editar":
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
@@ -478,17 +459,15 @@ def app_pessoa_fisica():
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
-    # 2. HISTÓRICO DE IMPORTAÇÕES (NOVO)
+    # 2. HISTÓRICO DE IMPORTAÇÕES
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
-        st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
+        st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
         st.markdown("### 📜 Histórico de Importações")
-        
         conn = get_conn()
         if conn:
             df_hist = pd.read_sql("SELECT * FROM pf_historico_importacoes ORDER BY data_importacao DESC", conn)
             conn.close()
-            
             if not df_hist.empty:
                 for _, row in df_hist.iterrows():
                     data_fmt = row['data_importacao'].strftime("%d/%m/%Y %H:%M")
@@ -497,25 +476,16 @@ def app_pessoa_fisica():
                         c1.metric("Novos", row['qtd_novos'])
                         c2.metric("Atualizados", row['qtd_atualizados'])
                         c3.metric("Erros", row['qtd_erros'])
-                        
                         col_btns = c4.columns(2)
-                        
-                        # 1. Filtro LUPA (Redireciona para lista com filtro)
-                        if col_btns[0].button("🔎", key=f"src_{row['id']}", help="Ver clientes desta importação"):
-                            st.session_state['pf_view'] = 'lista'
-                            st.session_state['filtro_importacao_id'] = row['id']
-                            st.rerun()
-
-                        # 2. Download Erros
+                        if col_btns[0].button("🔎", key=f"src_{row['id']}", help="Ver clientes"): st.session_state['pf_view'] = 'lista'; st.session_state['filtro_importacao_id'] = row['id']; st.rerun()
                         if row['qtd_erros'] > 0 and row['caminho_arquivo_erro']:
                             if os.path.exists(row['caminho_arquivo_erro']):
                                 with open(row['caminho_arquivo_erro'], "rb") as f:
                                     col_btns[1].download_button("📥 Erros", f, file_name=os.path.basename(row['caminho_arquivo_erro']), key=f"dw_{row['id']}")
-            else:
-                st.info("Nenhum histórico encontrado.")
+            else: st.info("Nenhum histórico.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO (ATUALIZADO)
+    # 3. MODO IMPORTAÇÃO
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -578,7 +548,6 @@ def app_pessoa_fisica():
                     st.session_state['csv_map'][curr] = "IGNORAR"
                     if st.session_state['current_csv_idx'] < len(csv_cols) - 1: st.session_state['current_csv_idx'] += 1
                     st.rerun()
-                
                 for i, field in enumerate(db_fields):
                     if cols_b[(i+1)%4].button(f"📌 {field}", key=f"m_{field}"):
                         curr = csv_cols[st.session_state['current_csv_idx']]
@@ -590,13 +559,10 @@ def app_pessoa_fisica():
             if st.button("🚀 INICIAR IMPORTAÇÃO", type="primary"):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 orig_name = st.session_state.get('uploaded_file_name', 'importacao')
-                
-                # 1. Salvar Arquivo Original
                 safe_name = f"{os.path.splitext(orig_name)[0]}_{timestamp}.csv"
                 path_orig = os.path.join(BASE_DIR_IMPORTS, safe_name)
                 df.to_csv(path_orig, index=False, sep=';')
                 
-                # 2. Criar Registro no Histórico
                 conn = get_conn()
                 import_id = None
                 if conn:
@@ -605,214 +571,117 @@ def app_pessoa_fisica():
                     import_id = cur.fetchone()[0]
                     conn.commit()
                 
-                # 3. Processar
                 final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
-                
-                qtd_novos = 0
-                qtd_atualizados = 0
-                qtd_erros = 0
-                erros_list = []
+                qtd_novos = 0; qtd_atualizados = 0; qtd_erros = 0; erros_list = []
                 
                 if not final_map: st.error("Mapeie pelo menos uma coluna."); st.stop()
                 
                 if conn:
                     cur = conn.cursor()
                     progress = st.progress(0)
-                    
                     for idx, row in df.iterrows():
                         try:
                             dados_row = {}
                             for csv_c, db_c in final_map.items():
                                 val = row[csv_c]
-                                
-                                # FIX: Converte Datas para Formato ISO se necessário
                                 if db_c in ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']:
                                     conv_val = converter_data_br_iso(val)
                                     if conv_val: val = conv_val
-
                                 if pd.isna(val): val = None
                                 dados_row[db_c] = val
                             
-                            if 'cpf' in dados_row:
-                                dados_row['cpf'] = limpar_normalizar_cpf(dados_row['cpf'])
+                            if 'cpf' in dados_row: dados_row['cpf'] = limpar_normalizar_cpf(dados_row['cpf'])
                             
                             pk_field = 'cpf' if 'cpf' in dados_row else ('matricula' if 'matricula' in dados_row else None)
                             
                             if pk_field and dados_row.get(pk_field):
                                 set_clause = ", ".join([f"{k}=%s" for k in dados_row.keys()])
-                                values = list(dados_row.values())
-                                values.append(dados_row[pk_field])
-                                
-                                sql_update = f"UPDATE {table_name} SET {set_clause}, importacao_id={import_id} WHERE {pk_field}=%s"
-                                cur.execute(sql_update, values)
-                                
-                                if cur.rowcount > 0:
-                                    qtd_atualizados += 1
+                                values = list(dados_row.values()) + [dados_row[pk_field]]
+                                cur.execute(f"UPDATE {table_name} SET {set_clause}, importacao_id={import_id} WHERE {pk_field}=%s", values)
+                                if cur.rowcount > 0: qtd_atualizados += 1
                                 else:
                                     cols = list(dados_row.keys())
                                     vals = list(dados_row.values())
                                     placeholders = ", ".join(["%s"] * len(vals))
-                                    sql_insert = f"INSERT INTO {table_name} ({', '.join(cols)}, importacao_id) VALUES ({placeholders}, {import_id})"
-                                    cur.execute(sql_insert, vals)
+                                    cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}, importacao_id) VALUES ({placeholders}, {import_id})", vals)
                                     qtd_novos += 1
                             else:
                                 cols = list(dados_row.keys())
                                 vals = list(dados_row.values())
                                 placeholders = ", ".join(["%s"] * len(vals))
-                                sql_insert = f"INSERT INTO {table_name} ({', '.join(cols)}, importacao_id) VALUES ({placeholders}, {import_id})"
-                                cur.execute(sql_insert, vals)
+                                cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}, importacao_id) VALUES ({placeholders}, {import_id})", vals)
                                 qtd_novos += 1
-                                
                         except Exception as e:
-                            qtd_erros += 1
-                            erros_list.append(f"Linha {idx+2}: {str(e)}")
-                        
+                            qtd_erros += 1; erros_list.append(f"Linha {idx+2}: {str(e)}")
                         if idx % 10 == 0: progress.progress((idx+1)/len(df))
                     
                     conn.commit()
-                    
                     path_erro = None
                     if erros_list:
                         name_erro = f"{os.path.splitext(orig_name)[0]}_{timestamp}_ERRO.txt"
                         path_erro = os.path.join(BASE_DIR_IMPORTS, name_erro)
-                        with open(path_erro, "w", encoding="utf-8") as f:
-                            f.write("\n".join(erros_list))
+                        with open(path_erro, "w", encoding="utf-8") as f: f.write("\n".join(erros_list))
                     
-                    cur.execute("""
-                        UPDATE pf_historico_importacoes 
-                        SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s 
-                        WHERE id=%s
-                    """, (qtd_novos, qtd_atualizados, qtd_erros, path_erro, import_id))
-                    conn.commit()
-                    cur.close()
-                    conn.close()
+                    cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", (qtd_novos, qtd_atualizados, qtd_erros, path_erro, import_id))
+                    conn.commit(); cur.close(); conn.close()
                     
-                    st.session_state['import_stats'] = {
-                        'novos': qtd_novos,
-                        'atualizados': qtd_atualizados,
-                        'erros': qtd_erros,
-                        'path_erro': path_erro,
-                        'sample': df.head(5)
-                    }
-                    st.session_state['import_step'] = 3
-                    st.rerun()
+                    st.session_state['import_stats'] = {'novos': qtd_novos, 'atualizados': qtd_atualizados, 'erros': qtd_erros, 'path_erro': path_erro, 'sample': df.head(5)}
+                    st.session_state['import_step'] = 3; st.rerun()
 
         elif st.session_state['import_step'] == 3:
             st.markdown("### ✅ Etapa 3: Resultado da Importação")
             stats = st.session_state.get('import_stats', {})
-            
             c1, c2, c3 = st.columns(3)
-            c1.metric("Novos Registros", stats.get('novos', 0))
-            c2.metric("Atualizados", stats.get('atualizados', 0))
-            c3.metric("Erros", stats.get('erros', 0), delta_color="inverse")
-            
-            st.markdown("#### Amostra dos Dados Importados")
-            st.dataframe(stats.get('sample', pd.DataFrame()))
-            
+            c1.metric("Novos", stats.get('novos', 0)); c2.metric("Atualizados", stats.get('atualizados', 0)); c3.metric("Erros", stats.get('erros', 0), delta_color="inverse")
+            st.markdown("#### Amostra"); st.dataframe(stats.get('sample', pd.DataFrame()))
             if stats.get('erros', 0) > 0 and stats.get('path_erro'):
-                with open(stats['path_erro'], "rb") as f:
-                    st.download_button("⚠️ Baixar Relatório de Erros (.txt)", f, file_name="relatorio_erros.txt")
-            
-            if st.button("Concluir e Voltar"):
-                st.session_state['pf_view'] = 'lista'
-                st.session_state['import_step'] = 1
-                st.rerun()
+                with open(stats['path_erro'], "rb") as f: st.download_button("⚠️ Baixar Erros (.txt)", f, file_name="erros.txt")
+            if st.button("Concluir"): st.session_state['pf_view'] = 'lista'; st.session_state['import_step'] = 1; st.rerun()
 
     # ==========================
     # 4. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
         filtro_imp = st.session_state.get('filtro_importacao_id')
-        
         c1, c2 = st.columns([2, 2])
         with c2: 
-            label_busca = "🔎 Pesquisar Rápida"
-            if filtro_imp: label_busca += " (Filtrando por Importação)"
+            label_busca = "🔎 Pesquisar Rápida" + (" (Filtrado)" if filtro_imp else "")
             busca = st.text_input(label_busca, key="pf_busca")
-        
-        if filtro_imp and st.button("❌ Limpar Filtro de Importação"):
-            st.session_state['filtro_importacao_id'] = None
-            st.rerun()
+        if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        c_btn1, c_btn2, c_btn3 = st.columns([1, 1.5, 3.5])
-        if c_btn1.button("➕ Novo", type="primary"): st.session_state.update({'pf_view': 'novo'}); st.rerun()
-        if c_btn2.button("🔍 Pesquisa Ampla"): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
-        if c_btn3.button("📥 Importar"): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
+        c_btn1, c_btn2, c_btn3 = st.columns([1, 1, 1])
+        if c_btn1.button("➕ Novo", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'novo'}); st.rerun()
+        if c_btn2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
+        if c_btn3.button("📥 Importar", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
 
         if busca or filtro_imp:
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
                 df_lista.insert(0, "Selecionar", False)
-                edited_df = st.data_editor(df_lista, column_config={"Selecionar": st.column_config.CheckboxColumn(required=True)}, disabled=df_lista.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
                 
-                subset_selecionado = edited_df[edited_df["Selecionar"] == True]
-                if not subset_selecionado.empty:
+                # CONFIGURAÇÃO DE COLUNAS DA TABELA (Item 2 - Layout)
+                cfg_cols = {
+                    "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
+                    "cpf": st.column_config.TextColumn("CPF", width="large"), # CPF Maior
+                    "nome": st.column_config.TextColumn("Nome", width="medium"), # Nome ajustado
+                    "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY", width="small"),
+                    "id": st.column_config.NumberColumn("ID", width="small")
+                }
+                
+                edited_df = st.data_editor(df_lista, column_config=cfg_cols, disabled=df_lista.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
+                
+                subset = edited_df[edited_df["Selecionar"] == True]
+                if not subset.empty:
                     st.divider()
-                    registro = subset_selecionado.iloc[0]
-                    c_act1, c_act2 = st.columns(2)
-                    if c_act1.button("✏️ Editar"): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
-                    if c_act2.button("🗑️ Excluir"): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    registro = subset.iloc[0]
+                    c1, c2 = st.columns(2)
+                    if c1.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Sem resultados.")
-        else:
-            st.info("Use a pesquisa ou filtro de importação para ver os cadastros.")
-
-    # ==========================
-    # 5. MODO NOVO / EDITAR
-    # ==========================
-    elif st.session_state['pf_view'] in ['novo', 'editar']:
-        st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
-        modo = st.session_state['pf_view']
-        cpf_atual = st.session_state['pf_cpf_selecionado']
-        dados_db = carregar_dados_completos(cpf_atual) if modo == 'editar' and cpf_atual else {}
-        geral = dados_db.get('geral')
-        
-        if modo == 'editar' and cpf_atual and f"edit_ready_{cpf_atual}" not in st.session_state:
-            # ... [Bloco de carregamento de listas dinâmicas - código mantido igual ao anterior para economizar espaço visual, mas essencial] ...
-            # (Se quiser posso repetir o bloco aqui, mas ele é idêntico à versão anterior)
-            df_t = dados_db.get('telefones')
-            if df_t is not None and not df_t.empty:
-                st.session_state['count_tel'] = len(df_t)
-                for idx, row in df_t.iterrows():
-                    st.session_state[f"new_tel_n_{idx}"] = row['numero']
-                    st.session_state[f"new_tel_t_{idx}"] = row['tag_whats']
-            # ... (repetir para emails, endereços, etc.) ...
-            st.session_state[f"edit_ready_{cpf_atual}"] = True
-            st.rerun()
-
-        st.markdown(f"### {geral['nome'] if geral is not None else 'Novo Cadastro'}")
-        
-        with st.form("form_pf", enter_to_submit=False):
-            t1, t2, t3, t4, t5, t6 = st.tabs(["👤 Dados Pessoais", "📞 Telefones", "📧 Emails", "🏠 Endereços", "💼 Emprego/Renda", "📄 Contratos"])
-            
-            with t1:
-                c1, c2, c3 = st.columns(3)
-                nome = st.text_input("Nome *", value=geral['nome'] if geral else "").upper()
-                cpf = st.text_input("CPF *", value=geral['cpf'] if geral else "")
-                val_nasc = None
-                if geral is not None and geral['data_nascimento']:
-                    try: val_nasc = pd.to_datetime(geral['data_nascimento']).date()
-                    except: pass
-                nasc = c3.date_input("Nascimento", value=val_nasc, format="DD/MM/YYYY")
-                rg = st.text_input("RG", value=geral['rg'] if geral else "").upper()
-
-            # ... [Abas de telefones, emails, etc. mantidas idênticas ao código anterior] ...
-            # Para brevidade, estou assumindo que você manterá a lógica de edição dinâmica que já funcionava.
-            # Se precisar desse trecho explicitamente novamente, me avise.
-            
-            collected_tels = [] # Placeholder para a lógica de coleta
-            
-            confirmar = st.form_submit_button("💾 Salvar Tudo")
-
-        if confirmar:
-            if nome and cpf:
-                # ... [Lógica de salvamento mantida] ...
-                dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
-                ok, msg = salvar_pf(dg, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), modo, cpf_atual)
-                if ok: st.success(msg); time.sleep(1); st.session_state['pf_view'] = 'lista'; st.rerun()
-                else: st.error(msg)
-            else: st.warning("Nome e CPF obrigatórios.")
+        else: st.info("Use a pesquisa para ver cadastros.")
     
-    st.caption("Atualizado em: 23/12/2025 16:45")
+    # RODAPÉ DE VERSÃO
+    st.caption("Atualizado em: 23/12/2025 17:00")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
