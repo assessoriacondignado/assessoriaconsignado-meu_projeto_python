@@ -42,11 +42,36 @@ def buscar_referencias(tipo):
             conn.close()
     return []
 
+def limpar_normalizar_cpf(cpf_raw):
+    """Remove não-numeros e garante 11 dígitos com zeros a esquerda"""
+    if not cpf_raw: return ""
+    apenas_nums = re.sub(r'\D', '', str(cpf_raw))
+    if not apenas_nums: return ""
+    return apenas_nums.zfill(11)
+
+def verificar_cpf_existente(cpf_normalizado):
+    """Verifica se o CPF já existe e retorna o Nome do titular se encontrar"""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT nome FROM pf_dados WHERE cpf = %s", (cpf_normalizado,))
+            res = cur.fetchone()
+            conn.close()
+            return res[0] if res else None
+        except:
+            conn.close()
+    return None
+
 # --- FUNÇÕES DE BUSCA (SIMPLES E AMPLA) ---
 def buscar_pf_simples(termo):
     conn = get_conn()
     if conn:
         try:
+            # Tenta normalizar o termo caso seja um CPF digitado parcialmente
+            termo_limpo = re.sub(r'\D', '', termo)
+            param = f"%{termo}%"
+            
             query = """
                 SELECT d.id, d.nome, d.cpf, d.data_nascimento 
                 FROM pf_dados d
@@ -56,8 +81,7 @@ def buscar_pf_simples(termo):
                 ORDER BY d.nome ASC
                 LIMIT 50
             """
-            param = f"%{termo}%"
-            df = pd.read_sql(query, conn, params=(param, param, param))
+            df = pd.read_sql(query, conn, params=(f"%{termo_limpo}%", param, param))
             conn.close()
             return df
         except:
@@ -93,8 +117,9 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 conditions.append("d.nome ILIKE %s")
                 params.append(f"%{filtros['nome']}%")
             if filtros.get('cpf'):
-                conditions.append("d.cpf ILIKE %s")
-                params.append(f"%{filtros['cpf']}%")
+                cpf_norm = limpar_normalizar_cpf(filtros['cpf'])
+                conditions.append("d.cpf = %s") # Busca exata pelo normalizado
+                params.append(cpf_norm)
             if filtros.get('rg'):
                 conditions.append("d.rg ILIKE %s")
                 params.append(f"%{filtros['rg']}%")
@@ -176,12 +201,14 @@ def carregar_dados_completos(cpf):
     dados = {}
     if conn:
         try:
-            df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf,))
+            # Garante busca pelo normalizado
+            cpf_norm = limpar_normalizar_cpf(cpf)
+            df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
-            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf,))
-            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf,))
-            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf,))
-            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf,))
+            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             
             if not dados['empregos'].empty:
                 matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
@@ -201,6 +228,14 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
         try:
             cur = conn.cursor()
             
+            # Normalização de CPF para garantir a regra de 11 dígitos com zeros a esquerda
+            cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
+            dados_gerais['cpf'] = cpf_limpo
+            
+            # Normaliza o cpf original se vier
+            if cpf_original:
+                cpf_original = limpar_normalizar_cpf(cpf_original)
+
             # Converte dados gerais para UPPER
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
@@ -255,6 +290,9 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             conn.commit()
             conn.close()
             return True, "Salvo com sucesso!"
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return False, "Erro: CPF já cadastrado no sistema."
         except Exception as e: return False, str(e)
     return False, "Erro de conexão"
 
@@ -262,8 +300,9 @@ def excluir_pf(cpf):
     conn = get_conn()
     if conn:
         try:
+            cpf_norm = limpar_normalizar_cpf(cpf)
             cur = conn.cursor()
-            cur.execute("DELETE FROM pf_dados WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM pf_dados WHERE cpf = %s", (cpf_norm,))
             conn.commit(); conn.close()
             return True
         except: return False
@@ -272,7 +311,8 @@ def excluir_pf(cpf):
 def exportar_dados(lista_cpfs):
     conn = get_conn()
     if conn and lista_cpfs:
-        placeholders = ",".join(["%s"] * len(lista_cpfs))
+        lista_norm = [limpar_normalizar_cpf(c) for c in lista_cpfs]
+        placeholders = ",".join(["%s"] * len(lista_norm))
         query = f"""
             SELECT d.cpf, d.nome, d.data_nascimento, t.numero as telefone_principal, e.email
             FROM pf_dados d
@@ -280,7 +320,7 @@ def exportar_dados(lista_cpfs):
             LEFT JOIN pf_emails e ON d.cpf = e.cpf_ref
             WHERE d.cpf IN ({placeholders})
         """
-        df = pd.read_sql(query, conn, params=tuple(lista_cpfs))
+        df = pd.read_sql(query, conn, params=tuple(lista_norm))
         conn.close()
         return df
     return pd.DataFrame()
@@ -569,7 +609,7 @@ def app_pessoa_fisica():
                     # Mantém data_editor para edição em massa rápida se for editar
                     df_tel = dados_db.get('telefones')
                     cfg_tel = {
-                        "numero": st.column_config.TextColumn("Número", help="Celular com DDD", width="medium", required=True, validate=r"^\d{11}$"),
+                        "numero": st.column_config.TextColumn("Telefone", help="Telefone (DDD+9 digitos)", width="medium", required=True, validate=r"^\d{11}$"),
                         "tag_whats": st.column_config.SelectboxColumn("WhatsApp?", options=["Sim", "Não"], required=True, width="small")
                     }
                     ed_tel = st.data_editor(df_tel, column_config=cfg_tel, num_rows="dynamic", use_container_width=True, key="editor_tel")
@@ -662,6 +702,26 @@ def app_pessoa_fisica():
 
         if confirmar:
             if nome and cpf:
+                
+                # --- VERIFICAÇÃO DE DUPLICIDADE (NOVA REGRA) ---
+                cpf_limpo_verif = limpar_normalizar_cpf(cpf)
+                
+                # Só verifica se estiver no modo NOVO e clicou em salvar
+                if modo == 'novo':
+                    nome_existente = verificar_cpf_existente(cpf_limpo_verif)
+                    if nome_existente:
+                        st.error(f"⚠️ Este CPF já está cadastrado para: **{nome_existente}**")
+                        st.warning("Não é permitido cadastros duplicados.")
+                        
+                        col_dup1, col_dup2 = st.columns(2)
+                        if col_dup1.button("🔄 Editar cadastro existente?"):
+                            st.session_state['pf_view'] = 'editar'
+                            st.session_state['pf_cpf_selecionado'] = cpf_limpo_verif
+                            st.rerun()
+                        # Interrompe a execução para não salvar duplicado
+                        st.stop() 
+
+                # --- SE PASSOU NA VERIFICAÇÃO, PROSSEGUE ---
                 dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
                 
                 # Prepara DataFrames para a função de salvamento
