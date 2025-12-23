@@ -576,8 +576,8 @@ def app_pessoa_fisica():
                 else:
                     # MODO NOVO: Inputs Individuais
                     for i in range(st.session_state['count_tel']):
-                        c_num, c_tag = st.columns([3, 1])
-                        val_num = c_num.text_input(f"Celular {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
+                        c_num, c_tag, c_vazio = st.columns([2, 1, 4])
+                        val_num = c_num.text_input(f"Telefone {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
                         val_tag = c_tag.selectbox(f"WhatsApp? {i+1}", ["Sim", "Não"], key=f"new_tel_t_{i}")
                         if val_num: collected_tels.append({"numero": val_num, "tag_whats": val_tag})
                     
