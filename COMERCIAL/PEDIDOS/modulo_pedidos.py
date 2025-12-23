@@ -22,6 +22,21 @@ def get_conn():
         st.error(f"Erro ao conectar ao banco: {e}")
         return None
 
+# --- FUNÇÕES AUXILIARES ---
+def listar_modelos_mensagens():
+    """Busca os modelos de mensagem cadastrados no W-API para este módulo"""
+    conn = get_conn()
+    if conn:
+        try:
+            # Filtra apenas modelos do módulo PEDIDOS
+            query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'PEDIDOS' ORDER BY chave_status ASC"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df['chave_status'].tolist()
+        except:
+            conn.close()
+    return []
+
 # --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
 def buscar_clientes():
     conn = get_conn()
@@ -63,11 +78,6 @@ def criar_pedido(cliente, produto, qtd, valor_total, avisar_cliente, avisar_grup
             if instancia:
                 inst_id, inst_token = instancia
                 
-                # Aviso Grupo (Opcional: Pode ser configurado via template também futuramente)
-                if avisar_grupo: 
-                    # Simples hardcode ou busca template 'grupo_novo_pedido' se desejar
-                    pass 
-
                 # Aviso Cliente
                 if avisar_cliente and cliente['telefone']:
                     template = modulo_wapi.buscar_template("PEDIDOS", "criacao")
@@ -106,7 +116,7 @@ def editar_dados_pedido(id_pedido, nova_qtd, novo_valor_unit, novo_cliente, novo
             return False
     return False
 
-def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente, obs_status_texto):
+def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente, obs_status_texto, modelo_msg_escolhido="Automático (Padrão)"):
     conn = get_conn()
     if conn:
         try:
@@ -121,8 +131,14 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente
             if avisar_cliente and dados_pedido['telefone_cliente']:
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
-                    # Busca template centralizado: chaves ex: 'pago', 'registro', 'pendente'
-                    chave_msg = novo_status.lower().replace(" ", "_")
+                    # Lógica de seleção do modelo
+                    if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
+                        # Usa a chave selecionada manualmente
+                        chave_msg = modelo_msg_escolhido
+                    else:
+                        # Usa o padrão (nome do status convertido para chave)
+                        chave_msg = novo_status.lower().replace(" ", "_")
+                    
                     template = modulo_wapi.buscar_template("PEDIDOS", chave_msg)
                     
                     if template:
@@ -173,12 +189,22 @@ def dialog_editar_dados(pedido):
 @st.dialog("🔄 Atualizar Status")
 def dialog_status_pedido(pedido):
     status_opcoes = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
+    
+    # Carrega opções de modelos do W-API
+    lista_modelos = listar_modelos_mensagens()
+    opcoes_msg = ["Automático (Padrão)"] + lista_modelos
+    
     with st.form("form_status_update"):
         novo = st.selectbox("Novo Status", status_opcoes)
+        
+        # Novo campo de seleção de modelo
+        modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
+        
         obs = st.text_area("Observação")
         avisar = st.checkbox("Avisar cliente?", value=True)
+        
         if st.form_submit_button("Atualizar"):
-            if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs):
+            if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs, modelo_escolhido):
                 st.success("Status Alterado!")
                 st.rerun()
 
