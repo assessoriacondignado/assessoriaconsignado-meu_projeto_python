@@ -68,9 +68,13 @@ def buscar_pf_simples(termo):
     conn = get_conn()
     if conn:
         try:
-            # Tenta normalizar o termo caso seja um CPF digitado parcialmente
+            # Remove caracteres não numéricos para busca em campos numéricos (CPF, Telefone)
             termo_limpo = re.sub(r'\D', '', termo)
-            param = f"%{termo}%"
+            
+            # Termo original para busca por Nome
+            param_nome = f"%{termo}%"
+            # Termo limpo para CPF e Telefone (garante match independente de formatação visual)
+            param_num = f"%{termo_limpo}%"
             
             query = """
                 SELECT d.id, d.nome, d.cpf, d.data_nascimento 
@@ -81,7 +85,8 @@ def buscar_pf_simples(termo):
                 ORDER BY d.nome ASC
                 LIMIT 50
             """
-            df = pd.read_sql(query, conn, params=(f"%{termo_limpo}%", param, param))
+            # Aplica termo_limpo no CPF e Telefone, e termo original no Nome
+            df = pd.read_sql(query, conn, params=(param_num, param_nome, param_num))
             conn.close()
             return df
         except:
@@ -152,8 +157,10 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 params.append(filtros['ddd'])
             
             if filtros.get('telefone'):
+                # Limpa a entrada do filtro também para garantir match numérico
+                tel_clean = re.sub(r'\D', '', filtros['telefone'])
                 conditions.append("tel.numero LIKE %s")
-                params.append(f"%{filtros['telefone']}%")
+                params.append(f"%{tel_clean}%")
 
             if filtros.get('email'):
                 joins.append("JOIN pf_emails em ON d.cpf = em.cpf_ref")
@@ -415,7 +422,6 @@ def app_pessoa_fisica():
             with t3:
                 c_ddd, c_tel, c_email = st.columns([0.5, 1.5, 4])
                 filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
-                # AJUSTE 1.1: Telefone limitado a 9 dígitos
                 filtros['telefone'] = c_tel.text_input("Telefone", max_chars=9)
                 filtros['email'] = c_email.text_input("E-mail")
             
