@@ -401,11 +401,9 @@ def app_pessoa_fisica():
                 filtros['nome'] = c1.text_input("Nome")
                 filtros['cpf'] = c2.text_input("CPF")
                 filtros['rg'] = c3.text_input("RG")
-                # AJUSTE 1.1: Formato data_input
                 filtros['nascimento'] = c4.date_input("Nascimento", value=None, format="DD/MM/YYYY")
             
             with t2:
-                # AJUSTE 1.2: Redução largura UF
                 c_uf, c_cid, c_bai, c_rua = st.columns([1, 3, 3, 3])
                 lista_ufs = buscar_opcoes_filtro('uf', 'pf_enderecos')
                 sel_uf = c_uf.selectbox("UF", [""] + lista_ufs)
@@ -415,10 +413,10 @@ def app_pessoa_fisica():
                 filtros['rua'] = c_rua.text_input("Rua")
             
             with t3:
-                # AJUSTE 1.3: Redução largura DDD
                 c_ddd, c_tel, c_email = st.columns([0.5, 1.5, 4])
                 filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
-                filtros['telefone'] = c_tel.text_input("Telefone")
+                # AJUSTE 1.1: Telefone limitado a 9 dígitos
+                filtros['telefone'] = c_tel.text_input("Telefone", max_chars=9)
                 filtros['email'] = c_email.text_input("E-mail")
             
             with t4:
@@ -678,7 +676,6 @@ def app_pessoa_fisica():
 
             with t3:
                 for i in range(st.session_state['count_email']):
-                    # AJUSTE 2.1: Redução largura E-mail
                     ce1, ce2 = st.columns([4, 2])
                     val_email = ce1.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
                     if val_email: collected_emails.append({"email": val_email})
@@ -691,7 +688,6 @@ def app_pessoa_fisica():
                 for i in range(st.session_state['count_end']):
                     st.markdown(f"**Endereço {i+1}**")
                     c_rua, c_bairro = st.columns(2)
-                    # AJUSTE 2.2: Redução largura UF
                     c_cid, c_uf, c_cep = st.columns([3, 1, 1.5])
                     
                     rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
