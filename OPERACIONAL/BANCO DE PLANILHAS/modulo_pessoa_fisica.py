@@ -539,8 +539,19 @@ def app_pessoa_fisica():
                 rg = st.text_input("RG", value=geral['rg'] if geral is not None else "").upper()
 
             with t2:
+                # --- ATUALIZAÇÃO SOLICITADA: AJUSTE DE LARGURA DA COLUNA TELEFONE ---
                 df_tel = dados_db.get('telefones') if modo=='editar' else pd.DataFrame(columns=["numero", "tag_whats"])
-                ed_tel = st.data_editor(df_tel, num_rows="dynamic", use_container_width=True)
+                
+                cfg_tel = {
+                    "numero": st.column_config.TextColumn(
+                        "Número",
+                        help="DDD+Número (Ex: 11999999999)",
+                        width="medium", # Largura ajustada para formato celular
+                        required=True
+                    )
+                }
+                
+                ed_tel = st.data_editor(df_tel, column_config=cfg_tel, num_rows="dynamic", use_container_width=True)
 
             with t3:
                 df_email = dados_db.get('emails') if modo=='editar' else pd.DataFrame(columns=["email"])
@@ -575,4 +586,3 @@ def app_pessoa_fisica():
 
 if __name__ == "__main__":
     app_pessoa_fisica()
-    
