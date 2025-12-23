@@ -539,15 +539,22 @@ def app_pessoa_fisica():
                 rg = st.text_input("RG", value=geral['rg'] if geral is not None else "").upper()
 
             with t2:
-                # --- ATUALIZAÇÃO SOLICITADA: AJUSTE DE LARGURA DA COLUNA TELEFONE ---
+                # --- ATUALIZAÇÃO SOLICITADA: VALIDAÇÃO CELULAR + TAG WHATS (SIM/NÃO) ---
                 df_tel = dados_db.get('telefones') if modo=='editar' else pd.DataFrame(columns=["numero", "tag_whats"])
                 
                 cfg_tel = {
                     "numero": st.column_config.TextColumn(
                         "Número",
-                        help="DDD+Número (Ex: 11999999999)",
-                        width="medium", # Largura ajustada para formato celular
-                        required=True
+                        help="Celular com DDD (Ex: 11999999999)",
+                        width="medium", 
+                        required=True,
+                        validate=r"^\d{2}9\d{8}$" # Valida apenas números: 2 dígitos DDD + 9 + 8 dígitos
+                    ),
+                    "tag_whats": st.column_config.SelectboxColumn(
+                        "WhatsApp?",
+                        options=["Sim", "Não"],
+                        required=True,
+                        width="small"
                     )
                 }
                 
