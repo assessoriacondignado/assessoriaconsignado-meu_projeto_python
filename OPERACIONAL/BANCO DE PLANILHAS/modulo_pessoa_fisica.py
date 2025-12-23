@@ -359,16 +359,9 @@ def app_pessoa_fisica():
             
             with t2:
                 c_uf, c_cid, c_bai, c_rua = st.columns(4)
-                
-                # UF (Carrega do Banco)
                 lista_ufs = buscar_opcoes_filtro('uf', 'pf_enderecos')
                 sel_uf = c_uf.selectbox("UF", [""] + lista_ufs)
                 if sel_uf: filtros['uf'] = sel_uf
-                
-                # Cidade (Depende da UF selecionada visualmente, aqui simplificado para carregar tudo se vazio)
-                # Para uma experiência perfeita, seria ideal usar st.rerun() ao mudar UF, 
-                # mas dentro do form o st.rerun só acontece no submit.
-                # Entao deixaremos texto livre ou select global
                 filtros['cidade'] = c_cid.text_input("Cidade")
                 filtros['bairro'] = c_bai.text_input("Bairro")
                 filtros['rua'] = c_rua.text_input("Rua")
@@ -380,27 +373,21 @@ def app_pessoa_fisica():
             
             with t4:
                 c_conv, c_matr = st.columns(2)
-                # Convênios do banco
                 lista_conv = buscar_referencias('CONVENIO')
                 sel_conv = c_conv.selectbox("Convênio", [""] + lista_conv)
                 if sel_conv: filtros['convenio'] = sel_conv
-                
                 filtros['matricula'] = c_matr.text_input("Matrícula")
                 
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
             
-            # Botão de Pesquisar
             btn_pesquisar = st.form_submit_button("🔎 Executar Pesquisa")
         
-        # Lógica de Resultado
         if btn_pesquisar:
-            # Limpa filtros vazios e reseta pagina
             filtros_limpos = {k: v for k, v in filtros.items() if v}
             st.session_state['filtros_ativos'] = filtros_limpos
             st.session_state['pesquisa_pag'] = 1
         
-        # Exibição
         if 'filtros_ativos' in st.session_state and st.session_state['filtros_ativos']:
             pag_atual = st.session_state['pesquisa_pag']
             df_res, total = executar_pesquisa_ampla(st.session_state['filtros_ativos'], pag_atual)
@@ -411,7 +398,6 @@ def app_pessoa_fisica():
             if not df_res.empty:
                 st.dataframe(df_res, use_container_width=True, hide_index=True)
                 
-                # Paginação
                 total_pags = math.ceil(total / 30)
                 col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
                 
@@ -428,7 +414,6 @@ def app_pessoa_fisica():
                             st.session_state['pesquisa_pag'] += 1
                             st.rerun()
                 
-                # Ações rápidas nos resultados
                 st.markdown("##### Ações Rápidas")
                 col_sel = st.selectbox("Selecionar Cadastro para ver Detalhes", df_res['nome'].tolist())
                 if st.button("Ver Cadastro Selecionado"):
@@ -453,7 +438,6 @@ def app_pessoa_fisica():
             "Contratos": "pf_contratos"
         }
 
-        # ETAPA 1: UPLOAD E VALIDAÇÃO
         if st.session_state['import_step'] == 1:
             st.markdown("### 📤 Etapa 1: Upload do Arquivo")
             sel_amigavel = st.selectbox("Selecione a Tabela de Destino", list(mapa_tabelas.keys()))
@@ -465,11 +449,9 @@ def app_pessoa_fisica():
                 try:
                     df = pd.read_csv(uploaded_file)
                     st.session_state['import_df'] = df
-                    
                     st.write("🔎 **Pré-visualização (10 linhas):**")
                     st.dataframe(df.head(10))
                     
-                    # Verificação de Erros Simples
                     linhas_erro = []
                     for idx, row in df.iterrows():
                         if row.isnull().all(): linhas_erro.append(f"Linha {idx+2}: Linha vazia.")
@@ -484,20 +466,17 @@ def app_pessoa_fisica():
                     if st.button("Confirmar e Ir para Mapeamento", type="primary"):
                         st.session_state['import_step'] = 2
                         st.rerun()
-                        
                 except Exception as e:
                     st.error(f"Erro ao ler arquivo: {e}")
 
-        # ETAPA 2: MAPEAMENTO DE COLUNAS
         elif st.session_state['import_step'] == 2:
             st.markdown("### 🔗 Etapa 2: Mapeamento de Colunas")
             df = st.session_state['import_df']
             table_name = st.session_state['import_table']
             
-            db_cols_info = get_table_columns(table_name) # [(name, type), ...]
+            db_cols_info = get_table_columns(table_name)
             db_col_names = [c[0] for c in db_cols_info if c[0] not in ['id', 'data_criacao', 'data_atualizacao']]
             
-            # Adicionar Coluna Nova (Apenas para tabelas permitidas)
             if table_name in ['pf_emprego_renda', 'pf_contratos']:
                 with st.expander("✨ Criar Nova Coluna no Banco"):
                     new_col_name = st.text_input("Nome da Nova Coluna (sem espaços)")
@@ -507,27 +486,20 @@ def app_pessoa_fisica():
                             clean_name = re.sub(r'[^a-zA-Z0-9_]', '', new_col_name).lower()
                             if add_column_to_table(table_name, clean_name, new_col_type):
                                 st.success(f"Coluna '{clean_name}' criada!")
-                                time.sleep(1)
-                                st.rerun()
+                                time.sleep(1); st.rerun()
                             else: st.error("Erro ao criar coluna.")
             
-            # Interface de Mapeamento
             mapping = {}
             st.write("Relacione as colunas do CSV com as do Banco de Dados (Deixe 'Ignorar' para pular)")
-            
             cols_csv = ["(Ignorar)"] + list(df.columns)
             
-            # Criação dinâmica dos selects
             for db_col in db_col_names:
-                # Tenta adivinhar o match pelo nome
                 idx_default = 0
                 for i, csv_c in enumerate(cols_csv):
                     if csv_c.lower() == db_col.lower(): idx_default = i
-                
                 mapping[db_col] = st.selectbox(f"Campo Banco: **{db_col}**", cols_csv, index=idx_default, key=f"map_{db_col}")
             
             if st.button("Finalizar Importação", type="primary"):
-                # ETAPA 3: PROCESSAMENTO
                 st.markdown("### ⚙️ Processando...")
                 progress_bar = st.progress(0)
                 status_text = st.empty()
@@ -538,33 +510,23 @@ def app_pessoa_fisica():
                     total_rows = len(df)
                     count_novo = 0
                     count_atualizado = 0
-                    
-                    # Filtra apenas colunas mapeadas
                     valid_map = {k: v for k, v in mapping.items() if v != "(Ignorar)"}
                     
                     for i, row in df.iterrows():
-                        # Atualiza barra a cada 500 ou 10%
                         if i % 500 == 0 or i == total_rows - 1:
                             progress_bar.progress(int((i + 1) / total_rows * 100))
                             status_text.text(f"Processando linha {i+1} de {total_rows}...")
-                        
                         try:
-                            # Constroi Query Dinâmica
                             cols = list(valid_map.keys())
                             vals = [row[valid_map[c]] for c in cols]
-                            
-                            # Tratamento de Nulos
                             vals = [None if pd.isna(v) else v for v in vals]
                             
-                            # Lógica de Upsert baseada na tabela
                             pk = 'cpf' if table_name == 'pf_dados' else 'matricula' if table_name == 'pf_emprego_renda' else None
                             
                             if pk and pk in cols:
-                                # Verifica existência
                                 pk_val = vals[cols.index(pk)]
                                 cur.execute(f"SELECT 1 FROM {table_name} WHERE {pk} = %s", (pk_val,))
                                 exists = cur.fetchone()
-                                
                                 if exists:
                                     set_clause = ", ".join([f"{c}=%s" for c in cols])
                                     cur.execute(f"UPDATE {table_name} SET {set_clause} WHERE {pk}=%s", vals + [pk_val])
@@ -574,41 +536,31 @@ def app_pessoa_fisica():
                                     cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders})", vals)
                                     count_novo += 1
                             else:
-                                # Tabelas sem chave única definida para upsert (Telefones, etc) -> Apenas Insert
                                 placeholders = ", ".join(["%s"] * len(vals))
                                 cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders})", vals)
                                 count_novo += 1
-                                
-                        except Exception as e:
-                            print(f"Erro linha {i}: {e}")
+                        except Exception as e: print(f"Erro linha {i}: {e}")
                             
-                    conn.commit()
-                    conn.close()
-                    
+                    conn.commit(); conn.close()
                     st.success("Importação Concluída!")
                     st.info(f"Resumo: {count_novo} novos registros, {count_atualizado} atualizados.")
                     if st.button("Voltar para Lista"):
-                        st.session_state['pf_view'] = 'lista'
-                        st.rerun()
+                        st.session_state['pf_view'] = 'lista'; st.rerun()
 
     # --- MODO LISTA (PADRÃO) ---
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         with c2: busca = st.text_input("🔎 Pesquisar Rápida (CPF / Nome / Telefone)", key="pf_busca")
         
-        # BOTÕES DE AÇÃO
         c_btn1, c_btn2, c_btn3 = st.columns([1, 1.5, 3.5])
         if c_btn1.button("➕ Novo", type="primary"):
             st.session_state['pf_view'] = 'novo'; st.session_state['pf_cpf_selecionado'] = None; st.rerun()
         
         if c_btn2.button("🔍 Pesquisa Ampla"):
-            st.session_state['pf_view'] = 'pesquisa_ampla'
-            st.rerun()
+            st.session_state['pf_view'] = 'pesquisa_ampla'; st.rerun()
             
         if c_btn3.button("📥 Importar"):
-            st.session_state['pf_view'] = 'importacao'
-            st.session_state['import_step'] = 1
-            st.rerun()
+            st.session_state['pf_view'] = 'importacao'; st.session_state['import_step'] = 1; st.rerun()
 
         if busca:
             df_lista = buscar_pf_simples(busca)
@@ -648,7 +600,22 @@ def app_pessoa_fisica():
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome *", value=geral['nome'] if geral is not None else "")
                 cpf = c2.text_input("CPF *", value=geral['cpf'] if geral is not None else "")
-                nasc = c3.date_input("Nascimento", value=pd.to_datetime(geral['data_nascimento']) if geral is not None and geral['data_nascimento'] else None)
+                
+                # --- AJUSTE: DATA DE NASCIMENTO ---
+                min_data = date(1900, 1, 1)
+                max_data = date.today()
+                
+                val_nasc = None
+                if geral is not None and geral['data_nascimento']:
+                    try: val_nasc = pd.to_datetime(geral['data_nascimento']).date()
+                    except: val_nasc = None
+
+                nasc = c3.date_input("Data Nascimento", value=val_nasc, min_value=min_data, max_value=max_data, format="DD/MM/YYYY")
+                
+                if nasc:
+                    a, m, d = calcular_idade_completa(nasc)
+                    st.caption(f"Idade: {a} anos, {m} meses, {d} dias")
+                
                 rg = st.text_input("RG", value=geral['rg'] if geral is not None else "")
 
             with t2:
@@ -691,4 +658,3 @@ def app_pessoa_fisica():
 
 if __name__ == "__main__":
     app_pessoa_fisica()
-    
