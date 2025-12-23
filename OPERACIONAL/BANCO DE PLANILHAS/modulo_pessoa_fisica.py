@@ -68,13 +68,9 @@ def buscar_pf_simples(termo):
     conn = get_conn()
     if conn:
         try:
-            # Remove caracteres não numéricos para busca em campos numéricos (CPF, Telefone)
+            # Tenta normalizar o termo caso seja um CPF digitado parcialmente
             termo_limpo = re.sub(r'\D', '', termo)
-            
-            # Termo original para busca por Nome
-            param_nome = f"%{termo}%"
-            # Termo limpo para CPF e Telefone (garante match independente de formatação visual)
-            param_num = f"%{termo_limpo}%"
+            param = f"%{termo}%"
             
             query = """
                 SELECT d.id, d.nome, d.cpf, d.data_nascimento 
@@ -85,8 +81,7 @@ def buscar_pf_simples(termo):
                 ORDER BY d.nome ASC
                 LIMIT 50
             """
-            # Aplica termo_limpo no CPF e Telefone, e termo original no Nome
-            df = pd.read_sql(query, conn, params=(param_num, param_nome, param_num))
+            df = pd.read_sql(query, conn, params=(f"%{termo_limpo}%", param, param))
             conn.close()
             return df
         except:
@@ -157,7 +152,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 params.append(filtros['ddd'])
             
             if filtros.get('telefone'):
-                # Limpa a entrada do filtro também para garantir match numérico
                 tel_clean = re.sub(r'\D', '', filtros['telefone'])
                 conditions.append("tel.numero LIKE %s")
                 params.append(f"%{tel_clean}%")
@@ -493,22 +487,63 @@ def app_pessoa_fisica():
         st.button("⬅️ Cancelar Importação", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'import_step': 1}))
         st.divider()
         
+        # CSS INJECT: Tradução visual forçada do Uploader
+        st.markdown("""
+            <style>
+                section[data-testid="stFileUploader"] div[role="button"] > div > div > span {
+                    display: none;
+                }
+                section[data-testid="stFileUploader"] div[role="button"] > div > div::after {
+                    content: "Arraste e solte o arquivo CSV aqui";
+                    font-size: 1rem;
+                    visibility: visible;
+                    display: block;
+                }
+                section[data-testid="stFileUploader"] div[role="button"] > div > div > small {
+                    display: none;
+                }
+                section[data-testid="stFileUploader"] div[role="button"] > div > div::before {
+                    content: "Limite 200MB • CSV";
+                    font-size: 0.8em;
+                    visibility: visible;
+                    display: block;
+                    margin-bottom: 10px;
+                }
+            </style>
+        """, unsafe_allow_html=True)
+        
         mapa_tabelas = {"Dados Cadastrais": "pf_dados", "Telefones": "pf_telefones", "Emails": "pf_emails", "Endereços": "pf_enderecos", "Emprego/Renda": "pf_emprego_renda", "Contratos": "pf_contratos"}
 
         if st.session_state['import_step'] == 1:
             st.markdown("### 📤 Etapa 1: Upload")
             sel_amigavel = st.selectbox("Selecione a Tabela de Destino", list(mapa_tabelas.keys()))
             st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
-            uploaded_file = st.file_uploader("Arquivo CSV", type=['csv'])
+            
+            uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
             
             if uploaded_file:
                 try:
-                    df = pd.read_csv(uploaded_file)
+                    # CORREÇÃO DE FORMATAÇÃO: Tenta detectar ponto e vírgula ou vírgula
+                    uploaded_file.seek(0)
+                    # Primeiro tenta com ; (padrão BR)
+                    try:
+                        df = pd.read_csv(uploaded_file, sep=';')
+                        # Se ficou tudo em uma coluna só, provavelmente é vírgula
+                        if len(df.columns) <= 1:
+                            uploaded_file.seek(0)
+                            df = pd.read_csv(uploaded_file, sep=',')
+                    except:
+                        # Fallback
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, sep=',')
+
                     st.session_state['import_df'] = df
-                    st.dataframe(df.head(10))
+                    st.success(f"Arquivo carregado! {len(df)} linhas encontradas.")
+                    st.dataframe(df.head(5))
+                    
                     if st.button("Ir para Mapeamento", type="primary"):
                         st.session_state['import_step'] = 2; st.rerun()
-                except Exception as e: st.error(f"Erro: {e}")
+                except Exception as e: st.error(f"Erro ao ler arquivo: {e}")
 
         elif st.session_state['import_step'] == 2:
             st.markdown("### 🔗 Etapa 2: Mapeamento")
@@ -777,4 +812,3 @@ def app_pessoa_fisica():
 
 if __name__ == "__main__":
     app_pessoa_fisica()
-    
