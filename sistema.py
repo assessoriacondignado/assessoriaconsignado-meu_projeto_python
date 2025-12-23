@@ -17,6 +17,7 @@ st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon=
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 pastas_modulos = [
     "OPERACIONAL/CLIENTES E USUARIOS",
+    "OPERACIONAL/BANCO DE PLANILHAS",  # <--- NOVA PASTA ADICIONADA AQUI
     "OPERACIONAL/MODULO_W-API",
     "COMERCIAL/PRODUTOS E SERVICOS",
     "COMERCIAL/PEDIDOS",
@@ -34,6 +35,9 @@ try:
     import modulo_cliente
     import modulo_usuario
     import modulo_wapi
+    # Importação do novo módulo com tratamento de erro
+    modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
+    
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
     modulo_pedidos = __import__('modulo_pedidos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS/modulo_pedidos.py")) else None
     modulo_tarefas = __import__('modulo_tarefas') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS/modulo_tarefas.py")) else None
@@ -41,7 +45,9 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar módulos: {e}")
 
-# --- 4. FUNÇÕES DE BANCO E SEGURANÇA ---
+# ... (restante das funções de banco e login permanecem iguais) ...
+# ... (funções verificar_senha, validar_login_db, dialog_mensagem_rapida, dialog_reset_senha) ...
+
 @st.cache_resource(ttl=600)
 def get_conn():
     try:
@@ -63,7 +69,6 @@ def validar_login_db(usuario_input, senha_input):
     try:
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
-        # SQL Robusto: busca ignorando espaços e maiúsculas
         sql = """SELECT id, nome, hierarquia, senha, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
@@ -72,7 +77,6 @@ def validar_login_db(usuario_input, senha_input):
         
         if res:
             id_user, nome, cargo, senha_hash, falhas = res
-            # Bloqueio após 5 tentativas (Segurança 2)
             if falhas >= 5: return {"status": "bloqueado"}
             
             if verificar_senha(senha_input, senha_hash):
@@ -86,7 +90,6 @@ def validar_login_db(usuario_input, senha_input):
     except: return None
     return None
 
-# --- 5. MENSAGEM RÁPIDA (Com seleção de cliente) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
     try:
@@ -127,7 +130,6 @@ def dialog_mensagem_rapida():
     finally:
         if 'cur' in locals(): cur.close()
 
-# --- 6. RESET DE SENHA (WhatsApp) ---
 @st.dialog("Recuperar Acesso")
 def dialog_reset_senha():
     st.write("Receba uma nova senha via WhatsApp.")
@@ -150,11 +152,9 @@ def dialog_reset_senha():
                     conn.commit(); st.success("Senha enviada!"); time.sleep(2); st.rerun()
             else: st.error("WhatsApp indisponível.")
         else: st.error("Usuário não localizado ou sem telefone.")
-        # Sem fechar conexão para manter o cache
 
 # --- 7. INTERFACE PRINCIPAL ---
 def main():
-    # Segurança 1: Inatividade (30 min)
     if 'last_action' not in st.session_state: st.session_state['last_action'] = datetime.now()
     if st.session_state.get('logado') and datetime.now() - st.session_state['last_action'] > timedelta(minutes=30):
         st.session_state.clear(); st.warning("Sessão encerrada por inatividade."); st.rerun()
@@ -177,9 +177,6 @@ def main():
                 else: st.error("Acesso negado.")
             if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
     else:
-        # AQUI FOI REMOVIDO O CÓDIGO QUE ESCONDIA O MENU SUPERIOR
-        
-        # Botão Mensagem Rápida no Topo Direito
         col_m1, col_m2 = st.columns([10, 2])
         with col_m2:
             if st.button("🟢 Mensagem Rápida", use_container_width=True): dialog_mensagem_rapida()
@@ -198,12 +195,12 @@ def main():
                 sub = option_menu(None, ["Produtos", "Pedidos", "Tarefas", "Renovação"], 
                                   icons=["box", "cart-check", "check2-all", "arrow-repeat"])
             elif mod == "OPERACIONAL":
-                sub = option_menu(None, ["Clientes", "Usuários", "WhatsApp"], 
-                                  icons=["people", "lock", "whatsapp"])
+                # MENU ATUALIZADO AQUI
+                sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "WhatsApp"], 
+                                  icons=["people", "lock", "person-vcard", "whatsapp"])
             else: sub = None
             if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
 
-        # Renderização dos Módulos
         if mod == "COMERCIAL":
             if sub == "Produtos" and modulo_produtos: modulo_produtos.app_produtos()
             elif sub == "Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
@@ -212,6 +209,7 @@ def main():
         elif mod == "OPERACIONAL":
             if sub == "Clientes": modulo_cliente.app_clientes()
             elif sub == "Usuários": modulo_usuario.app_usuarios()
+            elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica() # CHAMADA DO NOVO MÓDULO
             elif sub == "WhatsApp": modulo_wapi.app_wapi()
 
 if __name__ == "__main__": main()
