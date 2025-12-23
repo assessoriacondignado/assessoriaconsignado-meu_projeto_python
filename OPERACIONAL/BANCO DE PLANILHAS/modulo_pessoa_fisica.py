@@ -614,7 +614,7 @@ def app_pessoa_fisica():
                         uf = c_uf.text_input("UF", key=f"end_uf_{i}", max_chars=2)
                         cep = c_cep.text_input("CEP", key=f"end_cep_{i}")
                         
-                        if rua or city: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
+                        if rua or cidade: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
                         st.divider()
                     
                     if st.form_submit_button("➕ Adicionar Endereço"):
