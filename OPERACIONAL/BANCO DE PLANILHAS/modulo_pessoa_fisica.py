@@ -93,7 +93,7 @@ def verificar_cpf_existente(cpf_normalizado):
 def converter_data_br_iso(valor):
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    valor_str = valor_str.split(' ')[0] # Remove horas
+    valor_str = valor_str.split(' ')[0] # Remove horas se houver
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
         try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
@@ -125,6 +125,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         # 2. Separação de Erros
         erros = []
         if table_name == 'pf_dados':
+            # Remove linhas sem CPF se for a tabela principal
             invalidos = df_proc[df_proc['cpf'] == ""]
             if not invalidos.empty:
                 for idx, row in invalidos.iterrows():
@@ -381,6 +382,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
+            # Inserção das tabelas filhas (Mantido)
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
                     if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
@@ -462,7 +464,7 @@ def add_column_to_table(table_name, col_name, col_type):
         except: return False
     return False
 
-# --- DIALOG: VISUALIZAR CLIENTE ---
+# --- DIALOG: VISUALIZAR CLIENTE (NOVO RECURSO LUPA) ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
     dados = carregar_dados_completos(cpf_cliente)
@@ -603,9 +605,29 @@ def app_pessoa_fisica():
             df_res, total = executar_pesquisa_ampla(st.session_state['filtros_ativos'], pag_atual)
             st.divider()
             st.write(f"**Resultados Encontrados:** {total}")
+            
+            # CONFIGURAÇÃO DE COLUNAS (oculta RG e Data Nasc, foca em Seleção/ID/CPF/Nome)
             if not df_res.empty:
                 df_res.insert(0, "Selecionar", False)
-                edited_df = st.data_editor(df_res, column_config={"Selecionar": st.column_config.CheckboxColumn(required=True)}, disabled=df_res.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
+                
+                # Definição das colunas para Pesquisa Ampla também
+                cfg_cols = {
+                    "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
+                    "cpf": st.column_config.TextColumn("CPF", width="large"),
+                    "nome": st.column_config.TextColumn("Nome", width="medium"),
+                    "id": st.column_config.NumberColumn("Código", width="small"),
+                    # Ocultar colunas indesejadas
+                    "rg": st.column_config.Column(hidden=True),
+                    "data_nascimento": st.column_config.Column(hidden=True)
+                }
+
+                edited_df = st.data_editor(
+                    df_res,
+                    column_config=cfg_cols,
+                    disabled=df_res.columns.drop("Selecionar"),
+                    hide_index=True,
+                    use_container_width=True
+                )
                 
                 total_pags = math.ceil(total / 30)
                 col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
@@ -622,7 +644,8 @@ def app_pessoa_fisica():
                     registro = subset_selecionado.iloc[0]
                     c1, c2, c3 = st.columns(3)
                     if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
-                    if c2.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c2.button("✏️ Editar", use_container_width=True): 
+                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
                     if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Nenhum registro encontrado.")
 
@@ -656,7 +679,7 @@ def app_pessoa_fisica():
             else: st.info("Nenhum histórico.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO (BULK OTIMIZADO)
+    # 3. MODO IMPORTAÇÃO (BULK)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -799,28 +822,31 @@ def app_pessoa_fisica():
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
                 df_lista.insert(0, "Selecionar", False)
+                # Configuração de colunas: CPF Largo, Resto Compacto. Ocultar RG/Data
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
                     "nome": st.column_config.TextColumn("Nome", width="medium"),
-                    "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY", width="small"),
-                    "id": st.column_config.NumberColumn("ID", width="small")
+                    "id": st.column_config.NumberColumn("Código", width="small"),
+                    # OCULTAR COLUNAS (AJUSTE SOLICITADO)
+                    "rg": st.column_config.Column(hidden=True),
+                    "data_nascimento": st.column_config.Column(hidden=True)
                 }
                 edited_df = st.data_editor(df_lista, column_config=cfg_cols, disabled=df_lista.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
                 subset = edited_df[edited_df["Selecionar"] == True]
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
-                    c1, c2 = st.columns(2)
+                    c1, c2, c3 = st.columns(3)
                     if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
                     if c2.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
-                    if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em: 23/12/2025 18:00 1 - Versão Final Corrigida")
+    st.caption(f"Atualizado em:2 {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
