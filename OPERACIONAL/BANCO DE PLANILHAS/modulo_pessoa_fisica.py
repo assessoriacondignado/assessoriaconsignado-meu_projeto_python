@@ -42,8 +42,7 @@ def init_db_structures():
                     qtd_atualizados INTEGER DEFAULT 0,
                     qtd_erros INTEGER DEFAULT 0,
                     caminho_arquivo_original TEXT,
-                    caminho_arquivo_erro TEXT,
-                    usuario_responsavel VARCHAR(100)
+                    caminho_arquivo_erro TEXT
                 );
             """)
             cur.execute("ALTER TABLE pf_dados ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
@@ -93,7 +92,7 @@ def verificar_cpf_existente(cpf_normalizado):
 def converter_data_br_iso(valor):
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    valor_str = valor_str.split(' ')[0] # Remove horas se houver
+    valor_str = valor_str.split(' ')[0]
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
         try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
@@ -125,7 +124,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         # 2. Separação de Erros
         erros = []
         if table_name == 'pf_dados':
-            # Remove linhas sem CPF se for a tabela principal
             invalidos = df_proc[df_proc['cpf'] == ""]
             if not invalidos.empty:
                 for idx, row in invalidos.iterrows():
@@ -199,7 +197,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             """
             
             if filtro_importacao_id:
-                # Filtro de Importação Ativo
                 sql_where = " WHERE d.importacao_id = %s "
                 params = [filtro_importacao_id]
                 if termo:
@@ -207,7 +204,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                    params.extend([param_num, param_nome, param_num])
                 params = tuple(params)
             else:
-                # Busca Normal
                 sql_where = " WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s "
                 params = (param_num, param_nome, param_num)
             
@@ -253,7 +249,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 conditions.append("d.data_nascimento = %s")
                 params.append(filtros['nascimento'])
             
-            # FILTRO NOVO: IMPORTAÇÃO (Item 2)
             if filtros.get('importacao_id'):
                 conditions.append("d.importacao_id = %s")
                 params.append(filtros['importacao_id'])
@@ -322,7 +317,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD (COMPLETAS) ---
+# --- FUNÇÕES CRUD ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -353,7 +348,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
     if conn:
         try:
             cur = conn.cursor()
-            
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
@@ -372,7 +366,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 cur.execute(f"UPDATE pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
             cpf_chave = dados_gerais['cpf']
-            
             if modo == "editar":
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
@@ -382,7 +375,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
-            # Inserção das tabelas filhas (Mantido)
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
                     if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
@@ -464,71 +456,6 @@ def add_column_to_table(table_name, col_name, col_type):
         except: return False
     return False
 
-# --- DIALOG: VISUALIZAR CLIENTE (NOVO RECURSO LUPA) ---
-@st.dialog("👁️ Detalhes do Cliente")
-def dialog_visualizar_cliente(cpf_cliente):
-    dados = carregar_dados_completos(cpf_cliente)
-    g = dados.get('geral')
-    
-    if g is None:
-        st.error("Cliente não encontrado.")
-        return
-
-    # 1.2.3 DADOS CADASTRAIS
-    with st.expander("👤 Dados Cadastrais", expanded=True):
-        c1, c2 = st.columns(2)
-        c1.write(f"**Nome:** {g['nome']}")
-        c2.write(f"**CPF:** {g['cpf']}")
-        
-        c3, c4 = st.columns(2)
-        dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
-        c3.write(f"**Nascimento:** {dt_nasc}")
-        c4.write(f"**RG:** {g['rg']}")
-    
-    # 1.2.4 DADOS DE TELEFONE
-    with st.expander("📞 Telefones"):
-        df_tel = dados.get('telefones')
-        if not df_tel.empty:
-            for _, row in df_tel.iterrows():
-                st.write(f"📱 {row['numero']} (WhatsApp: {row['tag_whats']})")
-        else: st.info("Sem telefones cadastrados.")
-
-    # 1.2.5 DADOS DE E-MAIL
-    with st.expander("📧 E-mails"):
-        df_email = dados.get('emails')
-        if not df_email.empty:
-            for _, row in df_email.iterrows():
-                st.write(f"✉️ {row['email']}")
-        else: st.info("Sem e-mails cadastrados.")
-
-    # 1.2.6 DADOS DE ENDEREÇO
-    with st.expander("🏠 Endereços"):
-        df_end = dados.get('enderecos')
-        if not df_end.empty:
-            for _, row in df_end.iterrows():
-                st.write(f"📍 {row['rua']}, {row['bairro']} - {row['cidade']}/{row['uf']} (CEP: {row['cep']})")
-        else: st.info("Sem endereços cadastrados.")
-
-    # 1.2.7 DADOS DE EMPREGO E RENDA + CONTRATOS
-    with st.expander("💼 Emprego, Renda e Contratos"):
-        df_emp = dados.get('empregos')
-        df_contr = dados.get('contratos')
-        
-        if not df_emp.empty:
-            for _, row in df_emp.iterrows():
-                st.markdown(f"**Convênio:** {row['convenio']} | **Matrícula:** {row['matricula']}")
-                if row['dados_extras']: st.caption(f"Extras: {row['dados_extras']}")
-                
-                # Contratos vinculados a esta matrícula
-                contratos_vinculados = df_contr[df_contr['matricula_ref'] == row['matricula']]
-                if not contratos_vinculados.empty:
-                    st.write("📄 *Contratos:*")
-                    for _, c in contratos_vinculados.iterrows():
-                        st.write(f"- {c['contrato']}")
-                st.divider()
-        else: st.info("Sem dados profissionais.")
-
-
 # --- INTERFACE ---
 @st.dialog("⚠️ Excluir Cadastro")
 def dialog_excluir_pf(cpf, nome):
@@ -553,7 +480,7 @@ def app_pessoa_fisica():
         if k not in st.session_state: st.session_state[k] = 1
 
     # ==========================
-    # 1. PESQUISA AMPLA (ATUALIZADO COM LUPA)
+    # 1. PESQUISA AMPLA
     # ==========================
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
@@ -618,31 +545,13 @@ def app_pessoa_fisica():
             if not df_res.empty:
                 df_res.insert(0, "Selecionar", False)
                 edited_df = st.data_editor(df_res, column_config={"Selecionar": st.column_config.CheckboxColumn(required=True)}, disabled=df_res.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
-                
-                total_pags = math.ceil(total / 30)
-                col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
-                with col_p1:
-                    if pag_atual > 1 and st.button("⬅️ Anterior"): st.session_state['pesquisa_pag'] -= 1; st.rerun()
-                with col_p2:
-                    st.markdown(f"<div style='text-align:center'>Página {pag_atual} de {total_pags}</div>", unsafe_allow_html=True)
-                with col_p3:
-                    if pag_atual < total_pags and st.button("Próxima ➡️"): st.session_state['pesquisa_pag'] += 1; st.rerun()
-
-                subset_selecionado = edited_df[edited_df["Selecionar"] == True]
-                if not subset_selecionado.empty:
+                subset = edited_df[edited_df["Selecionar"] == True]
+                if not subset.empty:
                     st.divider()
-                    registro = subset_selecionado.iloc[0]
-                    c1, c2, c3 = st.columns(3) # Aumentei para 3 colunas para caber a Lupa
-                    
-                    # 1. BOTÃO LUPA (NOVO)
-                    if c1.button("👁️ Ver", use_container_width=True):
-                        dialog_visualizar_cliente(registro['cpf'])
-
-                    if c2.button("✏️ Editar", use_container_width=True): 
-                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
-                    
-                    if c3.button("🗑️ Excluir", use_container_width=True): 
-                        dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    registro = subset.iloc[0]
+                    c1, c2 = st.columns(2)
+                    if c1.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
@@ -675,7 +584,7 @@ def app_pessoa_fisica():
             else: st.info("Nenhum histórico.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO (BULK)
+    # 3. MODO IMPORTAÇÃO (BULK OTIMIZADO)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -763,7 +672,7 @@ def app_pessoa_fisica():
                 if conn:
                     with st.spinner("Processando em lote... Aguarde alguns instantes."):
                         try:
-                            # EXECUÇÃO DO PLANO A
+                            # EXECUÇÃO DO PLANO A (IMPORTAÇÃO RÁPIDA EM LOTE)
                             novos, atualizados, erros_list = processar_importacao_lote(conn, df, table_name, final_map, import_id)
                             conn.commit()
                             
@@ -780,7 +689,8 @@ def app_pessoa_fisica():
                             st.session_state['import_stats'] = {'novos': novos, 'atualizados': atualizados, 'erros': len(erros_list), 'path_erro': path_erro, 'sample': df.head(5)}
                             st.session_state['import_step'] = 3; st.rerun()
                         except Exception as e:
-                            st.error(f"Erro Crítico na Importação: {e}"); if conn: conn.close()
+                            st.error(f"Erro Crítico na Importação: {e}")
+                            if conn: conn.close()
 
         elif st.session_state['import_step'] == 3:
             st.markdown("### ✅ Etapa 3: Resultado da Importação")
@@ -796,7 +706,9 @@ def app_pessoa_fisica():
     # 4. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
-        for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']: st.session_state[k] = 1
+        # Reinicia contadores ao voltar para a lista
+        for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
+            st.session_state[k] = 1
 
         filtro_imp = st.session_state.get('filtro_importacao_id')
         c1, c2 = st.columns([2, 2])
@@ -805,6 +717,7 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
+        # BOTÕES UNIFICADOS NO TOPO DA LISTA (Layout solicitado)
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'novo'}); st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
@@ -814,6 +727,7 @@ def app_pessoa_fisica():
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
                 df_lista.insert(0, "Selecionar", False)
+                # Configuração de colunas: CPF Largo, Resto Compacto
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
@@ -826,17 +740,15 @@ def app_pessoa_fisica():
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
-                    c1, c2, c3 = st.columns(3) # Aumentado para 3 botões
-                    # BOTÃO LUPA (RECURSO 1.1)
-                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
-                    if c2.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
-                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    c1, c2 = st.columns(2)
+                    if c1.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado em: 23/12/2025 17:50 - Versão Final Bulk Integrada")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
