@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import io
 import time
 import math
@@ -42,7 +42,8 @@ def init_db_structures():
                     qtd_atualizados INTEGER DEFAULT 0,
                     qtd_erros INTEGER DEFAULT 0,
                     caminho_arquivo_original TEXT,
-                    caminho_arquivo_erro TEXT
+                    caminho_arquivo_erro TEXT,
+                    usuario_responsavel VARCHAR(100)
                 );
             """)
             cur.execute("ALTER TABLE pf_dados ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
@@ -71,7 +72,7 @@ def buscar_referencias(tipo):
     return []
 
 def limpar_normalizar_cpf(cpf_raw):
-    """Remove não-numeros e remove zeros a esquerda (Regra: Importar sem zero)"""
+    """Remove não-numeros e remove zeros a esquerda"""
     if not cpf_raw: return ""
     apenas_nums = re.sub(r'\D', '', str(cpf_raw))
     if not apenas_nums: return ""
@@ -92,31 +93,26 @@ def verificar_cpf_existente(cpf_normalizado):
 def converter_data_br_iso(valor):
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    # Remove horas se houver
-    valor_str = valor_str.split(' ')[0]
+    valor_str = valor_str.split(' ')[0] # Remove horas se houver
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
         try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
         except ValueError: continue
     return None
 
-# --- IMPORTAÇÃO RÁPIDA (PLANO A - BULK) ---
+# --- IMPORTAÇÃO RÁPIDA (BULK OTIMIZADO) ---
 def processar_importacao_lote(conn, df, table_name, mapping, import_id):
-    """
-    Executa a importação em lote (Bulk Insert/Update) usando tabelas temporárias.
-    Esta função roda 'sozinha' no banco para máxima performance.
-    """
     cur = conn.cursor()
     try:
-        # 1. Preparação dos Dados (Data Cleaning no Python)
+        # 1. Preparação dos Dados
         df_proc = df.rename(columns=mapping)
         cols_db = list(mapping.values())
         df_proc = df_proc[cols_db].copy()
         
-        # Adiciona ID da importação para rastreio
+        # Adiciona ID da importação
         df_proc['importacao_id'] = import_id
 
-        # Normalizações Rápidas (Vetorizadas)
+        # Normalizações Vetorizadas
         if 'cpf' in df_proc.columns:
             df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
         
@@ -126,17 +122,17 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             if col in df_proc.columns:
                 df_proc[col] = df_proc[col].apply(converter_data_br_iso)
 
-        # 2. Validação Básica de Erros
+        # 2. Separação de Erros
         erros = []
         if table_name == 'pf_dados':
-            # Remove linhas sem CPF (chave obrigatória)
+            # Remove linhas sem CPF se for a tabela principal
             invalidos = df_proc[df_proc['cpf'] == ""]
             if not invalidos.empty:
                 for idx, row in invalidos.iterrows():
                     erros.append(f"Linha {idx}: CPF inválido ou vazio.")
             df_proc = df_proc[df_proc['cpf'] != ""]
 
-        # 3. Upload para Staging (Tabela Temporária)
+        # 3. Upload para Staging
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
@@ -147,14 +143,14 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         cols_order = list(df_proc.columns)
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
-        # 4. Execução do UPSERT (SQL Puro)
+        # 4. Execução do UPSERT
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
         
         qtd_novos = 0
         qtd_atualizados = 0
         
         if pk_field:
-            # UPDATE (Quem já existe)
+            # UPDATE
             sql_update = f"""
                 UPDATE {table_name} t
                 SET {', '.join([f"{c} = s.{c}" for c in cols_order if c != pk_field])}
@@ -164,7 +160,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_update)
             qtd_atualizados = cur.rowcount
             
-            # INSERT (Quem não existe)
+            # INSERT
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)})
                 SELECT {', '.join(cols_order)}
@@ -174,7 +170,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            # INSERT Simples (Sem chave de verificação)
+            # INSERT Simples
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)})
                 SELECT {', '.join(cols_order)} FROM {staging_table}
@@ -192,7 +188,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
     conn = get_conn()
     if conn:
         try:
-            # Normalização para busca: remove não numéricos e zeros a esquerda
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             param_num = f"%{termo_limpo}%"
@@ -204,6 +199,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             """
             
             if filtro_importacao_id:
+                # Filtro de Importação Ativo
                 sql_where = " WHERE d.importacao_id = %s "
                 params = [filtro_importacao_id]
                 if termo:
@@ -211,6 +207,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                    params.extend([param_num, param_nome, param_num])
                 params = tuple(params)
             else:
+                # Busca Normal
                 sql_where = " WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s "
                 params = (param_num, param_nome, param_num)
             
@@ -255,6 +252,11 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
             if filtros.get('nascimento'):
                 conditions.append("d.data_nascimento = %s")
                 params.append(filtros['nascimento'])
+            
+            # FILTRO NOVO: IMPORTAÇÃO (Item 2)
+            if filtros.get('importacao_id'):
+                conditions.append("d.importacao_id = %s")
+                params.append(filtros['importacao_id'])
 
             if any(k in filtros for k in ['uf', 'cidade', 'bairro', 'rua']):
                 joins.append("JOIN pf_enderecos end ON d.cpf = end.cpf_ref")
@@ -320,7 +322,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD (PRESERVADAS) ---
+# --- FUNÇÕES CRUD (COMPLETAS) ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -372,7 +374,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_chave = dados_gerais['cpf']
             
             if modo == "editar":
-                # Full refresh dos filhos para garantir consistência
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
@@ -381,21 +382,18 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
-            # Inserção das tabelas filhas
+            # Inserção das tabelas filhas (Mantido)
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): 
-                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
+                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
             
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
-                    if row.get('email'): 
-                        cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
+                    if row.get('email'): cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
             
             if not df_end.empty:
                 for _, row in df_upper(df_end).iterrows():
-                    if row.get('rua') or row.get('cidade'): 
-                        cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
+                    if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
             
             if not df_emp.empty:
                 for _, row in df_upper(df_emp).iterrows():
@@ -490,13 +488,13 @@ def app_pessoa_fisica():
         if k not in st.session_state: st.session_state[k] = 1
 
     # ==========================
-    # 1. PESQUISA AMPLA
+    # 1. PESQUISA AMPLA (ATUALIZADO COM FILTRO IMPORTAÇÃO)
     # ==========================
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### 🔎 Pesquisa Ampla")
         with st.form("form_pesquisa_ampla", enter_to_submit=False):
-            t1, t2, t3, t4, t5 = st.tabs(["Identificação", "Endereço", "Contatos", "Profissional", "Contratos"])
+            t1, t2, t3, t4, t5, t6 = st.tabs(["Identificação", "Endereço", "Contatos", "Profissional", "Contratos", "Origem"])
             filtros = {}
             with t1:
                 c1, c2, c3, c4 = st.columns(4)
@@ -525,6 +523,24 @@ def app_pessoa_fisica():
                 filtros['matricula'] = c_matr.text_input("Matrícula")
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
+            with t6:
+                # LISTA DE IMPORTAÇÕES PARA FILTRO
+                conn = get_conn()
+                opcoes_imp = {}
+                if conn:
+                    try:
+                        df_imp = pd.read_sql("SELECT id, nome_arquivo, data_importacao FROM pf_historico_importacoes ORDER BY id DESC", conn)
+                        for _, row in df_imp.iterrows():
+                             dt = row['data_importacao'].strftime('%d/%m/%Y %H:%M')
+                             label = f"{dt} - {row['nome_arquivo']} (ID: {row['id']})"
+                             opcoes_imp[label] = row['id']
+                    except: pass
+                    conn.close()
+                
+                sel_imp = st.selectbox("Filtrar por Importação", [""] + list(opcoes_imp.keys()))
+                if sel_imp:
+                    filtros['importacao_id'] = opcoes_imp[sel_imp]
+
             btn_pesquisar = st.form_submit_button("Pesquisar")
 
         if btn_pesquisar:
@@ -606,7 +622,6 @@ def app_pessoa_fisica():
             st.markdown("### 📤 Etapa 1: Upload")
             sel_amigavel = st.selectbox("Selecione a Tabela de Destino", opcoes_tabelas)
             st.session_state['import_table'] = mapa_real[sel_amigavel]
-            
             uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
             if uploaded_file:
                 try:
@@ -674,9 +689,7 @@ def app_pessoa_fisica():
                 
                 final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
                 
-                if not final_map: 
-                    st.error("Mapeie pelo menos uma coluna.")
-                    st.stop()
+                if not final_map: st.error("Mapeie pelo menos uma coluna."); st.stop()
 
                 if conn:
                     with st.spinner("Processando em lote... Aguarde alguns instantes."):
@@ -725,7 +738,7 @@ def app_pessoa_fisica():
     # 4. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
-        # Reinicia contadores ao voltar para a lista
+        # Reinicia contadores
         for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
             st.session_state[k] = 1
 
@@ -736,7 +749,7 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        # BOTÕES UNIFICADOS NO TOPO DA LISTA (Layout solicitado)
+        # BOTÕES UNIFICADOS NO TOPO DA LISTA
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'novo'}); st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
@@ -746,7 +759,6 @@ def app_pessoa_fisica():
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
                 df_lista.insert(0, "Selecionar", False)
-                # Configuração de colunas: CPF Largo, Resto Compacto
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
@@ -755,7 +767,6 @@ def app_pessoa_fisica():
                     "id": st.column_config.NumberColumn("ID", width="small")
                 }
                 edited_df = st.data_editor(df_lista, column_config=cfg_cols, disabled=df_lista.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
-                
                 subset = edited_df[edited_df["Selecionar"] == True]
                 if not subset.empty:
                     st.divider()
@@ -766,7 +777,9 @@ def app_pessoa_fisica():
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
-    st.caption("Atualizado em: 23/12/2025 17:50 - Versão Final Bulk Integrada")
+    # RODAPÉ - Fuso Horário Brasília (GMT-3)
+    br_time = datetime.now() - timedelta(hours=3)
+    st.caption(f"Atualizado em: 24.12-11:48 {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
