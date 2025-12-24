@@ -91,99 +91,65 @@ def verificar_cpf_existente(cpf_normalizado):
     return None
 
 def converter_data_br_iso(valor):
-    """Converte datas DD/MM/AAAA para AAAA-MM-DD (ISO)"""
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    valor_str = valor_str.split(' ')[0] # Remove horas se houver
-    # Lista de formatos aceitos
+    valor_str = valor_str.split(' ')[0] # Remove horas
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
-        try: 
-            return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
-        except ValueError: 
-            continue
-    return None # Retorna None se não conseguir converter (o banco receberá NULL)
+        try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
+        except ValueError: continue
+    return None
 
 # --- IMPORTAÇÃO RÁPIDA (BULK OTIMIZADO) ---
 def processar_importacao_lote(conn, df, table_name, mapping, import_id):
     cur = conn.cursor()
     try:
-        # 1. Preparação dos Dados
         df_proc = df.rename(columns=mapping)
         cols_db = list(mapping.values())
-        # Filtra apenas as colunas que existem no mapeamento
         df_proc = df_proc[cols_db].copy()
         
-        # Adiciona ID da importação
         df_proc['importacao_id'] = import_id
 
-        # Normalizações Vetorizadas
         if 'cpf' in df_proc.columns:
             df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
         
-        # Conversão de Datas (CRÍTICO PARA CORRIGIR O ERRO)
         cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
         for col in cols_data:
             if col in df_proc.columns:
-                # Aplica o conversor linha a linha na coluna de data
                 df_proc[col] = df_proc[col].apply(converter_data_br_iso)
 
-        # 2. Separação de Erros
         erros = []
         if table_name == 'pf_dados':
-            # Remove linhas sem CPF (chave obrigatória)
             invalidos = df_proc[df_proc['cpf'] == ""]
             if not invalidos.empty:
                 for idx, row in invalidos.iterrows():
                     erros.append(f"Linha {idx}: CPF inválido ou vazio.")
             df_proc = df_proc[df_proc['cpf'] != ""]
 
-        # 3. Upload para Staging (Tabela Temporária)
         staging_table = f"staging_import_{import_id}"
-        # Cria tabela temporária copiando a estrutura da original
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
-        # Prepara o buffer de texto para o COPY
         output = io.StringIO()
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
         
         cols_order = list(df_proc.columns)
-        # Executa o COPY (Upload rápido)
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
-        # 4. Execução do UPSERT (Update ou Insert)
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
-        
         qtd_novos = 0
         qtd_atualizados = 0
         
         if pk_field:
-            # UPDATE quem já existe
-            sql_update = f"""
-                UPDATE {table_name} t
-                SET {', '.join([f"{c} = s.{c}" for c in cols_order if c != pk_field])}
-                FROM {staging_table} s
-                WHERE t.{pk_field} = s.{pk_field}
-            """
+            sql_update = f"UPDATE {table_name} t SET {', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}"
             cur.execute(sql_update)
             qtd_atualizados = cur.rowcount
             
-            # INSERT quem não existe
-            sql_insert = f"""
-                INSERT INTO {table_name} ({', '.join(cols_order)})
-                SELECT {', '.join(cols_order)}
-                FROM {staging_table} s
-                WHERE NOT EXISTS (SELECT 1 FROM {table_name} t WHERE t.{pk_field} = s.{pk_field})
-            """
+            sql_insert = f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_name} t WHERE t.{pk_field} = s.{pk_field})"
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            # INSERT Simples (se não tiver chave única definida)
-            sql_insert = f"""
-                INSERT INTO {table_name} ({', '.join(cols_order)})
-                SELECT {', '.join(cols_order)} FROM {staging_table}
-            """
+            sql_insert = f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table}"
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
 
@@ -192,34 +158,45 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
     except Exception as e:
         raise e
 
-# --- FUNÇÕES DE BUSCA ---
+# --- FUNÇÕES DE BUSCA (CORRIGIDA) ---
 def buscar_pf_simples(termo, filtro_importacao_id=None):
     conn = get_conn()
     if conn:
         try:
+            # Limpa o termo: remove tudo que não é dígito e zeros à esquerda
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
-            param_num = f"%{termo_limpo}%"
             
-            sql_base = """
-                SELECT d.id, d.nome, d.cpf, d.data_nascimento 
-                FROM pf_dados d
-                LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref
-            """
+            sql_base = "SELECT d.id, d.nome, d.cpf, d.data_nascimento FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
             
+            conditions = []
+            params = []
+
+            # Filtro de Importação
             if filtro_importacao_id:
-                sql_where = " WHERE d.importacao_id = %s "
-                params = [filtro_importacao_id]
-                if termo:
-                   sql_where += " AND (d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s) "
-                   params.extend([param_num, param_nome, param_num])
-                params = tuple(params)
-            else:
-                sql_where = " WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s "
-                params = (param_num, param_nome, param_num)
+                conditions.append("d.importacao_id = %s")
+                params.append(filtro_importacao_id)
             
+            # Filtro de Texto (Nome, CPF ou Telefone)
+            if termo:
+                # Se tiver números, busca em CPF/Telefone também
+                if termo_limpo:
+                    param_num = f"%{termo_limpo}%"
+                    sub_cond = ["d.nome ILIKE %s", "d.cpf ILIKE %s", "t.numero ILIKE %s"]
+                    sub_params = [param_nome, param_num, param_num]
+                    # Adiciona grupo OR (Importante parenteses)
+                    conditions.append(f"({' OR '.join(sub_cond)})")
+                    params.extend(sub_params)
+                else:
+                    # Se só tiver letras, busca APENAS no Nome (Evita erro de %% em campos numéricos)
+                    conditions.append("d.nome ILIKE %s")
+                    params.append(param_nome)
+            
+            # Monta Query Final
+            sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             query = f"{sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 50"
-            df = pd.read_sql(query, conn, params=params)
+            
+            df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
             return df
         except: conn.close()
@@ -260,7 +237,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
                 conditions.append("d.data_nascimento = %s")
                 params.append(filtros['nascimento'])
             
-            # FILTRO NOVO: IMPORTAÇÃO
             if filtros.get('importacao_id'):
                 conditions.append("d.importacao_id = %s")
                 params.append(filtros['importacao_id'])
@@ -379,7 +355,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 cur.execute(f"UPDATE pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
             cpf_chave = dados_gerais['cpf']
-            
             if modo == "editar":
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
@@ -470,7 +445,7 @@ def add_column_to_table(table_name, col_name, col_type):
         except: return False
     return False
 
-# --- DIALOG: VISUALIZAR CLIENTE (NOVO RECURSO LUPA) ---
+# --- DIALOG: VISUALIZAR CLIENTE ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
     dados = carregar_dados_completos(cpf_cliente)
@@ -614,42 +589,23 @@ def app_pessoa_fisica():
             
             if not df_res.empty:
                 df_res.insert(0, "Selecionar", False)
-                # CONFIGURAÇÃO DE COLUNAS (oculta RG e Data Nasc, foca em Seleção/ID/CPF/Nome)
+                # CONFIGURAÇÃO DE COLUNAS (RG e DATA ocultos)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
                     "nome": st.column_config.TextColumn("Nome", width="medium"),
                     "id": st.column_config.NumberColumn("Código", width="small"),
-                    # Ocultar colunas indesejadas
                     "rg": st.column_config.Column(hidden=True),
                     "data_nascimento": st.column_config.Column(hidden=True)
                 }
-
-                edited_df = st.data_editor(
-                    df_res,
-                    column_config=cfg_cols,
-                    disabled=df_res.columns.drop("Selecionar"),
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                total_pags = math.ceil(total / 30)
-                col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
-                with col_p1:
-                    if pag_atual > 1 and st.button("⬅️ Anterior"): st.session_state['pesquisa_pag'] -= 1; st.rerun()
-                with col_p2:
-                    st.markdown(f"<div style='text-align:center'>Página {pag_atual} de {total_pags}</div>", unsafe_allow_html=True)
-                with col_p3:
-                    if pag_atual < total_pags and st.button("Próxima ➡️"): st.session_state['pesquisa_pag'] += 1; st.rerun()
-
-                subset_selecionado = edited_df[edited_df["Selecionar"] == True]
-                if not subset_selecionado.empty:
+                edited_df = st.data_editor(df_res, column_config=cfg_cols, disabled=df_res.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
+                subset = edited_df[edited_df["Selecionar"] == True]
+                if not subset.empty:
                     st.divider()
-                    registro = subset_selecionado.iloc[0]
+                    registro = subset.iloc[0]
                     c1, c2, c3 = st.columns(3)
                     if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
-                    if c2.button("✏️ Editar", use_container_width=True): 
-                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c2.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
                     if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Nenhum registro encontrado.")
 
@@ -765,13 +721,12 @@ def app_pessoa_fisica():
                     conn.commit()
                 
                 final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
-                qtd_novos = 0; qtd_atualizados = 0; qtd_erros = 0; erros_list = []
                 
                 if not final_map: st.error("Mapeie pelo menos uma coluna."); st.stop()
+
                 if conn:
                     with st.spinner("Processando em lote... Aguarde alguns instantes."):
                         try:
-                            # EXECUÇÃO DO PLANO A
                             novos, atualizados, erros_list = processar_importacao_lote(conn, df, table_name, final_map, import_id)
                             conn.commit()
                             
@@ -782,7 +737,7 @@ def app_pessoa_fisica():
                                 with open(path_erro, "w", encoding="utf-8") as f: f.write("\n".join(erros_list))
                             
                             cur = conn.cursor()
-                            cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", (qtd_novos, qtd_atualizados, len(erros_list), path_erro, import_id))
+                            cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", (novos, atualizados, len(erros_list), path_erro, import_id))
                             conn.commit(); cur.close(); conn.close()
                             
                             st.session_state['import_stats'] = {'novos': novos, 'atualizados': atualizados, 'erros': len(erros_list), 'path_erro': path_erro, 'sample': df.head(5)}
@@ -816,7 +771,6 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        # BOTÕES UNIFICADOS NO TOPO DA LISTA
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'novo'}); st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
@@ -826,7 +780,7 @@ def app_pessoa_fisica():
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
                 df_lista.insert(0, "Selecionar", False)
-                # CONFIGURAÇÃO DE COLUNAS: CPF Largo, Resto Compacto. Ocultar RG/Data
+                # Configuração de colunas: CPF Largo, Resto Compacto. Ocultar RG/Data
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
@@ -850,8 +804,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em5: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 6 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
-    
