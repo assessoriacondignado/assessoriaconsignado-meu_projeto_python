@@ -91,14 +91,18 @@ def verificar_cpf_existente(cpf_normalizado):
     return None
 
 def converter_data_br_iso(valor):
+    """Converte datas DD/MM/AAAA para AAAA-MM-DD (ISO)"""
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
     valor_str = valor_str.split(' ')[0] # Remove horas se houver
+    # Lista de formatos aceitos
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
-        try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
-        except ValueError: continue
-    return None
+        try: 
+            return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
+        except ValueError: 
+            continue
+    return None # Retorna None se não conseguir converter (o banco receberá NULL)
 
 # --- IMPORTAÇÃO RÁPIDA (BULK OTIMIZADO) ---
 def processar_importacao_lote(conn, df, table_name, mapping, import_id):
@@ -107,6 +111,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         # 1. Preparação dos Dados
         df_proc = df.rename(columns=mapping)
         cols_db = list(mapping.values())
+        # Filtra apenas as colunas que existem no mapeamento
         df_proc = df_proc[cols_db].copy()
         
         # Adiciona ID da importação
@@ -116,41 +121,45 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         if 'cpf' in df_proc.columns:
             df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
         
-        # Conversão de Datas
+        # Conversão de Datas (CRÍTICO PARA CORRIGIR O ERRO)
         cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
         for col in cols_data:
             if col in df_proc.columns:
+                # Aplica o conversor linha a linha na coluna de data
                 df_proc[col] = df_proc[col].apply(converter_data_br_iso)
 
         # 2. Separação de Erros
         erros = []
         if table_name == 'pf_dados':
-            # Remove linhas sem CPF se for a tabela principal
+            # Remove linhas sem CPF (chave obrigatória)
             invalidos = df_proc[df_proc['cpf'] == ""]
             if not invalidos.empty:
                 for idx, row in invalidos.iterrows():
                     erros.append(f"Linha {idx}: CPF inválido ou vazio.")
             df_proc = df_proc[df_proc['cpf'] != ""]
 
-        # 3. Upload para Staging
+        # 3. Upload para Staging (Tabela Temporária)
         staging_table = f"staging_import_{import_id}"
+        # Cria tabela temporária copiando a estrutura da original
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
+        # Prepara o buffer de texto para o COPY
         output = io.StringIO()
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
         
         cols_order = list(df_proc.columns)
+        # Executa o COPY (Upload rápido)
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
-        # 4. Execução do UPSERT
+        # 4. Execução do UPSERT (Update ou Insert)
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
         
         qtd_novos = 0
         qtd_atualizados = 0
         
         if pk_field:
-            # UPDATE
+            # UPDATE quem já existe
             sql_update = f"""
                 UPDATE {table_name} t
                 SET {', '.join([f"{c} = s.{c}" for c in cols_order if c != pk_field])}
@@ -160,7 +169,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_update)
             qtd_atualizados = cur.rowcount
             
-            # INSERT
+            # INSERT quem não existe
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)})
                 SELECT {', '.join(cols_order)}
@@ -170,7 +179,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            # INSERT Simples
+            # INSERT Simples (se não tiver chave única definida)
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)})
                 SELECT {', '.join(cols_order)} FROM {staging_table}
@@ -199,7 +208,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             """
             
             if filtro_importacao_id:
-                # Filtro de Importação Ativo
                 sql_where = " WHERE d.importacao_id = %s "
                 params = [filtro_importacao_id]
                 if termo:
@@ -207,7 +215,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                    params.extend([param_num, param_nome, param_num])
                 params = tuple(params)
             else:
-                # Busca Normal
                 sql_where = " WHERE d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s "
                 params = (param_num, param_nome, param_num)
             
@@ -382,7 +389,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
-            # Inserção das tabelas filhas (Mantido)
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
                     if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
@@ -568,7 +574,7 @@ def app_pessoa_fisica():
             with t3:
                 c_ddd, c_tel, c_email = st.columns([0.5, 1.5, 4])
                 filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
-                filtros['telefone'] = c_tel.text_input("Telefone")
+                filtros['telefone'] = c_tel.text_input("Telefone", max_chars=9)
                 filtros['email'] = c_email.text_input("E-mail")
             with t4:
                 c_conv, c_matr = st.columns(2)
@@ -606,11 +612,9 @@ def app_pessoa_fisica():
             st.divider()
             st.write(f"**Resultados Encontrados:** {total}")
             
-            # CONFIGURAÇÃO DE COLUNAS (oculta RG e Data Nasc, foca em Seleção/ID/CPF/Nome)
             if not df_res.empty:
                 df_res.insert(0, "Selecionar", False)
-                
-                # Definição das colunas para Pesquisa Ampla também
+                # CONFIGURAÇÃO DE COLUNAS (oculta RG e Data Nasc, foca em Seleção/ID/CPF/Nome)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
@@ -822,7 +826,7 @@ def app_pessoa_fisica():
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
                 df_lista.insert(0, "Selecionar", False)
-                # Configuração de colunas: CPF Largo, Resto Compacto. Ocultar RG/Data
+                # CONFIGURAÇÃO DE COLUNAS: CPF Largo, Resto Compacto. Ocultar RG/Data
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
@@ -846,7 +850,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em:2 {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 3 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
