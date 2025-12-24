@@ -322,7 +322,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD (COMPLETAS) ---
+# --- FUNÇÕES CRUD ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -374,6 +374,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_chave = dados_gerais['cpf']
             
             if modo == "editar":
+                # Limpeza completa dos filhos para regravação (Full Refresh)
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
@@ -385,15 +386,18 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             # Inserção das tabelas filhas (Mantido)
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
+                    if row.get('numero'): 
+                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
             
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
-                    if row.get('email'): cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
+                    if row.get('email'): 
+                        cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
             
             if not df_end.empty:
                 for _, row in df_upper(df_end).iterrows():
-                    if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
+                    if row.get('rua') or row.get('cidade'): 
+                        cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
             
             if not df_emp.empty:
                 for _, row in df_upper(df_emp).iterrows():
@@ -691,6 +695,7 @@ def app_pessoa_fisica():
             st.markdown("### 📤 Etapa 1: Upload")
             sel_amigavel = st.selectbox("Selecione a Tabela de Destino", opcoes_tabelas)
             st.session_state['import_table'] = mapa_real[sel_amigavel]
+            
             uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
             if uploaded_file:
                 try:
@@ -796,7 +801,9 @@ def app_pessoa_fisica():
     # 4. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
-        for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']: st.session_state[k] = 1
+        # Reinicia contadores
+        for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
+            st.session_state[k] = 1
 
         filtro_imp = st.session_state.get('filtro_importacao_id')
         c1, c2 = st.columns([2, 2])
@@ -805,6 +812,7 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
+        # BOTÕES UNIFICADOS NO TOPO DA LISTA
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'novo'}); st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
@@ -826,18 +834,15 @@ def app_pessoa_fisica():
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
-                    c1, c2, c3 = st.columns(3) # Aumentado para 3 botões
-                    # BOTÃO LUPA (RECURSO 1.1)
-                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
-                    if c2.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
-                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    c1, c2 = st.columns(2)
+                    if c1.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado em: 24.12-11:48 {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
-    
