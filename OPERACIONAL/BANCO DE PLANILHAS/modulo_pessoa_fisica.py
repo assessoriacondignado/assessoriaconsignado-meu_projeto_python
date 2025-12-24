@@ -464,6 +464,71 @@ def add_column_to_table(table_name, col_name, col_type):
         except: return False
     return False
 
+# --- DIALOG: VISUALIZAR CLIENTE (NOVO RECURSO LUPA) ---
+@st.dialog("👁️ Detalhes do Cliente")
+def dialog_visualizar_cliente(cpf_cliente):
+    dados = carregar_dados_completos(cpf_cliente)
+    g = dados.get('geral')
+    
+    if g is None:
+        st.error("Cliente não encontrado.")
+        return
+
+    # 1.2.3 DADOS CADASTRAIS
+    with st.expander("👤 Dados Cadastrais", expanded=True):
+        c1, c2 = st.columns(2)
+        c1.write(f"**Nome:** {g['nome']}")
+        c2.write(f"**CPF:** {g['cpf']}")
+        
+        c3, c4 = st.columns(2)
+        dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
+        c3.write(f"**Nascimento:** {dt_nasc}")
+        c4.write(f"**RG:** {g['rg']}")
+    
+    # 1.2.4 DADOS DE TELEFONE
+    with st.expander("📞 Telefones"):
+        df_tel = dados.get('telefones')
+        if not df_tel.empty:
+            for _, row in df_tel.iterrows():
+                st.write(f"📱 {row['numero']} (WhatsApp: {row['tag_whats']})")
+        else: st.info("Sem telefones cadastrados.")
+
+    # 1.2.5 DADOS DE E-MAIL
+    with st.expander("📧 E-mails"):
+        df_email = dados.get('emails')
+        if not df_email.empty:
+            for _, row in df_email.iterrows():
+                st.write(f"✉️ {row['email']}")
+        else: st.info("Sem e-mails cadastrados.")
+
+    # 1.2.6 DADOS DE ENDEREÇO
+    with st.expander("🏠 Endereços"):
+        df_end = dados.get('enderecos')
+        if not df_end.empty:
+            for _, row in df_end.iterrows():
+                st.write(f"📍 {row['rua']}, {row['bairro']} - {row['cidade']}/{row['uf']} (CEP: {row['cep']})")
+        else: st.info("Sem endereços cadastrados.")
+
+    # 1.2.7 DADOS DE EMPREGO E RENDA + CONTRATOS
+    with st.expander("💼 Emprego, Renda e Contratos"):
+        df_emp = dados.get('empregos')
+        df_contr = dados.get('contratos')
+        
+        if not df_emp.empty:
+            for _, row in df_emp.iterrows():
+                st.markdown(f"**Convênio:** {row['convenio']} | **Matrícula:** {row['matricula']}")
+                if row['dados_extras']: st.caption(f"Extras: {row['dados_extras']}")
+                
+                # Contratos vinculados a esta matrícula
+                contratos_vinculados = df_contr[df_contr['matricula_ref'] == row['matricula']]
+                if not contratos_vinculados.empty:
+                    st.write("📄 *Contratos:*")
+                    for _, c in contratos_vinculados.iterrows():
+                        st.write(f"- {c['contrato']}")
+                st.divider()
+        else: st.info("Sem dados profissionais.")
+
+
 # --- INTERFACE ---
 @st.dialog("⚠️ Excluir Cadastro")
 def dialog_excluir_pf(cpf, nome):
@@ -488,7 +553,7 @@ def app_pessoa_fisica():
         if k not in st.session_state: st.session_state[k] = 1
 
     # ==========================
-    # 1. PESQUISA AMPLA (ATUALIZADO COM FILTRO IMPORTAÇÃO)
+    # 1. PESQUISA AMPLA (ATUALIZADO COM LUPA)
     # ==========================
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
@@ -524,7 +589,6 @@ def app_pessoa_fisica():
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
             with t6:
-                # LISTA DE IMPORTAÇÕES PARA FILTRO
                 conn = get_conn()
                 opcoes_imp = {}
                 if conn:
@@ -536,10 +600,8 @@ def app_pessoa_fisica():
                              opcoes_imp[label] = row['id']
                     except: pass
                     conn.close()
-                
                 sel_imp = st.selectbox("Filtrar por Importação", [""] + list(opcoes_imp.keys()))
-                if sel_imp:
-                    filtros['importacao_id'] = opcoes_imp[sel_imp]
+                if sel_imp: filtros['importacao_id'] = opcoes_imp[sel_imp]
 
             btn_pesquisar = st.form_submit_button("Pesquisar")
 
@@ -570,10 +632,17 @@ def app_pessoa_fisica():
                 if not subset_selecionado.empty:
                     st.divider()
                     registro = subset_selecionado.iloc[0]
-                    c1, c2 = st.columns(2)
-                    if c1.button("✏️ Editar"): 
-                        st.session_state['pf_view'] = 'editar'; st.session_state['pf_cpf_selecionado'] = registro['cpf']; st.rerun()
-                    if c2.button("🗑️ Excluir"): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    c1, c2, c3 = st.columns(3) # Aumentei para 3 colunas para caber a Lupa
+                    
+                    # 1. BOTÃO LUPA (NOVO)
+                    if c1.button("👁️ Ver", use_container_width=True):
+                        dialog_visualizar_cliente(registro['cpf'])
+
+                    if c2.button("✏️ Editar", use_container_width=True): 
+                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    
+                    if c3.button("🗑️ Excluir", use_container_width=True): 
+                        dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
@@ -688,13 +757,13 @@ def app_pessoa_fisica():
                     conn.commit()
                 
                 final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
+                qtd_novos = 0; qtd_atualizados = 0; qtd_erros = 0; erros_list = []
                 
                 if not final_map: st.error("Mapeie pelo menos uma coluna."); st.stop()
-
                 if conn:
                     with st.spinner("Processando em lote... Aguarde alguns instantes."):
                         try:
-                            # EXECUÇÃO DO PLANO A (IMPORTAÇÃO RÁPIDA EM LOTE)
+                            # EXECUÇÃO DO PLANO A
                             novos, atualizados, erros_list = processar_importacao_lote(conn, df, table_name, final_map, import_id)
                             conn.commit()
                             
@@ -702,27 +771,16 @@ def app_pessoa_fisica():
                             if erros_list:
                                 name_erro = f"{os.path.splitext(orig_name)[0]}_{timestamp}_ERRO.txt"
                                 path_erro = os.path.join(BASE_DIR_IMPORTS, name_erro)
-                                with open(path_erro, "w", encoding="utf-8") as f: 
-                                    f.write("\n".join(erros_list))
+                                with open(path_erro, "w", encoding="utf-8") as f: f.write("\n".join(erros_list))
                             
                             cur = conn.cursor()
-                            cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", 
-                                        (novos, atualizados, len(erros_list), path_erro, import_id))
-                            conn.commit()
-                            cur.close()
-                            conn.close()
+                            cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", (qtd_novos, qtd_atualizados, len(erros_list), path_erro, import_id))
+                            conn.commit(); cur.close(); conn.close()
                             
-                            st.session_state['import_stats'] = {
-                                'novos': novos, 'atualizados': atualizados, 
-                                'erros': len(erros_list), 'path_erro': path_erro, 
-                                'sample': df.head(5)
-                            }
-                            st.session_state['import_step'] = 3
-                            st.rerun()
-                            
+                            st.session_state['import_stats'] = {'novos': novos, 'atualizados': atualizados, 'erros': len(erros_list), 'path_erro': path_erro, 'sample': df.head(5)}
+                            st.session_state['import_step'] = 3; st.rerun()
                         except Exception as e:
-                            st.error(f"Erro Crítico na Importação: {e}")
-                            if conn: conn.close()
+                            st.error(f"Erro Crítico na Importação: {e}"); if conn: conn.close()
 
         elif st.session_state['import_step'] == 3:
             st.markdown("### ✅ Etapa 3: Resultado da Importação")
@@ -738,9 +796,7 @@ def app_pessoa_fisica():
     # 4. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
-        # Reinicia contadores
-        for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
-            st.session_state[k] = 1
+        for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']: st.session_state[k] = 1
 
         filtro_imp = st.session_state.get('filtro_importacao_id')
         c1, c2 = st.columns([2, 2])
@@ -749,7 +805,6 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        # BOTÕES UNIFICADOS NO TOPO DA LISTA
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'novo'}); st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
@@ -771,15 +826,17 @@ def app_pessoa_fisica():
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
-                    c1, c2 = st.columns(2)
-                    if c1.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
-                    if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    c1, c2, c3 = st.columns(3) # Aumentado para 3 botões
+                    # BOTÃO LUPA (RECURSO 1.1)
+                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
+                    if c2.button("✏️ Editar", use_container_width=True): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf']}); st.rerun()
+                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em: 24.12-11:48 {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
