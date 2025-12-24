@@ -71,14 +71,10 @@ def buscar_referencias(tipo):
     return []
 
 def limpar_normalizar_cpf(cpf_raw):
-    """
-    Remove não-números e REMOVE zeros à esquerda (Regra: Importar sem zero).
-    Ex: 060... vira 60...
-    """
+    """Remove não-numeros e remove zeros a esquerda (Regra: Importar sem zero)"""
     if not cpf_raw: return ""
     apenas_nums = re.sub(r'\D', '', str(cpf_raw))
     if not apenas_nums: return ""
-    # lstrip('0') remove os zeros do início
     return apenas_nums.lstrip('0')
 
 def verificar_cpf_existente(cpf_normalizado):
@@ -96,11 +92,100 @@ def verificar_cpf_existente(cpf_normalizado):
 def converter_data_br_iso(valor):
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]
+    # Remove horas se houver
+    valor_str = valor_str.split(' ')[0]
+    formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
         try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
         except ValueError: continue
     return None
+
+# --- IMPORTAÇÃO RÁPIDA (PLANO A - BULK) ---
+def processar_importacao_lote(conn, df, table_name, mapping, import_id):
+    """
+    Executa a importação em lote (Bulk Insert/Update) usando tabelas temporárias.
+    Esta função roda 'sozinha' no banco para máxima performance.
+    """
+    cur = conn.cursor()
+    try:
+        # 1. Preparação dos Dados (Data Cleaning no Python)
+        df_proc = df.rename(columns=mapping)
+        cols_db = list(mapping.values())
+        df_proc = df_proc[cols_db].copy()
+        
+        # Adiciona ID da importação para rastreio
+        df_proc['importacao_id'] = import_id
+
+        # Normalizações Rápidas (Vetorizadas)
+        if 'cpf' in df_proc.columns:
+            df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
+        
+        # Conversão de Datas
+        cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
+        for col in cols_data:
+            if col in df_proc.columns:
+                df_proc[col] = df_proc[col].apply(converter_data_br_iso)
+
+        # 2. Validação Básica de Erros
+        erros = []
+        if table_name == 'pf_dados':
+            # Remove linhas sem CPF (chave obrigatória)
+            invalidos = df_proc[df_proc['cpf'] == ""]
+            if not invalidos.empty:
+                for idx, row in invalidos.iterrows():
+                    erros.append(f"Linha {idx}: CPF inválido ou vazio.")
+            df_proc = df_proc[df_proc['cpf'] != ""]
+
+        # 3. Upload para Staging (Tabela Temporária)
+        staging_table = f"staging_import_{import_id}"
+        cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
+        
+        output = io.StringIO()
+        df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
+        output.seek(0)
+        
+        cols_order = list(df_proc.columns)
+        cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
+        
+        # 4. Execução do UPSERT (SQL Puro)
+        pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
+        
+        qtd_novos = 0
+        qtd_atualizados = 0
+        
+        if pk_field:
+            # UPDATE (Quem já existe)
+            sql_update = f"""
+                UPDATE {table_name} t
+                SET {', '.join([f"{c} = s.{c}" for c in cols_order if c != pk_field])}
+                FROM {staging_table} s
+                WHERE t.{pk_field} = s.{pk_field}
+            """
+            cur.execute(sql_update)
+            qtd_atualizados = cur.rowcount
+            
+            # INSERT (Quem não existe)
+            sql_insert = f"""
+                INSERT INTO {table_name} ({', '.join(cols_order)})
+                SELECT {', '.join(cols_order)}
+                FROM {staging_table} s
+                WHERE NOT EXISTS (SELECT 1 FROM {table_name} t WHERE t.{pk_field} = s.{pk_field})
+            """
+            cur.execute(sql_insert)
+            qtd_novos = cur.rowcount
+        else:
+            # INSERT Simples (Sem chave de verificação)
+            sql_insert = f"""
+                INSERT INTO {table_name} ({', '.join(cols_order)})
+                SELECT {', '.join(cols_order)} FROM {staging_table}
+            """
+            cur.execute(sql_insert)
+            qtd_novos = cur.rowcount
+
+        return qtd_novos, qtd_atualizados, erros
+        
+    except Exception as e:
+        raise e
 
 # --- FUNÇÕES DE BUSCA ---
 def buscar_pf_simples(termo, filtro_importacao_id=None):
@@ -109,7 +194,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
         try:
             # Normalização para busca: remove não numéricos e zeros a esquerda
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
-            
             param_nome = f"%{termo}%"
             param_num = f"%{termo_limpo}%"
             
@@ -124,7 +208,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                 params = [filtro_importacao_id]
                 if termo:
                    sql_where += " AND (d.cpf ILIKE %s OR d.nome ILIKE %s OR t.numero ILIKE %s) "
-                   # Para o CPF, usamos o termo limpo (sem zero) para dar match com o banco (sem zero)
                    params.extend([param_num, param_nome, param_num])
                 params = tuple(params)
             else:
@@ -237,7 +320,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD ---
+# --- FUNÇÕES CRUD (PRESERVADAS) ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -289,6 +372,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_chave = dados_gerais['cpf']
             
             if modo == "editar":
+                # Full refresh dos filhos para garantir consistência
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
@@ -297,17 +381,21 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
 
+            # Inserção das tabelas filhas
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
+                    if row.get('numero'): 
+                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
             
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
-                    if row.get('email'): cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
+                    if row.get('email'): 
+                        cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
             
             if not df_end.empty:
                 for _, row in df_upper(df_end).iterrows():
-                    if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
+                    if row.get('rua') or row.get('cidade'): 
+                        cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
             
             if not df_emp.empty:
                 for _, row in df_upper(df_emp).iterrows():
@@ -502,7 +590,7 @@ def app_pessoa_fisica():
             else: st.info("Nenhum histórico.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO
+    # 3. MODO IMPORTAÇÃO (BULK)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -569,7 +657,7 @@ def app_pessoa_fisica():
                         st.rerun()
 
             st.divider()
-            if st.button("🚀 INICIAR IMPORTAÇÃO", type="primary"):
+            if st.button("🚀 INICIAR IMPORTAÇÃO (BULK)", type="primary"):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 orig_name = st.session_state.get('uploaded_file_name', 'importacao')
                 safe_name = f"{os.path.splitext(orig_name)[0]}_{timestamp}.csv"
@@ -585,57 +673,43 @@ def app_pessoa_fisica():
                     conn.commit()
                 
                 final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
-                qtd_novos = 0; qtd_atualizados = 0; qtd_erros = 0; erros_list = []
                 
-                if not final_map: st.error("Mapeie pelo menos uma coluna."); st.stop()
+                if not final_map: 
+                    st.error("Mapeie pelo menos uma coluna.")
+                    st.stop()
+
                 if conn:
-                    cur = conn.cursor()
-                    progress = st.progress(0)
-                    for idx, row in df.iterrows():
+                    with st.spinner("Processando em lote... Aguarde alguns instantes."):
                         try:
-                            dados_row = {}
-                            for csv_c, db_c in final_map.items():
-                                val = row[csv_c]
-                                if db_c in ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']:
-                                    conv_val = converter_data_br_iso(val)
-                                    if conv_val: val = conv_val
-                                if pd.isna(val): val = None
-                                dados_row[db_c] = val
+                            # EXECUÇÃO DO PLANO A (IMPORTAÇÃO RÁPIDA EM LOTE)
+                            novos, atualizados, erros_list = processar_importacao_lote(conn, df, table_name, final_map, import_id)
+                            conn.commit()
                             
-                            if 'cpf' in dados_row: dados_row['cpf'] = limpar_normalizar_cpf(dados_row['cpf'])
-                            pk_field = 'cpf' if 'cpf' in dados_row else ('matricula' if 'matricula' in dados_row else None)
+                            path_erro = None
+                            if erros_list:
+                                name_erro = f"{os.path.splitext(orig_name)[0]}_{timestamp}_ERRO.txt"
+                                path_erro = os.path.join(BASE_DIR_IMPORTS, name_erro)
+                                with open(path_erro, "w", encoding="utf-8") as f: 
+                                    f.write("\n".join(erros_list))
                             
-                            if pk_field and dados_row.get(pk_field):
-                                set_clause = ", ".join([f"{k}=%s" for k in dados_row.keys()])
-                                values = list(dados_row.values()) + [dados_row[pk_field]]
-                                cur.execute(f"UPDATE {table_name} SET {set_clause}, importacao_id={import_id} WHERE {pk_field}=%s", values)
-                                if cur.rowcount > 0: qtd_atualizados += 1
-                                else:
-                                    cols = list(dados_row.keys())
-                                    vals = list(dados_row.values())
-                                    placeholders = ", ".join(["%s"] * len(vals))
-                                    cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}, importacao_id) VALUES ({placeholders}, {import_id})", vals)
-                                    qtd_novos += 1
-                            else:
-                                cols = list(dados_row.keys())
-                                vals = list(dados_row.values())
-                                placeholders = ", ".join(["%s"] * len(vals))
-                                cur.execute(f"INSERT INTO {table_name} ({', '.join(cols)}, importacao_id) VALUES ({placeholders}, {import_id})", vals)
-                                qtd_novos += 1
+                            cur = conn.cursor()
+                            cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", 
+                                        (novos, atualizados, len(erros_list), path_erro, import_id))
+                            conn.commit()
+                            cur.close()
+                            conn.close()
+                            
+                            st.session_state['import_stats'] = {
+                                'novos': novos, 'atualizados': atualizados, 
+                                'erros': len(erros_list), 'path_erro': path_erro, 
+                                'sample': df.head(5)
+                            }
+                            st.session_state['import_step'] = 3
+                            st.rerun()
+                            
                         except Exception as e:
-                            qtd_erros += 1; erros_list.append(f"Linha {idx+2}: {str(e)}")
-                        if idx % 10 == 0: progress.progress((idx+1)/len(df))
-                    conn.commit()
-                    path_erro = None
-                    if erros_list:
-                        name_erro = f"{os.path.splitext(orig_name)[0]}_{timestamp}_ERRO.txt"
-                        path_erro = os.path.join(BASE_DIR_IMPORTS, name_erro)
-                        with open(path_erro, "w", encoding="utf-8") as f: f.write("\n".join(erros_list))
-                    
-                    cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s, caminho_arquivo_erro=%s WHERE id=%s", (qtd_novos, qtd_atualizados, qtd_erros, path_erro, import_id))
-                    conn.commit(); cur.close(); conn.close()
-                    st.session_state['import_stats'] = {'novos': qtd_novos, 'atualizados': qtd_atualizados, 'erros': qtd_erros, 'path_erro': path_erro, 'sample': df.head(5)}
-                    st.session_state['import_step'] = 3; st.rerun()
+                            st.error(f"Erro Crítico na Importação: {e}")
+                            if conn: conn.close()
 
         elif st.session_state['import_step'] == 3:
             st.markdown("### ✅ Etapa 3: Resultado da Importação")
@@ -691,166 +765,8 @@ def app_pessoa_fisica():
                     if c2.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
-
-    # ==========================
-    # 5. MODO NOVO / EDITAR
-    # ==========================
-    elif st.session_state['pf_view'] in ['novo', 'editar']:
-        st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
-        modo = st.session_state['pf_view']
-        cpf_atual = st.session_state['pf_cpf_selecionado']
-        dados_db = carregar_dados_completos(cpf_atual) if modo == 'editar' and cpf_atual else {}
-        geral = dados_db.get('geral')
-        
-        # Lógica de Pré-carregamento dos campos dinâmicos na edição
-        if modo == 'editar' and cpf_atual and f"edit_ready_{cpf_atual}" not in st.session_state:
-            df_t = dados_db.get('telefones')
-            if df_t is not None and not df_t.empty:
-                st.session_state['count_tel'] = len(df_t)
-                for idx, row in df_t.iterrows():
-                    st.session_state[f"new_tel_n_{idx}"] = row['numero']
-                    st.session_state[f"new_tel_t_{idx}"] = row['tag_whats']
-            
-            df_m = dados_db.get('emails')
-            if df_m is not None and not df_m.empty:
-                st.session_state['count_email'] = len(df_m)
-                for idx, row in df_m.iterrows():
-                    st.session_state[f"new_email_{idx}"] = row['email']
-
-            df_e = dados_db.get('enderecos')
-            if df_e is not None and not df_e.empty:
-                st.session_state['count_end'] = len(df_e)
-                for idx, row in df_e.iterrows():
-                    st.session_state[f"end_rua_{idx}"] = row['rua']
-                    st.session_state[f"end_bairro_{idx}"] = row['bairro']
-                    st.session_state[f"end_cid_{idx}"] = row['cidade']
-                    st.session_state[f"end_uf_{idx}"] = row['uf']
-                    st.session_state[f"end_cep_{idx}"] = row['cep']
-
-            df_em = dados_db.get('empregos')
-            if df_em is not None and not df_em.empty:
-                st.session_state['count_emp'] = len(df_em)
-                for idx, row in df_em.iterrows():
-                    st.session_state[f"emp_conv_{idx}"] = row['convenio']
-                    st.session_state[f"emp_matr_{idx}"] = row['matricula']
-                    st.session_state[f"emp_ext_{idx}"] = row['dados_extras']
-
-            df_c = dados_db.get('contratos')
-            if df_c is not None and not df_c.empty:
-                st.session_state['count_ctr'] = len(df_c)
-                for idx, row in df_c.iterrows():
-                    st.session_state[f"ctr_mref_{idx}"] = row['matricula_ref']
-                    st.session_state[f"ctr_num_{idx}"] = row['contrato']
-
-            st.session_state[f"edit_ready_{cpf_atual}"] = True
-            st.rerun()
-
-        st.markdown(f"### {geral['nome'] if geral is not None else 'Novo Cadastro'}")
-        
-        with st.form("form_pf", enter_to_submit=False):
-            t1, t2, t3, t4, t5, t6 = st.tabs(["👤 Dados Pessoais", "📞 Telefones", "📧 Emails", "🏠 Endereços", "💼 Emprego/Renda", "📄 Contratos"])
-            
-            with t1:
-                c1, c2, c3 = st.columns(3)
-                nome = st.text_input("Nome *", value=geral['nome'] if geral else "").upper()
-                cpf = st.text_input("CPF *", value=geral['cpf'] if geral else "")
-                val_nasc = None
-                if geral is not None and geral['data_nascimento']:
-                    try: val_nasc = pd.to_datetime(geral['data_nascimento']).date()
-                    except: pass
-                nasc = c3.date_input("Nascimento", value=val_nasc, format="DD/MM/YYYY")
-                rg = st.text_input("RG", value=geral['rg'] if geral is not None else "").upper()
-
-            collected_tels = []
-            collected_emails = []
-            collected_ends = []
-            collected_emps = []
-            collected_ctrs = []
-
-            with t2:
-                for i in range(st.session_state['count_tel']):
-                    c_num, c_tag, c_vazio = st.columns([2, 1, 4])
-                    val_num = c_num.text_input(f"Telefone {i+1} (DDD+9 digitos)", key=f"new_tel_n_{i}", max_chars=11)
-                    val_tag = c_tag.selectbox(f"WhatsApp? {i+1}", ["Sim", "Não"], key=f"new_tel_t_{i}")
-                    if val_num: collected_tels.append({"numero": val_num, "tag_whats": val_tag})
-                if st.form_submit_button("➕ Adicionar Telefone"): st.session_state['count_tel'] += 1; st.rerun()
-
-            with t3:
-                for i in range(st.session_state['count_email']):
-                    ce1, ce2 = st.columns([4, 2])
-                    val_email = ce1.text_input(f"E-mail {i+1}", key=f"new_email_{i}")
-                    if val_email: collected_emails.append({"email": val_email})
-                if st.form_submit_button("➕ Adicionar E-mail"): st.session_state['count_email'] += 1; st.rerun()
-
-            with t4:
-                for i in range(st.session_state['count_end']):
-                    st.markdown(f"**Endereço {i+1}**")
-                    c_rua, c_bairro = st.columns(2)
-                    c_cid, c_uf, c_cep = st.columns([3, 1, 1.5])
-                    rua = c_rua.text_input("Rua", key=f"end_rua_{i}")
-                    bairro = c_bairro.text_input("Bairro", key=f"end_bairro_{i}")
-                    cidade = c_cid.text_input("Cidade", key=f"end_cid_{i}")
-                    uf = c_uf.text_input("UF", key=f"end_uf_{i}", max_chars=2)
-                    cep = c_cep.text_input("CEP", key=f"end_cep_{i}")
-                    if rua or cidade: collected_ends.append({"rua": rua, "bairro": bairro, "cidade": cidade, "uf": uf, "cep": cep})
-                    st.divider()
-                if st.form_submit_button("➕ Adicionar Endereço"): st.session_state['count_end'] += 1; st.rerun()
-
-            with t5:
-                lista_conv = buscar_referencias('CONVENIO')
-                st.markdown("##### Dados Profissionais")
-                for i in range(st.session_state['count_emp']):
-                    c_conv, c_matr = st.columns(2)
-                    conv = c_conv.selectbox(f"Convênio {i+1}", [""] + lista_conv, key=f"emp_conv_{i}")
-                    matr = c_matr.text_input(f"Matrícula {i+1}", key=f"emp_matr_{i}")
-                    extras = st.text_area(f"Dados Extras {i+1}", height=60, key=f"emp_ext_{i}")
-                    if conv and matr: collected_emps.append({"convenio": conv, "matricula": matr, "dados_extras": extras})
-                    st.divider()
-                if st.form_submit_button("➕ Adicionar Emprego"): st.session_state['count_emp'] += 1; st.rerun()
-
-            with t6:
-                st.markdown("##### Contratos")
-                for i in range(st.session_state['count_ctr']):
-                    c_mref, c_ctr = st.columns(2)
-                    mref = c_mref.text_input(f"Matrícula Referência {i+1}", key=f"ctr_mref_{i}")
-                    ctr = c_ctr.text_input(f"Contrato {i+1}", key=f"ctr_num_{i}")
-                    if ctr: collected_ctrs.append({"matricula_ref": mref, "contrato": ctr, "dados_extras": ""})
-                if st.form_submit_button("➕ Adicionar Contrato"): st.session_state['count_ctr'] += 1; st.rerun()
-
-            st.markdown("---")
-            confirmar = st.form_submit_button("💾 Salvar Tudo")
-
-        if confirmar:
-            if nome and cpf:
-                cpf_limpo_verif = limpar_normalizar_cpf(cpf)
-                
-                # Regra de Duplicidade
-                if modo == 'novo':
-                    nome_existente = verificar_cpf_existente(cpf_limpo_verif)
-                    if nome_existente:
-                        st.error(f"⚠️ CPF já cadastrado: {nome_existente}")
-                        if st.button("🔄 Editar existente?"):
-                            st.session_state['pf_view'] = 'editar'; st.session_state['pf_cpf_selecionado'] = cpf_limpo_verif; st.rerun()
-                        st.stop() 
-
-                dg = {"cpf": cpf, "nome": nome, "data_nascimento": nasc, "rg": rg}
-                
-                # Conversão das Listas Coletadas para DataFrames (formato esperado pelo salvar_pf)
-                df_final_tel = pd.DataFrame(collected_tels) if collected_tels else pd.DataFrame()
-                df_final_email = pd.DataFrame(collected_emails) if collected_emails else pd.DataFrame()
-                df_final_end = pd.DataFrame(collected_ends) if collected_ends else pd.DataFrame()
-                df_final_emp = pd.DataFrame(collected_emps) if collected_emps else pd.DataFrame()
-                df_final_ctr = pd.DataFrame(collected_ctrs) if collected_ctrs else pd.DataFrame()
-
-                ok, msg = salvar_pf(dg, df_final_tel, df_final_email, df_final_end, df_final_emp, df_final_ctr, modo, cpf_atual)
-                if ok: 
-                    st.success(msg)
-                    st.session_state['pf_view'] = 'lista'
-                    time.sleep(1); st.rerun()
-                else: st.error(msg)
-            else: st.warning("Nome e CPF obrigatórios.")
     
-    st.caption("Atualizado em: 23/12/2025 18:00")
+    st.caption("Atualizado em: 23/12/2025 17:50 - Versão Final Bulk Integrada")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
