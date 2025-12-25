@@ -595,8 +595,8 @@ def app_pessoa_fisica():
                     "cpf": st.column_config.TextColumn("CPF", width="large"),
                     "nome": st.column_config.TextColumn("Nome", width="medium"),
                     "id": st.column_config.NumberColumn("Código", width="small"),
-                    "rg": st.column_config.Column(hidden=True),
-                    "data_nascimento": st.column_config.Column(hidden=True)
+                    "rg": None,
+                    "data_nascimento": None
                 }
                 edited_df = st.data_editor(df_res, column_config=cfg_cols, disabled=df_res.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
                 subset = edited_df[edited_df["Selecionar"] == True]
@@ -787,8 +787,8 @@ def app_pessoa_fisica():
                     "nome": st.column_config.TextColumn("Nome", width="medium"),
                     "id": st.column_config.NumberColumn("Código", width="small"),
                     # OCULTAR COLUNAS (AJUSTE SOLICITADO)
-                    "rg": st.column_config.Column(hidden=True),
-                    "data_nascimento": st.column_config.Column(hidden=True)
+                    "rg": None,
+                    "data_nascimento": None
                 }
                 edited_df = st.data_editor(df_lista, column_config=cfg_cols, disabled=df_lista.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
                 subset = edited_df[edited_df["Selecionar"] == True]
