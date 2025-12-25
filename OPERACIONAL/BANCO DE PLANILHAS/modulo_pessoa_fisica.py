@@ -76,6 +76,19 @@ def limpar_apenas_numeros(valor):
     if not valor: return ""
     return re.sub(r'\D', '', str(valor))
 
+def formatar_cpf_visual(cpf_db):
+    """
+    Recebe o CPF do banco (que pode estar sem zeros à esquerda) 
+    e retorna formatado visualmente: 000.000.000-00
+    """
+    if not cpf_db: return ""
+    # Garante que é string e remove espaços
+    cpf_limpo = str(cpf_db).strip()
+    # Adiciona zeros à esquerda até completar 11 dígitos
+    cpf_full = cpf_limpo.zfill(11)
+    # Aplica a máscara
+    return f"{cpf_full[:3]}.{cpf_full[3:6]}.{cpf_full[6:9]}-{cpf_full[9:]}"
+
 def validar_formatar_cpf(cpf_raw):
     """Valida 11 dígitos e formata XXX.XXX.XXX-XX"""
     numeros = limpar_apenas_numeros(cpf_raw)
@@ -200,6 +213,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
     conn = get_conn()
     if conn:
         try:
+            # Limpa o termo: remove tudo que não é dígito e zeros à esquerda
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
@@ -208,10 +222,12 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             conditions = []
             params = []
 
+            # Filtro de Importação
             if filtro_importacao_id:
                 conditions.append("d.importacao_id = %s")
                 params.append(filtro_importacao_id)
             
+            # Filtro de Texto (Nome, CPF ou Telefone)
             if termo:
                 if termo_limpo:
                     param_num = f"%{termo_limpo}%"
@@ -223,6 +239,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                     conditions.append("d.nome ILIKE %s")
                     params.append(param_nome)
             
+            # Monta Query Final
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             query = f"{sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 50"
             
@@ -344,7 +361,6 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
-            # Atualizado para trazer Data de Atualização e Qualificação
             dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
@@ -398,7 +414,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
                     if row.get('numero'): 
-                        # Salva com data de atualização e novos campos
                         dt = row.get('data_atualizacao') or date.today()
                         cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", 
                                     (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), dt))
@@ -461,6 +476,9 @@ def get_table_columns(table_name):
 # --- DIALOG: VISUALIZAR CLIENTE ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
+    # Aplica formatação visual ao CPF exibido no título
+    cpf_vis = formatar_cpf_visual(cpf_cliente)
+    
     dados = carregar_dados_completos(cpf_cliente)
     g = dados.get('geral')
     
@@ -471,7 +489,8 @@ def dialog_visualizar_cliente(cpf_cliente):
     with st.expander("👤 Dados Cadastrais", expanded=True):
         c1, c2 = st.columns(2)
         c1.write(f"**Nome:** {g['nome']}")
-        c2.write(f"**CPF:** {g['cpf']}")
+        # Exibe CPF formatado
+        c2.write(f"**CPF:** {cpf_vis}")
         c3, c4 = st.columns(2)
         dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
         c3.write(f"**Nascimento:** {dt_nasc}")
@@ -605,6 +624,10 @@ def app_pessoa_fisica():
             st.write(f"**Resultados Encontrados:** {total}")
             
             if not df_res.empty:
+                # Formatação Visual do CPF na Tabela
+                if 'cpf' in df_res.columns:
+                    df_res['cpf'] = df_res['cpf'].apply(formatar_cpf_visual)
+                
                 df_res.insert(0, "Selecionar", False)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
@@ -619,16 +642,18 @@ def app_pessoa_fisica():
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
+                    # Ao selecionar para editar, removemos a formatação para buscar no banco
+                    cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
                     c1, c2, c3 = st.columns(3)
-                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
+                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
                     if c2.button("✏️ Editar", use_container_width=True): 
-                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf'], 'form_loaded': False})
+                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo_busca, 'form_loaded': False})
                         st.rerun()
-                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
-    # 2. HISTÓRICO DE IMPORTAÇÕES
+    # 2. HISTÓRICO DE IMPORTAÇÕES (Mantido)
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
@@ -657,7 +682,7 @@ def app_pessoa_fisica():
             else: st.info("Nenhum histórico.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO (BULK)
+    # 3. MODO IMPORTAÇÃO (BULK) (Mantido)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -779,7 +804,9 @@ def app_pessoa_fisica():
     # ==========================
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         is_edit = st.session_state['pf_view'] == 'editar'
-        titulo = f"✏️ Editar Cadastro: {st.session_state['pf_cpf_selecionado']}" if is_edit else "➕ Novo Cadastro"
+        # Formata o CPF para o título, se houver
+        cpf_titulo = formatar_cpf_visual(st.session_state.get('pf_cpf_selecionado')) if is_edit else ""
+        titulo = f"✏️ Editar Cadastro: {cpf_titulo}" if is_edit else "➕ Novo Cadastro"
         
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'form_loaded': False}))
         st.markdown(f"### {titulo}")
@@ -812,8 +839,11 @@ def app_pessoa_fisica():
             with t1:
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome Completo *", value=g.get('nome', ''))
-                cpf_val = g.get('cpf', '')
-                cpf = c2.text_input("CPF *", value=cpf_val, disabled=is_edit)
+                
+                # --- CAMPO CPF COM FORMATAÇÃO VISUAL ---
+                cpf_banco = g.get('cpf', '')
+                cpf_visual_inicial = formatar_cpf_visual(cpf_banco)
+                cpf = c2.text_input("CPF *", value=cpf_visual_inicial, disabled=is_edit, help="Formato visual: 000.000.000-00")
                 
                 val_nasc = None
                 if g.get('data_nascimento'):
@@ -830,7 +860,7 @@ def app_pessoa_fisica():
                 nome_mae = c7.text_input("Nome da Mãe", value=g.get('nome_mae', ''))
                 nome_pai = c8.text_input("Nome do Pai", value=g.get('nome_pai', ''))
 
-            # --- TAB 2: CONTATOS (ATUALIZADA) ---
+            # --- TAB 2: CONTATOS (Mantida lógica anterior de Telefone) ---
             with t2:
                 # TELEFONES
                 st.markdown("#### 📞 Telefones")
@@ -854,7 +884,6 @@ def app_pessoa_fisica():
                 
                 # Lista Telefones
                 if st.session_state['temp_telefones']:
-                    # Cabeçalho
                     ch1, ch2, ch3, ch4, ch5 = st.columns([2, 1, 2, 1.5, 0.5])
                     ch1.caption("**Número**")
                     ch2.caption("**WhatsApp**")
@@ -869,7 +898,6 @@ def app_pessoa_fisica():
                         col_l2.text(t['tag_whats'])
                         col_l3.text(t['tag_qualificacao'])
                         
-                        # Formatação Data
                         d_show = t.get('data_atualizacao')
                         if isinstance(d_show, str):
                              try: d_show = datetime.strptime(d_show, '%Y-%m-%d').date()
@@ -885,7 +913,7 @@ def app_pessoa_fisica():
                 
                 st.divider()
                 
-                # EMAILS
+                # EMAILS (Mantido)
                 st.markdown("#### 📧 E-mails")
                 c_e1, c_e2 = st.columns([4, 1])
                 novo_email = c_e1.text_input("Novo E-mail", key="in_email")
@@ -905,7 +933,7 @@ def app_pessoa_fisica():
 
                 st.divider()
 
-                # ENDEREÇOS
+                # ENDEREÇOS (Mantido)
                 st.markdown("#### 🏠 Endereço")
                 ce1, ce2, ce3 = st.columns([1.5, 3, 1])
                 n_cep = ce1.text_input("CEP", key="in_cep")
@@ -933,7 +961,7 @@ def app_pessoa_fisica():
                             st.session_state['temp_enderecos'].pop(i)
                             st.rerun()
 
-            # --- TAB 3: EMPREGO ---
+            # --- TAB 3: EMPREGO (Mantido) ---
             with t3:
                 st.markdown("#### 💼 Emprego e Renda")
                 ce1, ce2, ce3 = st.columns(3)
@@ -957,11 +985,10 @@ def app_pessoa_fisica():
                             st.session_state['temp_empregos'].pop(i)
                             st.rerun()
 
-            # --- TAB 4: CONTRATOS ---
+            # --- TAB 4: CONTRATOS (Mantido) ---
             with t4:
                 st.markdown("#### 📄 Contratos")
                 cc1, cc2, cc3 = st.columns(3)
-                # Selectbox para pegar matrículas já cadastradas na sessão
                 lista_matr = [e['matricula'] for e in st.session_state['temp_empregos'] if 'matricula' in e]
                 n_matr_ref = cc1.selectbox("Matrícula Vinculada", lista_matr, key="in_ctr_matr")
                 n_contrato = cc2.text_input("Número Contrato", key="in_contrato")
@@ -996,14 +1023,13 @@ def app_pessoa_fisica():
                 elif erro_cpf:
                     st.error(erro_cpf)
                 else:
-                    # Montar Dicionário Geral
+                    # Montar Dicionário Geral - Limpar CPF para salvar
                     dados_gerais = {
-                        'cpf': cpf_fmt, 'nome': nome, 'data_nascimento': d_nasc,
+                        'cpf': limpar_normalizar_cpf(cpf), 'nome': nome, 'data_nascimento': d_nasc,
                         'rg': rg, 'cnh': cnh, 'pis': pis,
                         'nome_mae': nome_mae, 'nome_pai': nome_pai
                     }
                     
-                    # Converte as listas da sessão para DataFrames para passar para a função salvar_pf
                     df_tel_save = pd.DataFrame(st.session_state['temp_telefones'])
                     df_email_save = pd.DataFrame(st.session_state['temp_emails'])
                     df_end_save = pd.DataFrame(st.session_state['temp_enderecos'])
@@ -1011,14 +1037,14 @@ def app_pessoa_fisica():
                     df_contr_save = pd.DataFrame(st.session_state['temp_contratos'])
                     
                     modo_salvar = "editar" if is_edit else "novo"
-                    cpf_orig = st.session_state.get('pf_cpf_selecionado') if is_edit else None
+                    # Se for edição, o CPF original também deve ser limpo para encontrar no banco
+                    cpf_orig = limpar_normalizar_cpf(st.session_state.get('pf_cpf_selecionado')) if is_edit else None
                     
                     sucesso, msg = salvar_pf(dados_gerais, df_tel_save, df_email_save, df_end_save, df_emp_save, df_contr_save, modo_salvar, cpf_orig)
                     
                     if sucesso:
                         st.success(msg)
                         time.sleep(1)
-                        # Limpa sessão
                         st.session_state['form_loaded'] = False
                         st.session_state['pf_view'] = 'lista'
                         st.rerun()
@@ -1029,7 +1055,6 @@ def app_pessoa_fisica():
     # 6. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
-        # ... (Mantido código lista sem alterações) ...
         # Reinicia contadores
         for k in ['count_tel', 'count_email', 'count_end', 'count_emp', 'count_ctr']:
             st.session_state[k] = 1
@@ -1051,6 +1076,10 @@ def app_pessoa_fisica():
         if busca or filtro_imp:
             df_lista = buscar_pf_simples(busca, filtro_imp)
             if not df_lista.empty:
+                # Aplica formatação visual na coluna CPF
+                if 'cpf' in df_lista.columns:
+                    df_lista['cpf'] = df_lista['cpf'].apply(formatar_cpf_visual)
+                
                 df_lista.insert(0, "Selecionar", False)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
@@ -1065,18 +1094,21 @@ def app_pessoa_fisica():
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
+                    # Remove formatação visual para buscar no banco (pois o banco usa RAW)
+                    cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
+                    
                     c1, c2, c3 = st.columns(3)
-                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(registro['cpf'])
+                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
                     if c2.button("✏️ Editar", use_container_width=True): 
-                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': registro['cpf'], 'form_loaded': False})
+                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo_busca, 'form_loaded': False})
                         st.rerun()
-                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(registro['cpf'], registro['nome'])
+                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 8  em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 9 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
