@@ -939,7 +939,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado  em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 5  em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
