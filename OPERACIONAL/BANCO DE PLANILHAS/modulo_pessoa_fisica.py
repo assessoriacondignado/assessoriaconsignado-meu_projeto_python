@@ -98,12 +98,13 @@ def validar_formatar_cpf(cpf_raw):
     return cpf_formatado, None
 
 def validar_formatar_telefone(tel_raw):
-    """Valida 10 ou 11 dígitos e formata (XX) XXXXX-XXXX"""
+    """
+    Valida 10 ou 11 dígitos e retorna APENAS NÚMEROS (Sem máscara).
+    Formato: 11999998888
+    """
     numeros = limpar_apenas_numeros(tel_raw)
-    if len(numeros) == 10:
-        return f"({numeros[:2]}) {numeros[2:6]}-{numeros[6:]}", None
-    elif len(numeros) == 11:
-        return f"({numeros[:2]}) {numeros[2:7]}-{numeros[7:]}", None
+    if len(numeros) == 10 or len(numeros) == 11:
+        return numeros, None
     return None, "Telefone deve ter 10 ou 11 dígitos (DDD + Número)."
 
 def validar_email(email):
@@ -160,13 +161,20 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         
         df_proc['importacao_id'] = import_id
 
+        # --- REGRAS DE NORMALIZAÇÃO ---
+        
         if 'cpf' in df_proc.columns:
             df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
             
-            # --- REGRA DE DUPLICIDADE (APENAS PARA pf_dados) ---
+            # Regra para pf_dados: Remove duplicatas de CPF do arquivo (mantém último)
             if table_name == 'pf_dados':
                 df_proc = df_proc.drop_duplicates(subset=['cpf'], keep='last')
-        
+
+        # Regra para pf_telefones: Limpa formatação visual (deixa só números)
+        if table_name == 'pf_telefones' and 'numero' in df_proc.columns:
+             df_proc['numero'] = df_proc['numero'].astype(str).apply(limpar_apenas_numeros)
+
+        # Conversão de Datas
         cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
         for col in cols_data:
             if col in df_proc.columns:
@@ -195,6 +203,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         qtd_atualizados = 0
         
         if pk_field:
+            # Lógica de UPSERT (Atualiza se existe, Insere se não existe)
             sql_update = f"UPDATE {table_name} t SET {', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}"
             cur.execute(sql_update)
             qtd_atualizados = cur.rowcount
@@ -203,7 +212,10 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
+            # Lógica para Tabelas Vinculadas (Evita criar linhas idênticas)
+            # Compara todas as colunas para garantir que não cria duplicata exata
             conditions = " AND ".join([f"t.{c} IS NOT DISTINCT FROM s.{c}" for c in cols_order])
+            
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)}) 
                 SELECT {', '.join(cols_order)} 
@@ -229,6 +241,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
+            # Query base (mesma lógica)
             sql_base_select = "SELECT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_base_from = "FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
             
@@ -252,17 +265,20 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             
+            # Se for exportar, busca tudo sem paginação (limitado a 1M)
             if exportar:
                 query = f"{sql_base_select} {sql_base_from} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 1000000"
                 df = pd.read_sql(query, conn, params=tuple(params))
                 conn.close()
                 return df, len(df)
 
+            # Contagem Total (para paginação)
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_base_from} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total_registros = cur.fetchone()[0]
 
+            # Busca Paginada
             offset = (pagina - 1) * itens_por_pagina
             query = f"{sql_base_select} {sql_base_from} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT {itens_por_pagina} OFFSET {offset}"
             
@@ -361,12 +377,14 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
             sql_joins = " ".join(joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             
+            # Se for exportar, sem paginação
             if exportar:
                 full_sql = f"{sql_select} {sql_from} {sql_joins} {sql_where} ORDER BY d.nome LIMIT 1000000"
                 df = pd.read_sql(full_sql, conn, params=tuple(params))
                 conn.close()
                 return df, len(df)
             
+            # Contagem Total
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {sql_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
@@ -1244,7 +1262,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 6 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 7 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
