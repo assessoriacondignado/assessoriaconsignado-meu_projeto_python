@@ -328,7 +328,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
                 query = f"{sql_base_select} {sql_base_from} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 1000000"
                 df = pd.read_sql(query, conn, params=tuple(params))
                 conn.close()
-                return df, len(df)
+                return df.fillna(""), len(df)
 
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_base_from} {sql_where}"
             cur = conn.cursor()
@@ -340,7 +340,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
-            return df, total_registros
+            return df.fillna(""), total_registros
         except: conn.close()
     return pd.DataFrame(), 0
 
@@ -444,7 +444,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
                 full_sql = f"{sql_select} {sql_from} {sql_joins} {sql_where} ORDER BY d.nome LIMIT 1000000"
                 df = pd.read_sql(full_sql, conn, params=tuple(params))
                 conn.close()
-                return df, len(df)
+                return df.fillna(""), len(df)
             
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {sql_joins} {sql_where}"
             cur = conn.cursor()
@@ -456,7 +456,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
             
             df = pd.read_sql(pag_sql, conn, params=tuple(params))
             conn.close()
-            return df, total_registros
+            return df.fillna(""), total_registros
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
@@ -468,18 +468,21 @@ def carregar_dados_completos(cpf):
         try:
             cpf_norm = limpar_normalizar_cpf(cpf)
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
+            if not df_d.empty:
+                df_d = df_d.fillna("")
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
-            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
-            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
-            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
-            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            
+            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
             
             if not dados['empregos'].empty:
                 matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
                 if matr_list:
                     placeholders = ",".join(["%s"] * len(matr_list))
                     q_contratos = f"SELECT matricula_ref, contrato, dados_extras FROM pf_contratos WHERE matricula_ref IN ({placeholders})"
-                    dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list)
+                    dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list).fillna("")
                 else: dados['contratos'] = pd.DataFrame()
             else: dados['contratos'] = pd.DataFrame()
         except: pass
@@ -521,7 +524,10 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
 
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), datetime.now().date()))
+                    if row.get('numero'): 
+                        dt = row.get('data_atualizacao') or date.today()
+                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", 
+                                    (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), dt))
             
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
@@ -683,8 +689,6 @@ def app_pessoa_fisica():
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
-    
-    # CORREÇÃO CRÍTICA: Garante que 'selecionados' seja sempre um dicionário, mesmo se houver lixo na sessão
     if 'selecionados' not in st.session_state or not isinstance(st.session_state['selecionados'], dict):
         st.session_state['selecionados'] = {}
     
@@ -1320,7 +1324,7 @@ def app_pessoa_fisica():
                     
                     # Linha de Grade (ATUALIZADO)
                     st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
-
+                
                 # --- BOTÃO DE EXPORTAÇÃO (POSICIONADO ABAIXO DA TABELA) ---
                 if 'df_export' in locals() and not df_export.empty:
                     st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_rapida.csv", mime="text/csv")
@@ -1348,7 +1352,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 8 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
