@@ -757,7 +757,7 @@ def app_pessoa_fisica():
             if st.button("Concluir"): st.session_state['pf_view'] = 'lista'; st.session_state['import_step'] = 1; st.rerun()
 
     # ==========================
-    # 5. MODO NOVO / EDITAR (INSERIDO AQUI)
+    # 5. MODO NOVO / EDITAR
     # ==========================
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         is_edit = st.session_state['pf_view'] == 'editar'
@@ -808,25 +808,61 @@ def app_pessoa_fisica():
 
             with t2:
                 st.write("📞 **Telefones**")
-                # Data Editor permite adicionar/remover linhas dinamicamente
-                edt_tel = st.data_editor(df_tel_db, num_rows="dynamic", use_container_width=True, key="ed_tel")
+                cfg_tel = {
+                    "numero": st.column_config.TextColumn("Número", required=True),
+                    "tag_whats": st.column_config.TextColumn("WhatsApp"),
+                    "tag_qualificacao": st.column_config.TextColumn("Qualificação"),
+                    "data_atualizacao": None, # Ocultar
+                    "id": None, # Ocultar
+                    "cpf_ref": None # Ocultar
+                }
+                edt_tel = st.data_editor(df_tel_db, column_config=cfg_tel, num_rows="dynamic", use_container_width=True, key="ed_tel")
                 
                 st.divider()
                 st.write("📧 **E-mails**")
-                edt_email = st.data_editor(df_email_db, num_rows="dynamic", use_container_width=True, key="ed_email")
+                cfg_email = {
+                    "email": st.column_config.TextColumn("E-mail", required=True),
+                    "id": None, 
+                    "cpf_ref": None
+                }
+                edt_email = st.data_editor(df_email_db, column_config=cfg_email, num_rows="dynamic", use_container_width=True, key="ed_email")
                 
                 st.divider()
                 st.write("🏠 **Endereços**")
-                edt_end = st.data_editor(df_end_db, num_rows="dynamic", use_container_width=True, key="ed_end")
+                cfg_end = {
+                    "rua": st.column_config.TextColumn("Logradouro"),
+                    "bairro": st.column_config.TextColumn("Bairro"),
+                    "cidade": st.column_config.TextColumn("Cidade"),
+                    "uf": st.column_config.TextColumn("UF"),
+                    "cep": st.column_config.TextColumn("CEP"),
+                    "id": None,
+                    "cpf_ref": None
+                }
+                edt_end = st.data_editor(df_end_db, column_config=cfg_end, num_rows="dynamic", use_container_width=True, key="ed_end")
 
             with t3:
                 st.write("💼 **Emprego e Renda**")
-                edt_emp = st.data_editor(df_emp_db, num_rows="dynamic", use_container_width=True, key="ed_emp")
+                cfg_emp = {
+                    "convenio": st.column_config.TextColumn("Convênio"),
+                    "matricula": st.column_config.TextColumn("Matrícula"),
+                    "dados_extras": st.column_config.TextColumn("Dados Extras"),
+                    "id": None,
+                    "cpf_ref": None,
+                    "data_atualizacao": None
+                }
+                edt_emp = st.data_editor(df_emp_db, column_config=cfg_emp, num_rows="dynamic", use_container_width=True, key="ed_emp")
 
             with t4:
                 st.write("📄 **Contratos Ativos**")
-                st.info("Importante: A 'Matrícula Ref' deve ser igual a uma Matrícula cadastrada na aba Profissional.")
-                edt_ctr = st.data_editor(df_contr_db, num_rows="dynamic", use_container_width=True, key="ed_ctr")
+                st.info("Importante: A 'Matrícula Vinculada' deve ser igual a uma Matrícula cadastrada na aba Profissional.")
+                cfg_ctr = {
+                    "matricula_ref": st.column_config.TextColumn("Matrícula Vinculada"),
+                    "contrato": st.column_config.TextColumn("Contrato"),
+                    "dados_extras": st.column_config.TextColumn("Dados Extras"),
+                    "id": None,
+                    "data_atualizacao": None
+                }
+                edt_ctr = st.data_editor(df_contr_db, column_config=cfg_ctr, num_rows="dynamic", use_container_width=True, key="ed_ctr")
 
             st.markdown("---")
             col_b1, col_b2 = st.columns([1, 5])
