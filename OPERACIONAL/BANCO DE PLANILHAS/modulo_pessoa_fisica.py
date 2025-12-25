@@ -757,7 +757,106 @@ def app_pessoa_fisica():
             if st.button("Concluir"): st.session_state['pf_view'] = 'lista'; st.session_state['import_step'] = 1; st.rerun()
 
     # ==========================
-    # 4. MODO LISTA (INICIAL)
+    # 5. MODO NOVO / EDITAR (INSERIDO AQUI)
+    # ==========================
+    elif st.session_state['pf_view'] in ['novo', 'editar']:
+        is_edit = st.session_state['pf_view'] == 'editar'
+        titulo = f"✏️ Editar Cadastro: {st.session_state['pf_cpf_selecionado']}" if is_edit else "➕ Novo Cadastro"
+        
+        st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
+        st.markdown(f"### {titulo}")
+
+        # Dados Iniciais (Vazio ou Carregado)
+        dados_db = {}
+        if is_edit:
+            dados_db = carregar_dados_completos(st.session_state['pf_cpf_selecionado'])
+        
+        # Extrair DataFrames ou criar vazios com segurança
+        g = dados_db.get('geral')
+        if g is None: g = {}
+        
+        df_tel_db = dados_db.get('telefones', pd.DataFrame(columns=['numero', 'tag_whats', 'tag_qualificacao']))
+        df_email_db = dados_db.get('emails', pd.DataFrame(columns=['email']))
+        df_end_db = dados_db.get('enderecos', pd.DataFrame(columns=['rua', 'bairro', 'cidade', 'uf', 'cep']))
+        df_emp_db = dados_db.get('empregos', pd.DataFrame(columns=['convenio', 'matricula', 'dados_extras']))
+        df_contr_db = dados_db.get('contratos', pd.DataFrame(columns=['matricula_ref', 'contrato', 'dados_extras']))
+
+        # FORMULÁRIO PRINCIPAL
+        with st.form("form_cadastro_pf"):
+            t1, t2, t3, t4 = st.tabs(["👤 Dados Pessoais", "📞 Contatos e Endereço", "💼 Profissional", "📄 Contratos"])
+            
+            with t1:
+                c1, c2, c3 = st.columns(3)
+                nome = c1.text_input("Nome Completo *", value=g.get('nome', ''))
+                # CPF desabilitado na edição para não quebrar integridade (chave primária/estrangeira)
+                cpf = c2.text_input("CPF *", value=g.get('cpf', ''), disabled=is_edit) 
+                
+                val_nasc = None
+                if g.get('data_nascimento'):
+                    try: val_nasc = pd.to_datetime(g['data_nascimento']).date()
+                    except: val_nasc = None
+                d_nasc = c3.date_input("Data Nascimento", value=val_nasc, format="DD/MM/YYYY")
+                
+                c4, c5, c6 = st.columns(3)
+                rg = c4.text_input("RG", value=g.get('rg', ''))
+                cnh = c5.text_input("CNH", value=g.get('cnh', ''))
+                pis = c6.text_input("PIS", value=g.get('pis', ''))
+                
+                c7, c8 = st.columns(2)
+                nome_mae = c7.text_input("Nome da Mãe", value=g.get('nome_mae', ''))
+                nome_pai = c8.text_input("Nome do Pai", value=g.get('nome_pai', ''))
+
+            with t2:
+                st.write("📞 **Telefones**")
+                # Data Editor permite adicionar/remover linhas dinamicamente
+                edt_tel = st.data_editor(df_tel_db, num_rows="dynamic", use_container_width=True, key="ed_tel")
+                
+                st.divider()
+                st.write("📧 **E-mails**")
+                edt_email = st.data_editor(df_email_db, num_rows="dynamic", use_container_width=True, key="ed_email")
+                
+                st.divider()
+                st.write("🏠 **Endereços**")
+                edt_end = st.data_editor(df_end_db, num_rows="dynamic", use_container_width=True, key="ed_end")
+
+            with t3:
+                st.write("💼 **Emprego e Renda**")
+                edt_emp = st.data_editor(df_emp_db, num_rows="dynamic", use_container_width=True, key="ed_emp")
+
+            with t4:
+                st.write("📄 **Contratos Ativos**")
+                st.info("Importante: A 'Matrícula Ref' deve ser igual a uma Matrícula cadastrada na aba Profissional.")
+                edt_ctr = st.data_editor(df_contr_db, num_rows="dynamic", use_container_width=True, key="ed_ctr")
+
+            st.markdown("---")
+            col_b1, col_b2 = st.columns([1, 5])
+            if col_b1.form_submit_button("💾 SALVAR DADOS", type="primary"):
+                # Validação Básica
+                if not nome or not cpf:
+                    st.error("Nome e CPF são obrigatórios.")
+                else:
+                    # Montar Dicionário Geral
+                    dados_gerais = {
+                        'cpf': cpf, 'nome': nome, 'data_nascimento': d_nasc,
+                        'rg': rg, 'cnh': cnh, 'pis': pis,
+                        'nome_mae': nome_mae, 'nome_pai': nome_pai
+                    }
+                    
+                    modo_salvar = "editar" if is_edit else "novo"
+                    cpf_orig = st.session_state.get('pf_cpf_selecionado') if is_edit else None
+                    
+                    sucesso, msg = salvar_pf(dados_gerais, edt_tel, edt_email, edt_end, edt_emp, edt_ctr, modo_salvar, cpf_orig)
+                    
+                    if sucesso:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.session_state['pf_view'] = 'lista'
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+    # ==========================
+    # 6. MODO LISTA (INICIAL)
     # ==========================
     elif st.session_state['pf_view'] == 'lista':
         # Reinicia contadores
