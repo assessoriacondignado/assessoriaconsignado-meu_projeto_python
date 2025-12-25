@@ -160,9 +160,16 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         
         df_proc['importacao_id'] = import_id
 
+        # Normalização de CPF
         if 'cpf' in df_proc.columns:
             df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
+            
+            # --- REGRA DE DUPLICIDADE (APENAS PARA pf_dados) ---
+            if table_name == 'pf_dados':
+                # Remove duplicatas de CPF dentro do próprio arquivo, mantendo o último (mais recente)
+                df_proc = df_proc.drop_duplicates(subset=['cpf'], keep='last')
         
+        # Conversão de Datas
         cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
         for col in cols_data:
             if col in df_proc.columns:
@@ -191,6 +198,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         qtd_atualizados = 0
         
         if pk_field:
+            # Lógica de UPSERT (Atualiza se existe, Insere se não existe)
             sql_update = f"UPDATE {table_name} t SET {', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}"
             cur.execute(sql_update)
             qtd_atualizados = cur.rowcount
@@ -199,7 +207,19 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            sql_insert = f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table}"
+            # Lógica para Tabelas Vinculadas (Evita criar linhas idênticas)
+            # Compara todas as colunas para garantir que não cria duplicata exata
+            conditions = " AND ".join([f"t.{c} IS NOT DISTINCT FROM s.{c}" for c in cols_order])
+            
+            sql_insert = f"""
+                INSERT INTO {table_name} ({', '.join(cols_order)}) 
+                SELECT {', '.join(cols_order)} 
+                FROM {staging_table} s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {table_name} t 
+                    WHERE {conditions}
+                )
+            """
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
 
@@ -216,7 +236,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
-            # Query base (mesma lógica)
+            # Query base
             sql_base_select = "SELECT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_base_from = "FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
             
@@ -499,7 +519,9 @@ def get_table_columns(table_name):
 # --- DIALOG: VISUALIZAR CLIENTE ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
+    # Aplica formatação visual ao CPF exibido no título
     cpf_vis = formatar_cpf_visual(cpf_cliente)
+    
     dados = carregar_dados_completos(cpf_cliente)
     g = dados.get('geral')
     
@@ -510,6 +532,7 @@ def dialog_visualizar_cliente(cpf_cliente):
     with st.expander("👤 Dados Cadastrais", expanded=True):
         c1, c2 = st.columns(2)
         c1.write(f"**Nome:** {g['nome']}")
+        # Exibe CPF formatado
         c2.write(f"**CPF:** {cpf_vis}")
         c3, c4 = st.columns(2)
         dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
@@ -574,6 +597,7 @@ def app_pessoa_fisica():
     
     # Paginação e Seleção
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
+    if 'selecionados' not in st.session_state: st.session_state['selecionados'] = []
     
     if 'temp_telefones' not in st.session_state: st.session_state['temp_telefones'] = []
     if 'temp_emails' not in st.session_state: st.session_state['temp_emails'] = []
@@ -1097,7 +1121,8 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
+        # Barra de Ferramentas Superior
+        col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): 
             st.session_state.update({'pf_view': 'novo', 'form_loaded': False})
             st.rerun()
@@ -1185,7 +1210,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 2 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 3 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
