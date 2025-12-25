@@ -200,7 +200,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
     conn = get_conn()
     if conn:
         try:
-            # Limpa o termo: remove tudo que não é dígito e zeros à esquerda
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
@@ -209,12 +208,10 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
             conditions = []
             params = []
 
-            # Filtro de Importação
             if filtro_importacao_id:
                 conditions.append("d.importacao_id = %s")
                 params.append(filtro_importacao_id)
             
-            # Filtro de Texto (Nome, CPF ou Telefone)
             if termo:
                 if termo_limpo:
                     param_num = f"%{termo_limpo}%"
@@ -226,7 +223,6 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                     conditions.append("d.nome ILIKE %s")
                     params.append(param_nome)
             
-            # Monta Query Final
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             query = f"{sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 50"
             
@@ -348,7 +344,8 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
-            dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            # Atualizado para trazer Data de Atualização e Qualificação
+            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,))
@@ -389,7 +386,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 cur.execute(f"UPDATE pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
             cpf_chave = dados_gerais['cpf']
-            # Se for edição, limpa os filhos para recriar (estratégia simples)
             if modo == "editar":
                 cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
                 cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
@@ -401,7 +397,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
 
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats) VALUES (%s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats')))
+                    if row.get('numero'): 
+                        # Salva com data de atualização e novos campos
+                        dt = row.get('data_atualizacao') or date.today()
+                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", 
+                                    (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), dt))
             
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
@@ -533,7 +533,6 @@ def app_pessoa_fisica():
     if 'import_stats' not in st.session_state: st.session_state['import_stats'] = {}
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
-    # Inicialização das listas temporárias para edição/novo
     if 'temp_telefones' not in st.session_state: st.session_state['temp_telefones'] = []
     if 'temp_emails' not in st.session_state: st.session_state['temp_emails'] = []
     if 'temp_enderecos' not in st.session_state: st.session_state['temp_enderecos'] = []
@@ -545,7 +544,6 @@ def app_pessoa_fisica():
     # 1. PESQUISA AMPLA
     # ==========================
     if st.session_state['pf_view'] == 'pesquisa_ampla':
-        # ... (Mantido código de pesquisa ampla sem alterações) ...
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### 🔎 Pesquisa Ampla")
         with st.form("form_pesquisa_ampla", enter_to_submit=False):
@@ -633,7 +631,6 @@ def app_pessoa_fisica():
     # 2. HISTÓRICO DE IMPORTAÇÕES
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
-        # ... (Mantido código histórico sem alterações) ...
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
         st.markdown("### 📜 Histórico de Importações")
         conn = get_conn()
@@ -663,7 +660,6 @@ def app_pessoa_fisica():
     # 3. MODO IMPORTAÇÃO (BULK)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
-        # ... (Mantido código importação sem alterações) ...
         c_cancel, c_hist = st.columns([1, 4])
         c_cancel.button("⬅️ Cancelar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'import_step': 1}))
         c_hist.button("📜 Ver Histórico Importação", on_click=lambda: st.session_state.update({'pf_view': 'historico_importacao'}))
@@ -834,27 +830,56 @@ def app_pessoa_fisica():
                 nome_mae = c7.text_input("Nome da Mãe", value=g.get('nome_mae', ''))
                 nome_pai = c8.text_input("Nome do Pai", value=g.get('nome_pai', ''))
 
-            # --- TAB 2: CONTATOS ---
+            # --- TAB 2: CONTATOS (ATUALIZADA) ---
             with t2:
                 # TELEFONES
                 st.markdown("#### 📞 Telefones")
-                c_t1, c_t2, c_t3 = st.columns([2, 2, 1])
-                novo_tel = c_t1.text_input("Novo Telefone (com DDD)", key="in_tel")
-                novo_tel_tag = c_t2.text_input("Observação / WhatsApp", key="in_tel_tag")
-                if c_t3.form_submit_button("➕ Adicionar Tel"):
+                c_t1, c_t2, c_t3, c_t4 = st.columns([2, 1, 2, 1.5])
+                
+                novo_tel = c_t1.text_input("Telefone", key="in_tel", placeholder="(00) 00000-0000")
+                novo_whats = c_t2.selectbox("WhatsApp", ["Não", "Sim"], key="in_whats")
+                novo_qualif = c_t3.selectbox("Qualificação", ["NÃO CONFIRMADO", "CONFIRMADO"], key="in_qualif")
+                
+                if c_t4.form_submit_button("➕ Adicionar"):
                     fmt, erro = validar_formatar_telefone(novo_tel)
                     if fmt:
-                        st.session_state['temp_telefones'].append({'numero': fmt, 'tag_whats': novo_tel_tag})
+                        st.session_state['temp_telefones'].append({
+                            'numero': fmt, 
+                            'tag_whats': novo_whats, 
+                            'tag_qualificacao': novo_qualif,
+                            'data_atualizacao': date.today()
+                        })
                         st.success("Telefone adicionado!")
                     else: st.error(erro)
                 
                 # Lista Telefones
                 if st.session_state['temp_telefones']:
+                    # Cabeçalho
+                    ch1, ch2, ch3, ch4, ch5 = st.columns([2, 1, 2, 1.5, 0.5])
+                    ch1.caption("**Número**")
+                    ch2.caption("**WhatsApp**")
+                    ch3.caption("**Qualificação**")
+                    ch4.caption("**Atualizado**")
+                    ch5.caption("")
+                    st.divider()
+
                     for i, t in enumerate(st.session_state['temp_telefones']):
-                        col_l1, col_l2, col_l3 = st.columns([3, 3, 1])
+                        col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns([2, 1, 2, 1.5, 0.5])
                         col_l1.text(t['numero'])
                         col_l2.text(t['tag_whats'])
-                        if col_l3.form_submit_button("🗑️", key=f"del_tel_{i}"):
+                        col_l3.text(t['tag_qualificacao'])
+                        
+                        # Formatação Data
+                        d_show = t.get('data_atualizacao')
+                        if isinstance(d_show, str):
+                             try: d_show = datetime.strptime(d_show, '%Y-%m-%d').date()
+                             except: pass
+                        if isinstance(d_show, (date, datetime)):
+                             d_show = d_show.strftime('%d/%m/%Y')
+                        
+                        col_l4.text(str(d_show))
+                        
+                        if col_l5.form_submit_button("🗑️", key=f"del_tel_{i}"):
                             st.session_state['temp_telefones'].pop(i)
                             st.rerun()
                 
@@ -1051,7 +1076,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ - Fuso Horário Brasília (GMT-3)
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 7 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 8  em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
