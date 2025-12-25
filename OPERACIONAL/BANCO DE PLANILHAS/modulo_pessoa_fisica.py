@@ -390,6 +390,7 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
+            # Atualizado para trazer Data de Atualização e Qualificação
             dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
@@ -581,8 +582,13 @@ def app_pessoa_fisica():
     if 'import_stats' not in st.session_state: st.session_state['import_stats'] = {}
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
+    # Paginação e Seleção
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
-    if 'selecionados' not in st.session_state: st.session_state['selecionados'] = {}
+    
+    # CORREÇÃO CRÍTICA AQUI:
+    # Garante que 'selecionados' seja sempre um dicionário, mesmo se houver lixo na sessão
+    if 'selecionados' not in st.session_state or not isinstance(st.session_state['selecionados'], dict):
+        st.session_state['selecionados'] = {}
     
     if 'temp_telefones' not in st.session_state: st.session_state['temp_telefones'] = []
     if 'temp_emails' not in st.session_state: st.session_state['temp_emails'] = []
@@ -592,7 +598,7 @@ def app_pessoa_fisica():
     if 'form_loaded' not in st.session_state: st.session_state['form_loaded'] = False
 
     # ==========================
-    # 1. PESQUISA AMPLA
+    # 1. PESQUISA AMPLA (ATUALIZADA COM LAYOUT FIXO)
     # ==========================
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
@@ -667,14 +673,16 @@ def app_pessoa_fisica():
                         st.session_state['selecionados'][r['id']] = True
                     st.rerun()
 
-                # Cabeçalho Fixo
-                c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
-                c1.write("**Sel**")
-                c2.write("**Ações**")
-                c3.write("**Cód.**")
-                c4.write("**CPF**")
-                c5.write("**Nome**")
-                st.divider()
+                # Cabeçalho Fixo (ATUALIZADO)
+                st.markdown("""
+                <div style="background-color: #e6e9ef; padding: 10px; border-radius: 5px; display: flex; align-items: center; border-bottom: 2px solid #ccc; font-weight: bold; font-family: sans-serif;">
+                    <div style="flex: 0.5; text-align: center;">Sel</div>
+                    <div style="flex: 1.5; text-align: center;">Ações</div>
+                    <div style="flex: 1; padding-left: 5px;">Cód.</div>
+                    <div style="flex: 2;">CPF</div>
+                    <div style="flex: 4;">Nome</div>
+                </div>
+                """, unsafe_allow_html=True)
 
                 # Loop de Linhas
                 for idx, row in df_res.iterrows():
@@ -700,7 +708,8 @@ def app_pessoa_fisica():
                     c4.write(row['cpf'])
                     c5.write(row['nome'])
                     
-                    st.markdown("<hr style='margin:0; padding:0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+                    # Linha de Grade (ATUALIZADO)
+                    st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
                 
                 # --- BOTÃO DE EXPORTAÇÃO ---
                 df_export, _ = executar_pesquisa_ampla(st.session_state['filtros_ativos'], exportar=True)
@@ -1158,6 +1167,7 @@ def app_pessoa_fisica():
             df_lista, total_registros = buscar_pf_simples(busca, filtro_imp, pagina=pagina)
             
             if not df_lista.empty:
+                # Aplica formatação visual na coluna CPF
                 if 'cpf' in df_lista.columns:
                     df_lista['cpf'] = df_lista['cpf'].apply(formatar_cpf_visual)
                 
@@ -1169,14 +1179,16 @@ def app_pessoa_fisica():
                         st.session_state['selecionados'][r['id']] = True
                     st.rerun()
 
-                # Cabeçalho Fixo
-                c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
-                c1.write("**Sel**")
-                c2.write("**Ações**")
-                c3.write("**Cód.**")
-                c4.write("**CPF**")
-                c5.write("**Nome**")
-                st.divider()
+                # Cabeçalho Fixo (ATUALIZADO)
+                st.markdown("""
+                <div style="background-color: #e6e9ef; padding: 10px; border-radius: 5px; display: flex; align-items: center; border-bottom: 2px solid #ccc; font-weight: bold; font-family: sans-serif;">
+                    <div style="flex: 0.5; text-align: center;">Sel</div>
+                    <div style="flex: 1.5; text-align: center;">Ações</div>
+                    <div style="flex: 1; padding-left: 5px;">Cód.</div>
+                    <div style="flex: 2;">CPF</div>
+                    <div style="flex: 4;">Nome</div>
+                </div>
+                """, unsafe_allow_html=True)
 
                 # Loop de Linhas
                 for idx, row in df_lista.iterrows():
@@ -1202,7 +1214,8 @@ def app_pessoa_fisica():
                     c4.write(row['cpf'])
                     c5.write(row['nome'])
                     
-                    st.markdown("<hr style='margin:0; padding:0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+                    # Linha de Grade (ATUALIZADO)
+                    st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
 
                 # --- BOTÃO DE EXPORTAÇÃO (POSICIONADO ABAIXO DA TABELA) ---
                 if 'df_export' in locals() and not df_export.empty:
@@ -1231,7 +1244,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 5 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 6 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
