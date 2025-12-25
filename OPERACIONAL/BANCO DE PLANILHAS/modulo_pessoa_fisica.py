@@ -209,25 +209,23 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         raise e
 
 # --- FUNÇÕES DE BUSCA ---
-def buscar_pf_simples(termo, filtro_importacao_id=None):
+def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50, exportar=False):
     conn = get_conn()
     if conn:
         try:
-            # Limpa o termo: remove tudo que não é dígito e zeros à esquerda
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
-            sql_base = "SELECT d.id, d.nome, d.cpf, d.data_nascimento FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
+            # Query base
+            sql_base = "FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
             
             conditions = []
             params = []
 
-            # Filtro de Importação
             if filtro_importacao_id:
                 conditions.append("d.importacao_id = %s")
                 params.append(filtro_importacao_id)
             
-            # Filtro de Texto (Nome, CPF ou Telefone)
             if termo:
                 if termo_limpo:
                     param_num = f"%{termo_limpo}%"
@@ -239,15 +237,30 @@ def buscar_pf_simples(termo, filtro_importacao_id=None):
                     conditions.append("d.nome ILIKE %s")
                     params.append(param_nome)
             
-            # Monta Query Final
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
-            query = f"{sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 50"
+            
+            # Se for exportar, busca tudo sem paginação
+            if exportar:
+                query = f"SELECT d.id, d.nome, d.cpf, d.data_nascimento {sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC"
+                df = pd.read_sql(query, conn, params=tuple(params))
+                conn.close()
+                return df, len(df)
+
+            # Contagem Total (para paginação)
+            count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_base} {sql_where}"
+            cur = conn.cursor()
+            cur.execute(count_sql, tuple(params))
+            total_registros = cur.fetchone()[0]
+
+            # Busca Paginada
+            offset = (pagina - 1) * itens_por_pagina
+            query = f"SELECT d.id, d.nome, d.cpf, d.data_nascimento {sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT {itens_por_pagina} OFFSET {offset}"
             
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
-            return df
+            return df, total_registros
         except: conn.close()
-    return pd.DataFrame()
+    return pd.DataFrame(), 0
 
 def buscar_opcoes_filtro(coluna, tabela):
     conn = get_conn()
@@ -261,7 +274,7 @@ def buscar_opcoes_filtro(coluna, tabela):
         except: pass
     return opcoes
 
-def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=30):
+def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50):
     conn = get_conn()
     if conn:
         try:
@@ -361,6 +374,7 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
+            # Atualizado para trazer Data de Atualização e Qualificação
             dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
@@ -552,6 +566,10 @@ def app_pessoa_fisica():
     if 'import_stats' not in st.session_state: st.session_state['import_stats'] = {}
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
+    # Paginação e Seleção
+    if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
+    if 'selecionados' not in st.session_state: st.session_state['selecionados'] = []
+    
     if 'temp_telefones' not in st.session_state: st.session_state['temp_telefones'] = []
     if 'temp_emails' not in st.session_state: st.session_state['temp_emails'] = []
     if 'temp_enderecos' not in st.session_state: st.session_state['temp_enderecos'] = []
@@ -642,7 +660,7 @@ def app_pessoa_fisica():
                 if not subset.empty:
                     st.divider()
                     registro = subset.iloc[0]
-                    # Ao selecionar para editar, removemos a formatação para buscar no banco
+                    # Remove formatação visual para buscar no banco
                     cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
                     c1, c2, c3 = st.columns(3)
                     if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
@@ -653,7 +671,7 @@ def app_pessoa_fisica():
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
-    # 2. HISTÓRICO DE IMPORTAÇÕES (Mantido)
+    # 2. HISTÓRICO DE IMPORTAÇÕES
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
@@ -682,7 +700,7 @@ def app_pessoa_fisica():
             else: st.info("Nenhum histórico.")
 
     # ==========================
-    # 3. MODO IMPORTAÇÃO (BULK) (Mantido)
+    # 3. MODO IMPORTAÇÃO (BULK)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -804,14 +822,12 @@ def app_pessoa_fisica():
     # ==========================
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         is_edit = st.session_state['pf_view'] == 'editar'
-        # Formata o CPF para o título, se houver
         cpf_titulo = formatar_cpf_visual(st.session_state.get('pf_cpf_selecionado')) if is_edit else ""
         titulo = f"✏️ Editar Cadastro: {cpf_titulo}" if is_edit else "➕ Novo Cadastro"
         
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'form_loaded': False}))
         st.markdown(f"### {titulo}")
 
-        # Carregamento de Dados (Apenas uma vez)
         if is_edit and not st.session_state['form_loaded']:
             dados_db = carregar_dados_completos(st.session_state['pf_cpf_selecionado'])
             st.session_state['dados_gerais_temp'] = dados_db.get('geral', {})
@@ -832,7 +848,6 @@ def app_pessoa_fisica():
 
         g = st.session_state.get('dados_gerais_temp', {})
 
-        # FORMULÁRIO PRINCIPAL
         with st.form("form_cadastro_pf"):
             t1, t2, t3, t4 = st.tabs(["👤 Dados Pessoais", "📞 Contatos e Endereço", "💼 Profissional", "📄 Contratos"])
             
@@ -840,7 +855,6 @@ def app_pessoa_fisica():
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome Completo *", value=g.get('nome', ''))
                 
-                # --- CAMPO CPF COM FORMATAÇÃO VISUAL ---
                 cpf_banco = g.get('cpf', '')
                 cpf_visual_inicial = formatar_cpf_visual(cpf_banco)
                 cpf = c2.text_input("CPF *", value=cpf_visual_inicial, disabled=is_edit, help="Formato visual: 000.000.000-00")
@@ -860,9 +874,7 @@ def app_pessoa_fisica():
                 nome_mae = c7.text_input("Nome da Mãe", value=g.get('nome_mae', ''))
                 nome_pai = c8.text_input("Nome do Pai", value=g.get('nome_pai', ''))
 
-            # --- TAB 2: CONTATOS (Mantida lógica anterior de Telefone) ---
             with t2:
-                # TELEFONES
                 st.markdown("#### 📞 Telefones")
                 c_t1, c_t2, c_t3, c_t4 = st.columns([2, 1, 2, 1.5])
                 
@@ -882,7 +894,6 @@ def app_pessoa_fisica():
                         st.success("Telefone adicionado!")
                     else: st.error(erro)
                 
-                # Lista Telefones
                 if st.session_state['temp_telefones']:
                     ch1, ch2, ch3, ch4, ch5 = st.columns([2, 1, 2, 1.5, 0.5])
                     ch1.caption("**Número**")
@@ -912,8 +923,6 @@ def app_pessoa_fisica():
                             st.rerun()
                 
                 st.divider()
-                
-                # EMAILS (Mantido)
                 st.markdown("#### 📧 E-mails")
                 c_e1, c_e2 = st.columns([4, 1])
                 novo_email = c_e1.text_input("Novo E-mail", key="in_email")
@@ -932,8 +941,6 @@ def app_pessoa_fisica():
                             st.rerun()
 
                 st.divider()
-
-                # ENDEREÇOS (Mantido)
                 st.markdown("#### 🏠 Endereço")
                 ce1, ce2, ce3 = st.columns([1.5, 3, 1])
                 n_cep = ce1.text_input("CEP", key="in_cep")
@@ -961,7 +968,6 @@ def app_pessoa_fisica():
                             st.session_state['temp_enderecos'].pop(i)
                             st.rerun()
 
-            # --- TAB 3: EMPREGO (Mantido) ---
             with t3:
                 st.markdown("#### 💼 Emprego e Renda")
                 ce1, ce2, ce3 = st.columns(3)
@@ -985,7 +991,6 @@ def app_pessoa_fisica():
                             st.session_state['temp_empregos'].pop(i)
                             st.rerun()
 
-            # --- TAB 4: CONTRATOS (Mantido) ---
             with t4:
                 st.markdown("#### 📄 Contratos")
                 cc1, cc2, cc3 = st.columns(3)
@@ -1013,9 +1018,7 @@ def app_pessoa_fisica():
             st.markdown("---")
             col_b1, col_b2 = st.columns([1, 5])
             
-            # BOTÃO FINAL DE SALVAR
             if col_b1.form_submit_button("💾 SALVAR CADASTRO COMPLETO", type="primary"):
-                # Validação Final CPF
                 cpf_fmt, erro_cpf = validar_formatar_cpf(cpf)
                 
                 if not nome or not cpf:
@@ -1023,7 +1026,6 @@ def app_pessoa_fisica():
                 elif erro_cpf:
                     st.error(erro_cpf)
                 else:
-                    # Montar Dicionário Geral - Limpar CPF para salvar
                     dados_gerais = {
                         'cpf': limpar_normalizar_cpf(cpf), 'nome': nome, 'data_nascimento': d_nasc,
                         'rg': rg, 'cnh': cnh, 'pis': pis,
@@ -1037,7 +1039,6 @@ def app_pessoa_fisica():
                     df_contr_save = pd.DataFrame(st.session_state['temp_contratos'])
                     
                     modo_salvar = "editar" if is_edit else "novo"
-                    # Se for edição, o CPF original também deve ser limpo para encontrar no banco
                     cpf_orig = limpar_normalizar_cpf(st.session_state.get('pf_cpf_selecionado')) if is_edit else None
                     
                     sucesso, msg = salvar_pf(dados_gerais, df_tel_save, df_email_save, df_end_save, df_emp_save, df_contr_save, modo_salvar, cpf_orig)
@@ -1066,49 +1067,95 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
+        # Barra de Ferramentas Superior
+        col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): 
             st.session_state.update({'pf_view': 'novo', 'form_loaded': False})
             st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
         if col_b3.button("📥 Importar", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
 
+        # Botão Exportar (Todas as páginas)
         if busca or filtro_imp:
-            df_lista = buscar_pf_simples(busca, filtro_imp)
+             # Busca para exportação
+             df_export, _ = buscar_pf_simples(busca, filtro_imp, exportar=True)
+             if not df_export.empty:
+                 # Formatação Visual para o Excel
+                 if 'cpf' in df_export.columns: df_export['cpf'] = df_export['cpf'].apply(formatar_cpf_visual)
+                 
+                 csv = df_export.to_csv(index=False).encode('utf-8')
+                 col_b4.download_button("📤 Exportar Tudo", data=csv, file_name="exportacao_clientes.csv", mime="text/csv", use_container_width=True)
+
+        if busca or filtro_imp:
+            # Busca Paginada para Visualização
+            pagina = st.session_state['pagina_atual']
+            df_lista, total_registros = buscar_pf_simples(busca, filtro_imp, pagina=pagina)
+            
             if not df_lista.empty:
                 # Aplica formatação visual na coluna CPF
                 if 'cpf' in df_lista.columns:
                     df_lista['cpf'] = df_lista['cpf'].apply(formatar_cpf_visual)
                 
+                # Configuração da Tabela Fixa
                 df_lista.insert(0, "Selecionar", False)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
-                    "cpf": st.column_config.TextColumn("CPF", width="large"),
-                    "nome": st.column_config.TextColumn("Nome", width="medium"),
-                    "id": st.column_config.NumberColumn("Código", width="small"),
-                    "rg": None,
-                    "data_nascimento": None
+                    "id": st.column_config.NumberColumn("Código", width="small", disabled=True),
+                    "cpf": st.column_config.TextColumn("CPF", width="medium", disabled=True),
+                    "nome": st.column_config.TextColumn("Nome", width="medium", disabled=True),
+                    "data_nascimento": None # Ocultar
                 }
-                edited_df = st.data_editor(df_lista, column_config=cfg_cols, disabled=df_lista.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
+                
+                # Botão Selecionar Todos
+                if st.button("✅ Selecionar Todos da Página"):
+                    df_lista["Selecionar"] = True
+                
+                edited_df = st.data_editor(
+                    df_lista, 
+                    column_config=cfg_cols, 
+                    hide_index=True, 
+                    use_container_width=True,
+                    key="editor_lista_clientes"
+                )
+                
+                # Captura Seleção
                 subset = edited_df[edited_df["Selecionar"] == True]
+                
+                # Barra de Ações para Selecionados
                 if not subset.empty:
-                    st.divider()
-                    registro = subset.iloc[0]
-                    # Remove formatação visual para buscar no banco (pois o banco usa RAW)
+                    st.info(f"{len(subset)} item(s) selecionado(s).")
+                    registro = subset.iloc[0] # Pega o primeiro para ações individuais
+                    # Remove formatação visual para buscar no banco
                     cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
                     
-                    c1, c2, c3 = st.columns(3)
-                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
-                    if c2.button("✏️ Editar", use_container_width=True): 
+                    c_act1, c_act2, c_act3 = st.columns(3)
+                    if c_act1.button("👁️ Ver Detalhes", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
+                    if c_act2.button("✏️ Editar", use_container_width=True): 
                         st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo_busca, 'form_loaded': False})
                         st.rerun()
-                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
+                    if c_act3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
+
+                # --- PAGINAÇÃO ---
+                total_paginas = math.ceil(total_registros / 50)
+                st.divider()
+                cp1, cp2, cp3 = st.columns([1, 3, 1])
+                
+                if cp1.button("⬅️ Anterior") and pagina > 1:
+                    st.session_state['pagina_atual'] -= 1
+                    st.rerun()
+                
+                cp2.markdown(f"<div style='text-align: center'>Página <b>{pagina}</b> de <b>{total_paginas}</b> (Total: {total_registros})</div>", unsafe_allow_html=True)
+                
+                if cp3.button("Próximo ➡️") and pagina < total_paginas:
+                    st.session_state['pagina_atual'] += 1
+                    st.rerun()
+
             else: st.warning("Sem resultados.")
         else: st.info("Use a pesquisa para ver cadastros.")
     
-    # RODAPÉ - Fuso Horário Brasília (GMT-3)
+    # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 9 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 1 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
