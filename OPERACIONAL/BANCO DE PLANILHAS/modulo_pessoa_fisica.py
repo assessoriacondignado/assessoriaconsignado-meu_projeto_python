@@ -521,10 +521,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
 
             if not df_tel.empty:
                 for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): 
-                        dt = row.get('data_atualizacao') or date.today()
-                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", 
-                                    (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), dt))
+                    if row.get('numero'): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), datetime.now().date()))
             
             if not df_email.empty:
                 for _, row in df_upper(df_email).iterrows():
@@ -686,6 +683,8 @@ def app_pessoa_fisica():
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
+    
+    # CORREÇÃO CRÍTICA: Garante que 'selecionados' seja sempre um dicionário, mesmo se houver lixo na sessão
     if 'selecionados' not in st.session_state or not isinstance(st.session_state['selecionados'], dict):
         st.session_state['selecionados'] = {}
     
@@ -808,7 +807,7 @@ def app_pessoa_fisica():
                     c5.write(row['nome'])
                     
                     # Linha de Grade (ATUALIZADO)
-                    st.markdown("<div style='border-bottom: 1px solid #eee; margin: 0px; padding: 0px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
                 
                 # --- BOTÃO DE EXPORTAÇÃO ---
                 df_export, _ = executar_pesquisa_ampla(st.session_state['filtros_ativos'], exportar=True)
@@ -1320,7 +1319,7 @@ def app_pessoa_fisica():
                     c5.write(row['nome'])
                     
                     # Linha de Grade (ATUALIZADO)
-                    st.markdown("<div style='border-bottom: 1px solid #eee; margin: 0px; padding: 0px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
 
                 # --- BOTÃO DE EXPORTAÇÃO (POSICIONADO ABAIXO DA TABELA) ---
                 if 'df_export' in locals() and not df_export.empty:
@@ -1337,7 +1336,7 @@ def app_pessoa_fisica():
                     st.session_state['selecionados'] = {}
                     st.rerun()
                 
-                cp2.markdown(f"<div style='text-align: center'>Página <b>{pagina}</b> de <b>{total_paginas}</b> (Total: {total_registros})</div>", unsafe_allow_html=True)
+                cp2.markdown(f"<div style='text-align: center'>Página <b>{pagina}</b> de <b>{total_paginas}</b></div>", unsafe_allow_html=True)
                 
                 if cp3.button("Próximo ➡️") and pagina < total_paginas:
                     st.session_state['pagina_atual'] += 1
@@ -1349,8 +1348,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 5 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
-}
