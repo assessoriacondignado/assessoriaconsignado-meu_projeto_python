@@ -165,7 +165,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             
             # --- REGRA DE DUPLICIDADE (APENAS PARA pf_dados) ---
             if table_name == 'pf_dados':
-                # Remove duplicatas de CPF dentro do próprio arquivo, mantendo o último
                 df_proc = df_proc.drop_duplicates(subset=['cpf'], keep='last')
         
         cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
@@ -204,7 +203,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            # Lógica para Tabelas Vinculadas (Evita criar linhas idênticas)
             conditions = " AND ".join([f"t.{c} IS NOT DISTINCT FROM s.{c}" for c in cols_order])
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)}) 
@@ -507,7 +505,9 @@ def get_table_columns(table_name):
 # --- DIALOG: VISUALIZAR CLIENTE ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
+    # Aplica formatação visual ao CPF exibido no título
     cpf_vis = formatar_cpf_visual(cpf_cliente)
+    
     dados = carregar_dados_completos(cpf_cliente)
     g = dados.get('geral')
     
@@ -518,6 +518,7 @@ def dialog_visualizar_cliente(cpf_cliente):
     with st.expander("👤 Dados Cadastrais", expanded=True):
         c1, c2 = st.columns(2)
         c1.write(f"**Nome:** {g['nome']}")
+        # Exibe CPF formatado
         c2.write(f"**CPF:** {cpf_vis}")
         c3, c4 = st.columns(2)
         dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
@@ -581,6 +582,7 @@ def app_pessoa_fisica():
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
+    if 'selecionados' not in st.session_state: st.session_state['selecionados'] = {}
     
     if 'temp_telefones' not in st.session_state: st.session_state['temp_telefones'] = []
     if 'temp_emails' not in st.session_state: st.session_state['temp_emails'] = []
@@ -646,6 +648,7 @@ def app_pessoa_fisica():
             filtros_limpos = {k: v for k, v in filtros.items() if v}
             st.session_state['filtros_ativos'] = filtros_limpos
             st.session_state['pesquisa_pag'] = 1
+            st.session_state['selecionados'] = {} # Limpa seleção ao nova busca
         
         if 'filtros_ativos' in st.session_state and st.session_state['filtros_ativos']:
             pag_atual = st.session_state['pesquisa_pag']
@@ -656,19 +659,48 @@ def app_pessoa_fisica():
             if not df_res.empty:
                 if 'cpf' in df_res.columns: df_res['cpf'] = df_res['cpf'].apply(formatar_cpf_visual)
                 
-                df_res.insert(0, "Selecionar", False)
-                cfg_cols = {
-                    "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
-                    "id": st.column_config.NumberColumn("Código", width="small", disabled=True),
-                    "cpf": st.column_config.TextColumn("CPF", width="medium", disabled=True),
-                    "nome": st.column_config.TextColumn("Nome", width="medium", disabled=True),
-                    "data_nascimento": None
-                }
+                # --- NOVO LAYOUT DE GRID (LINHA POR LINHA) ---
                 
+                # Botão Selecionar Todos
                 if st.button("✅ Selecionar Todos da Página"):
-                    df_res["Selecionar"] = True
+                    for i, r in df_res.iterrows():
+                        st.session_state['selecionados'][r['id']] = True
+                    st.rerun()
 
-                edited_df = st.data_editor(df_res, column_config=cfg_cols, hide_index=True, use_container_width=True, key="editor_ampla")
+                # Cabeçalho Fixo
+                c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
+                c1.write("**Sel**")
+                c2.write("**Ações**")
+                c3.write("**Cód.**")
+                c4.write("**CPF**")
+                c5.write("**Nome**")
+                st.divider()
+
+                # Loop de Linhas
+                for idx, row in df_res.iterrows():
+                    c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
+                    
+                    # Col 1: Selecionar
+                    is_sel = c1.checkbox("", key=f"chk_sel_{row['id']}", value=st.session_state['selecionados'].get(row['id'], False))
+                    st.session_state['selecionados'][row['id']] = is_sel
+
+                    # Col 2: Botões de Ação
+                    b1, b2, b3 = c2.columns(3)
+                    cpf_limpo = limpar_normalizar_cpf(row['cpf'])
+                    if b1.button("👁️", key=f"v_a_{row['id']}", help="Ver"):
+                        dialog_visualizar_cliente(cpf_limpo)
+                    if b2.button("✏️", key=f"e_a_{row['id']}", help="Editar"):
+                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo, 'form_loaded': False})
+                        st.rerun()
+                    if b3.button("🗑️", key=f"d_a_{row['id']}", help="Excluir"):
+                        dialog_excluir_pf(cpf_limpo, row['nome'])
+
+                    # Col 3, 4, 5: Dados (Apenas Leitura)
+                    c3.write(str(row['id']))
+                    c4.write(row['cpf'])
+                    c5.write(row['nome'])
+                    
+                    st.markdown("<hr style='margin:0; padding:0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
                 
                 # --- BOTÃO DE EXPORTAÇÃO ---
                 df_export, _ = executar_pesquisa_ampla(st.session_state['filtros_ativos'], exportar=True)
@@ -680,26 +712,18 @@ def app_pessoa_fisica():
                     csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
                     st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_ampla.csv", mime="text/csv")
                 
-                subset = edited_df[edited_df["Selecionar"] == True]
-                if not subset.empty:
-                    registro = subset.iloc[0]
-                    cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
-                    c1, c2, c3 = st.columns(3)
-                    if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
-                    if c2.button("✏️ Editar", use_container_width=True): 
-                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo_busca, 'form_loaded': False})
-                        st.rerun()
-                    if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
-
+                # --- PAGINAÇÃO ---
                 total_paginas = math.ceil(total_registros / 50)
                 st.divider()
                 cp1, cp2, cp3 = st.columns([1, 3, 1])
                 if cp1.button("⬅️ Anterior") and pag_atual > 1:
                     st.session_state['pesquisa_pag'] -= 1
+                    st.session_state['selecionados'] = {}
                     st.rerun()
                 cp2.markdown(f"<div style='text-align: center'>Página <b>{pag_atual}</b> de <b>{total_paginas}</b></div>", unsafe_allow_html=True)
                 if cp3.button("Próximo ➡️") and pag_atual < total_paginas:
                     st.session_state['pesquisa_pag'] += 1
+                    st.session_state['selecionados'] = {}
                     st.rerun()
 
             else: st.warning("Nenhum registro encontrado.")
@@ -708,6 +732,7 @@ def app_pessoa_fisica():
     # 2. HISTÓRICO DE IMPORTAÇÕES
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
+        # ... (Mantido código histórico sem alterações) ...
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
         st.markdown("### 📜 Histórico de Importações")
         conn = get_conn()
@@ -737,6 +762,7 @@ def app_pessoa_fisica():
     # 3. MODO IMPORTAÇÃO (BULK)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
+        # ... (Mantido código importação sem alterações) ...
         c_cancel, c_hist = st.columns([1, 4])
         c_cancel.button("⬅️ Cancelar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'import_step': 1}))
         c_hist.button("📜 Ver Histórico Importação", on_click=lambda: st.session_state.update({'pf_view': 'historico_importacao'}))
@@ -1135,44 +1161,53 @@ def app_pessoa_fisica():
                 if 'cpf' in df_lista.columns:
                     df_lista['cpf'] = df_lista['cpf'].apply(formatar_cpf_visual)
                 
-                df_lista.insert(0, "Selecionar", False)
-                cfg_cols = {
-                    "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
-                    "id": st.column_config.NumberColumn("Código", width="small", disabled=True),
-                    "cpf": st.column_config.TextColumn("CPF", width="medium", disabled=True),
-                    "nome": st.column_config.TextColumn("Nome", width="medium", disabled=True),
-                    "data_nascimento": None
-                }
+                # --- NOVO LAYOUT DE GRID (LINHA POR LINHA) ---
                 
+                # Botão Selecionar Todos
                 if st.button("✅ Selecionar Todos da Página"):
-                    df_lista["Selecionar"] = True
-                
-                edited_df = st.data_editor(
-                    df_lista, 
-                    column_config=cfg_cols, 
-                    hide_index=True, 
-                    use_container_width=True,
-                    key="editor_lista_clientes"
-                )
+                    for i, r in df_lista.iterrows():
+                        st.session_state['selecionados'][r['id']] = True
+                    st.rerun()
+
+                # Cabeçalho Fixo
+                c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
+                c1.write("**Sel**")
+                c2.write("**Ações**")
+                c3.write("**Cód.**")
+                c4.write("**CPF**")
+                c5.write("**Nome**")
+                st.divider()
+
+                # Loop de Linhas
+                for idx, row in df_lista.iterrows():
+                    c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
+                    
+                    # Col 1: Selecionar
+                    is_sel = c1.checkbox("", key=f"chk_sel_rap_{row['id']}", value=st.session_state['selecionados'].get(row['id'], False))
+                    st.session_state['selecionados'][row['id']] = is_sel
+
+                    # Col 2: Botões de Ação
+                    b1, b2, b3 = c2.columns(3)
+                    cpf_limpo = limpar_normalizar_cpf(row['cpf'])
+                    if b1.button("👁️", key=f"v_r_{row['id']}", help="Ver"):
+                        dialog_visualizar_cliente(cpf_limpo)
+                    if b2.button("✏️", key=f"e_r_{row['id']}", help="Editar"):
+                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo, 'form_loaded': False})
+                        st.rerun()
+                    if b3.button("🗑️", key=f"d_r_{row['id']}", help="Excluir"):
+                        dialog_excluir_pf(cpf_limpo, row['nome'])
+
+                    # Col 3, 4, 5: Dados (Apenas Leitura)
+                    c3.write(str(row['id']))
+                    c4.write(row['cpf'])
+                    c5.write(row['nome'])
+                    
+                    st.markdown("<hr style='margin:0; padding:0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
 
                 # --- BOTÃO DE EXPORTAÇÃO (POSICIONADO ABAIXO DA TABELA) ---
                 if 'df_export' in locals() and not df_export.empty:
                     st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_rapida.csv", mime="text/csv")
                 # ----------------------------------------------------------
-                
-                subset = edited_df[edited_df["Selecionar"] == True]
-                
-                if not subset.empty:
-                    st.info(f"{len(subset)} item(s) selecionado(s).")
-                    registro = subset.iloc[0] 
-                    cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
-                    
-                    c_act1, c_act2, c_act3 = st.columns(3)
-                    if c_act1.button("👁️ Ver Detalhes", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
-                    if c_act2.button("✏️ Editar", use_container_width=True): 
-                        st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo_busca, 'form_loaded': False})
-                        st.rerun()
-                    if c_act3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
 
                 # --- PAGINAÇÃO ---
                 total_paginas = math.ceil(total_registros / 50)
@@ -1181,12 +1216,14 @@ def app_pessoa_fisica():
                 
                 if cp1.button("⬅️ Anterior") and pagina > 1:
                     st.session_state['pagina_atual'] -= 1
+                    st.session_state['selecionados'] = {}
                     st.rerun()
                 
                 cp2.markdown(f"<div style='text-align: center'>Página <b>{pagina}</b> de <b>{total_paginas}</b> (Total: {total_registros})</div>", unsafe_allow_html=True)
                 
                 if cp3.button("Próximo ➡️") and pagina < total_paginas:
                     st.session_state['pagina_atual'] += 1
+                    st.session_state['selecionados'] = {}
                     st.rerun()
 
             else: st.warning("Sem resultados.")
@@ -1194,7 +1231,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado em4: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 5 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
