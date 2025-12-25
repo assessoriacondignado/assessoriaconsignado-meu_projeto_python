@@ -33,6 +33,7 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
+            # Tabela de Histórico
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
                     id SERIAL PRIMARY KEY,
@@ -46,7 +47,12 @@ def init_db_structures():
                     usuario_responsavel VARCHAR(100)
                 );
             """)
-            cur.execute("ALTER TABLE pf_dados ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
+            
+            # Adiciona coluna de rastreio em TODAS as tabelas
+            tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos']
+            for tb in tabelas:
+                cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
+            
             conn.commit()
             conn.close()
         except: pass
@@ -98,12 +104,13 @@ def validar_formatar_cpf(cpf_raw):
     return cpf_formatado, None
 
 def validar_formatar_telefone(tel_raw):
-    """Valida 10 ou 11 dígitos e formata (XX) XXXXX-XXXX"""
+    """
+    Valida 10 ou 11 dígitos e retorna APENAS NÚMEROS (Sem máscara).
+    Formato: 11999998888
+    """
     numeros = limpar_apenas_numeros(tel_raw)
-    if len(numeros) == 10:
-        return f"({numeros[:2]}) {numeros[2:6]}-{numeros[6:]}", None
-    elif len(numeros) == 11:
-        return f"({numeros[:2]}) {numeros[2:7]}-{numeros[7:]}", None
+    if len(numeros) == 10 or len(numeros) == 11:
+        return numeros, None
     return None, "Telefone deve ter 10 ou 11 dígitos (DDD + Número)."
 
 def validar_email(email):
@@ -154,39 +161,85 @@ def converter_data_br_iso(valor):
 def processar_importacao_lote(conn, df, table_name, mapping, import_id):
     cur = conn.cursor()
     try:
-        df_proc = df.rename(columns=mapping)
-        cols_db = list(mapping.values())
-        df_proc = df_proc[cols_db].copy()
-        
-        df_proc['importacao_id'] = import_id
-
-        # Normalização de CPF
-        if 'cpf' in df_proc.columns:
-            df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
-            
-            # --- REGRA DE DUPLICIDADE (APENAS PARA pf_dados) ---
-            if table_name == 'pf_dados':
-                # Remove duplicatas de CPF dentro do próprio arquivo, mantendo o último (mais recente)
-                df_proc = df_proc.drop_duplicates(subset=['cpf'], keep='last')
-        
-        # Regra para pf_telefones: Limpa formatação visual (deixa só números)
-        if table_name == 'pf_telefones' and 'numero' in df_proc.columns:
-             df_proc['numero'] = df_proc['numero'].astype(str).apply(limpar_apenas_numeros)
-
-        # Conversão de Datas
-        cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
-        for col in cols_data:
-            if col in df_proc.columns:
-                df_proc[col] = df_proc[col].apply(converter_data_br_iso)
-
         erros = []
-        if table_name == 'pf_dados':
-            invalidos = df_proc[df_proc['cpf'] == ""]
-            if not invalidos.empty:
-                for idx, row in invalidos.iterrows():
-                    erros.append(f"Linha {idx}: CPF inválido ou vazio.")
-            df_proc = df_proc[df_proc['cpf'] != ""]
+        df_proc = pd.DataFrame()
+        cols_order = []
 
+        # --- LÓGICA ESPECIAL PARA TELEFONES (MULTI-COLUNAS) ---
+        if table_name == 'pf_telefones':
+            # Identificar colunas mapeadas
+            col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
+            col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
+            col_qualif = next((k for k, v in mapping.items() if v == 'tag_qualificacao'), None)
+            
+            # Mapeia colunas de telefone (telefone_1, telefone_2, etc)
+            map_tels = {k: v for k, v in mapping.items() if v and v.startswith('telefone_')}
+            
+            if not col_cpf:
+                return 0, 0, ["Erro: Coluna 'CPF (Vínculo)' é obrigatória para importar telefones."]
+            
+            new_rows = []
+            for _, row in df.iterrows():
+                # Processa o CPF
+                cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
+                cpf_limpo = limpar_normalizar_cpf(cpf_val)
+                
+                if not cpf_limpo: continue # Pula se não tiver CPF
+                
+                # Dados opcionais (repetem para todos os telefones da linha)
+                whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
+                qualif_val = str(row[col_qualif]) if col_qualif and pd.notna(row[col_qualif]) else None
+                
+                # Itera sobre todas as colunas de telefone mapeadas
+                for col_origin, _ in map_tels.items():
+                    tel_raw = row[col_origin]
+                    if pd.notna(tel_raw):
+                        tel_limpo = limpar_apenas_numeros(tel_raw)
+                        # Só adiciona se tiver pelo menos 8 dígitos (evita lixo)
+                        if tel_limpo and len(tel_limpo) >= 8: 
+                            new_rows.append({
+                                'cpf_ref': cpf_limpo,
+                                'numero': tel_limpo,
+                                'tag_whats': whats_val,
+                                'tag_qualificacao': qualif_val,
+                                'importacao_id': import_id,
+                                'data_atualizacao': datetime.now().strftime('%Y-%m-%d')
+                            })
+            
+            if not new_rows:
+                return 0, 0, ["Nenhum telefone válido encontrado para importação."]
+                
+            df_proc = pd.DataFrame(new_rows)
+            cols_order = list(df_proc.columns)
+            
+        # --- LÓGICA PADRÃO PARA OUTRAS TABELAS ---
+        else:
+            df_proc = df.rename(columns=mapping)
+            cols_db = list(mapping.values())
+            df_proc = df_proc[cols_db].copy()
+            df_proc['importacao_id'] = import_id
+            
+            if 'cpf' in df_proc.columns:
+                df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
+                
+                # Regra de Duplicidade (Apenas para pf_dados)
+                if table_name == 'pf_dados':
+                    df_proc = df_proc.drop_duplicates(subset=['cpf'], keep='last')
+                    invalidos = df_proc[df_proc['cpf'] == ""]
+                    if not invalidos.empty:
+                        for idx, _ in invalidos.iterrows():
+                            erros.append(f"Linha {idx}: CPF inválido ou vazio.")
+                    df_proc = df_proc[df_proc['cpf'] != ""]
+
+            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
+            for col in cols_data:
+                if col in df_proc.columns:
+                    df_proc[col] = df_proc[col].apply(converter_data_br_iso)
+            
+            cols_order = list(df_proc.columns)
+
+
+        # --- EXECUÇÃO DO COPY (COMUM A TODOS) ---
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
@@ -194,7 +247,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
         
-        cols_order = list(df_proc.columns)
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
@@ -211,10 +263,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            # Lógica para Tabelas Vinculadas (Evita criar linhas idênticas)
-            # Compara todas as colunas para garantir que não cria duplicata exata
+            # Lógica para Tabelas Vinculadas (Evita Duplicidade Exata)
             conditions = " AND ".join([f"t.{c} IS NOT DISTINCT FROM s.{c}" for c in cols_order])
-            
             sql_insert = f"""
                 INSERT INTO {table_name} ({', '.join(cols_order)}) 
                 SELECT {', '.join(cols_order)} 
@@ -240,7 +290,7 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
-            # Query base (mesma lógica)
+            # Query base
             sql_base_select = "SELECT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_base_from = "FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
             
@@ -411,7 +461,7 @@ def carregar_dados_completos(cpf):
             dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,))
-            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,))
             
             if not dados['empregos'].empty:
                 matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
@@ -599,6 +649,7 @@ def app_pessoa_fisica():
     if 'import_stats' not in st.session_state: st.session_state['import_stats'] = {}
     if 'filtro_importacao_id' not in st.session_state: st.session_state['filtro_importacao_id'] = None
     
+    # Paginação e Seleção
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
     
     # CORREÇÃO CRÍTICA: Garante que 'selecionados' seja sempre um dicionário
@@ -1266,7 +1317,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 9 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 1 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
