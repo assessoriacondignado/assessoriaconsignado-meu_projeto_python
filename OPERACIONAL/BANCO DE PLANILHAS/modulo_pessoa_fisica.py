@@ -216,8 +216,9 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
             param_nome = f"%{termo}%"
             
-            # Query base
-            sql_base = "FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
+            # Query base (mesma lógica)
+            sql_base_select = "SELECT d.id, d.nome, d.cpf, d.data_nascimento "
+            sql_base_from = "FROM pf_dados d LEFT JOIN pf_telefones t ON d.cpf = t.cpf_ref"
             
             conditions = []
             params = []
@@ -239,22 +240,22 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             
-            # Se for exportar, busca tudo sem paginação
+            # Se for exportar, busca tudo sem paginação (limitado a 1M)
             if exportar:
-                query = f"SELECT d.id, d.nome, d.cpf, d.data_nascimento {sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC"
+                query = f"{sql_base_select} {sql_base_from} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT 1000000"
                 df = pd.read_sql(query, conn, params=tuple(params))
                 conn.close()
                 return df, len(df)
 
             # Contagem Total (para paginação)
-            count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_base} {sql_where}"
+            count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_base_from} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total_registros = cur.fetchone()[0]
 
             # Busca Paginada
             offset = (pagina - 1) * itens_por_pagina
-            query = f"SELECT d.id, d.nome, d.cpf, d.data_nascimento {sql_base} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT {itens_por_pagina} OFFSET {offset}"
+            query = f"{sql_base_select} {sql_base_from} {sql_where} GROUP BY d.id ORDER BY d.nome ASC LIMIT {itens_por_pagina} OFFSET {offset}"
             
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
@@ -274,11 +275,12 @@ def buscar_opcoes_filtro(coluna, tabela):
         except: pass
     return opcoes
 
-def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50):
+def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=False):
     conn = get_conn()
     if conn:
         try:
-            sql = "SELECT DISTINCT d.id, d.nome, d.cpf, d.rg, d.data_nascimento FROM pf_dados d "
+            sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
+            sql_from = "FROM pf_dados d "
             joins = []
             conditions = []
             params = []
@@ -349,15 +351,22 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50):
             joins = list(set(joins))
             sql_joins = " ".join(joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
-            full_sql = f"{sql} {sql_joins} {sql_where} ORDER BY d.nome"
             
-            count_sql = f"SELECT COUNT(DISTINCT d.id) FROM pf_dados d {sql_joins} {sql_where}"
+            # Se for exportar, sem paginação
+            if exportar:
+                full_sql = f"{sql_select} {sql_from} {sql_joins} {sql_where} ORDER BY d.nome LIMIT 1000000"
+                df = pd.read_sql(full_sql, conn, params=tuple(params))
+                conn.close()
+                return df, len(df)
+            
+            # Contagem Total
+            count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {sql_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total_registros = cur.fetchone()[0]
             
             offset = (pagina - 1) * itens_por_pagina
-            pag_sql = f"{full_sql} LIMIT {itens_por_pagina} OFFSET {offset}"
+            pag_sql = f"{sql_select} {sql_from} {sql_joins} {sql_where} ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}"
             
             df = pd.read_sql(pag_sql, conn, params=tuple(params))
             conn.close()
@@ -490,9 +499,7 @@ def get_table_columns(table_name):
 # --- DIALOG: VISUALIZAR CLIENTE ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
-    # Aplica formatação visual ao CPF exibido no título
     cpf_vis = formatar_cpf_visual(cpf_cliente)
-    
     dados = carregar_dados_completos(cpf_cliente)
     g = dados.get('geral')
     
@@ -503,7 +510,6 @@ def dialog_visualizar_cliente(cpf_cliente):
     with st.expander("👤 Dados Cadastrais", expanded=True):
         c1, c2 = st.columns(2)
         c1.write(f"**Nome:** {g['nome']}")
-        # Exibe CPF formatado
         c2.write(f"**CPF:** {cpf_vis}")
         c3, c4 = st.columns(2)
         dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
@@ -568,7 +574,6 @@ def app_pessoa_fisica():
     
     # Paginação e Seleção
     if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
-    if 'selecionados' not in st.session_state: st.session_state['selecionados'] = []
     
     if 'temp_telefones' not in st.session_state: st.session_state['temp_telefones'] = []
     if 'temp_emails' not in st.session_state: st.session_state['temp_emails'] = []
@@ -578,7 +583,7 @@ def app_pessoa_fisica():
     if 'form_loaded' not in st.session_state: st.session_state['form_loaded'] = False
 
     # ==========================
-    # 1. PESQUISA AMPLA
+    # 1. PESQUISA AMPLA (ATUALIZADA COM LAYOUT FIXO)
     # ==========================
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
@@ -637,30 +642,42 @@ def app_pessoa_fisica():
         
         if 'filtros_ativos' in st.session_state and st.session_state['filtros_ativos']:
             pag_atual = st.session_state['pesquisa_pag']
-            df_res, total = executar_pesquisa_ampla(st.session_state['filtros_ativos'], pag_atual)
+            df_res, total_registros = executar_pesquisa_ampla(st.session_state['filtros_ativos'], pag_atual)
             st.divider()
-            st.write(f"**Resultados Encontrados:** {total}")
+            st.write(f"**Resultados Encontrados:** {total_registros}")
             
             if not df_res.empty:
-                # Formatação Visual do CPF na Tabela
-                if 'cpf' in df_res.columns:
-                    df_res['cpf'] = df_res['cpf'].apply(formatar_cpf_visual)
+                if 'cpf' in df_res.columns: df_res['cpf'] = df_res['cpf'].apply(formatar_cpf_visual)
                 
                 df_res.insert(0, "Selecionar", False)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
-                    "cpf": st.column_config.TextColumn("CPF", width="large"),
-                    "nome": st.column_config.TextColumn("Nome", width="medium"),
-                    "id": st.column_config.NumberColumn("Código", width="small"),
-                    "rg": None,
+                    "id": st.column_config.NumberColumn("Código", width="small", disabled=True),
+                    "cpf": st.column_config.TextColumn("CPF", width="medium", disabled=True),
+                    "nome": st.column_config.TextColumn("Nome", width="medium", disabled=True),
                     "data_nascimento": None
                 }
-                edited_df = st.data_editor(df_res, column_config=cfg_cols, disabled=df_res.columns.drop("Selecionar"), hide_index=True, use_container_width=True)
+                
+                # Botão Selecionar Todos
+                if st.button("✅ Selecionar Todos da Página"):
+                    df_res["Selecionar"] = True
+
+                edited_df = st.data_editor(df_res, column_config=cfg_cols, hide_index=True, use_container_width=True, key="editor_ampla")
+                
+                # --- BOTÃO DE EXPORTAÇÃO (ABAIXO DA TABELA) ---
+                df_export, _ = executar_pesquisa_ampla(st.session_state['filtros_ativos'], exportar=True)
+                if not df_export.empty:
+                    if 'cpf' in df_export.columns: df_export['cpf'] = df_export['cpf'].apply(formatar_cpf_visual)
+                    if 'data_nascimento' in df_export.columns:
+                         df_export['data_nascimento'] = pd.to_datetime(df_export['data_nascimento']).dt.strftime('%d/%m/%Y')
+                    
+                    csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
+                    st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_ampla.csv", mime="text/csv")
+                # -----------------------------------------------
+
                 subset = edited_df[edited_df["Selecionar"] == True]
                 if not subset.empty:
-                    st.divider()
                     registro = subset.iloc[0]
-                    # Remove formatação visual para buscar no banco
                     cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
                     c1, c2, c3 = st.columns(3)
                     if c1.button("👁️ Ver", use_container_width=True): dialog_visualizar_cliente(cpf_limpo_busca)
@@ -668,6 +685,19 @@ def app_pessoa_fisica():
                         st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': cpf_limpo_busca, 'form_loaded': False})
                         st.rerun()
                     if c3.button("🗑️ Excluir", use_container_width=True): dialog_excluir_pf(cpf_limpo_busca, registro['nome'])
+
+                # --- PAGINAÇÃO AMPLA ---
+                total_paginas = math.ceil(total_registros / 50)
+                st.divider()
+                cp1, cp2, cp3 = st.columns([1, 3, 1])
+                if cp1.button("⬅️ Anterior") and pag_atual > 1:
+                    st.session_state['pesquisa_pag'] -= 1
+                    st.rerun()
+                cp2.markdown(f"<div style='text-align: center'>Página <b>{pag_atual}</b> de <b>{total_paginas}</b></div>", unsafe_allow_html=True)
+                if cp3.button("Próximo ➡️") and pag_atual < total_paginas:
+                    st.session_state['pesquisa_pag'] += 1
+                    st.rerun()
+
             else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
@@ -1067,8 +1097,7 @@ def app_pessoa_fisica():
             busca = st.text_input(label_busca, key="pf_busca")
         if filtro_imp and st.button("❌ Limpar Filtro"): st.session_state['filtro_importacao_id'] = None; st.rerun()
             
-        # Barra de Ferramentas Superior
-        col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1, 1, 1])
+        col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         if col_b1.button("➕ Novo", type="primary", use_container_width=True): 
             st.session_state.update({'pf_view': 'novo', 'form_loaded': False})
             st.rerun()
@@ -1080,11 +1109,13 @@ def app_pessoa_fisica():
              # Busca para exportação
              df_export, _ = buscar_pf_simples(busca, filtro_imp, exportar=True)
              if not df_export.empty:
-                 # Formatação Visual para o Excel
                  if 'cpf' in df_export.columns: df_export['cpf'] = df_export['cpf'].apply(formatar_cpf_visual)
+                 if 'data_nascimento' in df_export.columns:
+                     df_export['data_nascimento'] = pd.to_datetime(df_export['data_nascimento']).dt.strftime('%d/%m/%Y')
                  
-                 csv = df_export.to_csv(index=False).encode('utf-8')
-                 col_b4.download_button("📤 Exportar Tudo", data=csv, file_name="exportacao_clientes.csv", mime="text/csv", use_container_width=True)
+                 csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
+                 # BOTÃO EXPORTAR MOVIDO PARA BAIXO DA TABELA
+                 # (Mantido aqui como lógica, mas será renderizado abaixo)
 
         if busca or filtro_imp:
             # Busca Paginada para Visualização
@@ -1092,21 +1123,18 @@ def app_pessoa_fisica():
             df_lista, total_registros = buscar_pf_simples(busca, filtro_imp, pagina=pagina)
             
             if not df_lista.empty:
-                # Aplica formatação visual na coluna CPF
                 if 'cpf' in df_lista.columns:
                     df_lista['cpf'] = df_lista['cpf'].apply(formatar_cpf_visual)
                 
-                # Configuração da Tabela Fixa
                 df_lista.insert(0, "Selecionar", False)
                 cfg_cols = {
                     "Selecionar": st.column_config.CheckboxColumn(required=True, width="small"),
                     "id": st.column_config.NumberColumn("Código", width="small", disabled=True),
                     "cpf": st.column_config.TextColumn("CPF", width="medium", disabled=True),
                     "nome": st.column_config.TextColumn("Nome", width="medium", disabled=True),
-                    "data_nascimento": None # Ocultar
+                    "data_nascimento": None
                 }
                 
-                # Botão Selecionar Todos
                 if st.button("✅ Selecionar Todos da Página"):
                     df_lista["Selecionar"] = True
                 
@@ -1117,15 +1145,17 @@ def app_pessoa_fisica():
                     use_container_width=True,
                     key="editor_lista_clientes"
                 )
+
+                # --- BOTÃO DE EXPORTAÇÃO (POSICIONADO ABAIXO DA TABELA) ---
+                if 'df_export' in locals() and not df_export.empty:
+                    st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_rapida.csv", mime="text/csv")
+                # ----------------------------------------------------------
                 
-                # Captura Seleção
                 subset = edited_df[edited_df["Selecionar"] == True]
                 
-                # Barra de Ações para Selecionados
                 if not subset.empty:
                     st.info(f"{len(subset)} item(s) selecionado(s).")
-                    registro = subset.iloc[0] # Pega o primeiro para ações individuais
-                    # Remove formatação visual para buscar no banco
+                    registro = subset.iloc[0] 
                     cpf_limpo_busca = limpar_normalizar_cpf(registro['cpf'])
                     
                     c_act1, c_act2, c_act3 = st.columns(3)
@@ -1155,7 +1185,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 1 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 2 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
