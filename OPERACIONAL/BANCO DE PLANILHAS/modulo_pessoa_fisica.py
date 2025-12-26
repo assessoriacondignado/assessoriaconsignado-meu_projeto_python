@@ -251,7 +251,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         return qtd_novos, qtd_atualizados, erros
     except Exception as e: raise e
 
-# --- FUNÇÃO DE BUSCA: EXECUÇÃO DINÂMICA (NOVO ENGINE) ---
+# --- FUNÇÃO DE BUSCA: EXECUÇÃO DINÂMICA (CORRIGIDO PARA DATA) ---
 def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50, exportar=False):
     conn = get_conn()
     if conn:
@@ -284,7 +284,7 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50, export
                     active_joins.append(joins_map[tabela])
                 
                 # Alias da coluna
-                col_sql = f"{coluna}" # A configuração deve passar o nome completo ex: 'd.nome'
+                col_sql = f"{coluna}" 
                 
                 # TRATAMENTO DO VALOR
                 if op == "∅": # Vazio/Nulo
@@ -304,6 +304,23 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50, export
                     if 'cpf' in coluna or 'cnpj' in coluna: val = limpar_normalizar_cpf(val)
                     if tipo == 'numero': val = re.sub(r'\D', '', val)
 
+                    # --- CORREÇÃO: LÓGICA ESPECIAL PARA DATAS ---
+                    if tipo == 'data':
+                        if op == "=":
+                            conds_or.append(f"{col_sql} = %s")
+                            params.append(val)
+                        elif op == "≥":
+                            conds_or.append(f"{col_sql} >= %s")
+                            params.append(val)
+                        elif op == "≤":
+                            conds_or.append(f"{col_sql} <= %s")
+                            params.append(val)
+                        elif op == "≠":
+                            conds_or.append(f"{col_sql} <> %s")
+                            params.append(val)
+                        continue # Pula o resto, pois data não usa ILIKE
+
+                    # --- LÓGICA PARA TEXTO E NÚMEROS ---
                     if op == "=>": # Começa com
                         conds_or.append(f"{col_sql} ILIKE %s")
                         params.append(f"{val}%")
@@ -323,8 +340,7 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50, export
                     elif op == "<≠>": # Não Contém
                         conds_or.append(f"{col_sql} NOT ILIKE %s")
                         params.append(f"%{val}%")
-                    elif op == "o": # Seleção (IN)
-                        # Agrupamos todos no IN depois
+                    elif op == "o": # Seleção (IN) - processado abaixo
                         pass 
                     elif op in [">", "<", "≥", "≤"]:
                         sym = {">":">", "<":"<", "≥":">=", "≤":"<="}[op]
@@ -404,7 +420,7 @@ def carregar_dados_completos(cpf):
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     # (Mantido integralmente para brevidade - funcionalidade inalterada)
     # ... código original de salvar ...
-    return True, "Simulação de Salvo (Código Mantido)" # Placeholder para não estourar limite, manter original
+    return True, "Simulação de Salvo (Código Mantido)" 
 
 def excluir_pf(cpf):
     conn = get_conn()
@@ -549,7 +565,7 @@ def app_pessoa_fisica():
             df_ops = pd.read_sql("SELECT tipo, simbolo, descricao FROM pf_operadores_de_filtro", conn)
             conn.close()
             for _, r in df_ops.iterrows():
-                ops_cache[r['tipo']].append(f"{r['simbolo']} : {r['descricao']}") # Exibe Símbolo : Descrição no select
+                ops_cache[r['tipo']].append(f"{r['simbolo']} : {r['descricao']}") 
 
         c_menu, c_regras = st.columns([1.5, 3.5])
 
@@ -559,7 +575,6 @@ def app_pessoa_fisica():
                 with st.expander(grupo):
                     for campo in campos:
                         if st.button(f"➕ {campo['label']}", key=f"add_{campo['coluna']}"):
-                            # Adiciona nova regra vazia
                             st.session_state['regras_pesquisa'].append({
                                 'label': campo['label'],
                                 'coluna': campo['coluna'],
@@ -587,18 +602,26 @@ def app_pessoa_fisica():
                     # Selectbox de Operador
                     opcoes = ops_cache.get(regra['tipo'], [])
                     idx_sel = 0
-                    # Tenta recuperar seleção anterior
                     if regra['operador'] in opcoes: idx_sel = opcoes.index(regra['operador'])
                     
                     novo_op_full = c2.selectbox("Operador", options=opcoes, key=f"op_{i}", label_visibility="collapsed")
                     novo_op_simbolo = novo_op_full.split(' : ')[0] if novo_op_full else "="
                     
-                    # Input de Valor
+                    # Input de Valor (COM CORREÇÃO DE DATA)
                     if novo_op_simbolo == '∅':
                         c3.text_input("Valor", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed")
                         novo_valor = None
                     elif regra['tipo'] == 'data':
-                        novo_valor = c3.date_input("Data", value=None, key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
+                        # Restringe data entre 1900 e 2025
+                        novo_valor = c3.date_input(
+                            "Data", 
+                            value=None, 
+                            min_value=date(1900, 1, 1),
+                            max_value=date(2025, 12, 31),
+                            key=f"val_{i}", 
+                            format="DD/MM/YYYY", 
+                            label_visibility="collapsed"
+                        )
                     else:
                         novo_valor = c3.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed", placeholder="Separe por vírgula para múltiplos")
 
@@ -606,11 +629,9 @@ def app_pessoa_fisica():
                     st.session_state['regras_pesquisa'][i]['operador'] = novo_op_simbolo
                     st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
 
-                    # Botão Remover
                     if c4.button("🗑️", key=f"del_{i}"):
                         regras_para_remover.append(i)
 
-            # Remove itens marcados
             if regras_para_remover:
                 for idx in sorted(regras_para_remover, reverse=True):
                     st.session_state['regras_pesquisa'].pop(idx)
@@ -638,7 +659,6 @@ def app_pessoa_fisica():
                     c4.write(row['nome'])
                     st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                 
-                # Paginação Simples
                 cp1, cp2, cp3 = st.columns([1, 3, 1])
                 if cp1.button("⬅️ Anterior") and st.session_state['pagina_atual'] > 1:
                     st.session_state['pagina_atual'] -= 1; st.rerun()
