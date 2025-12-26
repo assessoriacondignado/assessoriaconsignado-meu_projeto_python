@@ -25,15 +25,14 @@ GUIA DE CRIAÇÃO DE NOVAS TABELAS (VIA COMANDO SQL)
 -- COMANDO MODELO (Substitua os termos entre aspas ou os nomes de exemplo)
 -- Dica: Use nomes sem espaços e sem acentos (use_underline_para_separar)
 
-CREATE TABLE IF NOT EXISTS public.nome_da_sua_nova_tabela (
+CREATE TABLE IF NOT EXISTS admin.contratos_clt (
     -- Coluna Obrigatória (Identificador Único)
     id SERIAL PRIMARY KEY,
 
     -- COLOQUE SUAS NOVAS COLUNAS AQUI:
-    nome_do_campo_texto VARCHAR(255),
-    nome_do_campo_data DATE,
+    Matricula_ref VARCHAR(50),
+    Data_atualização_ DATE,
     nome_do_campo_valor NUMERIC(10, 2),
-    nome_do_campo_check BOOLEAN DEFAULT TRUE, -- (Pode definir um padrão DEFAULT)
     
     -- Colunas de Controle (Recomendado manter para auditoria)
     observacao TEXT,
