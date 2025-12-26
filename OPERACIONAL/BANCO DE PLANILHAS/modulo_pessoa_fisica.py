@@ -33,6 +33,7 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
+            # Tabela de Histórico de Importações
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
                     id SERIAL PRIMARY KEY,
@@ -47,10 +48,21 @@ def init_db_structures():
                 );
             """)
             
+            # Adiciona coluna de rastreio em TODAS as tabelas do módulo
             tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos']
             for tb in tabelas:
                 cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
-                
+            
+            # Garante tabela de referências (Convênios, etc)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pf_referencias (
+                    id SERIAL PRIMARY KEY,
+                    tipo VARCHAR(50),
+                    nome VARCHAR(100),
+                    UNIQUE(tipo, nome)
+                );
+            """)
+            
             conn.commit()
             conn.close()
         except: pass
@@ -74,6 +86,35 @@ def buscar_referencias(tipo):
             return df['nome'].tolist()
         except: conn.close()
     return []
+
+# --- FUNÇÕES DE GESTÃO DE REFERÊNCIAS (CONVÊNIOS) ---
+def adicionar_referencia(tipo, nome):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO pf_referencias (tipo, nome) VALUES (%s, %s) ON CONFLICT DO NOTHING", (tipo, nome.upper()))
+            conn.commit()
+            conn.close()
+            return True
+        except: 
+            conn.close()
+            return False
+    return False
+
+def excluir_referencia(id_ref):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM pf_referencias WHERE id = %s", (id_ref,))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            conn.close()
+            return False
+    return False
 
 def limpar_apenas_numeros(valor):
     """Remove tudo que não é dígito"""
@@ -163,11 +204,10 @@ def add_table_column(table_name, col_name, col_type):
     if conn:
         try:
             cur = conn.cursor()
-            # Sanitização simples para evitar injection grosseira, mas idealmente usar identificadores
+            # Sanitização simples para evitar injection
             clean_col = re.sub(r'[^a-zA-Z0-9_]', '', col_name).lower()
             if not clean_col: return False, "Nome de coluna inválido."
             
-            # Mapeamento de tipos amigáveis para SQL
             type_map = {
                 "Texto Curto": "VARCHAR(255)",
                 "Texto Longo": "TEXT",
@@ -179,7 +219,6 @@ def add_table_column(table_name, col_name, col_type):
             }
             sql_type = type_map.get(col_type, "VARCHAR(255)")
             
-            # PostgreSQL adiciona ao final por padrão. 'AFTER' não é suportado nativamente sem recriar tabela.
             query = f'ALTER TABLE "{table_name}" ADD COLUMN "{clean_col}" {sql_type}'
             cur.execute(query)
             conn.commit()
@@ -370,7 +409,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
                     WHERE d.cpf = s.cpf_ref
                 """
                 cur.execute(sql_propaga, (import_id,))
-            
             elif table_name == 'pf_contratos':
                 sql_propaga = f"""
                     UPDATE pf_dados d
@@ -561,6 +599,117 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
+# --- FUNÇÕES CRUD ---
+def carregar_dados_completos(cpf):
+    conn = get_conn()
+    dados = {}
+    if conn:
+        try:
+            cpf_norm = limpar_normalizar_cpf(cpf)
+            df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
+            if not df_d.empty:
+                df_d = df_d.fillna("")
+            dados['geral'] = df_d.iloc[0] if not df_d.empty else None
+            
+            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            
+            if not dados['empregos'].empty:
+                matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
+                if matr_list:
+                    placeholders = ",".join(["%s"] * len(matr_list))
+                    q_contratos = f"SELECT matricula_ref, contrato, dados_extras FROM pf_contratos WHERE matricula_ref IN ({placeholders})"
+                    dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list).fillna("")
+                else: dados['contratos'] = pd.DataFrame()
+            else: dados['contratos'] = pd.DataFrame()
+        except: pass
+        finally: conn.close()
+    return dados
+
+def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            
+            cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
+            dados_gerais['cpf'] = cpf_limpo
+            if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
+
+            dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
+
+            if modo == "novo":
+                cols = list(dados_gerais.keys())
+                vals = list(dados_gerais.values())
+                placeholders = ", ".join(["%s"] * len(vals))
+                col_names = ", ".join(cols)
+                cur.execute(f"INSERT INTO pf_dados ({col_names}) VALUES ({placeholders})", vals)
+            else:
+                set_clause = ", ".join([f"{k}=%s" for k in dados_gerais.keys()])
+                vals = list(dados_gerais.values()) + [cpf_original]
+                cur.execute(f"UPDATE pf_dados SET {set_clause} WHERE cpf=%s", vals)
+            
+            cpf_chave = dados_gerais['cpf']
+            if modo == "editar":
+                cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
+                cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
+                cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
+                cur.execute("DELETE FROM pf_contratos WHERE matricula_ref IN (SELECT matricula FROM pf_emprego_renda WHERE cpf_ref = %s)", (cpf_chave,))
+                cur.execute("DELETE FROM pf_emprego_renda WHERE cpf_ref = %s", (cpf_chave,))
+            
+            def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
+
+            if not df_tel.empty:
+                for _, row in df_upper(df_tel).iterrows():
+                    if row.get('numero'): 
+                        dt = row.get('data_atualizacao') or date.today()
+                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", 
+                                    (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), dt))
+            
+            if not df_email.empty:
+                for _, row in df_upper(df_email).iterrows():
+                    if row.get('email'): cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
+            
+            if not df_end.empty:
+                for _, row in df_upper(df_end).iterrows():
+                    if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
+            
+            if not df_emp.empty:
+                for _, row in df_upper(df_emp).iterrows():
+                    if row.get('convenio') and row.get('matricula'):
+                        try: cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, row.get('convenio'), row.get('matricula'), row.get('dados_extras')))
+                        except: pass
+
+            if not df_contr.empty:
+                for _, row in df_upper(df_contr).iterrows():
+                    if row.get('matricula_ref'):
+                        cur.execute("SELECT 1 FROM pf_emprego_renda WHERE matricula = %s", (row.get('matricula_ref'),))
+                        if cur.fetchone():
+                            cur.execute("INSERT INTO pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (row.get('matricula_ref'), row.get('contrato'), row.get('dados_extras')))
+
+            conn.commit()
+            conn.close()
+            return True, "Salvo com sucesso!"
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return False, "Erro: CPF já cadastrado."
+        except Exception as e: return False, str(e)
+    return False, "Erro de conexão"
+
+def excluir_pf(cpf):
+    conn = get_conn()
+    if conn:
+        try:
+            cpf_norm = limpar_normalizar_cpf(cpf)
+            cur = conn.cursor()
+            cur.execute("DELETE FROM pf_dados WHERE cpf = %s", (cpf_norm,))
+            conn.commit(); conn.close()
+            return True
+        except: return False
+    return False
+
 # --- FUNÇÕES DE IMPORTAÇÃO ---
 def get_table_columns(table_name):
     conn = get_conn()
@@ -651,8 +800,10 @@ def dialog_excluir_pf(cpf, nome):
 def app_pessoa_fisica():
     init_db_structures()
     
+    # CSS PARA OTIMIZAR ESPAÇAMENTO
     st.markdown("""
         <style>
+            /* Reduz espaçamento entre linhas da grade */
             [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
                 gap: 0.2rem;
             }
@@ -694,7 +845,7 @@ def app_pessoa_fisica():
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### ⚙️ Configuração de Estrutura")
         
-        tab_add, tab_mgr = st.tabs(["➕ Criar Coluna", "✏️ Gerenciar Colunas"])
+        tab_add, tab_mgr, tab_ref = st.tabs(["➕ Criar Coluna", "✏️ Gerenciar Colunas", "📋 Convênios"])
         
         # Opções de Tabela
         tabelas_disp = {
@@ -754,6 +905,34 @@ def app_pessoa_fisica():
             else:
                 st.warning("Não foi possível ler as colunas.")
 
+        with tab_ref:
+            st.markdown("#### Gestão de Convênios")
+            c_new_ref, c_btn_ref = st.columns([3, 1])
+            novo_conv = c_new_ref.text_input("Nome do Novo Convênio")
+            if c_btn_ref.button("Adicionar Convênio", type="primary"):
+                if novo_conv:
+                    if adicionar_referencia('CONVENIO', novo_conv):
+                        st.success("Adicionado!")
+                        time.sleep(0.5); st.rerun()
+                    else: st.error("Erro ao adicionar (possível duplicata).")
+            
+            st.divider()
+            
+            conn = get_conn()
+            if conn:
+                try:
+                    df_refs = pd.read_sql("SELECT id, nome FROM pf_referencias WHERE tipo = 'CONVENIO' ORDER BY nome", conn)
+                    conn.close()
+                    if not df_refs.empty:
+                        for _, row in df_refs.iterrows():
+                            c1, c2 = st.columns([4, 1])
+                            c1.text(row['nome'])
+                            if c2.button("🗑️", key=f"del_ref_{row['id']}"):
+                                excluir_referencia(row['id'])
+                                st.rerun()
+                            st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+                    else: st.info("Nenhum convênio cadastrado.")
+                except: conn.close()
 
     # ==========================
     # 1. PESQUISA AMPLA
@@ -953,13 +1132,9 @@ def app_pessoa_fisica():
             df = st.session_state['import_df']
             csv_cols = list(df.columns)
             table_name = st.session_state['import_table']
-            
-            if table_name == 'pf_telefones':
-                db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
-            else:
-                db_cols_info = get_table_columns(table_name)
-                ignore_db = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
-                db_fields = [c[0] for c in db_cols_info if c[0] not in ignore_db]
+            db_cols_info = get_table_columns(table_name)
+            ignore_db = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
+            db_fields = [c[0] for c in db_cols_info if c[0] not in ignore_db]
 
             c_l, c_r = st.columns([1, 2])
             with c_l:
@@ -1302,9 +1477,8 @@ def app_pessoa_fisica():
              # Busca para exportação
              df_export, _ = buscar_pf_simples(busca, filtro_imp, exportar=True)
              if not df_export.empty:
+                 # Formatação Visual para o Excel
                  if 'cpf' in df_export.columns: df_export['cpf'] = df_export['cpf'].apply(formatar_cpf_visual)
-                 if 'data_nascimento' in df_export.columns:
-                     df_export['data_nascimento'] = pd.to_datetime(df_export['data_nascimento']).dt.strftime('%d/%m/%Y')
                  
                  csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
                  # BOTÃO EXPORTAR MOVIDO PARA BAIXO DA TABELA
@@ -1393,7 +1567,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 3 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 5 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
