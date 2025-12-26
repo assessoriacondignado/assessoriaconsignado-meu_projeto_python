@@ -46,7 +46,6 @@ def buscar_clientes():
     if conn:
         try:
             # CORREÇÃO APLICADA: Busca na tabela 'admin.clientes'
-            # Garante que todos os clientes cadastrados apareçam, não apenas os usuários do sistema.
             query = "SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome"
             df = pd.read_sql(query, conn)
             conn.close()
@@ -183,7 +182,7 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 # --- POP-UPS (DIALOGS) ---
-@st.dialog("➕ Novo Pedido", width="large")
+@st.dialog("➕ Novo Pedido", width="large") # AJUSTE DE LARGURA APLICADO
 def dialog_novo_pedido():
     df_c = buscar_clientes()
     df_p = buscar_produtos()
@@ -265,8 +264,23 @@ def dialog_status_pedido(pedido):
                 st.success("Status Alterado!")
                 st.rerun()
 
+    # --- NOVA SEÇÃO: HISTÓRICO VISUAL ABAIXO DO STATUS ---
+    st.markdown("---")
+    st.caption("📜 Histórico de Tramitação")
+    
+    df_hist = buscar_historico_pedido(pedido['id'])
+    if not df_hist.empty:
+        # Formata a data para ficar amigável
+        df_hist['data_mudanca'] = pd.to_datetime(df_hist['data_mudanca']).dt.strftime('%d/%m/%Y %H:%M')
+        # Renomeia colunas para exibição
+        df_hist.columns = ["Data", "Status", "Observação"]
+        st.dataframe(df_hist, use_container_width=True, hide_index=True)
+    else:
+        st.info("Sem histórico registrado.")
+
 @st.dialog("📜 Histórico")
 def dialog_historico(id_pedido, codigo_pedido):
+    # Mantém este dialog separado caso o usuário clique no botão "Hist." da lista principal
     st.write(f"Histórico de: **{codigo_pedido}**")
     df_hist = buscar_historico_pedido(id_pedido)
     if not df_hist.empty:
