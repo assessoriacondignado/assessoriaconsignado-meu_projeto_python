@@ -140,6 +140,107 @@ def converter_data_br_iso(valor):
         except ValueError: continue
     return None
 
+# --- FUNÇÕES DE GERENCIAMENTO DE COLUNAS (CONFIGURAÇÃO) ---
+def get_table_schema(table_name):
+    conn = get_conn()
+    if conn:
+        try:
+            query = """
+                SELECT column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_name = %s 
+                ORDER BY ordinal_position;
+            """
+            df = pd.read_sql(query, conn, params=(table_name,))
+            conn.close()
+            return df
+        except:
+            conn.close()
+    return pd.DataFrame()
+
+def add_table_column(table_name, col_name, col_type):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # Sanitização simples para evitar injection grosseira, mas idealmente usar identificadores
+            clean_col = re.sub(r'[^a-zA-Z0-9_]', '', col_name).lower()
+            if not clean_col: return False, "Nome de coluna inválido."
+            
+            # Mapeamento de tipos amigáveis para SQL
+            type_map = {
+                "Texto Curto": "VARCHAR(255)",
+                "Texto Longo": "TEXT",
+                "Número Inteiro": "INTEGER",
+                "Número Decimal": "NUMERIC(15,2)",
+                "Data": "DATE",
+                "Data e Hora": "TIMESTAMP",
+                "Sim/Não (Booleano)": "BOOLEAN"
+            }
+            sql_type = type_map.get(col_type, "VARCHAR(255)")
+            
+            # PostgreSQL adiciona ao final por padrão. 'AFTER' não é suportado nativamente sem recriar tabela.
+            query = f'ALTER TABLE "{table_name}" ADD COLUMN "{clean_col}" {sql_type}'
+            cur.execute(query)
+            conn.commit()
+            conn.close()
+            return True, "Coluna criada com sucesso!"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    return False, "Erro conexão"
+
+def rename_table_column(table_name, old_name, new_name):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            clean_new = re.sub(r'[^a-zA-Z0-9_]', '', new_name).lower()
+            if not clean_new: return False, "Nome novo inválido."
+            
+            query = f'ALTER TABLE "{table_name}" RENAME COLUMN "{old_name}" TO "{clean_new}"'
+            cur.execute(query)
+            conn.commit()
+            conn.close()
+            return True, "Coluna renomeada!"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    return False, "Erro conexão"
+
+def drop_table_column(table_name, col_name):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            query = f'ALTER TABLE "{table_name}" DROP COLUMN "{col_name}"'
+            cur.execute(query)
+            conn.commit()
+            conn.close()
+            return True, "Coluna excluída!"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    return False, "Erro conexão"
+
+@st.dialog("⚠️ Confirmar Exclusão de Coluna")
+def dialog_drop_column(table, col):
+    st.warning(f"Tem certeza que deseja excluir a coluna **{col}** da tabela **{table}**?")
+    st.error("Esta ação apagará todos os dados desta coluna permanentemente.")
+    
+    col1, col2 = st.columns(2)
+    if col1.button("Sim, Excluir", type="primary"):
+        success, msg = drop_table_column(table, col)
+        if success:
+            st.success(msg)
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(msg)
+    
+    if col2.button("Cancelar"):
+        st.rerun()
+
 # --- IMPORTAÇÃO RÁPIDA (BULK OTIMIZADO) ---
 def processar_importacao_lote(conn, df, table_name, mapping, import_id):
     cur = conn.cursor()
@@ -460,117 +561,6 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD ---
-def carregar_dados_completos(cpf):
-    conn = get_conn()
-    dados = {}
-    if conn:
-        try:
-            cpf_norm = limpar_normalizar_cpf(cpf)
-            df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
-            if not df_d.empty:
-                df_d = df_d.fillna("")
-            dados['geral'] = df_d.iloc[0] if not df_d.empty else None
-            
-            dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
-            dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
-            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
-            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
-            
-            if not dados['empregos'].empty:
-                matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
-                if matr_list:
-                    placeholders = ",".join(["%s"] * len(matr_list))
-                    q_contratos = f"SELECT matricula_ref, contrato, dados_extras FROM pf_contratos WHERE matricula_ref IN ({placeholders})"
-                    dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list).fillna("")
-                else: dados['contratos'] = pd.DataFrame()
-            else: dados['contratos'] = pd.DataFrame()
-        except: pass
-        finally: conn.close()
-    return dados
-
-def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            
-            cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
-            dados_gerais['cpf'] = cpf_limpo
-            if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
-
-            dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
-
-            if modo == "novo":
-                cols = list(dados_gerais.keys())
-                vals = list(dados_gerais.values())
-                placeholders = ", ".join(["%s"] * len(vals))
-                col_names = ", ".join(cols)
-                cur.execute(f"INSERT INTO pf_dados ({col_names}) VALUES ({placeholders})", vals)
-            else:
-                set_clause = ", ".join([f"{k}=%s" for k in dados_gerais.keys()])
-                vals = list(dados_gerais.values()) + [cpf_original]
-                cur.execute(f"UPDATE pf_dados SET {set_clause} WHERE cpf=%s", vals)
-            
-            cpf_chave = dados_gerais['cpf']
-            if modo == "editar":
-                cur.execute("DELETE FROM pf_telefones WHERE cpf_ref = %s", (cpf_chave,))
-                cur.execute("DELETE FROM pf_emails WHERE cpf_ref = %s", (cpf_chave,))
-                cur.execute("DELETE FROM pf_enderecos WHERE cpf_ref = %s", (cpf_chave,))
-                cur.execute("DELETE FROM pf_contratos WHERE matricula_ref IN (SELECT matricula FROM pf_emprego_renda WHERE cpf_ref = %s)", (cpf_chave,))
-                cur.execute("DELETE FROM pf_emprego_renda WHERE cpf_ref = %s", (cpf_chave,))
-            
-            def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
-
-            if not df_tel.empty:
-                for _, row in df_upper(df_tel).iterrows():
-                    if row.get('numero'): 
-                        dt = row.get('data_atualizacao') or date.today()
-                        cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", 
-                                    (cpf_chave, row['numero'], row.get('tag_whats'), row.get('tag_qualificacao'), dt))
-            
-            if not df_email.empty:
-                for _, row in df_upper(df_email).iterrows():
-                    if row.get('email'): cur.execute("INSERT INTO pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, row['email']))
-            
-            if not df_end.empty:
-                for _, row in df_upper(df_end).iterrows():
-                    if row.get('rua') or row.get('cidade'): cur.execute("INSERT INTO pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, row['rua'], row.get('bairro'), row.get('cidade'), row.get('uf'), row.get('cep')))
-            
-            if not df_emp.empty:
-                for _, row in df_upper(df_emp).iterrows():
-                    if row.get('convenio') and row.get('matricula'):
-                        try: cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, row.get('convenio'), row.get('matricula'), row.get('dados_extras')))
-                        except: pass
-
-            if not df_contr.empty:
-                for _, row in df_upper(df_contr).iterrows():
-                    if row.get('matricula_ref'):
-                        cur.execute("SELECT 1 FROM pf_emprego_renda WHERE matricula = %s", (row.get('matricula_ref'),))
-                        if cur.fetchone():
-                            cur.execute("INSERT INTO pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (row.get('matricula_ref'), row.get('contrato'), row.get('dados_extras')))
-
-            conn.commit()
-            conn.close()
-            return True, "Salvo com sucesso!"
-        except psycopg2.IntegrityError:
-            conn.rollback()
-            return False, "Erro: CPF já cadastrado."
-        except Exception as e: return False, str(e)
-    return False, "Erro de conexão"
-
-def excluir_pf(cpf):
-    conn = get_conn()
-    if conn:
-        try:
-            cpf_norm = limpar_normalizar_cpf(cpf)
-            cur = conn.cursor()
-            cur.execute("DELETE FROM pf_dados WHERE cpf = %s", (cpf_norm,))
-            conn.commit(); conn.close()
-            return True
-        except: return False
-    return False
-
 # --- FUNÇÕES DE IMPORTAÇÃO ---
 def get_table_columns(table_name):
     conn = get_conn()
@@ -661,10 +651,8 @@ def dialog_excluir_pf(cpf, nome):
 def app_pessoa_fisica():
     init_db_structures()
     
-    # CSS PARA OTIMIZAR ESPAÇAMENTO
     st.markdown("""
         <style>
-            /* Reduz espaçamento entre linhas da grade */
             [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
                 gap: 0.2rem;
             }
@@ -700,9 +688,77 @@ def app_pessoa_fisica():
     if 'form_loaded' not in st.session_state: st.session_state['form_loaded'] = False
 
     # ==========================
-    # 1. PESQUISA AMPLA (ATUALIZADA COM LAYOUT FIXO)
+    # 7. MODO CONFIGURAÇÃO (NOVO)
     # ==========================
-    if st.session_state['pf_view'] == 'pesquisa_ampla':
+    if st.session_state['pf_view'] == 'configuracao':
+        st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
+        st.markdown("### ⚙️ Configuração de Estrutura")
+        
+        tab_add, tab_mgr = st.tabs(["➕ Criar Coluna", "✏️ Gerenciar Colunas"])
+        
+        # Opções de Tabela
+        tabelas_disp = {
+            'Dados Pessoais': 'pf_dados',
+            'Telefones': 'pf_telefones',
+            'Emails': 'pf_emails',
+            'Endereços': 'pf_enderecos',
+            'Emprego/Renda': 'pf_emprego_renda',
+            'Contratos': 'pf_contratos'
+        }
+        
+        with tab_add:
+            st.info("Adicione novas colunas para armazenar dados específicos na sua planilha.")
+            c1, c2, c3 = st.columns(3)
+            sel_tb_add = c1.selectbox("Selecione a Tabela", list(tabelas_disp.keys()), key="tb_add")
+            nome_col = c2.text_input("Nome da Nova Coluna (Sem espaços especiais)")
+            tipo_col = c3.selectbox("Tipo de Dado", ["Texto Curto", "Texto Longo", "Número Inteiro", "Número Decimal", "Data", "Sim/Não (Booleano)"])
+            
+            if st.button("Criar Coluna", type="primary"):
+                if nome_col:
+                    ok, msg = add_table_column(tabelas_disp[sel_tb_add], nome_col, tipo_col)
+                    if ok: st.success(msg)
+                    else: st.error(f"Erro: {msg}")
+                else:
+                    st.warning("Preencha o nome da coluna.")
+
+        with tab_mgr:
+            st.info("Renomeie ou exclua colunas existentes.")
+            c_sel_tb = st.selectbox("Tabela para Gerenciar", list(tabelas_disp.keys()), key="tb_mgr")
+            tb_real = tabelas_disp[c_sel_tb]
+            
+            df_cols = get_table_schema(tb_real)
+            
+            if not df_cols.empty:
+                # Ignorar colunas de sistema para segurança
+                cols_sistema = ['id', 'cpf', 'cpf_ref', 'matricula', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
+                df_view = df_cols[~df_cols['column_name'].isin(cols_sistema)]
+                
+                for _, row in df_view.iterrows():
+                    c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+                    c1.text(row['column_name'])
+                    c2.caption(row['data_type'])
+                    
+                    # Renomear
+                    new_name = c3.text_input("Novo Nome", key=f"ren_{row['column_name']}", placeholder="Renomear...")
+                    if c3.button("💾", key=f"btn_ren_{row['column_name']}"):
+                        if new_name:
+                            ok, msg = rename_table_column(tb_real, row['column_name'], new_name)
+                            if ok: st.success("Renomeado!"); time.sleep(1); st.rerun()
+                            else: st.error(msg)
+                            
+                    # Excluir
+                    if c4.button("🗑️", key=f"del_{row['column_name']}"):
+                        dialog_drop_column(tb_real, row['column_name'])
+                    
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else:
+                st.warning("Não foi possível ler as colunas.")
+
+
+    # ==========================
+    # 1. PESQUISA AMPLA
+    # ==========================
+    elif st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### 🔎 Pesquisa Ampla")
         with st.form("form_pesquisa_ampla", enter_to_submit=False):
@@ -756,7 +812,7 @@ def app_pessoa_fisica():
             filtros_limpos = {k: v for k, v in filtros.items() if v}
             st.session_state['filtros_ativos'] = filtros_limpos
             st.session_state['pesquisa_pag'] = 1
-            st.session_state['selecionados'] = {} # Limpa seleção ao nova busca
+            st.session_state['selecionados'] = {}
         
         if 'filtros_ativos' in st.session_state and st.session_state['filtros_ativos']:
             pag_atual = st.session_state['pesquisa_pag']
@@ -767,15 +823,11 @@ def app_pessoa_fisica():
             if not df_res.empty:
                 if 'cpf' in df_res.columns: df_res['cpf'] = df_res['cpf'].apply(formatar_cpf_visual)
                 
-                # --- NOVO LAYOUT DE GRID (LINHA POR LINHA) ---
-                
-                # Botão Selecionar Todos
                 if st.button("✅ Selecionar Todos da Página"):
                     for i, r in df_res.iterrows():
                         st.session_state['selecionados'][r['id']] = True
                     st.rerun()
 
-                # Cabeçalho Fixo (ATUALIZADO)
                 st.markdown("""
                 <div style="background-color: #e6e9ef; padding: 10px; border-radius: 5px; display: flex; align-items: center; border-bottom: 2px solid #ccc; font-weight: bold; font-family: sans-serif;">
                     <div style="flex: 0.5; text-align: center;">Sel</div>
@@ -786,15 +838,12 @@ def app_pessoa_fisica():
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Loop de Linhas
                 for idx, row in df_res.iterrows():
                     c1, c2, c3, c4, c5 = st.columns([0.5, 1.5, 1, 2, 4])
                     
-                    # Col 1: Selecionar
-                    is_sel = c1.checkbox("", key=f"chk_sel_{row['id']}", value=st.session_state['selecionados'].get(row['id'], False))
+                    is_sel = c1.checkbox("", key=f"chk_sel_rap_{row['id']}", value=st.session_state['selecionados'].get(row['id'], False))
                     st.session_state['selecionados'][row['id']] = is_sel
 
-                    # Col 2: Botões de Ação
                     b1, b2, b3 = c2.columns(3)
                     cpf_limpo = limpar_normalizar_cpf(row['cpf'])
                     if b1.button("👁️", key=f"v_a_{row['id']}", help="Ver"):
@@ -805,15 +854,12 @@ def app_pessoa_fisica():
                     if b3.button("🗑️", key=f"d_a_{row['id']}", help="Excluir"):
                         dialog_excluir_pf(cpf_limpo, row['nome'])
 
-                    # Col 3, 4, 5: Dados (Apenas Leitura)
                     c3.write(str(row['id']))
                     c4.write(row['cpf'])
                     c5.write(row['nome'])
                     
-                    # Linha de Grade (ATUALIZADO)
                     st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
                 
-                # --- BOTÃO DE EXPORTAÇÃO ---
                 df_export, _ = executar_pesquisa_ampla(st.session_state['filtros_ativos'], exportar=True)
                 if not df_export.empty:
                     if 'cpf' in df_export.columns: df_export['cpf'] = df_export['cpf'].apply(formatar_cpf_visual)
@@ -823,7 +869,6 @@ def app_pessoa_fisica():
                     csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
                     st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_ampla.csv", mime="text/csv")
                 
-                # --- PAGINAÇÃO ---
                 total_paginas = math.ceil(total_registros / 50)
                 st.divider()
                 cp1, cp2, cp3 = st.columns([1, 3, 1])
@@ -843,7 +888,6 @@ def app_pessoa_fisica():
     # 2. HISTÓRICO DE IMPORTAÇÕES
     # ==========================
     elif st.session_state['pf_view'] == 'historico_importacao':
-        # ... (Mantido código histórico sem alterações) ...
         st.button("⬅️ Voltar para Lista", on_click=lambda: st.session_state.update({'pf_view': 'importacao', 'import_step': 1}))
         st.markdown("### 📜 Histórico de Importações")
         conn = get_conn()
@@ -873,7 +917,6 @@ def app_pessoa_fisica():
     # 3. MODO IMPORTAÇÃO (BULK)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
-        # ... (Mantido código importação sem alterações) ...
         c_cancel, c_hist = st.columns([1, 4])
         c_cancel.button("⬅️ Cancelar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'import_step': 1}))
         c_hist.button("📜 Ver Histórico Importação", on_click=lambda: st.session_state.update({'pf_view': 'historico_importacao'}))
@@ -911,12 +954,9 @@ def app_pessoa_fisica():
             csv_cols = list(df.columns)
             table_name = st.session_state['import_table']
             
-            # --- LÓGICA DE MAPEAMENTO (ATUALIZADA) ---
             if table_name == 'pf_telefones':
-                # Opções especiais para telefones múltiplos
                 db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
             else:
-                # Padrão para outras tabelas
                 db_cols_info = get_table_columns(table_name)
                 ignore_db = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
                 db_fields = [c[0] for c in db_cols_info if c[0] not in ignore_db]
@@ -969,7 +1009,6 @@ def app_pessoa_fisica():
                             novos, atualizados, erros_list = processar_importacao_lote(conn, df, table_name, final_map, import_id)
                             conn.commit()
                             
-                            # Filtrar amostra apenas com colunas mapeadas
                             cols_mapeadas = list(final_map.keys())
                             df_sample = df[cols_mapeadas].head(5)
                             
@@ -1256,14 +1295,16 @@ def app_pessoa_fisica():
             st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
         if col_b3.button("📥 Importar", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
+        if col_b4.button("⚙️ Configuração", type="secondary", use_container_width=True): st.session_state.update({'pf_view': 'configuracao'}); st.rerun()
 
         # Botão Exportar (Todas as páginas)
         if busca or filtro_imp:
              # Busca para exportação
              df_export, _ = buscar_pf_simples(busca, filtro_imp, exportar=True)
              if not df_export.empty:
-                 # Formatação Visual para o Excel
                  if 'cpf' in df_export.columns: df_export['cpf'] = df_export['cpf'].apply(formatar_cpf_visual)
+                 if 'data_nascimento' in df_export.columns:
+                     df_export['data_nascimento'] = pd.to_datetime(df_export['data_nascimento']).dt.strftime('%d/%m/%Y')
                  
                  csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
                  # BOTÃO EXPORTAR MOVIDO PARA BAIXO DA TABELA
@@ -1324,7 +1365,7 @@ def app_pessoa_fisica():
                     
                     # Linha de Grade (ATUALIZADO)
                     st.markdown("<div style='border-bottom: 1px solid #e0e0e0; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
-                
+
                 # --- BOTÃO DE EXPORTAÇÃO (POSICIONADO ABAIXO DA TABELA) ---
                 if 'df_export' in locals() and not df_export.empty:
                     st.download_button("📤 Exportar Pesquisa Completa", data=csv, file_name="resultado_pesquisa_rapida.csv", mime="text/csv")
@@ -1352,7 +1393,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 8 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 1 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
