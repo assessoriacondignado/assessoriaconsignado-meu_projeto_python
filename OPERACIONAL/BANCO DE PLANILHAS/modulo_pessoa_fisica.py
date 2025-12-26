@@ -463,32 +463,59 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD ---
+# --- FUNÇÕES CRUD (ATUALIZADO COM DADOS CLT) ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
     if conn:
         try:
             cpf_norm = limpar_normalizar_cpf(cpf)
+            # 1. Dados Gerais
             df_d = pd.read_sql("SELECT * FROM pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df_d.empty:
                 df_d = df_d.fillna("")
             dados['geral'] = df_d.iloc[0] if not df_d.empty else None
             
+            # 2. Contatos e Endereço
             dados['telefones'] = pd.read_sql("SELECT numero, data_atualizacao, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
+            
+            # 3. Emprego e Renda
             dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("")
             
+            # 4. Contratos (Empréstimos) e Dados CLT (CAGED)
+            dados['contratos'] = pd.DataFrame()
+            dados['dados_clt'] = pd.DataFrame() # Nova estrutura
+
             if not dados['empregos'].empty:
                 matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
                 if matr_list:
+                    # Busca Contratos de Empréstimo
                     placeholders = ",".join(["%s"] * len(matr_list))
                     q_contratos = f"SELECT matricula_ref, contrato, dados_extras FROM pf_contratos WHERE matricula_ref IN ({placeholders})"
                     dados['contratos'] = pd.read_sql(q_contratos, conn, params=matr_list).fillna("")
-                else: dados['contratos'] = pd.DataFrame()
-            else: dados['contratos'] = pd.DataFrame()
-        except: pass
+                    
+                    # --- NOVO: Busca Dados Detalhados CLT/CAGED ---
+                    try:
+                        q_clt = f"""
+                            SELECT matricula_ref, nome_convenio, cnpj_nome, cnpj_numero, 
+                                   cnae_nome, data_admissao, cbo_nome, cbo_codigo, 
+                                   qtd_funcionarios, data_abertura_empresa 
+                            FROM admin.pf_contratos_clt 
+                            WHERE matricula_ref IN ({placeholders})
+                        """
+                        dados['dados_clt'] = pd.read_sql(q_clt, conn, params=matr_list).fillna("")
+                        
+                        # Converte datas para visualização
+                        for col in ['data_admissao', 'data_abertura_empresa']:
+                            if col in dados['dados_clt'].columns:
+                                dados['dados_clt'][col] = pd.to_datetime(dados['dados_clt'][col], errors='coerce').dt.strftime('%d/%m/%Y')
+                    except Exception as e:
+                        # Se a tabela não existir, ignora silenciosamente ou loga
+                        pass
+        except Exception as e: 
+            st.error(f"Erro ao carregar dados: {e}")
         finally: conn.close()
     return dados
 
@@ -587,7 +614,7 @@ def get_table_columns(table_name):
         except: pass
     return cols
 
-# --- DIALOG: VISUALIZAR CLIENTE ---
+# --- DIALOG: VISUALIZAR CLIENTE (ATUALIZADO) ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
     # Aplica formatação visual ao CPF exibido no título
@@ -600,56 +627,92 @@ def dialog_visualizar_cliente(cpf_cliente):
         st.error("Cliente não encontrado.")
         return
 
-    with st.expander("👤 Dados Cadastrais", expanded=True):
+    # --- CABEÇALHO ---
+    st.markdown(f"### 👤 {g['nome']}")
+    st.markdown(f"**CPF:** {cpf_vis}")
+    st.divider()
+
+    # --- ABAS DE ORGANIZAÇÃO ---
+    t1, t2, t3 = st.tabs(["📋 Cadastro", "💼 Profissional & CLT", "📞 Contatos"])
+
+    with t1:
         c1, c2 = st.columns(2)
-        c1.write(f"**Nome:** {g['nome']}")
-        # Exibe CPF formatado
-        c2.write(f"**CPF:** {cpf_vis}")
-        
-        # Mostra a origem da importação se disponível
-        if g.get('importacao_id'):
-            c2.caption(f"Origem (Importação): ID {g['importacao_id']}")
-            
-        c3, c4 = st.columns(2)
         dt_nasc = pd.to_datetime(g['data_nascimento']).strftime('%d/%m/%Y') if g['data_nascimento'] else "-"
-        c3.write(f"**Nascimento:** {dt_nasc}")
-        c4.write(f"**RG:** {g['rg']}")
-    
-    with st.expander("📞 Telefones"):
-        df_tel = dados.get('telefones')
-        if not df_tel.empty:
-            for _, row in df_tel.iterrows():
-                st.write(f"📱 {row['numero']} (WhatsApp: {row['tag_whats']})")
-        else: st.info("Sem telefones cadastrados.")
+        c1.write(f"**Nascimento:** {dt_nasc}")
+        c1.write(f"**RG:** {g['rg']}")
+        c1.write(f"**Mãe:** {g['nome_mae']}")
+        
+        c2.write(f"**PIS:** {g['pis']}")
+        c2.write(f"**CNH:** {g['cnh']}")
+        if g.get('importacao_id'):
+            c2.caption(f"Origem ID: {g['importacao_id']}")
 
-    with st.expander("📧 E-mails"):
-        df_email = dados.get('emails')
-        if not df_email.empty:
-            for _, row in df_email.iterrows():
-                st.write(f"✉️ {row['email']}")
-        else: st.info("Sem e-mails cadastrados.")
-
-    with st.expander("🏠 Endereços"):
+        st.markdown("##### 🏠 Endereços")
         df_end = dados.get('enderecos')
         if not df_end.empty:
             for _, row in df_end.iterrows():
-                st.write(f"📍 {row['rua']}, {row['bairro']} - {row['cidade']}/{row['uf']} (CEP: {row['cep']})")
-        else: st.info("Sem endereços cadastrados.")
+                st.info(f"📍 {row['rua']}, {row['bairro']} - {row['cidade']}/{row['uf']} (CEP: {row['cep']})")
+        else: st.caption("Sem endereços.")
 
-    with st.expander("💼 Emprego, Renda e Contratos"):
+    with t2:
         df_emp = dados.get('empregos')
         df_contr = dados.get('contratos')
+        df_clt = dados.get('dados_clt') # Tabela nova
+        
         if not df_emp.empty:
             for _, row in df_emp.iterrows():
-                st.markdown(f"**Convênio:** {row['convenio']} | **Matrícula:** {row['matricula']}")
-                if row['dados_extras']: st.caption(f"Extras: {row['dados_extras']}")
-                contratos_vinculados = df_contr[df_contr['matricula_ref'] == row['matricula']]
-                if not contratos_vinculados.empty:
-                    st.write("📄 *Contratos:*")
-                    for _, c in contratos_vinculados.iterrows():
-                        st.write(f"- {c['contrato']}")
-                st.divider()
-        else: st.info("Sem dados profissionais.")
+                matr = row['matricula']
+                
+                # Container Visual da Matrícula
+                with st.expander(f"🏢 {row['convenio']} | Matr: {matr}", expanded=True):
+                    st.caption(f"Dados Extras: {row['dados_extras']}")
+                    
+                    # 1. SEÇÃO CLT / DADOS DA EMPRESA (Se houver vínculo)
+                    if not df_clt.empty:
+                        clt_vinc = df_clt[df_clt['matricula_ref'] == matr]
+                        if not clt_vinc.empty:
+                            dados_c = clt_vinc.iloc[0]
+                            st.markdown("---")
+                            st.markdown("#### 🏭 Dados da Empresa (CAGED/CLT)")
+                            
+                            col_clt1, col_clt2 = st.columns(2)
+                            with col_clt1:
+                                st.markdown(f"**Empresa:** {dados_c.get('cnpj_nome', '')}")
+                                st.markdown(f"**CNPJ:** {dados_c.get('cnpj_numero', '')}")
+                                st.markdown(f"**CNAE:** {dados_c.get('cnae_nome', '')}")
+                                st.markdown(f"**Abertura:** {dados_c.get('data_abertura_empresa', '-')}")
+                            
+                            with col_clt2:
+                                st.markdown(f"**Cargo (CBO):** {dados_c.get('cbo_nome', '')} ({dados_c.get('cbo_codigo', '')})")
+                                st.markdown(f"**Admissão:** {dados_c.get('data_admissao', '-')}")
+                                st.markdown(f"**Funcionários:** {dados_c.get('qtd_funcionarios', 0)}")
+                                st.markdown(f"**Convênio:** {dados_c.get('nome_convenio', '')}")
+
+                    # 2. SEÇÃO CONTRATOS DE EMPRÉSTIMO
+                    contratos_vinculados = df_contr[df_contr['matricula_ref'] == matr]
+                    if not contratos_vinculados.empty:
+                        st.markdown("---")
+                        st.markdown("#### 📄 Contratos Ativos")
+                        st.table(contratos_vinculados[['contrato', 'dados_extras']])
+                    else:
+                        st.caption("Sem contratos de empréstimo vinculados.")
+        else:
+            st.info("Nenhum vínculo profissional encontrado.")
+
+    with t3:
+        st.markdown("##### 📱 Telefones")
+        df_tel = dados.get('telefones')
+        if not df_tel.empty:
+            for _, row in df_tel.iterrows():
+                icone = "✅" if row['tag_whats'] == 'Sim' else "📱"
+                st.write(f"{icone} **{row['numero']}** ({row['tag_qualificacao']})")
+        else: st.caption("Sem telefones.")
+
+        st.markdown("##### ✉️ E-mails")
+        df_email = dados.get('emails')
+        if not df_email.empty:
+            for _, row in df_email.iterrows():
+                st.write(f"📧 {row['email']}")
 
 # --- INTERFACE ---
 @st.dialog("⚠️ Excluir Cadastro")
@@ -1336,7 +1399,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 7 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 8 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
