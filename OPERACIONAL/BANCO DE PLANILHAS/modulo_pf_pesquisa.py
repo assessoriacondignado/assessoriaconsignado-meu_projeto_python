@@ -140,7 +140,54 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
         except Exception as e: st.error(f"Erro SQL: {e}"); return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- INTERFACE DE PESQUISA ---
+# --- INTERFACES VISUAIS ---
+
+def interface_pesquisa_rapida():
+    """
+    Interface para pesquisa rápida (Tela Inicial) com colunas fixas e botões.
+    """
+    c1, c2 = st.columns([2, 2])
+    busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
+    
+    col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
+    if col_b1.button("➕ Novo"): st.session_state.update({'pf_view': 'novo', 'form_loaded': False}); st.rerun()
+    if col_b2.button("🔍 Pesquisa Ampla"): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
+    if col_b3.button("📥 Importar"): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
+    
+    if busca:
+        df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
+        
+        if not df_lista.empty:
+            # Cabeçalho da Tabela (Colunas Fixas)
+            # Proporção: Cód (1) | CPF (2.5) | Nome (4) | Ações (2.5) -> Total 10
+            st.markdown("""
+            <div style="background-color: #e6e9ef; padding: 10px; border-radius: 5px; font-weight: bold; border-bottom: 2px solid #ccc; display: flex;">
+                <div style="width: 10%;">Cód.</div>
+                <div style="width: 25%;">CPF</div>
+                <div style="width: 40%;">Nome</div>
+                <div style="width: 25%; text-align: center;">Ações</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            for _, row in df_lista.iterrows():
+                # Grid de Resultados
+                c_id, c_cpf, c_nome, c_act = st.columns([1, 2.5, 4, 2.5])
+                
+                c_id.write(str(row['id']))
+                c_cpf.write(pf_core.formatar_cpf_visual(row['cpf']))
+                c_nome.write(row['nome'])
+                
+                # Botão Visualizar
+                if c_act.button("👁️ Visualizar Cadastro", key=f"v_list_{row['id']}", use_container_width=True):
+                    pf_core.dialog_visualizar_cliente(str(row['cpf']))
+                
+                st.markdown("<div style='border-bottom: 1px solid #f0f0f0; margin-bottom: 4px;'></div>", unsafe_allow_html=True)
+            
+        else: 
+            st.warning("Nenhum registro encontrado.")
+    else:
+        st.info("Utilize a busca para listar clientes.")
+
 def interface_pesquisa_ampla():
     c_nav_esq, c_nav_dir = st.columns([1, 6])
     if c_nav_esq.button("⬅️ Voltar"):
