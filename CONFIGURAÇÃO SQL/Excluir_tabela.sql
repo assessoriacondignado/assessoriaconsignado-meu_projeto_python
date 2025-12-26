@@ -1,2 +1,2 @@
 -- Estrutura:
-DROP TABLE IF EXISTS nome_da_tabela;
+DROP TABLE IF EXISTS admin.pf_contatos_clt;
