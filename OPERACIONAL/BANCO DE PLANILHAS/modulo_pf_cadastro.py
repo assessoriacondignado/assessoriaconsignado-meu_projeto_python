@@ -25,13 +25,82 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
-            # Garante tabelas básicas (simplificado para manter foco no cadastro)
-            cur.execute("CREATE TABLE IF NOT EXISTS pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
+            
+            # Tabela de Histórico de Importações
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
+                    id SERIAL PRIMARY KEY,
+                    nome_arquivo VARCHAR(255),
+                    data_importacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    qtd_novos INTEGER DEFAULT 0,
+                    qtd_atualizados INTEGER DEFAULT 0,
+                    qtd_erros INTEGER DEFAULT 0,
+                    caminho_arquivo_original TEXT,
+                    caminho_arquivo_erro TEXT,
+                    usuario_responsavel VARCHAR(100)
+                );
+            """)
+            
+            # Colunas de importação nas tabelas
+            tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos']
+            for tb in tabelas:
+                try: cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
+                except: pass
+            try: cur.execute("ALTER TABLE admin.pf_contratos_clt ADD COLUMN IF NOT EXISTS importacao_id INTEGER;")
+            except: pass
+
+            # Tabela de Referências
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pf_referencias (
+                    id SERIAL PRIMARY KEY,
+                    tipo VARCHAR(50),
+                    nome VARCHAR(100),
+                    UNIQUE(tipo, nome)
+                );
+            """)
+
+            # Tabela de Operadores
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pf_operadores_de_filtro (
+                    id SERIAL PRIMARY KEY,
+                    tipo VARCHAR(20),
+                    nome VARCHAR(50),
+                    simbolo VARCHAR(10),
+                    descricao VARCHAR(100),
+                    UNIQUE(tipo, simbolo)
+                );
+            """)
+            
+            # Popula Operadores se vazio
+            cur.execute("SELECT COUNT(*) FROM pf_operadores_de_filtro")
+            if cur.fetchone()[0] == 0:
+                ops = [
+                    ('texto', 'Começa com', '=>', 'Busca registros que iniciam com o valor'),
+                    ('texto', 'Contém', '<=>', 'Busca o valor em qualquer parte do texto'),
+                    ('texto', 'Igual', '=', 'Exatamente igual'),
+                    ('texto', 'Seleção', 'o', 'Pesquisa múltipla (separe por vírgula)'),
+                    ('texto', 'Diferente', '≠', 'Diferente de'),
+                    ('texto', 'Não Contém', '<≠>', 'Exclui resultados que tenham essa palavra'),
+                    ('texto', 'Vazio', '∅', 'Campo não preenchido'),
+                    ('numero', 'Igual', '=', 'Valor exato'),
+                    ('numero', 'Maior', '>', 'Maior que'),
+                    ('numero', 'Menor', '<', 'Menor que'),
+                    ('numero', 'Maior Igual', '≥', 'Maior ou igual a'),
+                    ('numero', 'Menor Igual', '≤', 'Menor ou igual a'),
+                    ('numero', 'Diferente', '≠', 'Diferente do valor'),
+                    ('numero', 'Vazio', '∅', 'Sem valor numérico'),
+                    ('data', 'Igual', '=', 'Data exata'),
+                    ('data', 'A Partir', '≥', 'Desta data em diante'),
+                    ('data', 'Até', '≤', 'Até esta data'),
+                    ('data', 'Vazio', '∅', 'Sem data')
+                ]
+                cur.executemany("INSERT INTO pf_operadores_de_filtro (tipo, nome, simbolo, descricao) VALUES (%s, %s, %s, %s)", ops)
+
             conn.commit()
             conn.close()
         except: pass
 
-# --- HELPERS DE FORMATAÇÃO E VALIDAÇÃO ---
+# --- HELPERS ---
 def formatar_cpf_visual(cpf_db):
     if not cpf_db: return ""
     cpf_limpo = str(cpf_db).strip()
@@ -89,7 +158,7 @@ def buscar_referencias(tipo):
         except: conn.close()
     return []
 
-# --- CRUD (MANTIDO INTACTO) ---
+# --- CRUD ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -103,7 +172,7 @@ def carregar_dados_completos(cpf):
             dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql("SELECT email FROM pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
-            dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
+            dados['empregos'] = pd.read_sql("SELECT id, convenio, matricula, dados_extras FROM pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['contratos'] = [] 
             dados['dados_clt'] = []
 
@@ -255,15 +324,20 @@ CONFIG_CADASTRO = {
     ]
 }
 
+# --- FUNÇÃO HELPER PARA INSERIR NA STAGING AREA ---
 def inserir_dado_staging(campo_config, valor, extras=None):
     tabela = campo_config['tabela']
     chave = campo_config['key']
     
     if tabela not in st.session_state['dados_staging']:
-        if campo_config.get('multiplo'): st.session_state['dados_staging'][tabela] = []
-        else: st.session_state['dados_staging'][tabela] = {}
+        if campo_config.get('multiplo'):
+            st.session_state['dados_staging'][tabela] = []
+        else:
+            st.session_state['dados_staging'][tabela] = {}
 
-    erro = None; valor_final = valor
+    # Validações
+    erro = None
+    valor_final = valor
     if campo_config['tipo'] == 'cpf':
         val, erro = validar_formatar_cpf(valor)
         if not erro: valor_final = limpar_normalizar_cpf(val)
@@ -276,19 +350,32 @@ def inserir_dado_staging(campo_config, valor, extras=None):
         val, erro = validar_formatar_cep(valor)
         if not erro: valor_final = val
     
-    if erro: st.toast(f"❌ {erro}"); return
-    if not valor_final and campo_config.get('obrigatorio'): st.toast(f"❌ {campo_config['label']} é obrigatório."); return
+    if erro:
+        st.toast(f"❌ {erro}")
+        return
 
+    if not valor_final and campo_config.get('obrigatorio'):
+        st.toast(f"❌ O campo {campo_config['label']} é obrigatório.")
+        return
+
+    # Inserção
     if campo_config.get('multiplo'):
+        # Cria um objeto para a linha (ex: Telefone + Whats + Qualif)
         novo_item = {chave: valor_final}
-        if extras: novo_item.update(extras)
-        if isinstance(valor, dict): st.session_state['dados_staging'][tabela].append(valor)
-        else: st.session_state['dados_staging'][tabela].append(novo_item)
+        if extras:
+            novo_item.update(extras)
+        # Se for agrupado (ex: Endereço completo), a lógica de interface deve enviar o dict completo
+        if isinstance(valor, dict): # Caso especial para grupos
+            st.session_state['dados_staging'][tabela].append(valor)
+        else:
+            st.session_state['dados_staging'][tabela].append(novo_item)
         st.toast(f"✅ {campo_config['label']} adicionado!")
     else:
+        # Dados únicos (atualiza chave)
         st.session_state['dados_staging'][tabela][chave] = valor_final
         st.toast(f"✅ {campo_config['label']} atualizado!")
 
+# --- INTERFACE DE CADASTRO (NOVO LAYOUT) ---
 def interface_cadastro_pf():
     is_edit = st.session_state['pf_view'] == 'editar'
     cpf_titulo = formatar_cpf_visual(st.session_state.get('pf_cpf_selecionado')) if is_edit else ""
@@ -297,12 +384,14 @@ def interface_cadastro_pf():
     st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'form_loaded': False}))
     st.markdown(f"### {titulo}")
 
+    # Inicializa Staging Area
     if 'dados_staging' not in st.session_state:
         st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': []}
 
+    # Carrega dados se for edição e primeira vez
     if is_edit and not st.session_state.get('form_loaded'):
         dados_db = carregar_dados_completos(st.session_state['pf_cpf_selecionado'])
-        st.session_state['dados_staging'] = dados_db 
+        st.session_state['dados_staging'] = dados_db # Carrega estrutura do banco para staging
         st.session_state['form_loaded'] = True
     elif not is_edit and not st.session_state.get('form_loaded'):
         st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': []}
@@ -310,22 +399,31 @@ def interface_cadastro_pf():
 
     c_builder, c_preview = st.columns([1.5, 3.5])
 
+    # --- LADO ESQUERDO: CONSTRUTOR ---
     with c_builder:
         st.markdown("#### 🏗️ Inserir Dados")
+        
+        # 1. DADOS PESSOAIS
         with st.expander("Dados Pessoais", expanded=True):
             for campo in CONFIG_CADASTRO["Dados Pessoais"]:
-                if is_edit and campo['key'] == 'cpf':
+                val_atual = ""
+                if is_edit and campo['tabela'] == 'geral' and campo['key'] == 'cpf':
                     st.text_input(campo['label'], value=st.session_state['dados_staging']['geral'].get('cpf', ''), disabled=True)
                     continue
+
                 if campo['tipo'] == 'data':
                     # AJUSTADO DATA 1900-2050
                     val = st.date_input(campo['label'], value=None, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}")
-                    if st.button("Inserir", key=f"btn_{campo['key']}"): inserir_dado_staging(campo, val)
+                    if st.button("Inserir", key=f"btn_{campo['key']}"):
+                        inserir_dado_staging(campo, val)
                 else:
                     val = st.text_input(campo['label'], key=f"in_{campo['key']}")
-                    if st.button("Inserir", key=f"btn_{campo['key']}"): inserir_dado_staging(campo, val)
+                    if st.button("Inserir", key=f"btn_{campo['key']}"):
+                        inserir_dado_staging(campo, val)
         
+        # 2. CONTATOS
         with st.expander("Contatos"):
+            # Telefone (Composto)
             st.caption("Telefone")
             tel = st.text_input("Número", key="in_tel_num")
             c_w, c_q = st.columns(2)
@@ -334,44 +432,61 @@ def interface_cadastro_pf():
             if st.button("Inserir Telefone"):
                 cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
                 inserir_dado_staging(cfg, tel, {'tag_whats': whats, 'tag_qualificacao': qualif})
+            
             st.divider()
+            # Email
             mail = st.text_input("E-mail", key="in_mail")
             if st.button("Inserir E-mail"):
                 cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
                 inserir_dado_staging(cfg, mail)
 
+        # 3. ENDEREÇO (Grupo)
         with st.expander("Endereço"):
             cep = st.text_input("CEP", key="in_end_cep")
             rua = st.text_input("Logradouro", key="in_end_rua")
             bairro = st.text_input("Bairro", key="in_end_bairro")
             c_cid, c_uf = st.columns([3, 1])
-            cidade = c_cid.text_input("Cidade", key="in_end_cid"); uf = c_uf.text_input("UF", key="in_end_uf")
+            cidade = c_cid.text_input("Cidade", key="in_end_cid")
+            uf = c_uf.text_input("UF", key="in_end_uf")
+            
             if st.button("Inserir Endereço"):
+                # Monta objeto completo
                 obj_end = {'cep': cep, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf}
+                # Usa configuração do CEP como referência de tabela
                 cfg = [c for c in CONFIG_CADASTRO["Endereços"] if c['key'] == 'cep'][0]
-                inserir_dado_staging(cfg, obj_end)
+                inserir_dado_staging(cfg, obj_end) # Passa dict direto
 
+        # 4. PROFISSIONAL
         with st.expander("Profissional"):
             conv = st.text_input("Convênio", key="in_emp_conv")
             matr = st.text_input("Matrícula", key="in_emp_matr")
             extra = st.text_input("Dados Extras", key="in_emp_extra")
+            
             if st.button("Inserir Vínculo"):
                 obj_emp = {'convenio': conv, 'matricula': matr, 'dados_extras': extra}
                 cfg = [c for c in CONFIG_CADASTRO["Profissional"] if c['key'] == 'convenio'][0]
                 inserir_dado_staging(cfg, obj_emp)
+
             st.divider()
+            st.caption("Adicionar Contrato (Requer Matrícula)")
+            # Lista matrículas já adicionadas no staging
             matrs_disponiveis = [e['matricula'] for e in st.session_state['dados_staging']['empregos'] if 'matricula' in e]
             if matrs_disponiveis:
                 m_ref = st.selectbox("Vincular à Matrícula", matrs_disponiveis, key="in_ctr_ref")
                 ctr_num = st.text_input("Nº Contrato", key="in_ctr_num")
                 ctr_det = st.text_input("Detalhes", key="in_ctr_det")
                 if st.button("Inserir Contrato"):
+                    # Adiciona direto na lista de contratos do staging
                     st.session_state['dados_staging']['contratos'].append({'matricula_ref': m_ref, 'contrato': ctr_num, 'dados_extras': ctr_det})
                     st.toast("✅ Contrato adicionado!")
-            else: st.info("Insira um vínculo profissional primeiro.")
+            else:
+                st.info("Insira um vínculo profissional primeiro.")
 
+    # --- LADO DIREITO: PREVIEW ---
     with c_preview:
         st.markdown("### 📋 Resumo do Cadastro (Regras Ativas)")
+        
+        # Bloco Geral
         st.info("👤 Dados Pessoais")
         geral = st.session_state['dados_staging']['geral']
         if geral:
@@ -381,53 +496,81 @@ def interface_cadastro_pf():
                 cols[i%3].text_input(k.upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
         else: st.caption("Nenhum dado pessoal inserido.")
 
+        # Bloco Contatos
         st.warning("📞 Contatos")
-        tels = st.session_state['dados_staging']['telefones']; mails = st.session_state['dados_staging']['emails']
+        tels = st.session_state['dados_staging']['telefones']
+        mails = st.session_state['dados_staging']['emails']
+        
         if tels:
             for i, t in enumerate(tels):
                 c1, c2, c3 = st.columns([4, 2, 1])
                 c1.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
-                if c3.button("🗑️", key=f"rm_tel_{i}"): st.session_state['dados_staging']['telefones'].pop(i); st.rerun()
+                if c3.button("🗑️", key=f"rm_tel_{i}"): 
+                    st.session_state['dados_staging']['telefones'].pop(i); st.rerun()
+        
         if mails:
             for i, m in enumerate(mails):
                 c1, c2 = st.columns([6, 1])
                 c1.write(f"📧 {m.get('email')}")
-                if c2.button("🗑️", key=f"rm_mail_{i}"): st.session_state['dados_staging']['emails'].pop(i); st.rerun()
+                if c2.button("🗑️", key=f"rm_mail_{i}"):
+                    st.session_state['dados_staging']['emails'].pop(i); st.rerun()
 
+        # Bloco Endereços
         st.success("🏠 Endereços")
         ends = st.session_state['dados_staging']['enderecos']
         if ends:
             for i, e in enumerate(ends):
                 c1, c2 = st.columns([6, 1])
                 c1.write(f"📍 {e.get('rua')}, {e.get('bairro')} - {e.get('cidade')}/{e.get('uf')} ({e.get('cep')})")
-                if c2.button("🗑️", key=f"rm_end_{i}"): st.session_state['dados_staging']['enderecos'].pop(i); st.rerun()
+                if c2.button("🗑️", key=f"rm_end_{i}"):
+                    st.session_state['dados_staging']['enderecos'].pop(i); st.rerun()
 
+        # Bloco Profissional
         st.error("💼 Profissional & Contratos")
-        emps = st.session_state['dados_staging']['empregos']; ctrs = st.session_state['dados_staging']['contratos']
+        emps = st.session_state['dados_staging']['empregos']
+        ctrs = st.session_state['dados_staging']['contratos']
+        
         if emps:
             for i, emp in enumerate(emps):
                 with st.container(border=True):
                     c1, c2 = st.columns([6, 1])
                     c1.markdown(f"**{emp.get('convenio')}** | Matr: {emp.get('matricula')}")
-                    if c2.button("🗑️", key=f"rm_emp_{i}"): st.session_state['dados_staging']['empregos'].pop(i); st.rerun()
+                    if c2.button("🗑️", key=f"rm_emp_{i}"):
+                        st.session_state['dados_staging']['empregos'].pop(i); st.rerun()
+                    
+                    # Contratos vinculados
                     ctrs_vinc = [c for c in ctrs if c.get('matricula_ref') == emp.get('matricula')]
                     if ctrs_vinc:
-                        for c in ctrs_vinc: st.caption(f"📄 Contrato: {c.get('contrato')} - {c.get('dados_extras')}")
+                        for c in ctrs_vinc:
+                            st.caption(f"📄 Contrato: {c.get('contrato')} - {c.get('dados_extras')}")
 
         st.divider()
+        
+        # Botão Salvar Final
         if st.button("💾 CONFIRMAR E SALVAR", type="primary", use_container_width=True):
             staging = st.session_state['dados_staging']
+            
+            # Validação Final Básica
             if not staging['geral'].get('nome') or not staging['geral'].get('cpf'):
                 st.error("É necessário informar pelo menos Nome e CPF nos Dados Pessoais.")
             else:
+                # Converte para DataFrames para usar a função salvar_pf original
                 df_tel = pd.DataFrame(staging['telefones'])
                 df_email = pd.DataFrame(staging['emails'])
                 df_end = pd.DataFrame(staging['enderecos'])
                 df_emp = pd.DataFrame(staging['empregos'])
                 df_contr = pd.DataFrame(staging['contratos'])
+                
                 modo_salvar = "editar" if is_edit else "novo"
                 cpf_orig = limpar_normalizar_cpf(st.session_state.get('pf_cpf_selecionado')) if is_edit else None
+                
                 sucesso, msg = salvar_pf(staging['geral'], df_tel, df_email, df_end, df_emp, df_contr, modo_salvar, cpf_orig)
+                
                 if sucesso:
-                    st.success(msg); time.sleep(1.5); st.session_state['pf_view'] = 'lista'; st.session_state['form_loaded'] = False; st.rerun()
-                else: st.error(msg)
+                    st.success(msg)
+                    time.sleep(1.5)
+                    st.session_state['pf_view'] = 'lista'
+                    st.session_state['form_loaded'] = False
+                    st.rerun()
+                else:
+                    st.error(msg)
