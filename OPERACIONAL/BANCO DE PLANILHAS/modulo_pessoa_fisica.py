@@ -33,6 +33,7 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
+            # Tabela de Histórico
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
                     id SERIAL PRIMARY KEY,
@@ -47,10 +48,12 @@ def init_db_structures():
                 );
             """)
             
+            # Adiciona coluna de rastreio em TODAS as tabelas
             tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos']
             for tb in tabelas:
                 cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
             
+            # Tabela de Referências (Convênios)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_referencias (
                     id SERIAL PRIMARY KEY,
@@ -84,32 +87,7 @@ def buscar_referencias(tipo):
         except: conn.close()
     return []
 
-# --- FUNÇÕES DE GESTÃO DE DADOS (CONFIGURAÇÃO) ---
-def inserir_registro_dinamico(table_name, dados_dict):
-    """Insere dados em qualquer tabela de forma dinâmica"""
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cols = list(dados_dict.keys())
-            vals = list(dados_dict.values())
-            
-            # Monta query dinâmica
-            placeholders = ", ".join(["%s"] * len(vals))
-            columns_str = ", ".join(cols)
-            
-            sql = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})"
-            cur.execute(sql, vals)
-            conn.commit()
-            conn.close()
-            return True, "Registro inserido com sucesso!"
-        except Exception as e:
-            conn.close()
-            return False, f"Erro ao inserir: {str(e)}"
-    return False, "Erro de conexão."
-
 def limpar_apenas_numeros(valor):
-    """Remove tudo que não é dígito"""
     if not valor: return ""
     return re.sub(r'\D', '', str(valor))
 
@@ -166,110 +144,12 @@ def verificar_cpf_existente(cpf_normalizado):
 def converter_data_br_iso(valor):
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip()
-    valor_str = valor_str.split(' ')[0] # Remove horas
+    valor_str = valor_str.split(' ')[0]
     formatos = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
     for fmt in formatos:
         try: return datetime.strptime(valor_str, fmt).strftime("%Y-%m-%d")
         except ValueError: continue
     return None
-
-# --- FUNÇÕES DE GERENCIAMENTO DE COLUNAS (CONFIGURAÇÃO) ---
-def get_table_schema(table_name):
-    conn = get_conn()
-    if conn:
-        try:
-            query = """
-                SELECT column_name, data_type 
-                FROM information_schema.columns 
-                WHERE table_name = %s 
-                ORDER BY ordinal_position;
-            """
-            df = pd.read_sql(query, conn, params=(table_name,))
-            conn.close()
-            return df
-        except:
-            conn.close()
-    return pd.DataFrame()
-
-def add_table_column(table_name, col_name, col_type):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            clean_col = re.sub(r'[^a-zA-Z0-9_]', '', col_name).lower()
-            if not clean_col: return False, "Nome de coluna inválido."
-            
-            type_map = {
-                "Texto Curto": "VARCHAR(255)",
-                "Texto Longo": "TEXT",
-                "Número Inteiro": "INTEGER",
-                "Número Decimal": "NUMERIC(15,2)",
-                "Data": "DATE",
-                "Data e Hora": "TIMESTAMP",
-                "Sim/Não (Booleano)": "BOOLEAN"
-            }
-            sql_type = type_map.get(col_type, "VARCHAR(255)")
-            
-            query = f'ALTER TABLE "{table_name}" ADD COLUMN "{clean_col}" {sql_type}'
-            cur.execute(query)
-            conn.commit()
-            conn.close()
-            return True, "Coluna criada com sucesso!"
-        except Exception as e:
-            conn.close()
-            return False, str(e)
-    return False, "Erro conexão"
-
-def rename_table_column(table_name, old_name, new_name):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            clean_new = re.sub(r'[^a-zA-Z0-9_]', '', new_name).lower()
-            if not clean_new: return False, "Nome novo inválido."
-            
-            query = f'ALTER TABLE "{table_name}" RENAME COLUMN "{old_name}" TO "{clean_new}"'
-            cur.execute(query)
-            conn.commit()
-            conn.close()
-            return True, "Coluna renomeada!"
-        except Exception as e:
-            conn.close()
-            return False, str(e)
-    return False, "Erro conexão"
-
-def drop_table_column(table_name, col_name):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            query = f'ALTER TABLE "{table_name}" DROP COLUMN "{col_name}"'
-            cur.execute(query)
-            conn.commit()
-            conn.close()
-            return True, "Coluna excluída!"
-        except Exception as e:
-            conn.close()
-            return False, str(e)
-    return False, "Erro conexão"
-
-@st.dialog("⚠️ Confirmar Exclusão de Coluna")
-def dialog_drop_column(table, col):
-    st.warning(f"Tem certeza que deseja excluir a coluna **{col}** da tabela **{table}**?")
-    st.error("Esta ação apagará todos os dados desta coluna permanentemente.")
-    
-    col1, col2 = st.columns(2)
-    if col1.button("Sim, Excluir", type="primary"):
-        success, msg = drop_table_column(table, col)
-        if success:
-            st.success(msg)
-            time.sleep(1)
-            st.rerun()
-        else:
-            st.error(msg)
-    
-    if col2.button("Cancelar"):
-        st.rerun()
 
 # --- IMPORTAÇÃO RÁPIDA (BULK OTIMIZADO) ---
 def processar_importacao_lote(conn, df, table_name, mapping, import_id):
@@ -821,154 +701,9 @@ def app_pessoa_fisica():
     if 'form_loaded' not in st.session_state: st.session_state['form_loaded'] = False
 
     # ==========================
-    # 7. MODO CONFIGURAÇÃO
-    # ==========================
-    if st.session_state['pf_view'] == 'configuracao':
-        st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
-        st.markdown("### ⚙️ Configuração de Estrutura")
-        
-        tab_add, tab_mgr, tab_data = st.tabs(["➕ Criar Coluna", "✏️ Gerenciar Colunas", "📋 Dados"])
-        
-        # Opções de Tabela
-        tabelas_disp = {
-            'Dados Pessoais': 'pf_dados',
-            'Telefones': 'pf_telefones',
-            'Emails': 'pf_emails',
-            'Endereços': 'pf_enderecos',
-            'Emprego/Renda': 'pf_emprego_renda',
-            'Contratos': 'pf_contratos',
-            'Referências': 'pf_referencias'
-        }
-        
-        with tab_add:
-            st.info("Adicione novas colunas para armazenar dados específicos na sua planilha.")
-            c1, c2, c3 = st.columns(3)
-            sel_tb_add = c1.selectbox("Selecione a Tabela", list(tabelas_disp.keys()), key="tb_add")
-            nome_col = c2.text_input("Nome da Nova Coluna (Sem espaços especiais)")
-            tipo_col = c3.selectbox("Tipo de Dado", ["Texto Curto", "Texto Longo", "Número Inteiro", "Número Decimal", "Data", "Sim/Não (Booleano)"])
-            
-            if st.button("Criar Coluna", type="primary"):
-                if nome_col:
-                    ok, msg = add_table_column(tabelas_disp[sel_tb_add], nome_col, tipo_col)
-                    if ok: st.success(msg)
-                    else: st.error(f"Erro: {msg}")
-                else:
-                    st.warning("Preencha o nome da coluna.")
-
-        with tab_mgr:
-            st.info("Renomeie ou exclua colunas existentes.")
-            c_sel_tb = st.selectbox("Tabela para Gerenciar", list(tabelas_disp.keys()), key="tb_mgr")
-            tb_real = tabelas_disp[c_sel_tb]
-            
-            df_cols = get_table_schema(tb_real)
-            
-            if not df_cols.empty:
-                # Ignorar colunas de sistema para segurança
-                cols_sistema = ['id', 'cpf', 'cpf_ref', 'matricula', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
-                df_view = df_cols[~df_cols['column_name'].isin(cols_sistema)]
-                
-                for _, row in df_view.iterrows():
-                    c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
-                    c1.text(row['column_name'])
-                    c2.caption(row['data_type'])
-                    
-                    new_name = c3.text_input("Novo Nome", key=f"ren_{row['column_name']}", placeholder="Renomear...")
-                    if c3.button("💾", key=f"btn_ren_{row['column_name']}"):
-                        if new_name:
-                            ok, msg = rename_table_column(tb_real, row['column_name'], new_name)
-                            if ok: st.success("Renomeado!"); time.sleep(1); st.rerun()
-                            else: st.error(msg)
-                            
-                    if c4.button("🗑️", key=f"del_{row['column_name']}"):
-                        dialog_drop_column(tb_real, row['column_name'])
-                    
-                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-            else:
-                st.warning("Não foi possível ler as colunas.")
-
-        # --- ABA DADOS GENÉRICOS (NOVO) ---
-        with tab_data:
-            st.markdown("#### Inserção Manual de Dados")
-            st.info("Preencha os dados abaixo para inserir registros manualmente na tabela selecionada.")
-            
-            sel_tb_data = st.selectbox("Selecione a Tabela para Inserção", list(tabelas_disp.keys()), key="tb_data")
-            tb_data_real = tabelas_disp[sel_tb_data]
-            
-            df_schema = get_table_schema(tb_data_real)
-            
-            if not df_schema.empty:
-                # Ignora colunas auto-gerenciadas
-                cols_ignore = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
-                df_fields = df_schema[~df_schema['column_name'].isin(cols_ignore)]
-                
-                with st.form("form_insert_dynamic"):
-                    inputs = {}
-                    for _, col in df_fields.iterrows():
-                        c_name = col['column_name']
-                        c_type = col['data_type']
-                        label = c_name.replace("_", " ").title()
-                        
-                        # Decide o tipo de input
-                        if 'date' in c_type or 'timestamp' in c_type:
-                            inputs[c_name] = st.date_input(label, value=None, format="DD/MM/YYYY")
-                        elif 'boolean' in c_type:
-                            inputs[c_name] = st.checkbox(label)
-                        elif 'integer' in c_type:
-                            inputs[c_name] = st.number_input(label, step=1)
-                        else:
-                            # Inputs de Texto
-                            max_chars = 255 if 'character varying' in c_type else None
-                            inputs[c_name] = st.text_input(label, max_chars=max_chars)
-                    
-                    if st.form_submit_button("💾 Salvar Registro"):
-                        # Processamento e Validação
-                        dados_finais = {}
-                        erro_validacao = None
-                        
-                        for k, v in inputs.items():
-                            val = v
-                            # Validações baseadas no nome da coluna
-                            if isinstance(val, str):
-                                val = val.upper().strip() # Padrão do sistema
-                                
-                                if 'cpf' in k:
-                                    v_cpf, err = validar_formatar_cpf(val)
-                                    if err: erro_validacao = f"{k}: {err}"
-                                    else: val = v_cpf
-                                
-                                elif 'telefone' in k or ('numero' in k and 'pf_telefones' in tb_data_real):
-                                    v_tel, err = validar_formatar_telefone(val)
-                                    if err: erro_validacao = f"{k}: {err}"
-                                    else: val = v_tel
-                                
-                                elif 'email' in k:
-                                    if val and not validar_email(val):
-                                        erro_validacao = f"{k}: E-mail inválido."
-                                    else: val = val.lower() # Email sempre minúsculo
-                                
-                                elif 'cep' in k:
-                                    v_cep = limpar_apenas_numeros(val)
-                                    if len(v_cep) == 8: val = f"{v_cep[:5]}-{v_cep[5:]}"
-                            
-                            # Tratamento de Datas (None se vazio)
-                            if val == "" or val is None:
-                                val = None
-                                
-                            dados_finais[k] = val
-                        
-                        if erro_validacao:
-                            st.error(erro_validacao)
-                        else:
-                            # Inserção
-                            ok, msg = inserir_registro_dinamico(tb_data_real, dados_finais)
-                            if ok: st.success(msg)
-                            else: st.error(msg)
-
-
-    # ==========================
     # 1. PESQUISA AMPLA
     # ==========================
-    elif st.session_state['pf_view'] == 'pesquisa_ampla':
+    if st.session_state['pf_view'] == 'pesquisa_ampla':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### 🔎 Pesquisa Ampla")
         with st.form("form_pesquisa_ampla", enter_to_submit=False):
@@ -1505,7 +1240,6 @@ def app_pessoa_fisica():
             st.rerun()
         if col_b2.button("🔍 Pesquisa Ampla", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
         if col_b3.button("📥 Importar", type="primary", use_container_width=True): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
-        if col_b4.button("⚙️ Configuração", type="secondary", use_container_width=True): st.session_state.update({'pf_view': 'configuracao'}); st.rerun()
 
         # Botão Exportar (Todas as páginas)
         if busca or filtro_imp:
@@ -1602,7 +1336,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 6 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 7 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()

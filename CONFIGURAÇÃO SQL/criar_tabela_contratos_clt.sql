@@ -5,8 +5,8 @@ SCHEMA: ADMIN
 
 1. NOME DA TABELA: admin.pf_contratos_clt
 2. RELACIONAMENTO: 
-   - A coluna 'matricula_ref' é vinculada à 'matricula' da tabela 'public.pf_emprego_renda'.
-   - Isso garante que os dados CLT só sejam inseridos se existir um emprego cadastrado.
+   - A coluna 'matricula_ref' é vinculada à 'matricula' da tabela 'admin.pf_emprego_renda'.
+   - Correção: A tabela de origem também está no schema 'admin'.
 
 =============================================================================
 */
@@ -14,7 +14,7 @@ SCHEMA: ADMIN
 CREATE TABLE IF NOT EXISTS admin.pf_contratos_clt (
     id SERIAL PRIMARY KEY,
     
-    -- VÍNCULO COM EMPREGO/RENDA (Tabela Pública)
+    -- VÍNCULO COM EMPREGO/RENDA (Tabela no schema ADMIN)
     matricula_ref VARCHAR(100) NOT NULL,
 
     -- DADOS DA EMPRESA
@@ -48,9 +48,9 @@ CREATE TABLE IF NOT EXISTS admin.pf_contratos_clt (
     data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    -- CRIAÇÃO DA CHAVE ESTRANGEIRA (VÍNCULO ENTRE SCHEMAS)
+    -- CRIAÇÃO DA CHAVE ESTRANGEIRA (VÍNCULO CORRIGIDO PARA ADMIN)
     CONSTRAINT fk_clt_matricula
         FOREIGN KEY (matricula_ref)
-        REFERENCES public.pf_emprego_renda (matricula)
+        REFERENCES admin.pf_emprego_renda (matricula)
         ON DELETE CASCADE
 );
