@@ -369,6 +369,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
             conditions = []
             params = []
 
+            # Filtros Pessoais
             if filtros.get('nome'):
                 conditions.append("d.nome ILIKE %s")
                 params.append(f"%{filtros['nome']}%")
@@ -383,6 +384,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
                 conditions.append("d.data_nascimento = %s")
                 params.append(filtros['nascimento'])
             
+            # Filtro por Importação
             if filtros.get('importacao_id'):
                 sub_queries = [
                     "d.importacao_id = %s",
@@ -394,6 +396,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
                 conditions.append(f"({' OR '.join(sub_queries)})")
                 params.extend([filtros['importacao_id']] * 5)
 
+            # Filtros Endereço
             if any(k in filtros for k in ['uf', 'cidade', 'bairro', 'rua']):
                 joins.append("JOIN pf_enderecos end ON d.cpf = end.cpf_ref")
                 if filtros.get('uf'):
@@ -409,6 +412,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
                     conditions.append("end.rua ILIKE %s")
                     params.append(f"%{filtros['rua']}%")
 
+            # Filtros Contato
             if filtros.get('ddd') or filtros.get('telefone'):
                 joins.append("JOIN pf_telefones tel ON d.cpf = tel.cpf_ref")
             if filtros.get('ddd'):
@@ -424,20 +428,89 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
                 conditions.append("em.email ILIKE %s")
                 params.append(f"%{filtros['email']}%")
 
+            # Filtros Profissionais (Geral)
             if any(k in filtros for k in ['convenio', 'matricula', 'contrato']):
+                joins.append("JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref")
+                
                 if filtros.get('contrato'):
-                    joins.append("JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref")
                     joins.append("JOIN pf_contratos ctr ON emp.matricula = ctr.matricula_ref")
                     conditions.append("ctr.contrato ILIKE %s")
                     params.append(f"%{filtros['contrato']}%")
-                else:
-                    joins.append("JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref")
+                
                 if filtros.get('convenio'):
                     conditions.append("emp.convenio = %s")
                     params.append(filtros['convenio'])
+                
                 if filtros.get('matricula'):
                     conditions.append("emp.matricula ILIKE %s")
                     params.append(f"%{filtros['matricula']}%")
+
+                # ===============================================
+                # LÓGICA FILTROS CLT (Tabela admin.pf_contratos_clt)
+                # ===============================================
+                campos_clt = [
+                    'clt_empresa', 'clt_cnpj', 'clt_cnae_nome', 'clt_cnae_cod',
+                    'clt_cbo_nome', 'clt_cbo_cod', 'clt_qtd_func', 'clt_dt_abertura',
+                    'clt_tempo_abertura', 'clt_dt_admissao', 'clt_tempo_admissao',
+                    'clt_dt_inicio', 'clt_tempo_inicio'
+                ]
+                
+                if any(k in filtros for k in campos_clt):
+                    joins.append("LEFT JOIN admin.pf_contratos_clt clt ON emp.matricula = clt.matricula_ref")
+                    
+                    if filtros.get('clt_empresa'):
+                        conditions.append("clt.cnpj_nome ILIKE %s")
+                        params.append(f"%{filtros['clt_empresa']}%")
+                    
+                    if filtros.get('clt_cnpj'):
+                        cnpj_clean = re.sub(r'\D', '', filtros['clt_cnpj'])
+                        conditions.append("clt.cnpj_numero LIKE %s")
+                        params.append(f"%{cnpj_clean}%")
+
+                    if filtros.get('clt_cnae_nome'):
+                        conditions.append("clt.cnae_nome ILIKE %s")
+                        params.append(f"%{filtros['clt_cnae_nome']}%")
+
+                    if filtros.get('clt_cnae_cod'):
+                        conditions.append("clt.cnae_codigo ILIKE %s")
+                        params.append(f"%{filtros['clt_cnae_cod']}%")
+
+                    if filtros.get('clt_cbo_nome'):
+                        conditions.append("clt.cbo_nome ILIKE %s")
+                        params.append(f"%{filtros['clt_cbo_nome']}%")
+
+                    if filtros.get('clt_cbo_cod'):
+                        conditions.append("clt.cbo_codigo ILIKE %s")
+                        params.append(f"%{filtros['clt_cbo_cod']}%")
+
+                    # Campos Numéricos e Datas (Igualdade simples para filtro)
+                    if filtros.get('clt_qtd_func'):
+                        conditions.append("clt.qtd_funcionarios = %s")
+                        params.append(filtros['clt_qtd_func'])
+
+                    if filtros.get('clt_dt_abertura'):
+                        conditions.append("clt.data_abertura_empresa = %s")
+                        params.append(filtros['clt_dt_abertura'])
+
+                    if filtros.get('clt_tempo_abertura'):
+                        conditions.append("clt.tempo_abertura_anos = %s")
+                        params.append(filtros['clt_tempo_abertura'])
+
+                    if filtros.get('clt_dt_admissao'):
+                        conditions.append("clt.data_admissao = %s")
+                        params.append(filtros['clt_dt_admissao'])
+
+                    if filtros.get('clt_tempo_admissao'):
+                        conditions.append("clt.tempo_admissao_anos = %s")
+                        params.append(filtros['clt_tempo_admissao'])
+
+                    if filtros.get('clt_dt_inicio'):
+                        conditions.append("clt.data_inicio_emprego = %s")
+                        params.append(filtros['clt_dt_inicio'])
+
+                    if filtros.get('clt_tempo_inicio'):
+                        conditions.append("clt.tempo_inicio_emprego_anos = %s")
+                        params.append(filtros['clt_tempo_inicio'])
 
             joins = list(set(joins))
             sql_joins = " ".join(joins)
@@ -463,7 +536,7 @@ def executar_pesquisa_ampla(filtros, pagina=1, itens_por_pagina=50, exportar=Fal
         except: return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
-# --- FUNÇÕES CRUD (ATUALIZADO COM DADOS CLT) ---
+# --- FUNÇÕES CRUD (COM DADOS CLT INTEGRADOS) ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {}
@@ -486,7 +559,7 @@ def carregar_dados_completos(cpf):
             
             # 4. Contratos (Empréstimos) e Dados CLT (CAGED)
             dados['contratos'] = pd.DataFrame()
-            dados['dados_clt'] = pd.DataFrame() # Nova estrutura
+            dados['dados_clt'] = pd.DataFrame() 
 
             if not dados['empregos'].empty:
                 matr_list = tuple(dados['empregos']['matricula'].dropna().tolist())
@@ -500,8 +573,9 @@ def carregar_dados_completos(cpf):
                     try:
                         q_clt = f"""
                             SELECT matricula_ref, nome_convenio, cnpj_nome, cnpj_numero, 
-                                   cnae_nome, data_admissao, cbo_nome, cbo_codigo, 
-                                   qtd_funcionarios, data_abertura_empresa 
+                                   cnae_nome, cnae_codigo, data_admissao, cbo_nome, cbo_codigo, 
+                                   qtd_funcionarios, data_abertura_empresa, 
+                                   tempo_abertura_anos, tempo_admissao_anos
                             FROM admin.pf_contratos_clt 
                             WHERE matricula_ref IN ({placeholders})
                         """
@@ -511,11 +585,8 @@ def carregar_dados_completos(cpf):
                         for col in ['data_admissao', 'data_abertura_empresa']:
                             if col in dados['dados_clt'].columns:
                                 dados['dados_clt'][col] = pd.to_datetime(dados['dados_clt'][col], errors='coerce').dt.strftime('%d/%m/%Y')
-                    except Exception as e:
-                        # Se a tabela não existir, ignora silenciosamente ou loga
-                        pass
-        except Exception as e: 
-            st.error(f"Erro ao carregar dados: {e}")
+                    except: pass
+        except: pass
         finally: conn.close()
     return dados
 
@@ -614,7 +685,7 @@ def get_table_columns(table_name):
         except: pass
     return cols
 
-# --- DIALOG: VISUALIZAR CLIENTE (ATUALIZADO) ---
+# --- DIALOG: VISUALIZAR CLIENTE (ATUALIZADO LUPA) ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
     # Aplica formatação visual ao CPF exibido no título
@@ -657,7 +728,7 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t2:
         df_emp = dados.get('empregos')
         df_contr = dados.get('contratos')
-        df_clt = dados.get('dados_clt') # Tabela nova
+        df_clt = dados.get('dados_clt')
         
         if not df_emp.empty:
             for _, row in df_emp.iterrows():
@@ -679,12 +750,14 @@ def dialog_visualizar_cliente(cpf_cliente):
                             with col_clt1:
                                 st.markdown(f"**Empresa:** {dados_c.get('cnpj_nome', '')}")
                                 st.markdown(f"**CNPJ:** {dados_c.get('cnpj_numero', '')}")
-                                st.markdown(f"**CNAE:** {dados_c.get('cnae_nome', '')}")
+                                st.markdown(f"**CNAE:** {dados_c.get('cnae_nome', '')} ({dados_c.get('cnae_codigo', '')})")
                                 st.markdown(f"**Abertura:** {dados_c.get('data_abertura_empresa', '-')}")
+                                st.caption(f"Tempo Abertura: {dados_c.get('tempo_abertura_anos', 0)} anos")
                             
                             with col_clt2:
                                 st.markdown(f"**Cargo (CBO):** {dados_c.get('cbo_nome', '')} ({dados_c.get('cbo_codigo', '')})")
                                 st.markdown(f"**Admissão:** {dados_c.get('data_admissao', '-')}")
+                                st.caption(f"Tempo Admissão: {dados_c.get('tempo_admissao_anos', 0)} anos")
                                 st.markdown(f"**Funcionários:** {dados_c.get('qtd_funcionarios', 0)}")
                                 st.markdown(f"**Convênio:** {dados_c.get('nome_convenio', '')}")
 
@@ -791,12 +864,57 @@ def app_pessoa_fisica():
                 filtros['ddd'] = c_ddd.text_input("DDD", max_chars=2)
                 filtros['telefone'] = c_tel.text_input("Telefone", max_chars=9)
                 filtros['email'] = c_email.text_input("E-mail")
+            
             with t4:
-                c_conv, c_matr = st.columns(2)
+                # SELETOR DE CONVÊNIO DINÂMICO
                 lista_conv = buscar_referencias('CONVENIO')
-                sel_conv = c_conv.selectbox("Convênio", [""] + lista_conv)
+                opcoes_conv = [""] + lista_conv
+                
+                c_conv, c_extra = st.columns([1, 3])
+                sel_conv = c_conv.selectbox("Tipo de Convênio", options=opcoes_conv, key="sel_conv_pesquisa")
                 if sel_conv: filtros['convenio'] = sel_conv
-                filtros['matricula'] = c_matr.text_input("Matrícula")
+
+                # === LÓGICA DINÂMICA DE FILTROS ===
+                if sel_conv == "CLT":
+                    st.markdown("##### 🏢 Filtros Avançados CLT")
+                    # Linha 1: Dados Empresa e Matrícula
+                    r1c1, r1c2, r1c3 = st.columns(3)
+                    filtros['matricula'] = r1c1.text_input("Matrícula")
+                    filtros['clt_empresa'] = r1c2.text_input("Nome da Empresa")
+                    filtros['clt_cnpj'] = r1c3.text_input("CNPJ")
+                    
+                    # Linha 2: Atividades Econômicas e Cargo
+                    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+                    filtros['clt_cnae_nome'] = r2c1.text_input("CNAE (Atividade)")
+                    filtros['clt_cnae_cod'] = r2c2.text_input("Cód. CNAE")
+                    filtros['clt_cbo_nome'] = r2c3.text_input("CBO (Cargo)")
+                    filtros['clt_cbo_cod'] = r2c4.text_input("Cód. CBO")
+
+                    # Linha 3: Dados Numéricos e Datas
+                    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+                    filtros['clt_qtd_func'] = r3c1.text_input("Qtd Funcionários (Exato)")
+                    filtros['clt_dt_abertura'] = r3c2.date_input("Data Abertura Empresa", value=None)
+                    filtros['clt_tempo_abertura'] = r3c3.text_input("Tempo Abertura (Anos)")
+                    
+                    # Linha 4: Dados Admissão
+                    r4c1, r4c2, r4c3, r4c4 = st.columns(4)
+                    filtros['clt_dt_admissao'] = r4c1.date_input("Data Admissão", value=None)
+                    filtros['clt_tempo_admissao'] = r4c2.text_input("Tempo Admissão (Anos)")
+                    filtros['clt_dt_inicio'] = r4c3.date_input("Data Início Emprego", value=None)
+                    filtros['clt_tempo_inicio'] = r4c4.text_input("Tempo Início (Anos)")
+
+                elif sel_conv == "INSS":
+                    st.caption("Filtros Específicos INSS:")
+                    inss1, inss2 = st.columns(2)
+                    filtros['matricula'] = inss1.text_input("Número do Benefício (NB)")
+                    
+                elif sel_conv in ["SIAPE", "GOVERNO SP"]:
+                     st.caption(f"Filtros {sel_conv}:")
+                     filtros['matricula'] = st.text_input("Matrícula / RS")
+                     
+                else:
+                    filtros['matricula'] = c_extra.text_input("Matrícula / Identificador")
+
             with t5:
                 filtros['contrato'] = st.text_input("Número do Contrato")
             with t6:
@@ -1233,16 +1351,6 @@ def app_pessoa_fisica():
                         st.session_state['temp_contratos'].append({'matricula_ref': n_matr_ref, 'contrato': n_contrato, 'dados_extras': n_ctr_extra})
                         st.success("Contrato adicionado!")
                     else: st.error("Matrícula e Contrato são obrigatórios.")
-
-                if st.session_state['temp_contratos']:
-                    for i, ctr in enumerate(st.session_state['temp_contratos']):
-                        col_l1, col_l2, col_l3, col_l4 = st.columns([2, 2, 3, 1])
-                        col_l1.text(ctr['matricula_ref'])
-                        col_l2.text(ctr['contrato'])
-                        col_l3.text(ctr['dados_extras'])
-                        if col_l4.form_submit_button("🗑️", key=f"del_ctr_{i}"):
-                            st.session_state['temp_contratos'].pop(i)
-                            st.rerun()
 
             st.markdown("---")
             col_b1, col_b2 = st.columns([1, 5])
