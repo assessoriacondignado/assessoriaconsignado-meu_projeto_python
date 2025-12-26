@@ -39,11 +39,21 @@ def listar_modelos_mensagens():
 
 # --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
 def buscar_clientes():
+    """
+    Busca a lista de clientes na tabela administrativa para preencher o selectbox.
+    """
     conn = get_conn()
     if conn:
-        df = pd.read_sql("SELECT id, nome, cpf, telefone FROM clientes_usuarios WHERE ativo = TRUE ORDER BY nome", conn)
-        conn.close()
-        return df
+        try:
+            # CORREÇÃO APLICADA: Busca na tabela 'admin.clientes'
+            # Garante que todos os clientes cadastrados apareçam, não apenas os usuários do sistema.
+            query = "SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df
+        except Exception as e:
+            st.error(f"Erro ao buscar clientes: {e}")
+            if conn: conn.close()
     return pd.DataFrame()
 
 def buscar_produtos():
