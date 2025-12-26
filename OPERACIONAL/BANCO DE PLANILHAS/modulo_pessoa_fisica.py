@@ -50,11 +50,16 @@ def init_db_structures():
             """)
             
             # Adiciona coluna de rastreio em TODAS as tabelas
-            tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos', 'admin.pf_contratos_clt']
+            tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos']
             for tb in tabelas:
                 try:
-                    cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER;")
+                    cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
                 except: pass
+
+            # Tenta adicionar na tabela admin se ela existir e for acessível
+            try:
+                cur.execute("ALTER TABLE admin.pf_contratos_clt ADD COLUMN IF NOT EXISTS importacao_id INTEGER;")
+            except: pass
             
             # Tabela de Referências (Convênios)
             cur.execute("""
@@ -191,7 +196,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         erros = []
         df_proc = pd.DataFrame()
         cols_order = []
-
         if table_name == 'pf_telefones':
             col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
             col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
@@ -237,8 +241,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
-        qtd_novos = 0
-        qtd_atualizados = 0
+        qtd_novos, qtd_atualizados = 0, 0
         if pk_field:
             set_clause = ', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])
             cur.execute(f"UPDATE {table_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
@@ -284,6 +287,7 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50, export
                 val_raw = regra['valor']
                 tipo = regra['tipo']
                 
+                # Identifica Join necessário
                 if tabela in joins_map and joins_map[tabela] not in active_joins:
                     active_joins.append(joins_map[tabela])
                 
@@ -414,7 +418,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 for tb in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
                     cur.execute(f"DELETE FROM {tb} WHERE cpf_ref = %s", (cpf_chave,))
             
-            # (Inserções auxiliares simplificadas para brevidade, mas funcionais)
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
             if not df_tel.empty:
                 for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
@@ -479,6 +482,9 @@ def dialog_visualizar_cliente(cpf_cliente):
         df_tel = dados.get('telefones')
         if not df_tel.empty:
             for _, r in df_tel.iterrows(): st.write(f"📱 {r['numero']}")
+        df_email = dados.get('emails')
+        if not df_email.empty:
+            for _, r in df_email.iterrows(): st.write(f"📧 {r['email']}")
 
 # --- DICIONÁRIO DE CAMPOS DISPONÍVEIS PARA PESQUISA ---
 CAMPOS_CONFIG = {
@@ -571,7 +577,7 @@ def app_pessoa_fisica():
             st.session_state.update({'pf_view': 'lista'})
             st.rerun()
             
-        if c_nav_dir.button("Limpar Filtros"):
+        if c_nav_dir.button("🗑️ Limpar Filtros"):
             st.session_state['regras_pesquisa'] = []
             st.session_state['executar_busca'] = False
             st.session_state['pagina_atual'] = 1
@@ -607,33 +613,39 @@ def app_pessoa_fisica():
 
         with c_regras:
             st.markdown("### 🎯 Regras Ativas")
-            if not st.session_state['regras_pesquisa']: st.info("Nenhuma regra selecionada.")
+            if not st.session_state['regras_pesquisa']: st.info("Nenhuma regra selecionada. Clique nos itens à esquerda para adicionar filtros.")
             
-            regras_rem = []
+            regras_para_remover = []
+            
             for i, regra in enumerate(st.session_state['regras_pesquisa']):
                 with st.container(border=True):
                     c1, c2, c3, c4 = st.columns([2, 2, 3, 0.5])
                     c1.markdown(f"**{regra['label']}**")
                     
                     opcoes = ops_cache.get(regra['tipo'], [])
-                    idx_sel = opcoes.index(regra['operador']) if regra['operador'] in opcoes else 0
-                    novo_op_full = c2.selectbox("Op.", opcoes, key=f"op_{i}", label_visibility="collapsed")
+                    idx_sel = 0
+                    if regra['operador'] and regra['operador'] in opcoes:
+                         idx_sel = opcoes.index(regra['operador'])
+                    
+                    novo_op_full = c2.selectbox("Op.", options=opcoes, index=idx_sel, key=f"op_{i}", label_visibility="collapsed")
                     novo_op_simbolo = novo_op_full.split(' : ')[0] if novo_op_full else "="
                     
                     if novo_op_simbolo == '∅':
-                        c3.text_input("V", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed")
+                        c3.text_input("Valor", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed")
                         novo_valor = None
                     elif regra['tipo'] == 'data':
-                        novo_valor = c3.date_input("D", value=None, min_value=date(1900,1,1), max_value=date(2025,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
+                        novo_valor = c3.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2025,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
                     else:
-                        novo_valor = c3.text_input("V", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
+                        novo_valor = c3.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed", placeholder="Separe por vírgula para múltiplos")
 
-                    st.session_state['regras_pesquisa'][i]['operador'] = novo_op_simbolo
+                    st.session_state['regras_pesquisa'][i]['operador'] = novo_op_full # Guarda o valor completo para manter o indice
                     st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
-                    if c4.button("🗑️", key=f"del_{i}"): regras_rem.append(i)
 
-            if regras_rem:
-                for idx in sorted(regras_rem, reverse=True): st.session_state['regras_pesquisa'].pop(idx)
+                    if c4.button("🗑️", key=f"del_{i}"):
+                        regras_para_remover.append(i)
+
+            if regras_para_remover:
+                for idx in sorted(regras_para_remover, reverse=True): st.session_state['regras_pesquisa'].pop(idx)
                 st.rerun()
 
             st.divider()
@@ -641,7 +653,14 @@ def app_pessoa_fisica():
                 st.session_state['executar_busca'] = True
 
         if st.session_state.get('executar_busca'):
-            df_res, total = executar_pesquisa_ampla(st.session_state['regras_pesquisa'], st.session_state['pagina_atual'])
+            # Prepara as regras para envio (limpa o operador para só enviar o símbolo)
+            regras_limpas = []
+            for r in st.session_state['regras_pesquisa']:
+                r_copy = r.copy()
+                if r_copy['operador']: r_copy['operador'] = r_copy['operador'].split(' : ')[0]
+                regras_limpas.append(r_copy)
+
+            df_res, total = executar_pesquisa_ampla(regras_limpas, st.session_state['pagina_atual'])
             st.write(f"**Resultados:** {total}")
             
             if not df_res.empty:
@@ -656,7 +675,7 @@ def app_pessoa_fisica():
                 cp1, cp2, cp3 = st.columns([1, 3, 1])
                 if cp1.button("⬅️ Ant.") and st.session_state['pagina_atual'] > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
                 if cp3.button("Próx. ➡️"): st.session_state['pagina_atual'] += 1; st.rerun()
-            else: st.warning("Nenhum registro.")
+            else: st.warning("Nenhum registro encontrado.")
 
     # ==========================
     # 6. MODO LISTA (PADRÃO)
@@ -678,9 +697,9 @@ def app_pessoa_fisica():
             else: st.warning("Nada encontrado.")
         else:
             st.info("Utilize a busca para listar clientes.")
-
+    
     # ==========================
-    # 7. MODO IMPORTAÇÃO (RESTAURADO)
+    # 7. MODO IMPORTAÇÃO (RESTAURADO COMPLETO)
     # ==========================
     elif st.session_state['pf_view'] == 'importacao':
         c_cancel, c_hist = st.columns([1, 4])
@@ -693,9 +712,9 @@ def app_pessoa_fisica():
 
         if st.session_state.get('import_step', 1) == 1:
             st.markdown("### 📤 Etapa 1: Upload")
-            sel_amigavel = st.selectbox("Selecione a Tabela", opcoes_tabelas)
+            sel_amigavel = st.selectbox("Selecione a Tabela de Destino", opcoes_tabelas)
             st.session_state['import_table'] = mapa_real[sel_amigavel]
-            uploaded_file = st.file_uploader("Arquivo CSV", type=['csv'])
+            uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
             if uploaded_file:
                 try:
                     uploaded_file.seek(0)
@@ -712,7 +731,7 @@ def app_pessoa_fisica():
                 except Exception as e: st.error(f"Erro: {e}")
 
         elif st.session_state['import_step'] == 2:
-            st.markdown("### 🔗 Etapa 2: Mapeamento")
+            st.markdown("### 🔗 Etapa 2: Mapeamento Visual")
             df = st.session_state['import_df']
             csv_cols = list(df.columns)
             table_name = st.session_state['import_table']
@@ -746,7 +765,7 @@ def app_pessoa_fisica():
                         st.rerun()
 
             st.divider()
-            if st.button("🚀 INICIAR IMPORTAÇÃO", type="primary"):
+            if st.button("🚀 INICIAR IMPORTAÇÃO (BULK)", type="primary"):
                 conn = get_conn()
                 if conn:
                     with st.spinner("Processando..."):
