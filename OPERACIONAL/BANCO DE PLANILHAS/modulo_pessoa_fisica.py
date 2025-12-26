@@ -33,7 +33,6 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
-            # Tabela de Histórico de Importações
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_historico_importacoes (
                     id SERIAL PRIMARY KEY,
@@ -48,12 +47,10 @@ def init_db_structures():
                 );
             """)
             
-            # Adiciona coluna de rastreio em TODAS as tabelas do módulo
             tabelas = ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'pf_contratos']
             for tb in tabelas:
                 cur.execute(f"ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS importacao_id INTEGER REFERENCES pf_historico_importacoes(id);")
             
-            # Garante tabela de referências (Convênios, etc)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pf_referencias (
                     id SERIAL PRIMARY KEY,
@@ -87,34 +84,29 @@ def buscar_referencias(tipo):
         except: conn.close()
     return []
 
-# --- FUNÇÕES DE GESTÃO DE REFERÊNCIAS (CONVÊNIOS) ---
-def adicionar_referencia(tipo, nome):
+# --- FUNÇÕES DE GESTÃO DE DADOS (CONFIGURAÇÃO) ---
+def inserir_registro_dinamico(table_name, dados_dict):
+    """Insere dados em qualquer tabela de forma dinâmica"""
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("INSERT INTO pf_referencias (tipo, nome) VALUES (%s, %s) ON CONFLICT DO NOTHING", (tipo, nome.upper()))
+            cols = list(dados_dict.keys())
+            vals = list(dados_dict.values())
+            
+            # Monta query dinâmica
+            placeholders = ", ".join(["%s"] * len(vals))
+            columns_str = ", ".join(cols)
+            
+            sql = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})"
+            cur.execute(sql, vals)
             conn.commit()
             conn.close()
-            return True
-        except: 
+            return True, "Registro inserido com sucesso!"
+        except Exception as e:
             conn.close()
-            return False
-    return False
-
-def excluir_referencia(id_ref):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM pf_referencias WHERE id = %s", (id_ref,))
-            conn.commit()
-            conn.close()
-            return True
-        except:
-            conn.close()
-            return False
-    return False
+            return False, f"Erro ao inserir: {str(e)}"
+    return False, "Erro de conexão."
 
 def limpar_apenas_numeros(valor):
     """Remove tudo que não é dígito"""
@@ -204,7 +196,6 @@ def add_table_column(table_name, col_name, col_type):
     if conn:
         try:
             cur = conn.cursor()
-            # Sanitização simples para evitar injection
             clean_col = re.sub(r'[^a-zA-Z0-9_]', '', col_name).lower()
             if not clean_col: return False, "Nome de coluna inválido."
             
@@ -288,7 +279,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         df_proc = pd.DataFrame()
         cols_order = []
 
-        # --- LÓGICA ESPECIAL PARA TELEFONES (MULTI-COLUNAS) ---
         if table_name == 'pf_telefones':
             col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
             col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
@@ -327,7 +317,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             df_proc = pd.DataFrame(new_rows)
             cols_order = list(df_proc.columns)
             
-        # --- LÓGICA PADRÃO PARA OUTRAS TABELAS ---
         else:
             df_proc = df.rename(columns=mapping)
             cols_db = list(mapping.values())
@@ -337,7 +326,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             if 'cpf' in df_proc.columns:
                 df_proc['cpf'] = df_proc['cpf'].astype(str).apply(limpar_normalizar_cpf)
                 
-                # Regra de Duplicidade (Apenas para pf_dados): Remove do arquivo
                 if table_name == 'pf_dados':
                     df_proc = df_proc.drop_duplicates(subset=['cpf'], keep='last')
                     invalidos = df_proc[df_proc['cpf'] == ""]
@@ -353,7 +341,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             
             cols_order = list(df_proc.columns)
 
-        # --- EXECUÇÃO DO COPY (COMUM) ---
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
@@ -368,9 +355,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         qtd_atualizados = 0
         
         if pk_field:
-            # Lógica de UPSERT para Tabelas Principais (pf_dados, etc)
             set_clause = ', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])
-            
             sql_update = f"""
                 UPDATE {table_name} t 
                 SET {set_clause}
@@ -384,7 +369,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
         else:
-            # Lógica para Tabelas Vinculadas (Telefones, Emails)
             cols_to_compare = [c for c in cols_order if c not in ['importacao_id', 'data_atualizacao', 'data_criacao', 'id']]
             conditions = " AND ".join([f"t.{c} IS NOT DISTINCT FROM s.{c}" for c in cols_to_compare])
             
@@ -400,7 +384,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             cur.execute(sql_insert)
             qtd_novos = cur.rowcount
             
-            # --- PROPAGAÇÃO DO ID DE IMPORTAÇÃO PARA O CLIENTE (PF_DADOS) ---
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
                 sql_propaga = f"""
                     UPDATE pf_dados d
@@ -409,6 +392,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
                     WHERE d.cpf = s.cpf_ref
                 """
                 cur.execute(sql_propaga, (import_id,))
+            
             elif table_name == 'pf_contratos':
                 sql_propaga = f"""
                     UPDATE pf_dados d
@@ -800,10 +784,8 @@ def dialog_excluir_pf(cpf, nome):
 def app_pessoa_fisica():
     init_db_structures()
     
-    # CSS PARA OTIMIZAR ESPAÇAMENTO
     st.markdown("""
         <style>
-            /* Reduz espaçamento entre linhas da grade */
             [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
                 gap: 0.2rem;
             }
@@ -839,13 +821,13 @@ def app_pessoa_fisica():
     if 'form_loaded' not in st.session_state: st.session_state['form_loaded'] = False
 
     # ==========================
-    # 7. MODO CONFIGURAÇÃO (NOVO)
+    # 7. MODO CONFIGURAÇÃO
     # ==========================
     if st.session_state['pf_view'] == 'configuracao':
         st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista'}))
         st.markdown("### ⚙️ Configuração de Estrutura")
         
-        tab_add, tab_mgr, tab_ref = st.tabs(["➕ Criar Coluna", "✏️ Gerenciar Colunas", "📋 Convênios"])
+        tab_add, tab_mgr, tab_data = st.tabs(["➕ Criar Coluna", "✏️ Gerenciar Colunas", "📋 Dados"])
         
         # Opções de Tabela
         tabelas_disp = {
@@ -854,7 +836,8 @@ def app_pessoa_fisica():
             'Emails': 'pf_emails',
             'Endereços': 'pf_enderecos',
             'Emprego/Renda': 'pf_emprego_renda',
-            'Contratos': 'pf_contratos'
+            'Contratos': 'pf_contratos',
+            'Referências': 'pf_referencias'
         }
         
         with tab_add:
@@ -889,7 +872,6 @@ def app_pessoa_fisica():
                     c1.text(row['column_name'])
                     c2.caption(row['data_type'])
                     
-                    # Renomear
                     new_name = c3.text_input("Novo Nome", key=f"ren_{row['column_name']}", placeholder="Renomear...")
                     if c3.button("💾", key=f"btn_ren_{row['column_name']}"):
                         if new_name:
@@ -897,7 +879,6 @@ def app_pessoa_fisica():
                             if ok: st.success("Renomeado!"); time.sleep(1); st.rerun()
                             else: st.error(msg)
                             
-                    # Excluir
                     if c4.button("🗑️", key=f"del_{row['column_name']}"):
                         dialog_drop_column(tb_real, row['column_name'])
                     
@@ -905,34 +886,84 @@ def app_pessoa_fisica():
             else:
                 st.warning("Não foi possível ler as colunas.")
 
-        with tab_ref:
-            st.markdown("#### Gestão de Convênios")
-            c_new_ref, c_btn_ref = st.columns([3, 1])
-            novo_conv = c_new_ref.text_input("Nome do Novo Convênio")
-            if c_btn_ref.button("Adicionar Convênio", type="primary"):
-                if novo_conv:
-                    if adicionar_referencia('CONVENIO', novo_conv):
-                        st.success("Adicionado!")
-                        time.sleep(0.5); st.rerun()
-                    else: st.error("Erro ao adicionar (possível duplicata).")
+        # --- ABA DADOS GENÉRICOS (NOVO) ---
+        with tab_data:
+            st.markdown("#### Inserção Manual de Dados")
+            st.info("Preencha os dados abaixo para inserir registros manualmente na tabela selecionada.")
             
-            st.divider()
+            sel_tb_data = st.selectbox("Selecione a Tabela para Inserção", list(tabelas_disp.keys()), key="tb_data")
+            tb_data_real = tabelas_disp[sel_tb_data]
             
-            conn = get_conn()
-            if conn:
-                try:
-                    df_refs = pd.read_sql("SELECT id, nome FROM pf_referencias WHERE tipo = 'CONVENIO' ORDER BY nome", conn)
-                    conn.close()
-                    if not df_refs.empty:
-                        for _, row in df_refs.iterrows():
-                            c1, c2 = st.columns([4, 1])
-                            c1.text(row['nome'])
-                            if c2.button("🗑️", key=f"del_ref_{row['id']}"):
-                                excluir_referencia(row['id'])
-                                st.rerun()
-                            st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-                    else: st.info("Nenhum convênio cadastrado.")
-                except: conn.close()
+            df_schema = get_table_schema(tb_data_real)
+            
+            if not df_schema.empty:
+                # Ignora colunas auto-gerenciadas
+                cols_ignore = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
+                df_fields = df_schema[~df_schema['column_name'].isin(cols_ignore)]
+                
+                with st.form("form_insert_dynamic"):
+                    inputs = {}
+                    for _, col in df_fields.iterrows():
+                        c_name = col['column_name']
+                        c_type = col['data_type']
+                        label = c_name.replace("_", " ").title()
+                        
+                        # Decide o tipo de input
+                        if 'date' in c_type or 'timestamp' in c_type:
+                            inputs[c_name] = st.date_input(label, value=None, format="DD/MM/YYYY")
+                        elif 'boolean' in c_type:
+                            inputs[c_name] = st.checkbox(label)
+                        elif 'integer' in c_type:
+                            inputs[c_name] = st.number_input(label, step=1)
+                        else:
+                            # Inputs de Texto
+                            max_chars = 255 if 'character varying' in c_type else None
+                            inputs[c_name] = st.text_input(label, max_chars=max_chars)
+                    
+                    if st.form_submit_button("💾 Salvar Registro"):
+                        # Processamento e Validação
+                        dados_finais = {}
+                        erro_validacao = None
+                        
+                        for k, v in inputs.items():
+                            val = v
+                            # Validações baseadas no nome da coluna
+                            if isinstance(val, str):
+                                val = val.upper().strip() # Padrão do sistema
+                                
+                                if 'cpf' in k:
+                                    v_cpf, err = validar_formatar_cpf(val)
+                                    if err: erro_validacao = f"{k}: {err}"
+                                    else: val = v_cpf
+                                
+                                elif 'telefone' in k or ('numero' in k and 'pf_telefones' in tb_data_real):
+                                    v_tel, err = validar_formatar_telefone(val)
+                                    if err: erro_validacao = f"{k}: {err}"
+                                    else: val = v_tel
+                                
+                                elif 'email' in k:
+                                    if val and not validar_email(val):
+                                        erro_validacao = f"{k}: E-mail inválido."
+                                    else: val = val.lower() # Email sempre minúsculo
+                                
+                                elif 'cep' in k:
+                                    v_cep = limpar_apenas_numeros(val)
+                                    if len(v_cep) == 8: val = f"{v_cep[:5]}-{v_cep[5:]}"
+                            
+                            # Tratamento de Datas (None se vazio)
+                            if val == "" or val is None:
+                                val = None
+                                
+                            dados_finais[k] = val
+                        
+                        if erro_validacao:
+                            st.error(erro_validacao)
+                        else:
+                            # Inserção
+                            ok, msg = inserir_registro_dinamico(tb_data_real, dados_finais)
+                            if ok: st.success(msg)
+                            else: st.error(msg)
+
 
     # ==========================
     # 1. PESQUISA AMPLA
@@ -1132,9 +1163,13 @@ def app_pessoa_fisica():
             df = st.session_state['import_df']
             csv_cols = list(df.columns)
             table_name = st.session_state['import_table']
-            db_cols_info = get_table_columns(table_name)
-            ignore_db = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
-            db_fields = [c[0] for c in db_cols_info if c[0] not in ignore_db]
+            
+            if table_name == 'pf_telefones':
+                db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
+            else:
+                db_cols_info = get_table_columns(table_name)
+                ignore_db = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
+                db_fields = [c[0] for c in db_cols_info if c[0] not in ignore_db]
 
             c_l, c_r = st.columns([1, 2])
             with c_l:
@@ -1567,7 +1602,7 @@ def app_pessoa_fisica():
     
     # RODAPÉ
     br_time = datetime.now() - timedelta(hours=3)
-    st.caption(f"Atualizado 5 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"Atualizado 6 em: {br_time.strftime('%d/%m/%Y %H:%M')}")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
