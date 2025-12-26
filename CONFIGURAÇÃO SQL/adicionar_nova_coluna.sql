@@ -27,8 +27,42 @@ GUIA DE CRIAÇÃO DE COLUNAS (MODULO PESSOA FÍSICA)
 -- COMANDO PARA ADICIONAR COLUNA (Substitua os termos entre aspas)
 -- Exemplo: Quero adicionar "nome_conjuge" na tabela "pf_dados" como texto.
 
-ALTER TABLE pf_dados 
-ADD COLUMN IF NOT EXISTS nome_coluna_nova TIPO_DO_DADO;
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS Pis VARCHAR(50);
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  Nome_Empresa VARCHAR(50);
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  CNPJ_empresa VARCHAR(50);
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  CNAE_empresa_codigo VARCHAR(50));
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  CNAE_empresa_nome VARCHAR(50);
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  Data_AberturaEmpresa DATE;
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  QNT_funcionário_empresa INTEGER;
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  Tempo_abertura INTEGER;
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  CBO_funcionario_codigo VARCHAR(50));
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  CBO_funcionario_nome VARCHAR(50);
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  Data_inicio_emprego DATE;
+
+ALTER TABLE admin.pf_contatos_clt 
+ADD COLUMN IF NOT EXISTS  Tempo_inicio_emprego INTEGER;
+
 
 -- EXEMPLOS PRÁTICOS (Pode descomentar e rodar):
 
