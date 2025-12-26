@@ -183,7 +183,7 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 # --- POP-UPS (DIALOGS) ---
-@st.dialog("➕ Novo Pedido")
+@st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
     df_c = buscar_clientes()
     df_p = buscar_produtos()
