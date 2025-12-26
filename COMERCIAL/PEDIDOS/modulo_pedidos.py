@@ -3,6 +3,7 @@ import pandas as pd
 import psycopg2
 import os
 import re
+import time
 from datetime import datetime
 import modulo_wapi  # Integração centralizada
 
@@ -182,7 +183,7 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 # --- POP-UPS (DIALOGS) ---
-@st.dialog("➕ Novo Pedido", width="large") # AJUSTE DE LARGURA APLICADO
+@st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
     df_c = buscar_clientes()
     df_p = buscar_produtos()
@@ -280,7 +281,6 @@ def dialog_status_pedido(pedido):
 
 @st.dialog("📜 Histórico")
 def dialog_historico(id_pedido, codigo_pedido):
-    # Mantém este dialog separado caso o usuário clique no botão "Hist." da lista principal
     st.write(f"Histórico de: **{codigo_pedido}**")
     df_hist = buscar_historico_pedido(id_pedido)
     if not df_hist.empty:
@@ -296,6 +296,43 @@ def dialog_excluir(id_pedido):
         if excluir_pedido_db(id_pedido):
             st.success("Pedido excluído!")
             st.rerun()
+
+# --- NOVO DIALOG: CRIAR TAREFA A PARTIR DO PEDIDO ---
+@st.dialog("📝 Criar Tarefa para Pedido")
+def dialog_criar_tarefa_rapida(pedido):
+    with st.form("form_tarefa_rapida_ped"):
+        st.write(f"Vinculando tarefa ao Pedido: **{pedido['codigo']}**")
+        st.write(f"Cliente: **{pedido['nome_cliente']}**")
+        
+        data_prev = st.date_input("Data Previsão", value=datetime.now())
+        obs = st.text_area("Descrição da Tarefa")
+        
+        if st.form_submit_button("🚀 Criar Tarefa"):
+            conn = get_conn()
+            if conn:
+                try:
+                    cur = conn.cursor()
+                    # Insere na tabela tarefas
+                    cur.execute("""
+                        INSERT INTO tarefas (id_pedido, data_previsao, observacao_tarefa, status) 
+                        VALUES (%s, %s, %s, 'Solicitado') RETURNING id
+                    """, (pedido['id'], data_prev, obs))
+                    
+                    new_id = cur.fetchone()[0]
+                    
+                    # Cria histórico inicial
+                    cur.execute("""
+                        INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) 
+                        VALUES (%s, 'Solicitado', 'Tarefa criada via Módulo de Pedidos')
+                    """, (new_id,))
+                    
+                    conn.commit()
+                    conn.close()
+                    st.success("Tarefa criada com sucesso! Verifique no módulo de Tarefas.")
+                    time.sleep(1.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao criar tarefa: {e}")
 
 # --- APP PRINCIPAL ---
 def app_pedidos():
@@ -406,14 +443,16 @@ def app_pedidos():
                     data_fmt = pd.to_datetime(row['data_criacao']).strftime('%d/%m/%Y %H:%M')
                     st.write(f"**Data:** {data_fmt}")
                     
-                    c1, c2, c3, c4, c5 = st.columns(5)
+                    # DIVIDIDO EM 6 COLUNAS PARA CABER O NOVO BOTÃO
+                    c1, c2, c3, c4, c5, c6 = st.columns(6)
                     if c1.button("👤 Cliente", key=f"c_{row['id']}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'])
                     if c2.button("✏️ Dados", key=f"e_{row['id']}"): dialog_editar_dados(row)
                     if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status_pedido(row)
                     if c4.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'], row['codigo'])
-                    
-                    # Botão Excluir
                     if c5.button("🗑️ Excluir", key=f"del_{row['id']}"): dialog_excluir(row['id'])
+                    
+                    # NOVO BOTÃO: CRIAR TAREFA
+                    if c6.button("📝 Nova Tarefa", key=f"nt_{row['id']}"): dialog_criar_tarefa_rapida(row)
         else:
             st.info("Nenhum pedido encontrado com os filtros atuais.")
     else:
