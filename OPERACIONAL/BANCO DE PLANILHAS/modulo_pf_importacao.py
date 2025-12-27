@@ -94,13 +94,27 @@ def interface_importacao():
     if c_hist.button("📜 Ver Histórico Importação"): pass # (Simplificado)
     st.divider()
     
-    opcoes_tabelas = ["Dados Cadastrais (pf_dados)", "Telefones (pf_telefones)", "Emails (pf_emails)", "Endereços (pf_enderecos)", "Emprego/Renda (pf_emprego_renda)", "Contratos (pf_contratos)"]
-    mapa_real = {"Dados Cadastrais (pf_dados)": "pf_dados", "Telefones (pf_telefones)": "pf_telefones", "Emails (pf_emails)": "pf_emails", "Endereços (pf_enderecos)": "pf_enderecos", "Emprego/Renda (pf_emprego_renda)": "pf_emprego_renda", "Contratos (pf_contratos)": "pf_contratos"}
+    # --- MUDANÇA AQUI: Nomes Amigáveis ---
+    mapa_tabelas = {
+        "Dados Cadastrais (CPF, Nome, RG...)": "pf_dados",
+        "Telefones": "pf_telefones",
+        "E-mails": "pf_emails",
+        "Endereços": "pf_enderecos",
+        "Emprego e Renda": "pf_emprego_renda",
+        "Contratos": "pf_contratos"
+    }
+    
+    opcoes_tabelas = list(mapa_tabelas.keys())
 
     if st.session_state.get('import_step', 1) == 1:
         st.markdown("### 📤 Etapa 1: Upload")
-        sel_amigavel = st.selectbox("Selecione a Tabela de Destino", opcoes_tabelas)
-        st.session_state['import_table'] = mapa_real[sel_amigavel]
+        
+        # O selectbox agora usa a lista de chaves amigáveis
+        sel_amigavel = st.selectbox("Selecione o Tipo de Dado para Importar", opcoes_tabelas)
+        
+        # Recupera o nome técnico para usar no código
+        st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
+        
         uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
         if uploaded_file:
             try:
