@@ -30,3 +30,4 @@ def app_registros():
             st.dataframe(df_logs, use_container_width=True, hide_index=True)
         else: st.info("Histórico vazio.")
     except Exception as e: st.error(f"Erro ao carregar logs: {e}")
+    
