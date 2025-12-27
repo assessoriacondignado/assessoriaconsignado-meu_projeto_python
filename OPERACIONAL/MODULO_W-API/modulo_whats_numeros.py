@@ -49,7 +49,7 @@ def dialog_editar_vinculo(id_registro, telefone_atual):
                     WHERE id = %s
                 """, (int(cli_sel['id']), cli_sel['nome'], id_registro))
                 
-                # Opcional: Atualizar logs antigos deste número
+                # Opcional: Atualizar logs antigos deste número para manter histórico coerente
                 cur.execute("""
                     UPDATE wapi_logs 
                     SET id_cliente = %s, nome_cliente = %s 
@@ -135,7 +135,8 @@ def app_numeros():
         c_h4.markdown("**Ações**")
         st.divider()
 
-        for _, row in df.iterrows():
+        # CORREÇÃO APLICADA AQUI: Usando idx para gerar keys únicas
+        for idx, row in df.iterrows():
             with st.container():
                 c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
                 
@@ -154,23 +155,19 @@ def app_numeros():
                 # Botões de Ação
                 b1, b2, b3 = c4.columns(3)
                 
-                # Botão Editar (Lápis)
-                if b1.button("✏️", key=f"ed_{row['id']}", help="Editar / Vincular"):
+                # Adicionado _{idx} para garantir unicidade da chave
+                if b1.button("✏️", key=f"ed_{row['id']}_{idx}", help="Editar / Vincular"):
                     dialog_editar_vinculo(row['id'], row['telefone'])
                 
-                # Botão Ver (Olho) - Só habilita se tiver cliente vinculado
                 if row['id_cliente']:
-                    if b2.button("👁️", key=f"ver_{row['id']}", help="Ver Cliente"):
+                    if b2.button("👁️", key=f"ver_{row['id']}_{idx}", help="Ver Cliente"):
                         dialog_ver_cliente(row['id_cliente'])
                 else:
                     b2.write("-")
 
-                # Botão Excluir (Lixeira)
-                if b3.button("🗑️", key=f"del_{row['id']}", help="Excluir Registro"):
+                if b3.button("🗑️", key=f"del_{row['id']}_{idx}", help="Excluir Registro"):
                     dialog_excluir_numero(row['id'], row['telefone'])
                 
                 st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
     else:
-        st.info("Nenhum registro encontrado.")    
-        
-         
+        st.info("Nenhum registro encontrado.")
