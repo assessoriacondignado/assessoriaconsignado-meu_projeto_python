@@ -94,7 +94,7 @@ def interface_importacao():
     if c_hist.button("📜 Ver Histórico Importação"): pass # (Simplificado)
     st.divider()
     
-    # --- MUDANÇA AQUI: Nomes Amigáveis ---
+    # --- MAPEAMENTO DE NOMES AMIGÁVEIS ---
     mapa_tabelas = {
         "Dados Cadastrais (CPF, Nome, RG...)": "pf_dados",
         "Telefones": "pf_telefones",
@@ -109,12 +109,29 @@ def interface_importacao():
     if st.session_state.get('import_step', 1) == 1:
         st.markdown("### 📤 Etapa 1: Upload")
         
-        # O selectbox agora usa a lista de chaves amigáveis
         sel_amigavel = st.selectbox("Selecione o Tipo de Dado para Importar", opcoes_tabelas)
-        
-        # Recupera o nome técnico para usar no código
         st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
         
+        # --- NOVO: EXIBIR CAMPOS ESPERADOS ---
+        tabela_selecionada = st.session_state['import_table']
+        cols_info = get_table_columns(tabela_selecionada)
+        
+        # Filtra colunas internas que não precisam ser mostradas
+        ignorar = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
+        campos_visiveis = [col[0] for col in cols_info if col[0] not in ignorar]
+        
+        if campos_visiveis:
+            with st.expander("📋 Ver colunas esperadas para este arquivo", expanded=True):
+                st.info(f"O sistema espera um arquivo contendo informações para os seguintes campos:")
+                # Exibe em formato de tags/pílulas
+                st.markdown(
+                    " ".join([f"`{c}`" for c in campos_visiveis]), 
+                    unsafe_allow_html=True
+                )
+        else:
+            st.warning("Não foi possível ler as colunas da tabela selecionada.")
+        # -------------------------------------
+
         uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
         if uploaded_file:
             try:
@@ -136,6 +153,7 @@ def interface_importacao():
         df = st.session_state['import_df']
         csv_cols = list(df.columns)
         table_name = st.session_state['import_table']
+        
         if table_name == 'pf_telefones':
             db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
         else:
@@ -179,7 +197,6 @@ def interface_importacao():
                         novos, atualizados, erros = processar_importacao_lote(conn, df, table_name, final_map, imp_id)
                         conn.commit()
                         
-                        # Atualiza stats
                         cur = conn.cursor()
                         cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s WHERE id=%s", (novos, atualizados, len(erros), imp_id))
                         conn.commit(); conn.close()
