@@ -143,9 +143,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
 # --- INTERFACES VISUAIS ---
 
 def interface_pesquisa_rapida():
-    """
-    Interface para pesquisa rápida (Tela Inicial) com colunas fixas e botões.
-    """
     c1, c2 = st.columns([2, 2])
     busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
     
@@ -158,8 +155,6 @@ def interface_pesquisa_rapida():
         df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
         
         if not df_lista.empty:
-            # Cabeçalho da Tabela (Colunas Fixas)
-            # Proporção: Cód (1) | CPF (2.5) | Nome (4) | Ações (2.5) -> Total 10
             st.markdown("""
             <div style="background-color: #e6e9ef; padding: 10px; border-radius: 5px; font-weight: bold; border-bottom: 2px solid #ccc; display: flex;">
                 <div style="width: 10%;">Cód.</div>
@@ -170,19 +165,13 @@ def interface_pesquisa_rapida():
             """, unsafe_allow_html=True)
 
             for _, row in df_lista.iterrows():
-                # Grid de Resultados
                 c_id, c_cpf, c_nome, c_act = st.columns([1, 2.5, 4, 2.5])
-                
                 c_id.write(str(row['id']))
                 c_cpf.write(pf_core.formatar_cpf_visual(row['cpf']))
                 c_nome.write(row['nome'])
-                
-                # Botão Visualizar
-                if c_act.button("👁️ Visualizar Cadastro", key=f"v_list_{row['id']}", use_container_width=True):
+                if c_act.button("👁️ Visualizar", key=f"v_list_{row['id']}", use_container_width=True):
                     pf_core.dialog_visualizar_cliente(str(row['cpf']))
-                
                 st.markdown("<div style='border-bottom: 1px solid #f0f0f0; margin-bottom: 4px;'></div>", unsafe_allow_html=True)
-            
         else: 
             st.warning("Nenhum registro encontrado.")
     else:
@@ -203,10 +192,12 @@ def interface_pesquisa_ampla():
     conn = pf_core.get_conn()
     ops_cache = {'texto': [], 'numero': [], 'data': []}
     if conn:
-        df_ops = pd.read_sql("SELECT tipo, simbolo, descricao FROM pf_operadores_de_filtro", conn)
+        try:
+            df_ops = pd.read_sql("SELECT tipo, simbolo, descricao FROM pf_operadores_de_filtro", conn)
+            for _, r in df_ops.iterrows():
+                ops_cache[r['tipo']].append(f"{r['simbolo']} : {r['descricao']}") 
+        except: pass
         conn.close()
-        for _, r in df_ops.iterrows():
-            ops_cache[r['tipo']].append(f"{r['simbolo']} : {r['descricao']}") 
 
     c_menu, c_regras = st.columns([1.5, 3.5])
     with c_menu:
@@ -265,6 +256,20 @@ def interface_pesquisa_ampla():
         st.write(f"**Resultados:** {total}")
         
         if not df_res.empty:
+            # --- NOVO: BOTÃO DE EXPORTAÇÃO ---
+            with st.expander("📂 Opções de Exportação", expanded=True):
+                c_csv, c_info = st.columns([1, 3])
+                csv_data = df_res.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                c_csv.download_button(
+                    label="⬇️ Baixar CSV",
+                    data=csv_data,
+                    file_name="resultado_pesquisa_pf.csv",
+                    mime="text/csv"
+                )
+                c_info.caption("O arquivo CSV pode ser aberto no Excel.")
+            st.divider()
+            # ---------------------------------
+
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
