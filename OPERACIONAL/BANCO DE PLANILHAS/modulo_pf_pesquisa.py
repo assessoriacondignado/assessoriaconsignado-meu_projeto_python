@@ -36,6 +36,9 @@ CAMPOS_CONFIG = {
         {"label": "CNAE (Atividade)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "admin.pf_contratos_clt"},
         {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "admin.pf_contratos_clt"},
         {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "admin.pf_contratos_clt"}
+    ],
+    "Controle de Importação": [
+        {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "numero", "tabela": "pf_dados"}
     ]
 }
 
@@ -256,7 +259,7 @@ def interface_pesquisa_ampla():
         st.write(f"**Resultados:** {total}")
         
         if not df_res.empty:
-            # --- NOVO: BOTÃO DE EXPORTAÇÃO ---
+            # --- BOTÃO DE EXPORTAÇÃO ---
             with st.expander("📂 Opções de Exportação", expanded=True):
                 c_csv, c_info = st.columns([1, 3])
                 csv_data = df_res.to_csv(sep=';', index=False, encoding='utf-8-sig')
@@ -268,7 +271,7 @@ def interface_pesquisa_ampla():
                 )
                 c_info.caption("O arquivo CSV pode ser aberto no Excel.")
             st.divider()
-            # ---------------------------------
+            # ---------------------------
 
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
