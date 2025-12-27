@@ -1,173 +1,261 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
-import time
-import conexao
+import io
+import os
+from datetime import datetime
+import modulo_pf_cadastro as pf_core
 
-def get_conn():
-    try:
-        return psycopg2.connect(
-            host=conexao.host, port=conexao.port, database=conexao.database,
-            user=conexao.user, password=conexao.password
-        )
-    except: return None
+# --- CONFIGURAÇÕES DE DIRETÓRIO ---
+BASE_DIR_IMPORTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ARQUIVO IMPORTAÇÕES")
+if not os.path.exists(BASE_DIR_IMPORTS):
+    os.makedirs(BASE_DIR_IMPORTS)
 
-# --- DIALOGS (POP-UPS) ---
-
-@st.dialog("✏️ Editar Vínculo")
-def dialog_editar_vinculo(id_registro, telefone_atual):
-    st.write(f"Vinculando número: **{telefone_atual}**")
-    
-    conn = get_conn()
-    if not conn: st.error("Erro conexão"); return
-
-    # Busca clientes para o selectbox
-    try:
-        df_cli = pd.read_sql("SELECT id, nome, telefone FROM admin.clientes ORDER BY nome", conn)
-    except: df_cli = pd.DataFrame()
-    conn.close()
-
-    if df_cli.empty:
-        st.warning("Nenhum cliente cadastrado no módulo admin.")
-        return
-
-    # Cria lista de opções formatada
-    opcoes = df_cli.apply(lambda x: f"{x['nome']} | Tel: {x['telefone'] or 'S/N'} (ID: {x['id']})", axis=1)
-    
-    idx_cli = st.selectbox("Escolha o Cliente", range(len(df_cli)), format_func=lambda x: opcoes[x], index=None, placeholder="Digite para buscar...")
-
-    if st.button("💾 Salvar Vínculo"):
-        if idx_cli is not None:
-            cli_sel = df_cli.iloc[idx_cli]
-            try:
-                conn = get_conn()
-                cur = conn.cursor()
-                # Atualiza tabela de números
-                cur.execute("""
-                    UPDATE wapi_numeros 
-                    SET id_cliente = %s, nome_cliente = %s 
-                    WHERE id = %s
-                """, (int(cli_sel['id']), cli_sel['nome'], id_registro))
-                
-                # Opcional: Atualizar logs antigos deste número para manter histórico coerente
-                cur.execute("""
-                    UPDATE wapi_logs 
-                    SET id_cliente = %s, nome_cliente = %s 
-                    WHERE telefone = %s
-                """, (int(cli_sel['id']), cli_sel['nome'], telefone_atual))
-                
-                conn.commit()
-                conn.close()
-                st.success(f"Vinculado a {cli_sel['nome']}!")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e: st.error(f"Erro: {e}")
-        else:
-            st.warning("Selecione um cliente.")
-
-@st.dialog("👤 Visualizar Cliente")
-def dialog_ver_cliente(id_cliente):
-    conn = get_conn()
-    try:
-        df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {id_cliente}", conn)
-        conn.close()
-        if not df.empty:
-            row = df.iloc[0]
-            st.write(f"**Nome:** {row['nome']}")
-            st.write(f"**E-mail:** {row['email']}")
-            st.write(f"**Telefone:** {row['telefone']}")
-            st.write(f"**CPF:** {row.get('cpf', '-')}")
-        else:
-            st.warning("Cliente não encontrado (talvez excluído).")
-    except: st.error("Erro ao buscar dados.")
-
-@st.dialog("⚠️ Excluir Registro")
-def dialog_excluir_numero(id_registro, telefone):
-    st.error(f"Tem certeza que deseja esquecer o número {telefone}?")
-    st.warning("Isso não apaga os logs de mensagens, apenas o vínculo atual.")
-    
-    col1, col2 = st.columns(2)
-    if col1.button("Sim, Excluir", type="primary"):
-        conn = get_conn()
+def get_table_columns(table_name):
+    conn = pf_core.get_conn()
+    cols = []
+    if conn:
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM wapi_numeros WHERE id = %s", (id_registro,))
-            conn.commit()
+            cur.execute(f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table_name}'")
+            cols = cur.fetchall()
             conn.close()
-            st.success("Registro apagado!")
-            time.sleep(1)
-            st.rerun()
-        except: st.error("Erro ao excluir.")
+        except: pass
+    return cols
+
+def processar_importacao_lote(conn, df, table_name, mapping, import_id):
+    cur = conn.cursor()
+    try:
+        erros = []
+        df_proc = pd.DataFrame()
+        cols_order = []
+        if table_name == 'pf_telefones':
+            col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
+            col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
+            col_qualif = next((k for k, v in mapping.items() if v == 'tag_qualificacao'), None)
+            map_tels = {k: v for k, v in mapping.items() if v and v.startswith('telefone_')}
+            if not col_cpf: return 0, 0, ["Erro: Coluna 'CPF (Vínculo)' é obrigatória."]
+            new_rows = []
+            
+            # --- LOOP DE PROCESSAMENTO (LINHA A LINHA) ---
+            for _, row in df.iterrows():
+                cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
+                cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
+                if not cpf_limpo: continue
+                whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
+                qualif_val = str(row[col_qualif]) if col_qualif and pd.notna(row[col_qualif]) else None
+                
+                for col_origin, _ in map_tels.items():
+                    tel_raw = row[col_origin]
+                    if pd.notna(tel_raw):
+                        tel_limpo = pf_core.limpar_apenas_numeros(tel_raw)
+                        numero_final = None
+                        
+                        # --- REGRA DE OURO: CELULAR COM DDD (11 DÍGITOS) ---
+                        if len(tel_limpo) == 11:
+                            # Formato correto (Ex: 82999998888)
+                            numero_final = tel_limpo
+                        elif len(tel_limpo) == 13 and tel_limpo.startswith("55"):
+                            # Formato com DDI (Ex: 5582999998888) -> Remove o 55
+                            numero_final = tel_limpo[2:]
+                        elif len(tel_limpo) == 9:
+                            # Formato sem DDD (Ex: 999998888) -> Adiciona DDD 82 Padrão
+                            # Se quiser outro DDD, mude o "82" abaixo
+                            numero_final = "82" + tel_limpo
+                        
+                        # Se passou na regra, adiciona na lista para salvar
+                        if numero_final: 
+                            new_rows.append({
+                                'cpf_ref': cpf_limpo, 
+                                'numero': numero_final, 
+                                'tag_whats': whats_val, 
+                                'tag_qualificacao': qualif_val, 
+                                'importacao_id': import_id, 
+                                'data_atualizacao': datetime.now().strftime('%Y-%m-%d')
+                            })
+            
+            if not new_rows: return 0, 0, ["Nenhum telefone válido encontrado (Padrão exigido: 11 dígitos)."]
+            df_proc = pd.DataFrame(new_rows)
+            cols_order = list(df_proc.columns)
+        else:
+            # Lógica padrão para outras tabelas
+            df_proc = df.rename(columns=mapping)
+            cols_db = list(mapping.values())
+            df_proc = df_proc[cols_db].copy()
+            df_proc['importacao_id'] = import_id
+            if 'cpf' in df_proc.columns:
+                df_proc['cpf'] = df_proc['cpf'].astype(str).apply(pf_core.limpar_normalizar_cpf)
+                if table_name == 'pf_dados': df_proc = df_proc[df_proc['cpf'] != ""]
+            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
+            for col in cols_data:
+                if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
+            cols_order = list(df_proc.columns)
+
+        # --- OPERAÇÃO DE BANCO DE DADOS (COPY EXPERT) ---
+        staging_table = f"staging_import_{import_id}"
+        cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
+        output = io.StringIO()
+        df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
+        output.seek(0)
+        cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
+        
+        pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
+        qtd_novos, qtd_atualizados = 0, 0
+        if pk_field:
+            set_clause = ', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])
+            cur.execute(f"UPDATE {table_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
+            qtd_atualizados = cur.rowcount
+            cur.execute(f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_name} t WHERE t.{pk_field} = s.{pk_field})")
+            qtd_novos = cur.rowcount
+        else:
+            cur.execute(f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
+            qtd_novos = cur.rowcount
+            if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
+                cur.execute(f"UPDATE pf_dados d SET importacao_id = %s FROM {staging_table} s WHERE d.cpf = s.cpf_ref", (import_id,))
+            elif table_name == 'pf_contratos':
+                cur.execute(f"UPDATE pf_dados d SET importacao_id = %s FROM pf_emprego_renda e JOIN {staging_table} s ON e.matricula = s.matricula_ref WHERE d.cpf = e.cpf_ref", (import_id,))
+        return qtd_novos, qtd_atualizados, erros
+    except Exception as e: raise e
+
+def interface_importacao():
+    c_cancel, c_hist = st.columns([1, 4])
+    if c_cancel.button("⬅️ Cancelar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
+    if c_hist.button("📜 Ver Histórico Importação"): pass # (Simplificado)
+    st.divider()
     
-    if col2.button("Cancelar"):
-        st.rerun()
-
-# --- APP PRINCIPAL ---
-def app_numeros():
-    st.markdown("### 📒 Registro de Números (Conciliação)")
+    # --- MAPEAMENTO DE NOMES AMIGÁVEIS ---
+    mapa_tabelas = {
+        "Dados Cadastrais (CPF, Nome, RG...)": "pf_dados",
+        "Telefones": "pf_telefones",
+        "E-mails": "pf_emails",
+        "Endereços": "pf_enderecos",
+        "Emprego e Renda": "pf_emprego_renda",
+        "Contratos": "pf_contratos"
+    }
     
-    conn = get_conn()
-    if not conn: return
+    opcoes_tabelas = list(mapa_tabelas.keys())
 
-    # Filtros
-    c1, c2 = st.columns([3, 1])
-    busca = c1.text_input("🔍 Buscar (Telefone ou Nome)", placeholder="Digite para filtrar...")
-    filtro_tipo = c2.selectbox("Filtrar por", ["Todos", "Vinculados", "Sem Vínculo"])
+    if st.session_state.get('import_step', 1) == 1:
+        st.markdown("### 📤 Etapa 1: Upload")
+        
+        # Aviso sobre formato
+        st.warning("⚠️ **Atenção:** Ao salvar no Excel, escolha a opção: **CSV UTF-8 (Delimitado por vírgulas) (*.csv)**.")
+        
+        sel_amigavel = st.selectbox("Selecione o Tipo de Dado para Importar", opcoes_tabelas)
+        st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
+        
+        # Exibe colunas esperadas
+        tabela_selecionada = st.session_state['import_table']
+        cols_info = get_table_columns(tabela_selecionada)
+        ignorar = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
+        campos_visiveis = [col[0] for col in cols_info if col[0] not in ignorar]
+        
+        if campos_visiveis:
+            with st.expander("📋 Ver colunas esperadas para este arquivo", expanded=False):
+                st.info(f"O sistema espera um arquivo contendo informações para os seguintes campos:")
+                st.markdown(" ".join([f"`{c}`" for c in campos_visiveis]), unsafe_allow_html=True)
+        else:
+            st.warning("Não foi possível ler as colunas da tabela selecionada.")
 
-    # Query Base
-    sql = "SELECT id, telefone, id_cliente, nome_cliente, data_ultima_interacao FROM wapi_numeros WHERE 1=1"
-    
-    if filtro_tipo == "Vinculados": sql += " AND id_cliente IS NOT NULL"
-    if filtro_tipo == "Sem Vínculo": sql += " AND id_cliente IS NULL"
-    if busca: sql += f" AND (telefone ILIKE '%%{busca}%%' OR nome_cliente ILIKE '%%{busca}%%')"
-    
-    sql += " ORDER BY data_ultima_interacao DESC LIMIT 50"
+        uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
+        if uploaded_file:
+            try:
+                # --- LEITURA ROBUSTA (UTF-8 e LATIN-1) ---
+                uploaded_file.seek(0)
+                df = None
+                erro_leitura = None
 
-    df = pd.read_sql(sql, conn)
-    conn.close()
+                # Tentativa 1: Ponto e vírgula + UTF-8
+                try: df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
+                except UnicodeDecodeError:
+                    # Tentativa 2: Ponto e vírgula + Latin-1
+                    uploaded_file.seek(0)
+                    try: df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
+                    except: pass
+                except Exception: pass
 
-    if not df.empty:
-        # Cabeçalho
-        c_h1, c_h2, c_h3, c_h4 = st.columns([2, 3, 2, 2])
-        c_h1.markdown("**Telefone**")
-        c_h2.markdown("**Cliente Vinculado**")
-        c_h3.markdown("**Última Interação**")
-        c_h4.markdown("**Ações**")
+                # Se falhar, tenta vírgula
+                if df is None:
+                    uploaded_file.seek(0)
+                    try: df = pd.read_csv(uploaded_file, sep=',', encoding='utf-8')
+                    except UnicodeDecodeError:
+                        uploaded_file.seek(0)
+                        try: df = pd.read_csv(uploaded_file, sep=',', encoding='latin-1')
+                        except Exception as e: erro_leitura = str(e)
+                
+                if df is not None:
+                    st.session_state['import_df'] = df
+                    st.session_state['uploaded_file_name'] = uploaded_file.name
+                    st.success(f"Carregado com sucesso! {len(df)} linhas identificadas.")
+                    if st.button("Ir para Mapeamento", type="primary"):
+                        st.session_state['csv_map'] = {col: None for col in df.columns}
+                        st.session_state['current_csv_idx'] = 0
+                        st.session_state['import_step'] = 2
+                        st.rerun()
+                else:
+                    st.error(f"Não foi possível ler o arquivo. Verifique se é um CSV válido.\nDetalhe: {erro_leitura}")
+
+            except Exception as e: st.error(f"Erro crítico no upload: {e}")
+
+    elif st.session_state['import_step'] == 2:
+        st.markdown("### 🔗 Etapa 2: Mapeamento Visual")
+        df = st.session_state['import_df']
+        csv_cols = list(df.columns)
+        table_name = st.session_state['import_table']
+        
+        if table_name == 'pf_telefones':
+            db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
+        else:
+            db_cols_info = get_table_columns(table_name)
+            ignore = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
+            db_fields = [c[0] for c in db_cols_info if c[0] not in ignore]
+
+        c_l, c_r = st.columns([1, 2])
+        with c_l:
+            for idx, col in enumerate(csv_cols):
+                mapped = st.session_state['csv_map'].get(col)
+                txt = f"{idx+1}. {col} -> {'✅ '+mapped if mapped else '❓'}"
+                if idx == st.session_state.get('current_csv_idx', 0): st.info(txt, icon="👉")
+                else: 
+                    if st.button(txt, key=f"s_{idx}"): st.session_state['current_csv_idx'] = idx; st.rerun()
+        with c_r:
+            cols_b = st.columns(4)
+            if cols_b[0].button("🚫 IGNORAR", type="secondary"):
+                curr = csv_cols[st.session_state['current_csv_idx']]
+                st.session_state['csv_map'][curr] = "IGNORAR"
+                if st.session_state['current_csv_idx'] < len(csv_cols) - 1: st.session_state['current_csv_idx'] += 1
+                st.rerun()
+            for i, field in enumerate(db_fields):
+                if cols_b[(i+1)%4].button(f"📌 {field}", key=f"m_{field}"):
+                    curr = csv_cols[st.session_state['current_csv_idx']]
+                    st.session_state['csv_map'][curr] = field
+                    if st.session_state['current_csv_idx'] < len(csv_cols) - 1: st.session_state['current_csv_idx'] += 1
+                    st.rerun()
+
         st.divider()
+        if st.button("🚀 INICIAR IMPORTAÇÃO (BULK)", type="primary"):
+            conn = pf_core.get_conn()
+            if conn:
+                with st.spinner("Processando..."):
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("INSERT INTO pf_historico_importacoes (nome_arquivo) VALUES (%s) RETURNING id", (st.session_state['uploaded_file_name'],))
+                        imp_id = cur.fetchone()[0]
+                        conn.commit()
+                        final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
+                        novos, atualizados, erros = processar_importacao_lote(conn, df, table_name, final_map, imp_id)
+                        conn.commit()
+                        
+                        cur = conn.cursor()
+                        cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s WHERE id=%s", (novos, atualizados, len(erros), imp_id))
+                        conn.commit(); conn.close()
+                        
+                        st.session_state['import_stats'] = {'novos': novos, 'atualizados': atualizados, 'erros': len(erros)}
+                        st.session_state['import_step'] = 3; st.rerun()
+                    except Exception as e: st.error(f"Erro: {e}")
 
-        # CORREÇÃO APLICADA AQUI: Usando idx para gerar keys únicas
-        for idx, row in df.iterrows():
-            with st.container():
-                c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
-                
-                c1.write(row['telefone'])
-                
-                # Coluna Cliente
-                if row['id_cliente']:
-                    c2.success(f"🆔 {row['id_cliente']} - {row['nome_cliente']}")
-                else:
-                    c2.warning("⚠️ Sem Vínculo")
-                
-                # Data
-                data_fmt = pd.to_datetime(row['data_ultima_interacao']).strftime('%d/%m %H:%M')
-                c3.write(data_fmt)
-                
-                # Botões de Ação
-                b1, b2, b3 = c4.columns(3)
-                
-                # Adicionado _{idx} para garantir unicidade da chave
-                if b1.button("✏️", key=f"ed_{row['id']}_{idx}", help="Editar / Vincular"):
-                    dialog_editar_vinculo(row['id'], row['telefone'])
-                
-                if row['id_cliente']:
-                    if b2.button("👁️", key=f"ver_{row['id']}_{idx}", help="Ver Cliente"):
-                        dialog_ver_cliente(row['id_cliente'])
-                else:
-                    b2.write("-")
-
-                if b3.button("🗑️", key=f"del_{row['id']}_{idx}", help="Excluir Registro"):
-                    dialog_excluir_numero(row['id'], row['telefone'])
-                
-                st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-    else:
-        st.info("Nenhum registro encontrado.")
+    elif st.session_state['import_step'] == 3:
+        st.markdown("### ✅ Concluído")
+        s = st.session_state.get('import_stats', {})
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Novos", s.get('novos', 0)); c2.metric("Atualizados", s.get('atualizados', 0)); c3.metric("Erros", s.get('erros', 0))
+        if st.button("Finalizar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
