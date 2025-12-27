@@ -172,3 +172,4 @@ def app_numeros():
                 st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
     else:
         st.info("Nenhum registro encontrado.")
+        
