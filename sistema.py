@@ -35,6 +35,8 @@ try:
     import modulo_cliente
     import modulo_usuario
     import modulo_wapi
+    import modulo_whats_controlador  # <--- NOVO CONTROLADOR ADICIONADO
+    
     # Importação do novo módulo com tratamento de erro
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     
@@ -209,7 +211,7 @@ def main():
         elif mod == "OPERACIONAL":
             if sub == "Clientes": modulo_cliente.app_clientes()
             elif sub == "Usuários": modulo_usuario.app_usuarios()
-            elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica() # CHAMADA DO NOVO MÓDULO
-            elif sub == "WhatsApp": modulo_wapi.app_wapi()
+            elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica() 
+            elif sub == "WhatsApp": modulo_whats_controlador.app_wapi() # <--- CHAMADA CORRIGIDA AQUI
 
 if __name__ == "__main__": main()
