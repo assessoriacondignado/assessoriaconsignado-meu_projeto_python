@@ -38,26 +38,45 @@ def listar_modelos_mensagens():
 # --- FUNÇÕES DE BANCO ---
 
 def buscar_pedidos_para_tarefa():
+    """Busca pedidos para vincular à nova tarefa. ATUALIZADO para trazer IDs de cliente e produto."""
     conn = get_conn()
     if conn:
-        query = "SELECT id, codigo, nome_cliente, nome_produto, categoria_produto, observacao as obs_pedido, status as status_pedido FROM pedidos ORDER BY data_criacao DESC"
+        # ATUALIZAÇÃO: Incluídos id_cliente e id_produto na busca
+        query = """
+            SELECT id, codigo, nome_cliente, nome_produto, categoria_produto, 
+                   observacao as obs_pedido, status as status_pedido,
+                   id_cliente, id_produto 
+            FROM pedidos 
+            ORDER BY data_criacao DESC
+        """
         df = pd.read_sql(query, conn)
         conn.close()
         return df
     return pd.DataFrame()
 
 def buscar_tarefas_lista():
+    """Lista tarefas buscando dados VIVOS de cliente/produto via ID. ATUALIZADO."""
     conn = get_conn()
     if conn:
-        # Adicionado JOIN com clientes_usuarios para trazer o email para a pesquisa
+        # ATUALIZAÇÃO: Join direto com Admin.Clientes e Produtos usando os IDs gravados na tarefa
         query = """
-            SELECT t.id, t.id_pedido, t.data_previsao, t.observacao_tarefa, t.status, t.data_criacao,
-                   p.codigo as codigo_pedido, p.nome_cliente, p.cpf_cliente, p.telefone_cliente,
-                   p.nome_produto, p.categoria_produto, p.observacao as obs_pedido,
-                   c.email as email_cliente
+            SELECT t.id, t.id_pedido, t.id_cliente, t.id_produto, 
+                   t.data_previsao, t.observacao_tarefa, t.status, t.data_criacao,
+                   
+                   -- Dados do Pedido (Referência)
+                   p.codigo as codigo_pedido, p.observacao as obs_pedido,
+                   
+                   -- Dados VIVOS do Cliente (Via id_cliente da tarefa)
+                   c.nome as nome_cliente, c.cpf as cpf_cliente, 
+                   c.telefone as telefone_cliente, c.email as email_cliente,
+                   
+                   -- Dados VIVOS do Produto (Via id_produto da tarefa)
+                   pr.nome as nome_produto, pr.tipo as categoria_produto
+
             FROM tarefas t
-            JOIN pedidos p ON t.id_pedido = p.id
-            LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id
+            LEFT JOIN pedidos p ON t.id_pedido = p.id
+            LEFT JOIN admin.clientes c ON t.id_cliente = c.id
+            LEFT JOIN produtos_servicos pr ON t.id_produto = pr.id
             ORDER BY t.data_criacao DESC
         """
         df = pd.read_sql(query, conn)
@@ -74,18 +93,26 @@ def buscar_historico_tarefa(id_tarefa):
         return df
     return pd.DataFrame()
 
-def criar_tarefa(id_pedido, data_prev, obs_tarefa, dados_pedido, avisar_cli):
+def criar_tarefa(id_pedido, id_cliente, id_produto, data_prev, obs_tarefa, dados_pedido, avisar_cli):
+    """Cria tarefa salvando os IDs de vínculo. ATUALIZADO."""
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("INSERT INTO tarefas (id_pedido, data_previsao, observacao_tarefa, status) VALUES (%s, %s, %s, 'Solicitado') RETURNING id", 
-                        (int(id_pedido), data_prev, obs_tarefa))
+            # ATUALIZAÇÃO: Inserção dos novos campos id_cliente e id_produto
+            sql = """
+                INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) 
+                VALUES (%s, %s, %s, %s, %s, 'Solicitado') 
+                RETURNING id
+            """
+            cur.execute(sql, (int(id_pedido), int(id_cliente), int(id_produto), data_prev, obs_tarefa))
+            
             id_tarefa = cur.fetchone()[0]
-            cur.execute("INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) VALUES (%s, 'Solicitado', 'Tarefa Criada')",(id_tarefa,))
+            cur.execute("INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) VALUES (%s, 'Solicitado', 'Tarefa Criada')", (id_tarefa,))
             conn.commit()
             conn.close()
             
+            # Notificação W-API (mantém lógica original)
             if avisar_cli and dados_pedido.get('telefone_cliente'):
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
@@ -97,7 +124,9 @@ def criar_tarefa(id_pedido, data_prev, obs_tarefa, dados_pedido, avisar_cli):
                                       .replace("{data_previsao}", data_prev.strftime('%d/%m/%Y'))
                         modulo_wapi.enviar_msg_api(instancia[0], instancia[1], dados_pedido['telefone_cliente'], msg)
             return True
-        except Exception as e: st.error(f"Erro SQL: {e}")
+        except Exception as e: 
+            st.error(f"Erro SQL: {e}")
+            if conn: conn.close()
     return False
 
 def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos, avisar, modelo_msg_escolhido="Automático (Padrão)"):
@@ -225,17 +254,47 @@ def dialog_confirmar_exclusao(id_tarefa):
 @st.dialog("➕ Nova Tarefa")
 def dialog_nova_tarefa():
     df_ped = buscar_pedidos_para_tarefa()
-    if df_ped.empty: return st.warning("Sem pedidos.")
+    if df_ped.empty: 
+        st.warning("Sem pedidos.")
+        return
+        
     opcoes = df_ped.apply(lambda x: f"{x['codigo']} | {x['nome_cliente']}", axis=1)
     idx_ped = st.selectbox("Selecione o Pedido", range(len(df_ped)), format_func=lambda x: opcoes[x], index=None)
+    
     if idx_ped is not None:
         sel = df_ped.iloc[idx_ped]
         with st.form("form_create_task"):
+            # Exibe confirmação visual
+            st.write(f"**Cliente:** {sel['nome_cliente']}")
+            st.write(f"**Produto:** {sel['nome_produto']}")
+            st.divider()
+            
             d_prev = st.date_input("Data Previsão", value=date.today(), format="DD/MM/YYYY")
             obs_tar = st.text_area("Observação")
+            
             if st.form_submit_button("Criar Tarefa"):
-                if criar_tarefa(sel['id'], d_prev, obs_tar, {'codigo_pedido': sel['codigo'], 'nome_cliente': sel['nome_cliente'], 'telefone_cliente': None, 'nome_produto': sel['nome_produto']}, True):
-                    st.rerun()
+                # Prepara dados para o aviso (mantendo snapshot para a msg rápida)
+                dados_msg = {
+                    'codigo_pedido': sel['codigo'], 
+                    'nome_cliente': sel['nome_cliente'], 
+                    'telefone_cliente': None, 
+                    'nome_produto': sel['nome_produto']
+                }
+                
+                # ATUALIZAÇÃO: Chama a função passando os 3 IDs
+                sucesso = criar_tarefa(
+                    id_pedido=sel['id'], 
+                    id_cliente=sel['id_cliente'],
+                    id_produto=sel['id_produto'],
+                    data_prev=d_prev, 
+                    obs_tarefa=obs_tar, 
+                    dados_pedido=dados_msg, 
+                    avisar_cli=True
+                )
+                
+                if sucesso:
+                    st.success("Tarefa criada com sucesso!")
+                    time.sleep(1); st.rerun()
 
 # --- APP PRINCIPAL ---
 def app_tarefas():
@@ -346,4 +405,3 @@ def app_tarefas():
 
 if __name__ == "__main__":
     app_tarefas()
-    
