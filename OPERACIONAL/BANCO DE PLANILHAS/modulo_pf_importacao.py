@@ -22,12 +22,16 @@ def get_table_columns(table_name):
         except: pass
     return cols
 
-def processar_importacao_lote(conn, df, table_name, mapping, import_id):
+def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_path_original):
     cur = conn.cursor()
     try:
         erros = []
         df_proc = pd.DataFrame()
         cols_order = []
+        
+        # Atualiza o caminho do arquivo no banco
+        cur.execute("UPDATE pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
+
         if table_name == 'pf_telefones':
             col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
             col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
@@ -35,49 +39,27 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
             map_tels = {k: v for k, v in mapping.items() if v and v.startswith('telefone_')}
             if not col_cpf: return 0, 0, ["Erro: Coluna 'CPF (Vínculo)' é obrigatória."]
             new_rows = []
-            
-            # --- LOOP DE PROCESSAMENTO (LINHA A LINHA) ---
             for _, row in df.iterrows():
                 cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
                 cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
                 if not cpf_limpo: continue
                 whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
                 qualif_val = str(row[col_qualif]) if col_qualif and pd.notna(row[col_qualif]) else None
-                
                 for col_origin, _ in map_tels.items():
                     tel_raw = row[col_origin]
                     if pd.notna(tel_raw):
                         tel_limpo = pf_core.limpar_apenas_numeros(tel_raw)
                         numero_final = None
+                        if len(tel_limpo) == 11: numero_final = tel_limpo
+                        elif len(tel_limpo) == 13 and tel_limpo.startswith("55"): numero_final = tel_limpo[2:]
+                        elif len(tel_limpo) == 9: numero_final = "82" + tel_limpo
                         
-                        # --- REGRA DE OURO: CELULAR COM DDD (11 DÍGITOS) ---
-                        if len(tel_limpo) == 11:
-                            # Formato correto (Ex: 82999998888)
-                            numero_final = tel_limpo
-                        elif len(tel_limpo) == 13 and tel_limpo.startswith("55"):
-                            # Formato com DDI (Ex: 5582999998888) -> Remove o 55
-                            numero_final = tel_limpo[2:]
-                        elif len(tel_limpo) == 9:
-                            # Formato sem DDD (Ex: 999998888) -> Adiciona DDD 82 Padrão
-                            # Se quiser outro DDD, mude o "82" abaixo
-                            numero_final = "82" + tel_limpo
-                        
-                        # Se passou na regra, adiciona na lista para salvar
                         if numero_final: 
-                            new_rows.append({
-                                'cpf_ref': cpf_limpo, 
-                                'numero': numero_final, 
-                                'tag_whats': whats_val, 
-                                'tag_qualificacao': qualif_val, 
-                                'importacao_id': import_id, 
-                                'data_atualizacao': datetime.now().strftime('%Y-%m-%d')
-                            })
-            
-            if not new_rows: return 0, 0, ["Nenhum telefone válido encontrado (Padrão exigido: 11 dígitos)."]
+                            new_rows.append({'cpf_ref': cpf_limpo, 'numero': numero_final, 'tag_whats': whats_val, 'tag_qualificacao': qualif_val, 'importacao_id': import_id, 'data_atualizacao': datetime.now().strftime('%Y-%m-%d')})
+            if not new_rows: return 0, 0, ["Nenhum telefone válido."]
             df_proc = pd.DataFrame(new_rows)
             cols_order = list(df_proc.columns)
         else:
-            # Lógica padrão para outras tabelas
             df_proc = df.rename(columns=mapping)
             cols_db = list(mapping.values())
             df_proc = df_proc[cols_db].copy()
@@ -90,7 +72,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
             cols_order = list(df_proc.columns)
 
-        # --- OPERAÇÃO DE BANCO DE DADOS (COPY EXPERT) ---
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         output = io.StringIO()
@@ -116,13 +97,94 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id):
         return qtd_novos, qtd_atualizados, erros
     except Exception as e: raise e
 
+# --- NOVA FUNÇÃO: VISUALIZAR HISTÓRICO ---
+def interface_historico():
+    st.markdown("### 📜 Histórico de Importações")
+    if st.button("⬅️ Voltar para Importação"):
+        st.session_state['import_step'] = 1
+        st.rerun()
+    
+    conn = pf_core.get_conn()
+    if not conn: return
+
+    try:
+        # Busca os dados do histórico ordenados por data
+        df_hist = pd.read_sql("""
+            SELECT id, nome_arquivo, data_importacao, qtd_novos, qtd_atualizados, qtd_erros, caminho_arquivo_original, caminho_arquivo_erro 
+            FROM pf_historico_importacoes 
+            ORDER BY id DESC
+        """, conn)
+        conn.close()
+
+        if df_hist.empty:
+            st.info("Nenhum histórico encontrado.")
+            return
+
+        # Cabeçalho da Tabela
+        st.markdown("""
+        <div style="display: flex; font-weight: bold; padding: 10px; background-color: #f0f2f6; border-radius: 5px;">
+            <div style="flex: 0.5;">ID</div>
+            <div style="flex: 2;">Arquivo</div>
+            <div style="flex: 1.5;">Data</div>
+            <div style="flex: 1.5;">Status (N/A/E)</div>
+            <div style="flex: 1.5; text-align: center;">Arquivo Original</div>
+            <div style="flex: 1.5; text-align: center;">Arquivo Erros</div>
+        </div>
+        <hr style="margin: 5px 0;">
+        """, unsafe_allow_html=True)
+
+        for _, row in df_hist.iterrows():
+            c1, c2, c3, c4, c5, c6 = st.columns([0.5, 2, 1.5, 1.5, 1.5, 1.5])
+            
+            c1.write(f"#{row['id']}")
+            c2.write(row['nome_arquivo'])
+            c3.write(pd.to_datetime(row['data_importacao']).strftime('%d/%m/%Y %H:%M'))
+            c4.write(f"✅{row['qtd_novos']} 🔄{row['qtd_atualizados']} ❌{row['qtd_erros']}")
+            
+            # Botão Download Original
+            with c5:
+                path_orig = row['caminho_arquivo_original']
+                if path_orig and os.path.exists(path_orig):
+                    try:
+                        with open(path_orig, "rb") as f:
+                            st.download_button("⬇️ Baixar", f, file_name=os.path.basename(path_orig), key=f"dw_orig_{row['id']}")
+                    except: st.error("Erro leitura")
+                else:
+                    st.caption("-")
+
+            # Botão Download Erro
+            with c6:
+                path_erro = row['caminho_arquivo_erro']
+                if path_erro and os.path.exists(path_erro):
+                    try:
+                        with open(path_erro, "rb") as f:
+                            st.download_button("⚠️ Ver Erros", f, file_name=os.path.basename(path_erro), key=f"dw_err_{row['id']}")
+                    except: st.error("Erro leitura")
+                else:
+                    st.caption("-")
+            
+            st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"Erro ao carregar histórico: {e}")
+
+# --- FUNÇÃO PRINCIPAL ---
 def interface_importacao():
+    # Se o estado for 'historico', mostra a tela de histórico
+    if st.session_state.get('import_step') == 'historico':
+        interface_historico()
+        return
+
     c_cancel, c_hist = st.columns([1, 4])
     if c_cancel.button("⬅️ Cancelar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
-    if c_hist.button("📜 Ver Histórico Importação"): pass # (Simplificado)
+    
+    # Botão para ativar o modo histórico
+    if c_hist.button("📜 Ver Histórico Importação"): 
+        st.session_state['import_step'] = 'historico'
+        st.rerun()
+        
     st.divider()
     
-    # --- MAPEAMENTO DE NOMES AMIGÁVEIS ---
     mapa_tabelas = {
         "Dados Cadastrais (CPF, Nome, RG...)": "pf_dados",
         "Telefones": "pf_telefones",
@@ -131,19 +193,15 @@ def interface_importacao():
         "Emprego e Renda": "pf_emprego_renda",
         "Contratos": "pf_contratos"
     }
-    
     opcoes_tabelas = list(mapa_tabelas.keys())
 
     if st.session_state.get('import_step', 1) == 1:
         st.markdown("### 📤 Etapa 1: Upload")
-        
-        # Aviso sobre formato
         st.warning("⚠️ **Atenção:** Ao salvar no Excel, escolha a opção: **CSV UTF-8 (Delimitado por vírgulas) (*.csv)**.")
         
         sel_amigavel = st.selectbox("Selecione o Tipo de Dado para Importar", opcoes_tabelas)
         st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
         
-        # Exibe colunas esperadas
         tabela_selecionada = st.session_state['import_table']
         cols_info = get_table_columns(tabela_selecionada)
         ignorar = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
@@ -159,21 +217,17 @@ def interface_importacao():
         uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
         if uploaded_file:
             try:
-                # --- LEITURA ROBUSTA (UTF-8 e LATIN-1) ---
                 uploaded_file.seek(0)
                 df = None
                 erro_leitura = None
 
-                # Tentativa 1: Ponto e vírgula + UTF-8
                 try: df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
                 except UnicodeDecodeError:
-                    # Tentativa 2: Ponto e vírgula + Latin-1
                     uploaded_file.seek(0)
                     try: df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
                     except: pass
                 except Exception: pass
 
-                # Se falhar, tenta vírgula
                 if df is None:
                     uploaded_file.seek(0)
                     try: df = pd.read_csv(uploaded_file, sep=',', encoding='utf-8')
@@ -185,6 +239,14 @@ def interface_importacao():
                 if df is not None:
                     st.session_state['import_df'] = df
                     st.session_state['uploaded_file_name'] = uploaded_file.name
+                    
+                    # SALVAR ARQUIVO NO DISCO PARA DOWNLOAD POSTERIOR
+                    caminho_fisico = os.path.join(BASE_DIR_IMPORTS, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}")
+                    with open(caminho_fisico, "wb") as f:
+                        uploaded_file.seek(0)
+                        f.write(uploaded_file.getbuffer())
+                    st.session_state['uploaded_file_path'] = caminho_fisico # Guarda para usar no banco
+                    
                     st.success(f"Carregado com sucesso! {len(df)} linhas identificadas.")
                     if st.button("Ir para Mapeamento", type="primary"):
                         st.session_state['csv_map'] = {col: None for col in df.columns}
@@ -242,7 +304,11 @@ def interface_importacao():
                         imp_id = cur.fetchone()[0]
                         conn.commit()
                         final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
-                        novos, atualizados, erros = processar_importacao_lote(conn, df, table_name, final_map, imp_id)
+                        
+                        # Passamos o caminho do arquivo salvo
+                        path_file = st.session_state.get('uploaded_file_path', '')
+                        
+                        novos, atualizados, erros = processar_importacao_lote(conn, df, table_name, final_map, imp_id, path_file)
                         conn.commit()
                         
                         cur = conn.cursor()
