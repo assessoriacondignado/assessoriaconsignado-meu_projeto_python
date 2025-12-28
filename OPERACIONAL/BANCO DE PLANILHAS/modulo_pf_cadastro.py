@@ -255,6 +255,10 @@ def dialog_visualizar_cliente(cpf_cliente):
         c2.write(f"**PIS:** {g.get('pis', '-')}")
         c2.write(f"**CNH:** {g.get('cnh', '-')}")
         
+        # Mostra o ID da Campanha se existir
+        if g.get('id_campanha'):
+            st.markdown(f"**🆔 ID Campanha:** {g.get('id_campanha')}")
+
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
             st.info(f"📍 {end.get('rua')}, {end.get('bairro')} - {end.get('cidade')}/{end.get('uf')}")
@@ -289,7 +293,7 @@ def dialog_visualizar_cliente(cpf_cliente):
                     st.caption("Nenhum contrato localizado para esta matrícula.")
 
     with t3:
-        for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_qualificacao')})")
+        for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
         for m in dados.get('emails', []): st.write(f"📧 {m.get('email')}")
 
 # --- CONFIGURAÇÃO DOS CAMPOS DE CADASTRO ---
@@ -303,6 +307,7 @@ CONFIG_CADASTRO = {
         {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
         {"label": "PIS", "key": "pis", "tabela": "geral", "tipo": "texto"},
         {"label": "CNH", "key": "cnh", "tabela": "geral", "tipo": "texto"},
+        {"label": "ID Campanha", "key": "id_campanha", "tabela": "geral", "tipo": "texto"},
     ],
     "Contatos": [
         {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True, "extras": ["tag_whats", "tag_qualificacao"]},
