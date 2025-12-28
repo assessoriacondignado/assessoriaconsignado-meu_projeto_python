@@ -83,27 +83,77 @@ def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
 # --- MOTORES INTERNOS ---
 
 def _motor_simples(conn, lista_cpfs):
-    if not lista_cpfs: return pd.DataFrame()
-    placeholders = ",".join(["%s"] * len(lista_cpfs))
-    # Busca dados básicos da tabela principal
-    query = f"""
-        SELECT id, nome, cpf, rg, data_nascimento, nome_mae, id_campanha 
-        FROM banco_pf.pf_dados 
-        WHERE cpf IN ({placeholders})
     """
-    df = pd.read_sql(query, conn, params=tuple(lista_cpfs))
-    conn.close()
-    return df
-
-def _motor_contratos_detalhado(conn, lista_cpfs):
-    # Lógica transferida do antigo módulo de pesquisa
+    Exportação Simples: Dados Cadastrais + Contatos Agrupados.
+    Mantém 1 linha por CPF.
+    """
     if not lista_cpfs: conn.close(); return pd.DataFrame()
     
     try:
         placeholders = ",".join(["%s"] * len(lista_cpfs))
         params_cpfs = tuple(lista_cpfs)
 
-        # 1. Dados Pessoais
+        # 1. Dados Pessoais Básicos (REMOVIDO id_campanha)
+        query_dados = f"""
+            SELECT id, nome, cpf, rg, data_nascimento, nome_mae 
+            FROM banco_pf.pf_dados 
+            WHERE cpf IN ({placeholders})
+        """
+        df_dados = pd.read_sql(query_dados, conn, params=params_cpfs)
+        
+        # 2. Telefones (Agrupados numa única célula, separados por |)
+        query_tel = f"""
+            SELECT cpf_ref, STRING_AGG(numero || ' (' || COALESCE(tag_qualificacao,'-') || ')', ' | ') as telefones 
+            FROM banco_pf.pf_telefones 
+            WHERE cpf_ref IN ({placeholders}) 
+            GROUP BY cpf_ref
+        """
+        df_tel = pd.read_sql(query_tel, conn, params=params_cpfs)
+
+        # 3. Emails (Agrupados)
+        query_email = f"""
+            SELECT cpf_ref, STRING_AGG(email, ' | ') as emails 
+            FROM banco_pf.pf_emails 
+            WHERE cpf_ref IN ({placeholders}) 
+            GROUP BY cpf_ref
+        """
+        df_email = pd.read_sql(query_email, conn, params=params_cpfs)
+
+        # 4. Endereços (Agrupados)
+        query_end = f"""
+            SELECT cpf_ref, STRING_AGG(rua || ', ' || bairro || ' - ' || cidade || '/' || uf || ' (' || cep || ')', ' | ') as enderecos 
+            FROM banco_pf.pf_enderecos 
+            WHERE cpf_ref IN ({placeholders}) 
+            GROUP BY cpf_ref
+        """
+        df_end = pd.read_sql(query_end, conn, params=params_cpfs)
+
+        # 5. Juntar tudo (Merge)
+        df_final = df_dados.merge(df_tel, left_on='cpf', right_on='cpf_ref', how='left')\
+                           .merge(df_email, left_on='cpf', right_on='cpf_ref', how='left')\
+                           .merge(df_end, left_on='cpf', right_on='cpf_ref', how='left')
+
+        # Remove colunas de referência duplicadas
+        cols_drop = [c for c in df_final.columns if '_ref' in c]
+        df_final.drop(columns=cols_drop, inplace=True, errors='ignore')
+        
+        conn.close()
+        return df_final
+        
+    except Exception as e:
+        print(f"Erro exportação simples: {e}")
+        conn.close()
+        return pd.DataFrame()
+
+def _motor_contratos_detalhado(conn, lista_cpfs):
+    # Lógica Completa (com Contratos e Emprego)
+    if not lista_cpfs: conn.close(); return pd.DataFrame()
+    
+    try:
+        placeholders = ",".join(["%s"] * len(lista_cpfs))
+        params_cpfs = tuple(lista_cpfs)
+
+        # 1. Dados Pessoais Completos
         df_dados = pd.read_sql(f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})", conn, params=params_cpfs)
         
         # 2. Contatos Agrupados
@@ -122,7 +172,7 @@ def _motor_contratos_detalhado(conn, lista_cpfs):
         
         # 4. Contratos Dinâmicos
         cur = conn.cursor()
-        cur.execute("SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = 'banco_pf' AND table_name LIKE 'pf_contratos%'")
+        cur.execute("SELECT table_schema, table_name FROM information_schema.tables WHERE (table_schema = 'banco_pf' OR table_schema = 'admin') AND table_name LIKE 'pf_contratos%'")
         tabelas_contratos = cur.fetchall()
         
         df_contratos_final = pd.DataFrame()
