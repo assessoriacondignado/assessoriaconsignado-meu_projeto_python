@@ -237,7 +237,12 @@ def dialog_visualizar_cliente(cpf_cliente):
     
     if not g: st.error("Cliente não encontrado."); return
     
-    st.markdown(f"### 👤 {g.get('nome', '')}")
+    # Tratamento para evitar aparecer "None" se o nome estiver nulo no banco
+    nome_display = g.get('nome')
+    if nome_display is None or str(nome_display).strip() == "":
+        nome_display = "Nome não informado"
+
+    st.markdown(f"### 👤 {nome_display}")
     st.markdown(f"**CPF:** {cpf_vis}")
     st.divider()
     t1, t2, t3 = st.tabs(["📋 Cadastro", "💼 Profissional & Contratos", "📞 Contatos"])
