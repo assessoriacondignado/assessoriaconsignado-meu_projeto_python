@@ -57,9 +57,6 @@ def excluir_modelo(id_mod):
 # =============================================================================
 
 def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
-    """
-    Função central que o módulo de pesquisa vai chamar.
-    """
     conn = pf_core.get_conn()
     if not conn: return pd.DataFrame()
     
@@ -72,38 +69,89 @@ def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
         tipo_proc = 'SIMPLES'
     
     if tipo_proc == 'CONTRATOS_DETALHADO':
+        # Agora o modelo detalhado TAMBÉM usará a lógica pivotada para contatos, 
+        # mas mantendo a linha por contrato.
         return _motor_contratos_detalhado(conn, lista_cpfs)
     else:
         return _motor_simples(conn, lista_cpfs)
 
-# --- MOTORES INTERNOS ---
+# --- FUNÇÃO AUXILIAR DE PIVOTAGEM ---
 
-def _pivotar_dados(df, index_col, value_cols, prefixo):
+def _pivotar_dados(df, index_col, value_cols, prefixo_base):
     """
-    Função auxiliar para transformar linhas em colunas (1º Telefone, 2º Telefone...)
+    Transforma linhas em colunas agrupadas sequencialmente.
+    Ex: Telefone 1, Whats 1, Qualif 1, Telefone 2, Whats 2...
     """
     if df.empty: return pd.DataFrame()
     
-    # Numera os itens por CPF (1, 2, 3...)
+    # 1. Numera a sequência de cada item por CPF (1, 2, 3...)
+    # Garante que a ordem original do banco seja respeitada
     df['seq'] = df.groupby(index_col).cumcount() + 1
     
-    # Pivota a tabela
+    # 2. Pivota a tabela
+    # index=CPF, columns=Sequencia, values=[Campos]
     df_pivot = df.pivot(index=index_col, columns='seq', values=value_cols)
     
-    # Renomeia as colunas para formato plano (Ex: Telefone 1, Whats 1)
-    if isinstance(df_pivot.columns, pd.MultiIndex):
-        # Se pivotou múltiplas colunas (ex: numero e tag_whats)
-        df_pivot.columns = [f"{col[0].capitalize()} {col[1]}" for col in df_pivot.columns]
-    else:
-        # Se pivotou uma única coluna
-        df_pivot.columns = [f"{prefixo} {c}" for c in df_pivot.columns]
-        
-    return df_pivot.reset_index()
+    # 3. Achata e Renomeia as colunas Hierárquicas
+    # O Pandas cria um MultiIndex (Ex: ('numero', 1), ('tag_whats', 1))
+    # Precisamos transformar em: "Telefone 1", "Whats 1"
+    
+    new_columns = []
+    
+    # Identifica o número máximo de itens (colunas geradas)
+    max_seq = df['seq'].max()
+    
+    # Reorganiza para ficar agrupado: Todos do 1, depois Todos do 2...
+    for i in range(1, max_seq + 1):
+        for col_name in value_cols:
+            # Mapeamento de nomes amigáveis
+            nome_final = col_name.capitalize()
+            if col_name == 'numero': nome_final = "Telefone"
+            elif col_name == 'tag_whats': nome_final = "Whats"
+            elif col_name == 'tag_qualificacao': nome_final = "Qualificacao"
+            elif col_name == 'rua': nome_final = "Logradouro"
+            
+            # Tenta acessar a coluna pivotada se ela existir para aquele índice
+            if (col_name, i) in df_pivot.columns:
+                # Renomeia para algo plano
+                # Ex: "Telefone 1"
+                new_col_name = f"{nome_final} {i}"
+                
+                # Adiciona no dataframe final achatado (flat)
+                # Mas espera... o pivot já está feito, só precisamos renomear e reordenar.
+                pass 
+
+    # Maneira mais fácil de achatar e depois reordenar:
+    df_pivot.columns = [f"{c[0]}_{c[1]}" for c in df_pivot.columns]
+    df_pivot = df_pivot.reset_index()
+    
+    # Agora reordenamos as colunas para ficar (Tel_1, Whats_1, Qualif_1, Tel_2...)
+    # Em vez de (Tel_1, Tel_2... Whats_1, Whats_2...)
+    cols_ordenadas = [index_col]
+    
+    for i in range(1, max_seq + 1):
+        for col_name in value_cols:
+            col_chave = f"{col_name}_{i}"
+            if col_chave in df_pivot.columns:
+                # Renomeia para ficar bonito
+                nome_amigavel = col_name.capitalize()
+                if col_name == 'numero': nome_amigavel = "Telefone"
+                elif col_name == 'tag_whats': nome_amigavel = "Whats"
+                elif col_name == 'tag_qualificacao': nome_amigavel = "Qualif."
+                
+                novo_nome = f"{nome_amigavel} {i}"
+                df_pivot.rename(columns={col_chave: novo_nome}, inplace=True)
+                cols_ordenadas.append(novo_nome)
+                
+    # Retorna apenas as colunas ordenadas e existentes
+    return df_pivot[cols_ordenadas]
+
+# --- MOTORES INTERNOS ---
 
 def _motor_simples(conn, lista_cpfs):
     """
     Exportação Simples: 1 Linha por CPF.
-    Contatos expandidos em colunas (Telefone 1, Telefone 2, Email 1...)
+    Contatos expandidos em colunas sequenciais.
     """
     if not lista_cpfs: conn.close(); return pd.DataFrame()
     
@@ -111,49 +159,30 @@ def _motor_simples(conn, lista_cpfs):
         placeholders = ",".join(["%s"] * len(lista_cpfs))
         params_cpfs = tuple(lista_cpfs)
 
-        # 1. Dados Pessoais Básicos
-        query_dados = f"""
-            SELECT nome, cpf, rg, data_nascimento, nome_mae 
-            FROM banco_pf.pf_dados 
-            WHERE cpf IN ({placeholders})
-        """
+        # 1. Dados Pessoais
+        query_dados = f"SELECT id, nome, cpf, rg, data_nascimento, nome_mae FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})"
         df_dados = pd.read_sql(query_dados, conn, params=params_cpfs)
         
-        # 2. Telefones (Expandidos)
-        query_tel = f"""
-            SELECT cpf_ref, numero, tag_whats, tag_qualificacao 
-            FROM banco_pf.pf_telefones 
-            WHERE cpf_ref IN ({placeholders})
-            ORDER BY cpf_ref, id ASC -- Ordena para manter consistência (Tel 1 sempre o primeiro cadastrado)
-        """
+        # 2. Telefones (Busca tudo para pivotar)
+        query_tel = f"SELECT cpf_ref, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN ({placeholders}) ORDER BY cpf_ref, id"
         df_tel_raw = pd.read_sql(query_tel, conn, params=params_cpfs)
-        # Pivota telefones (Gera colunas: Numero 1, Tag_whats 1, Tag_qualificacao 1, Numero 2...)
         df_tel_pivot = _pivotar_dados(df_tel_raw, 'cpf_ref', ['numero', 'tag_whats', 'tag_qualificacao'], 'Tel')
 
-        # 3. Emails (Expandidos)
-        query_email = f"""
-            SELECT cpf_ref, email 
-            FROM banco_pf.pf_emails 
-            WHERE cpf_ref IN ({placeholders})
-        """
+        # 3. Emails
+        query_email = f"SELECT cpf_ref, email FROM banco_pf.pf_emails WHERE cpf_ref IN ({placeholders}) ORDER BY cpf_ref, id"
         df_email_raw = pd.read_sql(query_email, conn, params=params_cpfs)
         df_email_pivot = _pivotar_dados(df_email_raw, 'cpf_ref', ['email'], 'Email')
 
-        # 4. Endereços (Expandidos)
-        query_end = f"""
-            SELECT cpf_ref, rua, bairro, cidade, uf, cep 
-            FROM banco_pf.pf_enderecos 
-            WHERE cpf_ref IN ({placeholders})
-        """
+        # 4. Endereços
+        query_end = f"SELECT cpf_ref, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN ({placeholders}) ORDER BY cpf_ref, id"
         df_end_raw = pd.read_sql(query_end, conn, params=params_cpfs)
         df_end_pivot = _pivotar_dados(df_end_raw, 'cpf_ref', ['rua', 'bairro', 'cidade', 'uf', 'cep'], 'End')
 
-        # 5. Juntar tudo (Merge)
+        # 5. Merge Geral
         df_final = df_dados.merge(df_tel_pivot, left_on='cpf', right_on='cpf_ref', how='left')\
                            .merge(df_email_pivot, left_on='cpf', right_on='cpf_ref', how='left')\
                            .merge(df_end_pivot, left_on='cpf', right_on='cpf_ref', how='left')
 
-        # Limpeza
         cols_drop = [c for c in df_final.columns if '_ref' in c]
         df_final.drop(columns=cols_drop, inplace=True, errors='ignore')
         
@@ -166,24 +195,32 @@ def _motor_simples(conn, lista_cpfs):
         return pd.DataFrame()
 
 def _motor_contratos_detalhado(conn, lista_cpfs):
-    # Lógica Completa (com Contratos e Emprego) mantida a mesma, apenas agrupando contatos para não explodir linhas
-    # (Pode ser mantida a lógica anterior de string_agg se o objetivo for manter 1 linha por contrato e não poluir com 10 colunas de telefone)
-    # VOU MANTER A LÓGICA ANTERIOR (STRING_AGG) PARA ESSE MODELO ESPECÍFICO, POIS É "DETALHADO POR CONTRATO"
-    
+    """
+    Exportação Detalhada: 1 Linha por Contrato + Dados Pessoais + Contatos Pivotados
+    """
     if not lista_cpfs: conn.close(); return pd.DataFrame()
     
     try:
         placeholders = ",".join(["%s"] * len(lista_cpfs))
         params_cpfs = tuple(lista_cpfs)
 
-        # 1. Dados Pessoais Completos
+        # 1. Dados Pessoais
         df_dados = pd.read_sql(f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})", conn, params=params_cpfs)
         
-        # 2. Contatos Agrupados (MANTIDO O AGRUPAMENTO PARA ESSE RELATÓRIO)
-        df_tel = pd.read_sql(f"SELECT cpf_ref, STRING_AGG(numero, ' | ') as telefones FROM banco_pf.pf_telefones WHERE cpf_ref IN ({placeholders}) GROUP BY cpf_ref", conn, params=params_cpfs)
-        df_email = pd.read_sql(f"SELECT cpf_ref, STRING_AGG(email, ' | ') as emails FROM banco_pf.pf_emails WHERE cpf_ref IN ({placeholders}) GROUP BY cpf_ref", conn, params=params_cpfs)
-        df_end = pd.read_sql(f"SELECT cpf_ref, STRING_AGG(rua || ' - ' || cidade || '/' || uf, ' | ') as enderecos FROM banco_pf.pf_enderecos WHERE cpf_ref IN ({placeholders}) GROUP BY cpf_ref", conn, params=params_cpfs)
+        # 2. Contatos Pivotados (Mesma lógica do simples, mas aplicado aqui)
+        # Telefones
+        query_tel = f"SELECT cpf_ref, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN ({placeholders}) ORDER BY cpf_ref, id"
+        df_tel = _pivotar_dados(pd.read_sql(query_tel, conn, params=params_cpfs), 'cpf_ref', ['numero', 'tag_whats', 'tag_qualificacao'], 'Tel')
+        
+        # Emails
+        query_email = f"SELECT cpf_ref, email FROM banco_pf.pf_emails WHERE cpf_ref IN ({placeholders}) ORDER BY cpf_ref, id"
+        df_email = _pivotar_dados(pd.read_sql(query_email, conn, params=params_cpfs), 'cpf_ref', ['email'], 'Email')
+        
+        # Endereços
+        query_end = f"SELECT cpf_ref, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN ({placeholders}) ORDER BY cpf_ref, id"
+        df_end = _pivotar_dados(pd.read_sql(query_end, conn, params=params_cpfs), 'cpf_ref', ['rua', 'bairro', 'cidade', 'uf', 'cep'], 'End')
 
+        # Merge dos dados cadastrais com contatos
         df_full = df_dados.merge(df_tel, left_on='cpf', right_on='cpf_ref', how='left')\
                           .merge(df_email, left_on='cpf', right_on='cpf_ref', how='left')\
                           .merge(df_end, left_on='cpf', right_on='cpf_ref', how='left')
@@ -216,12 +253,14 @@ def _motor_contratos_detalhado(conn, lista_cpfs):
         if not df_contratos_final.empty:
             df_export = df_base.merge(df_contratos_final, left_on='matricula', right_on='matricula_ref', how='inner')
         else:
-            df_export = pd.DataFrame()
+            df_export = pd.DataFrame() # Sem contratos
 
         if not df_export.empty:
             cols_drop = [c for c in df_export.columns if '_ref' in c or c == 'id']; df_export.drop(columns=cols_drop, inplace=True, errors='ignore')
+            
+            # Reordena para priorizar identificação e contrato, jogando contatos pro final ou meio
             cols = list(df_export.columns)
-            pri = ['nome', 'cpf', 'convenio', 'matricula', 'contrato', 'telefones']
+            pri = ['nome', 'cpf', 'convenio', 'matricula', 'contrato']
             final_cols = [c for c in pri if c in cols] + [c for c in cols if c not in pri]
             df_export = df_export[final_cols]
             
