@@ -31,21 +31,30 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         table_full_name = f"banco_pf.{table_name}"
         
+        # 1. Atualiza caminho do arquivo
         cur.execute("UPDATE banco_pf.pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
 
+        # Verifica colunas do banco
+        cols_banco = [c[0] for c in get_table_columns(table_name)]
+
+        # --- LÓGICA ESPECÍFICA PARA TELEFONES ---
         if table_name == 'pf_telefones':
             col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
             col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
             col_qualif = next((k for k, v in mapping.items() if v == 'tag_qualificacao'), None)
             map_tels = {k: v for k, v in mapping.items() if v and v.startswith('telefone_')}
+            
             if not col_cpf: return 0, 0, ["Erro: Coluna 'CPF (Vínculo)' é obrigatória."]
+            
             new_rows = []
             for _, row in df.iterrows():
                 cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
                 cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
                 if not cpf_limpo: continue
+                
                 whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
                 qualif_val = str(row[col_qualif]) if col_qualif and pd.notna(row[col_qualif]) else None
+                
                 for col_origin, _ in map_tels.items():
                     tel_raw = row[col_origin]
                     if pd.notna(tel_raw):
@@ -53,51 +62,115 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                         numero_final = None
                         if len(tel_limpo) == 11: numero_final = tel_limpo
                         elif len(tel_limpo) == 13 and tel_limpo.startswith("55"): numero_final = tel_limpo[2:]
-                        elif len(tel_limpo) == 9: numero_final = "82" + tel_limpo
+                        elif len(tel_limpo) == 9: numero_final = "82" + tel_limpo 
                         
                         if numero_final: 
-                            new_rows.append({'cpf_ref': cpf_limpo, 'numero': numero_final, 'tag_whats': whats_val, 'tag_qualificacao': qualif_val, 'importacao_id': import_id, 'data_atualizacao': datetime.now().strftime('%Y-%m-%d')})
-            if not new_rows: return 0, 0, ["Nenhum telefone válido."]
+                            row_dict = {
+                                'cpf_ref': cpf_limpo, 
+                                'numero': numero_final, 
+                                'tag_whats': whats_val, 
+                                'tag_qualificacao': qualif_val, 
+                                'data_atualizacao': datetime.now().strftime('%Y-%m-%d')
+                            }
+                            if 'importacao_id' in cols_banco:
+                                row_dict['importacao_id'] = import_id
+                            new_rows.append(row_dict)
+                            
+            if not new_rows: return 0, 0, ["Nenhum telefone válido encontrado após limpeza."]
             df_proc = pd.DataFrame(new_rows)
+            df_proc.drop_duplicates(subset=['cpf_ref', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
+
+        # --- LÓGICA GENÉRICA ---
         else:
             df_proc = df.rename(columns=mapping)
             cols_db = list(mapping.values())
             df_proc = df_proc[cols_db].copy()
-            df_proc['importacao_id'] = import_id
+            
+            if 'importacao_id' in cols_banco:
+                df_proc['importacao_id'] = import_id
+            
             if 'cpf' in df_proc.columns:
                 df_proc['cpf'] = df_proc['cpf'].astype(str).apply(pf_core.limpar_normalizar_cpf)
                 if table_name == 'pf_dados': df_proc = df_proc[df_proc['cpf'] != ""]
-            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao']
+            
+            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego']
             for col in cols_data:
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
+            
             cols_order = list(df_proc.columns)
+            pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
+            if pk_field:
+                df_proc.drop_duplicates(subset=[pk_field], keep='last', inplace=True)
 
+        # 3. Processo de Carga
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
+        
         output = io.StringIO()
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
+        
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
         qtd_novos, qtd_atualizados = 0, 0
+        
         if pk_field:
-            set_clause = ', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])
+            # --- LÓGICA DE UPDATE COM APPEND (ACUMULAR ID) ---
+            set_parts = []
+            for c in cols_order:
+                if c == pk_field: continue
+                
+                if c == 'importacao_id' and table_name == 'pf_dados':
+                    # Concatena: Se já tem valor, adiciona vírgula. Se não, usa o novo.
+                    expr = f"CASE WHEN t.importacao_id IS NULL OR t.importacao_id = '' THEN s.importacao_id::text ELSE t.importacao_id || ', ' || s.importacao_id::text END"
+                    set_parts.append(f"{c} = {expr}")
+                else:
+                    set_parts.append(f"{c} = s.{c}")
+            
+            set_clause = ', '.join(set_parts)
+            
             cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
             qtd_atualizados = cur.rowcount
+            
+            # INSERT PARA NOVOS
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
+            
+            # ATUALIZAÇÃO DO VÍNCULO NA TABELA PAI (PF_DADOS) COM APPEND
+            str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
-                cur.execute(f"UPDATE banco_pf.pf_dados d SET importacao_id = %s FROM {staging_table} s WHERE d.cpf = s.cpf_ref", (import_id,))
+                cur.execute(f"""
+                    UPDATE banco_pf.pf_dados d 
+                    SET importacao_id = CASE 
+                        WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s 
+                        ELSE d.importacao_id || ', ' || %s 
+                    END 
+                    FROM {staging_table} s 
+                    WHERE d.cpf = s.cpf_ref
+                """, (str_imp, str_imp))
+                
             elif table_name == 'pf_contratos':
-                cur.execute(f"UPDATE banco_pf.pf_dados d SET importacao_id = %s FROM banco_pf.pf_emprego_renda e JOIN {staging_table} s ON e.matricula = s.matricula_ref WHERE d.cpf = e.cpf_ref", (import_id,))
+                cur.execute(f"""
+                    UPDATE banco_pf.pf_dados d 
+                    SET importacao_id = CASE 
+                        WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s 
+                        ELSE d.importacao_id || ', ' || %s 
+                    END 
+                    FROM banco_pf.pf_emprego_renda e 
+                    JOIN {staging_table} s ON e.matricula = s.matricula_ref 
+                    WHERE d.cpf = e.cpf_ref
+                """, (str_imp, str_imp))
+        
         return qtd_novos, qtd_atualizados, erros
+
     except Exception as e: raise e
 
+# --- INTERFACE HISTÓRICO E PRINCIPAL (MANTIDAS IGUAIS) ---
 def interface_historico():
     st.markdown("### 📜 Histórico de Importações")
     if st.button("⬅️ Voltar para Importação"):
@@ -115,9 +188,7 @@ def interface_historico():
         """, conn)
         conn.close()
 
-        if df_hist.empty:
-            st.info("Nenhum histórico encontrado.")
-            return
+        if df_hist.empty: st.info("Nenhum histórico encontrado."); return
 
         st.markdown("""<div style="display: flex; font-weight: bold; padding: 10px; background-color: #f0f2f6; border-radius: 5px;"><div style="flex: 0.5;">ID</div><div style="flex: 2;">Arquivo</div><div style="flex: 1.5;">Data</div><div style="flex: 1.5;">Status (N/A/E)</div><div style="flex: 1.5; text-align: center;">Arquivo Original</div><div style="flex: 1.5; text-align: center;">Arquivo Erros</div></div><hr style="margin: 5px 0;">""", unsafe_allow_html=True)
 
@@ -132,14 +203,14 @@ def interface_historico():
                 if path_orig and os.path.exists(path_orig):
                     try:
                         with open(path_orig, "rb") as f: st.download_button("⬇️ Baixar", f, file_name=os.path.basename(path_orig), key=f"dw_orig_{row['id']}")
-                    except: st.error("Erro leitura")
+                    except: st.error("Erro")
                 else: st.caption("-")
             with c6:
                 path_erro = row['caminho_arquivo_erro']
                 if path_erro and os.path.exists(path_erro):
                     try:
                         with open(path_erro, "rb") as f: st.download_button("⚠️ Ver Erros", f, file_name=os.path.basename(path_erro), key=f"dw_err_{row['id']}")
-                    except: st.error("Erro leitura")
+                    except: st.error("Erro")
                 else: st.caption("-")
             st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
     except Exception as e: st.error(f"Erro ao carregar histórico: {e}")

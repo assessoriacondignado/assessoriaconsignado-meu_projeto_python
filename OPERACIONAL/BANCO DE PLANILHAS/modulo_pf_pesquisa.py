@@ -4,6 +4,7 @@ from datetime import date
 import re
 import time
 import modulo_pf_cadastro as pf_core
+# Importação do novo módulo de exportação
 import modulo_pf_exportacao as pf_export
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
@@ -14,8 +15,8 @@ CAMPOS_CONFIG = {
         {"label": "RG", "coluna": "d.rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
         {"label": "Idade", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
-        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
-        {"label": "ID Campanha", "coluna": "d.id_campanha", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
+        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
+        # ID Campanha removido conforme solicitado
     ],
     "Endereços": [
         {"label": "Logradouro", "coluna": "ende.rua", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"},
@@ -34,7 +35,6 @@ CAMPOS_CONFIG = {
         {"label": "Contrato Empréstimo", "coluna": "ctr.contrato", "tipo": "texto", "tabela": "banco_pf.pf_contratos"}
     ],
     "Contratos CLT / CAGED": [
-        # ATUALIZADO PARA BANCO_PF
         {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CBO (Cargo)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
@@ -43,7 +43,8 @@ CAMPOS_CONFIG = {
         {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_contratos_clt"}
     ],
     "Controle de Importação": [
-        {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "numero", "tabela": "banco_pf.pf_dados"}
+        # Alterado para 'texto' para permitir busca "Contém" (ex: "13, 15")
+        {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
     ]
 }
 
@@ -84,7 +85,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
-            # ATUALIZADO: JOIN com banco_pf.pf_contratos_clt
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
@@ -103,6 +103,7 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                     active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
+                # LÓGICA DE IDADE (Campo Virtual)
                 if coluna == 'virtual_idade':
                     col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
 
@@ -158,7 +159,7 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             conn.close()
             return df.fillna(""), total
         except Exception as e: 
-            st.error(f"Erro SQL: {e}") 
+            st.error(f"Erro SQL: {e}"); 
             return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
@@ -223,7 +224,7 @@ def interface_pesquisa_rapida():
         if not df_lista.empty:
             st.markdown(f"**Resultados encontrados: {total}**")
             
-            # Layout Tabela (Igual Pesquisa Ampla)
+            # --- LAYOUT ATUALIZADO (IGUAL PESQUISA AMPLA) ---
             st.markdown("""
             <div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;">
                 <div style="flex: 2;">Ações</div>
@@ -349,15 +350,14 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
             
-            # --- ÁREA DE EXPORTAÇÃO (INTEGRADA COM MÓDULO EXPORTAÇÃO) ---
+            # --- ÁREA DE EXPORTAÇÃO INTEGRADA ---
             with st.expander("📂 Exportar Dados", expanded=False):
-                # Busca modelos do novo módulo
+                # Busca modelos do módulo de exportação
                 df_modelos = pf_export.listar_modelos_ativos()
                 
                 if not df_modelos.empty:
                     c_sel, c_btn = st.columns([3, 1])
                     
-                    # Dropdown de modelos
                     opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
                     idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x])
                     modelo_selecionado = df_modelos.iloc[idx_mod]
@@ -370,7 +370,7 @@ def interface_pesquisa_ampla():
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999)
                             lista_cpfs = df_total['cpf'].unique().tolist()
                             
-                            # Chama o novo módulo para gerar o DF
+                            # Chama o novo módulo de exportação
                             df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], lista_cpfs)
                             
                             if not df_final.empty:
@@ -383,7 +383,7 @@ def interface_pesquisa_ampla():
                                 )
                                 st.success(f"Arquivo gerado com {len(df_final)} linhas!")
                             else:
-                                st.warning("A exportação retornou vazio (verifique se os clientes possuem os dados requeridos pelo modelo).")
+                                st.warning("A exportação retornou vazio.")
                 else:
                     st.warning("Nenhum modelo de exportação configurado.")
 
@@ -432,7 +432,7 @@ def interface_pesquisa_ampla():
                             st.rerun()
             st.divider()
             
-            # Tabela de Resultados Visual
+            # Tabela de Resultados Visual (Igual Pesquisa Rápida)
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
