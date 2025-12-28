@@ -78,6 +78,14 @@ def converter_data_br_iso(valor):
         except ValueError: continue
     return None
 
+def calcular_idade_hoje(dt_nasc):
+    """Calcula a idade baseada na data de nascimento"""
+    if not dt_nasc: return None
+    hoje = date.today()
+    if isinstance(dt_nasc, datetime): dt_nasc = dt_nasc.date()
+    # Subtrai 1 se o aniversário ainda não ocorreu este ano
+    return hoje.year - dt_nasc.year - ((hoje.month, hoje.day) < (dt_nasc.month, dt_nasc.day))
+
 def buscar_referencias(tipo):
     conn = get_conn()
     if conn:
@@ -120,8 +128,6 @@ def carregar_dados_completos(cpf):
                     placeholders = ",".join(["%s"] * len(matr_list))
                     cur = conn.cursor()
                     
-                    # A) Busca todas as tabelas que começam com 'pf_contratos' ou 'admin.pf_contratos'
-                    #    Exceto a tabela de importação de contratos_clt que tratamos separado
                     cur.execute("""
                         SELECT table_schema, table_name 
                         FROM information_schema.tables 
@@ -132,32 +138,21 @@ def carregar_dados_completos(cpf):
                     
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
-                        # Pula a tabela CLT padrão se quiser tratar separado, ou inclui aqui
-                        # Vamos incluir tudo genericamente
                         try:
-                            # Tenta buscar colunas padrão de contrato
                             query = f"SELECT * FROM {nome_completo} WHERE matricula_ref IN ({placeholders})"
                             df_temp = pd.read_sql(query, conn, params=matr_list).fillna("")
                             
                             if not df_temp.empty:
                                 records = df_temp.to_dict('records')
-                                # Adiciona metadado da origem
                                 for r in records:
                                     r['origem_tabela'] = tabela
                                     dados['contratos'].append(r)
-                                    
-                                    # Se for a tabela CLT específica, popula também dados_clt para compatibilidade
                                     if 'clt' in tabela:
                                         dados['dados_clt'].append(r)
-
-                        except Exception as e:
-                            # Ignora se a tabela não tiver a coluna matricula_ref ou der erro
-                            continue
+                        except: continue
                     
-        except Exception as e:
-            print(f"Erro ao carregar dados: {e}") # Log interno
-        finally: 
-            conn.close()
+        except Exception as e: print(f"Erro ao carregar dados: {e}") 
+        finally: conn.close()
             
     return dados
 
@@ -195,10 +190,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows(): cur.execute("INSERT INTO pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], r['matricula'], r['dados_extras']))
             
-            # Nota: Contratos dinâmicos geralmente são somente leitura ou importados. 
-            # Aqui salvamos apenas na tabela padrão pf_contratos se houver dados novos manuais.
             if not df_contr.empty:
-                # Filtra apenas os que são da tabela padrão (sem origem definida ou origem='pf_contratos')
                 df_padrao = df_contr[df_contr.get('origem_tabela', 'pf_contratos') == 'pf_contratos']
                 if not df_padrao.empty:
                      cur.execute("DELETE FROM pf_contratos WHERE matricula_ref IN (SELECT matricula FROM pf_emprego_renda WHERE cpf_ref = %s)", (cpf_chave,))
@@ -228,7 +220,7 @@ def dialog_excluir_pf(cpf, nome):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pf(cpf): st.success("Apagado!"); time.sleep(1); st.rerun()
 
-# --- VISUALIZAÇÃO LUPA (ATUALIZADA) ---
+# --- VISUALIZAÇÃO LUPA ---
 @st.dialog("👁️ Detalhes do Cliente")
 def dialog_visualizar_cliente(cpf_cliente):
     cpf_vis = formatar_cpf_visual(cpf_cliente)
@@ -237,7 +229,6 @@ def dialog_visualizar_cliente(cpf_cliente):
     
     if not g: st.error("Cliente não encontrado."); return
     
-    # Tratamento para evitar aparecer "None" se o nome estiver nulo no banco
     nome_display = g.get('nome')
     if nome_display is None or str(nome_display).strip() == "":
         nome_display = "Nome não informado"
@@ -250,12 +241,15 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t1:
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
-        c1.write(f"**Nascimento:** {nasc.strftime('%d/%m/%Y') if isinstance(nasc, (date, datetime)) else '-'}")
+        # Cálculo da Idade
+        idade = calcular_idade_hoje(nasc)
+        txt_nasc = f"{nasc.strftime('%d/%m/%Y')} ({idade} anos)" if idade is not None and isinstance(nasc, (date, datetime)) else "-"
+        
+        c1.write(f"**Nascimento:** {txt_nasc}")
         c1.write(f"**RG:** {g.get('rg', '-')}")
         c2.write(f"**PIS:** {g.get('pis', '-')}")
         c2.write(f"**CNH:** {g.get('cnh', '-')}")
         
-        # Mostra o ID da Campanha se existir
         if g.get('id_campanha'):
             st.markdown(f"**🆔 ID Campanha:** {g.get('id_campanha')}")
 
@@ -274,17 +268,14 @@ def dialog_visualizar_cliente(cpf_cliente):
             with st.expander(f"🏢 {emp.get('convenio')} | Matr: {matr}", expanded=True):
                 st.caption(f"Extras: {emp.get('dados_extras', '-')}")
                 
-                # Filtra contratos desta matrícula
                 ctrs_vinc = [c for c in all_contratos if c.get('matricula_ref') == matr]
                 
                 if ctrs_vinc:
-                    # Agrupa por tabela de origem
                     df_ctrs = pd.DataFrame(ctrs_vinc)
                     if 'origem_tabela' in df_ctrs.columns:
                         grupos = df_ctrs.groupby('origem_tabela')
                         for origem, grupo in grupos:
                             st.markdown(f"**📄 Fonte: {origem.replace('pf_contratos_', '').upper()}**")
-                            # Exibe colunas relevantes dinamicamente, removendo IDs internos
                             cols_show = [c for c in grupo.columns if c not in ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'origem_tabela']]
                             st.dataframe(grupo[cols_show], hide_index=True)
                     else:

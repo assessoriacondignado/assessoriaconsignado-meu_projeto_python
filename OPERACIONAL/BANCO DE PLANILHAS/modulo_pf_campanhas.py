@@ -4,7 +4,7 @@ import json
 import time
 import re
 from datetime import date
-# Importações dos módulos vizinhos
+# Importações dos módulos que estão na mesma pasta
 import modulo_pf_cadastro as pf_core
 import modulo_pf_pesquisa as pf_pesquisa
 
@@ -51,7 +51,10 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                     active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
-                
+                # --- TRATAMENTO PARA IDADE (COLUNA VIRTUAL) ---
+                if coluna == 'virtual_idade':
+                    col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
+
                 # Tratamento de operador Vazio
                 if op == "∅" or op == "Vazio": 
                     conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')")
@@ -391,7 +394,7 @@ def app_campanhas():
 
             fe1, fe2, fe3, fe4 = st.columns([2, 1.5, 2, 1])
             ex_campo = fe1.selectbox("Campo Extra", opcoes_campos, key="cp_ex")
-            ex_op = fe2.selectbox("Op.", ["=", ">", "<", "Contém"], key="op_ex")
+            ex_op = fe2.selectbox("Operador", ["=", ">", "<", "Contém"], key="op_ex")
             ex_val = fe3.text_input("Valor", key="val_ex")
             
             if fe4.button("➕ Add", key="add_ex"):

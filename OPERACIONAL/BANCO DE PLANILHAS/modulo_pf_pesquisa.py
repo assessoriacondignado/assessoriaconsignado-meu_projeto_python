@@ -6,13 +6,14 @@ import time
 import modulo_pf_cadastro as pf_core
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
-# CORREÇÃO: Alterado alias 'end' para 'ende' para evitar conflito com palavra reservada SQL
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "pf_dados"},
         {"label": "CPF", "coluna": "d.cpf", "tipo": "texto", "tabela": "pf_dados"},
         {"label": "RG", "coluna": "d.rg", "tipo": "texto", "tabela": "pf_dados"},
         {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "pf_dados"},
+        # --- NOVO CAMPO: IDADE (VIRTUAL) ---
+        {"label": "Idade", "coluna": "virtual_idade", "tipo": "numero", "tabela": "pf_dados"},
         {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "pf_dados"}
     ],
     "Endereços": [
@@ -79,7 +80,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM pf_dados d "
             
-            # CORREÇÃO: Alterado alias 'end' para 'ende' aqui também
             joins_map = {
                 'pf_telefones': "JOIN pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'pf_emails': "JOIN pf_emails em ON d.cpf = em.cpf_ref",
@@ -98,6 +98,10 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                     active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
+                # --- TRATAMENTO PARA IDADE (COLUNA VIRTUAL) ---
+                if coluna == 'virtual_idade':
+                    col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
+
                 if op == "∅": 
                     conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')"); continue
                 if val_raw is None or str(val_raw).strip() == "": continue
@@ -408,4 +412,3 @@ def interface_pesquisa_ampla():
             if cp1.button("⬅️ Ant.") and st.session_state['pagina_atual'] > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
             if cp3.button("Próx. ➡️"): st.session_state['pagina_atual'] += 1; st.rerun()
         else: st.warning("Nenhum registro encontrado.")
-        
