@@ -13,7 +13,8 @@ CAMPOS_CONFIG = {
         {"label": "RG", "coluna": "d.rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
         {"label": "Idade", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
-        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
+        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "ID Campanha", "coluna": "d.id_campanha", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
     ],
     "Endereços": [
         {"label": "Logradouro", "coluna": "ende.rua", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"},
@@ -45,6 +46,7 @@ CAMPOS_CONFIG = {
 }
 
 # --- FUNÇÕES SQL ---
+
 def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50):
     conn = pf_core.get_conn()
     if conn:
@@ -137,19 +139,144 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             full_joins = " ".join(active_joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             
+            # Contagem para paginação
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {full_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total = cur.fetchone()[0]
             
+            # Busca paginada
             offset = (pagina - 1) * itens_por_pagina
-            query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}"
+            # Se for exportação total (limite muito alto), ajusta
+            limit_clause = f"LIMIT {itens_por_pagina} OFFSET {offset}" if itens_por_pagina < 9999999 else ""
+            
+            query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome {limit_clause}"
             df = pd.read_sql(query, conn, params=tuple(params))
-            conn.close(); return df.fillna(""), total
+            conn.close()
+            return df.fillna(""), total
         except Exception as e: 
-            st.error(f"Erro SQL: {e}"); 
+            st.error(f"Erro SQL: {e}") 
             return pd.DataFrame(), 0
     return pd.DataFrame(), 0
+
+# --- GERADOR DE RELATÓRIO DETALHADO (MODELO CONTRATOS) ---
+def gerar_relatorio_contratos_completo(cpfs_alvo):
+    """
+    Gera um DataFrame complexo:
+    1. Baseado nos CPFs filtrados.
+    2. Busca todas as tabelas de contratos dinamicamente.
+    3. Agrega telefones, emails e endereços para não duplicar linhas excessivamente.
+    4. Garante 1 linha por Contrato (referência principal).
+    """
+    conn = pf_core.get_conn()
+    if not conn or not cpfs_alvo: return pd.DataFrame()
+    
+    try:
+        # Prepara a lista de CPFs para a query IN
+        placeholders = ",".join(["%s"] * len(cpfs_alvo))
+        params_cpfs = tuple(cpfs_alvo)
+
+        # 1. Busca Dados Pessoais (Base)
+        query_dados = f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})"
+        df_dados = pd.read_sql(query_dados, conn, params=params_cpfs)
+        
+        # 2. Busca Dados Agregados (Telefones, Emails, Endereços)
+        # Agrupa múltiplos registros em uma única célula para manter a linha única por contrato
+        query_tel = f"SELECT cpf_ref, STRING_AGG(numero || ' (' || COALESCE(tag_qualificacao,'') || ')', ' | ') as telefones FROM banco_pf.pf_telefones WHERE cpf_ref IN ({placeholders}) GROUP BY cpf_ref"
+        df_tel = pd.read_sql(query_tel, conn, params=params_cpfs)
+        
+        query_email = f"SELECT cpf_ref, STRING_AGG(email, ' | ') as emails FROM banco_pf.pf_emails WHERE cpf_ref IN ({placeholders}) GROUP BY cpf_ref"
+        df_email = pd.read_sql(query_email, conn, params=params_cpfs)
+        
+        query_end = f"SELECT cpf_ref, STRING_AGG(rua || ', ' || bairro || ' - ' || cidade || '/' || uf || ' (' || cep || ')', ' | ') as enderecos FROM banco_pf.pf_enderecos WHERE cpf_ref IN ({placeholders}) GROUP BY cpf_ref"
+        df_end = pd.read_sql(query_end, conn, params=params_cpfs)
+
+        # Merge dos dados cadastrais
+        df_full = df_dados.merge(df_tel, left_on='cpf', right_on='cpf_ref', how='left')\
+                          .merge(df_email, left_on='cpf', right_on='cpf_ref', how='left')\
+                          .merge(df_end, left_on='cpf', right_on='cpf_ref', how='left')
+        
+        # Limpa colunas de join duplicadas
+        cols_drop = [c for c in df_full.columns if '_ref' in c]
+        df_full.drop(columns=cols_drop, inplace=True, errors='ignore')
+
+        # 3. Busca Empregos (Necessário para vincular contrato -> matricula -> cpf)
+        query_emp = f"SELECT cpf_ref, convenio, matricula, dados_extras as emprego_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN ({placeholders})"
+        df_emp = pd.read_sql(query_emp, conn, params=params_cpfs)
+        
+        # 4. Busca Dinâmica de Contratos (Todas as tabelas pf_contratos%)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT table_schema, table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'banco_pf' AND table_name LIKE 'pf_contratos%'
+        """)
+        tabelas_contratos = cur.fetchall()
+        
+        df_contratos_final = pd.DataFrame()
+        
+        if not df_emp.empty:
+            matriculas = df_emp['matricula'].dropna().unique().tolist()
+            if matriculas:
+                placeholders_mat = ",".join(["%s"] * len(matriculas))
+                params_mat = tuple(matriculas)
+                
+                for schema, tabela in tabelas_contratos:
+                    try:
+                        # Tenta ler a tabela de contratos
+                        query_ctr = f"SELECT *, '{tabela}' as origem_contrato FROM {schema}.{tabela} WHERE matricula_ref IN ({placeholders_mat})"
+                        df_temp = pd.read_sql(query_ctr, conn, params=params_mat)
+                        
+                        # Padronização de colunas (caso variem)
+                        if not df_temp.empty:
+                            # Remove colunas técnicas que não interessam no relatório
+                            df_temp = df_temp.drop(columns=['id', 'data_criacao', 'data_atualizacao', 'importacao_id'], errors='ignore')
+                            df_contratos_final = pd.concat([df_contratos_final, df_temp], ignore_index=True)
+                    except: continue
+
+        # 5. Consolidação Final (Vínculo: Dados -> Emprego -> Contrato)
+        # Se o cliente não tiver contrato, ele deve aparecer? O modelo diz "usar contrato como referência". 
+        # Se não tem contrato, não tem linha. (Inner Join implícito pela lógica)
+        
+        # Join Dados + Emprego
+        df_base = df_full.merge(df_emp, left_on='cpf', right_on='cpf_ref', how='inner')
+        
+        # Join (Dados+Emprego) + Contratos
+        if not df_contratos_final.empty:
+            df_export = df_base.merge(df_contratos_final, left_on='matricula', right_on='matricula_ref', how='inner')
+        else:
+            # Se não achou nenhum contrato, retorna vazio
+            df_export = pd.DataFrame()
+
+        # Limpeza final e Ordenação
+        if not df_export.empty:
+            cols_drop = [c for c in df_export.columns if '_ref' in c or c == 'id']
+            df_export.drop(columns=cols_drop, inplace=True, errors='ignore')
+            
+            # Ordenação Solicitada: 1º CPF, 2º Convênio, 3º Matrícula
+            cols_sort = []
+            if 'cpf' in df_export.columns: cols_sort.append('cpf')
+            if 'convenio' in df_export.columns: cols_sort.append('convenio')
+            if 'matricula' in df_export.columns: cols_sort.append('matricula')
+            
+            if cols_sort:
+                df_export.sort_values(by=cols_sort, inplace=True)
+                
+            # Organização de Colunas (Layout solicitado: Dados -> Tel -> Email -> End -> Emprego -> Contrato)
+            # Reordenamos movendo as colunas conhecidas para o início
+            cols = list(df_export.columns)
+            prioridade = ['nome', 'cpf', 'rg', 'data_nascimento', 'telefones', 'emails', 'enderecos', 'convenio', 'matricula']
+            
+            ordered_cols = [c for c in prioridade if c in cols] + [c for c in cols if c not in prioridade]
+            df_export = df_export[ordered_cols]
+
+        conn.close()
+        return df_export
+
+    except Exception as e:
+        st.error(f"Erro ao gerar relatório detalhado: {e}")
+        conn.close()
+        return pd.DataFrame()
 
 # --- FUNÇÃO DE EXCLUSÃO EM LOTE ---
 def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
@@ -213,7 +340,6 @@ def interface_pesquisa_rapida():
             st.markdown(f"**Resultados encontrados: {total}**")
             
             # --- LAYOUT ATUALIZADO (IGUAL PESQUISA AMPLA) ---
-            # Cabeçalho da tabela
             st.markdown("""
             <div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;">
                 <div style="flex: 2;">Ações</div>
@@ -223,11 +349,8 @@ def interface_pesquisa_rapida():
             </div>
             """, unsafe_allow_html=True)
 
-            # Linhas da tabela
             for _, row in df_lista.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
-                
-                # Coluna de Ações (Botões)
                 with c1:
                     b1, b2, b3 = st.columns(3)
                     with b1:
@@ -240,15 +363,11 @@ def interface_pesquisa_rapida():
                     with b3:
                         if st.button("🗑️", key=f"d_fast_{row['id']}", help="Excluir"): 
                             pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
-                
-                # Dados
                 c2.write(str(row['id']))
                 c3.write(pf_core.formatar_cpf_visual(row['cpf']))
                 c4.write(row['nome'])
-                
                 st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
             
-            # Paginação
             cp1, cp2, cp3 = st.columns([1, 3, 1])
             if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pagina_atual', 1) > 1: 
                 st.session_state['pagina_atual'] -= 1
@@ -339,16 +458,43 @@ def interface_pesquisa_ampla():
         
         if not df_res.empty:
             st.divider()
-            with st.expander("📂 Exportar Dados (CSV)", expanded=False):
-                c_csv, c_info = st.columns([1, 3])
-                csv_data = df_res.to_csv(sep=';', index=False, encoding='utf-8-sig')
-                c_csv.download_button(label="⬇️ Baixar CSV", data=csv_data, file_name="resultado_pesquisa_pf.csv", mime="text/csv")
-                c_info.caption("O arquivo CSV pode ser aberto no Excel.")
+            # --- ÁREA DE AÇÕES EM MASSA ---
             
+            with st.expander("📂 Exportar Dados", expanded=False):
+                # Seletor de Tipo de Exportação
+                tipo_export = st.radio("Escolha o Modelo de Exportação:", ["📄 Lista Simples (Tela)", "📑 Modelo Contratos (Detalhado)"])
+                
+                c_btn_exp, c_info = st.columns([1, 3])
+                
+                if tipo_export == "📄 Lista Simples (Tela)":
+                    csv_data = df_res.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                    c_btn_exp.download_button(label="⬇️ Baixar Lista", data=csv_data, file_name="resultado_simples.csv", mime="text/csv")
+                    c_info.caption("Exporta apenas as colunas visíveis na tabela abaixo.")
+                
+                else:
+                    if c_btn_exp.button("⚡ Gerar Relatório Contratos"):
+                        # Busca todos os IDs (sem paginação) para o relatório completo
+                        with st.spinner("Compilando dados de contratos... Isso pode levar alguns segundos."):
+                            # Reexecuta query sem limite para pegar todos os IDs
+                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999)
+                            cpfs_alvo = df_total['cpf'].unique().tolist()
+                            
+                            df_contratos = gerar_relatorio_contratos_completo(cpfs_alvo)
+                            
+                            if not df_contratos.empty:
+                                csv_contr = df_contratos.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                                st.success(f"Relatório gerado! {len(df_contratos)} registros.")
+                                st.download_button(label="⬇️ Baixar Contratos", data=csv_contr, file_name="relatorio_contratos_detalhado.csv", mime="text/csv")
+                            else:
+                                st.warning("Nenhum contrato encontrado para os clientes filtrados.")
+
+            # ... Restante do código de exclusão ...
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
                 st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual.")
+                
                 modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]
                 tipo_exc = st.selectbox("O que deseja excluir?", modulos_exclusao)
+                
                 convenio_sel = None
                 sub_opcao_sel = None
                 
@@ -361,22 +507,34 @@ def interface_pesquisa_ampla():
                     if st.button("Preparar Exclusão", key="btn_prep_exc"):
                         st.session_state['confirm_delete_lote'] = True
                         st.rerun()
+                    
                     if st.session_state.get('confirm_delete_lote'):
                         st.warning(f"Você está prestes a excluir **{tipo_exc}** de **{total}** clientes.")
+                        if tipo_exc == "Emprego e Renda":
+                            st.warning(f"Convênio: {convenio_sel} | Ação: {sub_opcao_sel}")
+                            
                         c_sim, c_nao = st.columns(2)
+                        
                         if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary", key="btn_conf_exc"):
+                            # Recriando a query sem limit para pegar todos os CPFs
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999) 
                             lista_cpfs = df_total['cpf'].tolist()
+                            
                             ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
                             if ok:
                                 st.success(msg)
                                 st.session_state['confirm_delete_lote'] = False
-                                time.sleep(2); st.rerun()
-                            else: st.error(f"Erro: {msg}")
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error(f"Erro: {msg}")
+                                
                         if c_nao.button("Cancelar", key="btn_canc_exc"):
-                            st.session_state['confirm_delete_lote'] = False; st.rerun()
+                            st.session_state['confirm_delete_lote'] = False
+                            st.rerun()
             st.divider()
-
+            
+            # Tabela de Resultados Visual
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
