@@ -4,7 +4,7 @@ import psycopg2
 import requests
 import re
 import time
-import base64 # Nova importação para tratar arquivos
+import base64
 from datetime import datetime
 
 # --- IMPORTAÇÃO ROBUSTA DA CONEXÃO ---
@@ -46,18 +46,23 @@ def enviar_midia_api(instance_id, token, to, base64_data, file_name, caption="")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     contato_limpo = to if "@g.us" in str(to) else re.sub(r'[^0-9]', '', str(to))
     
-    # O prefixo do base64 (data:image/png;base64,...) geralmente é necessário ou aceito pela API
     payload = {
         "phone": contato_limpo,
-        "image": base64_data, # O campo na API pode ser 'image', 'media' ou 'base64'. Ajustado para padrão comum.
+        "media": base64_data,  # CORREÇÃO: Alterado de 'image' para 'media' (padrão genérico)
         "caption": caption,
         "fileName": file_name,
         "delayMessage": 3
     }
     
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=60) # Timeout maior para upload
-        return res.json()
+        res = requests.post(url, json=payload, headers=headers, timeout=60)
+        
+        # Tenta decodificar JSON, se falhar devolve o texto do erro
+        try:
+            return res.json()
+        except ValueError:
+            return {"success": False, "error": f"Erro API (Não JSON): {res.text} - Code: {res.status_code}"}
+            
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -195,7 +200,7 @@ def app_wapi():
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Disparador", "🤖 Instâncias", "📝 Modelos", "📋 Registros"])
 
     with tab1:
-        # Importa o módulo de disparador (que será atualizado abaixo)
+        # Importa o módulo de disparador
         import modulo_whats_disparador
         modulo_whats_disparador.app_disparador()
 
