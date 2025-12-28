@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import re
+import time  # <--- FALTAVA ESTA IMPORTAÇÃO
 import modulo_pf_cadastro as pf_core
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
