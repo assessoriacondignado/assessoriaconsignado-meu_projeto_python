@@ -13,32 +13,25 @@ import modulo_pf_pesquisa as pf_pesquisa
 # =============================================================================
 
 def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina=50):
-    """
-    Executa a busca diretamente no banco SQL, exclusiva para o módulo de campanhas.
-    Replica a lógica da pesquisa ampla, mas com execução isolada.
-    """
     conn = pf_core.get_conn()
     if conn:
         try:
-            # Seleção básica
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
-            sql_from = "FROM pf_dados d "
+            sql_from = "FROM banco_pf.pf_dados d "
             
-            # Mapeamento de JOINs (Com a correção do alias 'ende' para endereços)
             joins_map = {
-                'pf_telefones': "JOIN pf_telefones tel ON d.cpf = tel.cpf_ref",
-                'pf_emails': "JOIN pf_emails em ON d.cpf = em.cpf_ref",
-                'pf_enderecos': "JOIN pf_enderecos ende ON d.cpf = ende.cpf_ref",
-                'pf_emprego_renda': "JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref",
-                'pf_contratos': "JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref JOIN pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
-                'admin.pf_contratos_clt': "JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref LEFT JOIN admin.pf_contratos_clt clt ON emp.matricula = clt.matricula_ref"
+                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
+                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
+                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf_ref",
+                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref",
+                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
+                'banco_pf.pf_contratos_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref LEFT JOIN banco_pf.pf_contratos_clt clt ON emp.matricula = clt.matricula_ref"
             }
             
             active_joins = []
             conditions = []
             params = []
 
-            # Processamento das Regras (Filtros)
             for regra in regras_ativas:
                 tabela = regra['tabela']
                 coluna = regra['coluna']
@@ -46,36 +39,25 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                 val_raw = regra['valor']
                 tipo = regra.get('tipo', 'texto')
                 
-                # Ativa o JOIN necessário se a tabela não for a principal (pf_dados)
                 if tabela in joins_map and joins_map[tabela] not in active_joins:
                     active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
-                # --- TRATAMENTO PARA IDADE (COLUNA VIRTUAL) ---
+                # LÓGICA DE IDADE
                 if coluna == 'virtual_idade':
                     col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
 
-                # Tratamento de operador Vazio
                 if op == "∅" or op == "Vazio": 
-                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')")
-                    continue
+                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')"); continue
+                if val_raw is None or str(val_raw).strip() == "": continue
                 
-                # Ignora filtros sem valor (exceto se for vazio)
-                if val_raw is None or str(val_raw).strip() == "": 
-                    continue
-                
-                # Prepara valores (permite múltiplos separados por vírgula)
                 valores = [v.strip() for v in str(val_raw).split(',') if v.strip()]
                 conds_or = []
                 
                 for val in valores:
-                    # Normalizações
-                    if 'cpf' in coluna or 'cnpj' in coluna: 
-                        val = pf_core.limpar_normalizar_cpf(val)
-                    if tipo == 'numero': 
-                        val = re.sub(r'\D', '', val)
+                    if 'cpf' in coluna or 'cnpj' in coluna: val = pf_core.limpar_normalizar_cpf(val)
+                    if tipo == 'numero': val = re.sub(r'\D', '', val)
 
-                    # Lógica de Operadores
                     if tipo == 'data':
                         if op == "=": conds_or.append(f"{col_sql} = %s"); params.append(val)
                         elif op == "≥" or op == "A Partir": conds_or.append(f"{col_sql} >= %s"); params.append(val)
@@ -83,41 +65,31 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                         elif op == "≠": conds_or.append(f"{col_sql} <> %s"); params.append(val)
                         continue 
 
-                    if op == "=>" or op == "Começa com": 
-                        conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"{val}%")
-                    elif op == "<=>" or op == "Contém": 
-                        conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"%{val}%")
+                    if op == "=>" or op == "Começa com": conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"{val}%")
+                    elif op == "<=>" or op == "Contém": conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"%{val}%")
                     elif op == "=" or op == "Igual": 
                         if tipo == 'numero': conds_or.append(f"{col_sql} = %s"); params.append(val)
                         else: conds_or.append(f"{col_sql} ILIKE %s"); params.append(val)
-                    elif op == "≠" or op == "Diferente": 
-                        conds_or.append(f"{col_sql} <> %s"); params.append(val)
-                    elif op == "<≠>" or op == "Não Contém": 
-                        conds_or.append(f"{col_sql} NOT ILIKE %s"); params.append(f"%{val}%")
+                    elif op == "≠" or op == "Diferente": conds_or.append(f"{col_sql} <> %s"); params.append(val)
+                    elif op == "<≠>" or op == "Não Contém": conds_or.append(f"{col_sql} NOT ILIKE %s"); params.append(f"%{val}%")
                     elif op in [">", "<", "≥", "≤"]:
                         sym = {">":">", "<":"<", "≥":">=", "≤":"<="}[op]
                         conds_or.append(f"{col_sql} {sym} %s"); params.append(val)
                 
-                if conds_or: 
-                    conditions.append(f"({' OR '.join(conds_or)})")
+                if conds_or: conditions.append(f"({' OR '.join(conds_or)})")
 
-            # Montagem Final da Query
             full_joins = " ".join(active_joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
             
-            # 1. Contagem Total
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {full_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total = cur.fetchone()[0]
             
-            # 2. Busca de Dados Paginada
             offset = (pagina - 1) * itens_por_pagina
             query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}"
-            
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
-            
             return df.fillna(""), total
             
         except Exception as e: 
@@ -139,7 +111,7 @@ def salvar_campanha(nome, objetivo, status, filtros_lista):
             txt_visual = "; ".join([f.get('descricao_visual', '') for f in filtros_lista])
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO pf_campanhas (nome_campanha, objetivo, status, filtros_config, filtros_aplicaveis, data_criacao)
+                INSERT INTO banco_pf.pf_campanhas (nome_campanha, objetivo, status, filtros_config, filtros_aplicaveis, data_criacao)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (nome, objetivo, status, filtros_json, txt_visual, date.today()))
             conn.commit(); conn.close()
@@ -156,7 +128,7 @@ def atualizar_campanha_db(id_campanha, nome, objetivo, status, filtros_lista):
             txt_visual = "; ".join([f.get('descricao_visual', '') for f in filtros_lista])
             cur = conn.cursor()
             cur.execute("""
-                UPDATE pf_campanhas SET nome_campanha=%s, objetivo=%s, status=%s, filtros_config=%s, filtros_aplicaveis=%s WHERE id=%s
+                UPDATE banco_pf.pf_campanhas SET nome_campanha=%s, objetivo=%s, status=%s, filtros_config=%s, filtros_aplicaveis=%s WHERE id=%s
             """, (nome, objetivo, status, filtros_json, txt_visual, id_campanha))
             conn.commit(); conn.close()
             return True
@@ -168,7 +140,7 @@ def excluir_campanha_db(id_campanha):
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM pf_campanhas WHERE id = %s", (int(id_campanha),))
+            cur.execute("DELETE FROM banco_pf.pf_campanhas WHERE id = %s", (int(id_campanha),))
             conn.commit(); conn.close()
             return True
         except Exception as e: st.error(f"Erro ao excluir: {e}"); conn.close()
@@ -178,7 +150,7 @@ def listar_campanhas_ativas():
     conn = pf_core.get_conn()
     if conn:
         try:
-            df = pd.read_sql("SELECT id, nome_campanha, filtros_config, filtros_aplicaveis, objetivo, data_criacao, status FROM pf_campanhas ORDER BY id DESC", conn)
+            df = pd.read_sql("SELECT id, nome_campanha, filtros_config, filtros_aplicaveis, objetivo, data_criacao, status FROM banco_pf.pf_campanhas ORDER BY id DESC", conn)
             conn.close(); return df
         except: conn.close()
     return pd.DataFrame()
@@ -190,7 +162,7 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
             cur = conn.cursor()
             if not lista_ids_clientes: return 0
             ids_tuple = tuple(int(x) for x in lista_ids_clientes)
-            query = f"UPDATE pf_dados SET id_campanha = %s WHERE id IN %s"
+            query = f"UPDATE banco_pf.pf_dados SET id_campanha = %s WHERE id IN %s"
             cur.execute(query, (str(id_campanha), ids_tuple))
             afetados = cur.rowcount
             conn.commit(); conn.close()
@@ -281,8 +253,6 @@ def dialog_excluir_campanha(id_campanha, nome):
 
 def app_campanhas():
     st.markdown("## 📢 Gestão de Campanhas e Perfilamento")
-    
-    # Gerenciamento de Paginação
     if 'pag_campanha' not in st.session_state: st.session_state['pag_campanha'] = 1
 
     tab_config, tab_aplicar = st.tabs(["⚙️ Configurar Campanha", "🚀 Executar Campanha"])
@@ -349,21 +319,18 @@ def app_campanhas():
         if df_todas.empty:
             st.info("Nenhuma campanha cadastrada.")
         else:
-            # Controle do Dialog de Edição
             if 'id_campanha_em_edicao' in st.session_state and st.session_state['id_campanha_em_edicao']:
                 id_edit = st.session_state['id_campanha_em_edicao']
                 camp_edit = df_todas[df_todas['id'] == id_edit]
                 if not camp_edit.empty: dialog_editar_campanha(camp_edit.iloc[0])
                 else: del st.session_state['id_campanha_em_edicao']; st.rerun()
 
-            # Seleção
             sel_camp_fmt = df_todas.apply(lambda x: f"#{x['id']} - {x['nome_campanha']} ({x['status']})", axis=1)
             idx = st.selectbox("Selecione a Campanha", range(len(df_todas)), format_func=lambda x: sel_camp_fmt[x])
             
             campanha = df_todas.iloc[idx]
             filtros_db = json.loads(campanha['filtros_config']) if campanha['filtros_config'] else []
             
-            # --- CARD DE DETALHES ---
             with st.container(border=True):
                 c_info, c_acts = st.columns([3.5, 1.5])
                 with c_info:
@@ -380,7 +347,6 @@ def app_campanhas():
                     if st.button("🗑️ Excluir", key="btn_del", type="primary", use_container_width=True):
                         dialog_excluir_campanha(campanha['id'], campanha['nome_campanha'])
 
-            # --- FILTROS ADICIONAIS ---
             st.markdown("#### 🔎 Filtros Adicionais (Opcional)")
             if 'filtros_extras' not in st.session_state: st.session_state['filtros_extras'] = []
             
@@ -412,44 +378,33 @@ def app_campanhas():
 
             st.divider()
 
-            # --- BOTÃO DE PESQUISA ---
             if st.button("🔎 VISUALIZAR PÚBLICO ALVO", type="primary", use_container_width=True):
                 todos_filtros = filtros_db + st.session_state['filtros_extras']
-                
-                # Executa busca usando a ENGINE LOCAL (desvinculada do módulo pesquisa geral)
                 with st.spinner("Analisando base de dados..."):
                     df_res, total = executar_pesquisa_campanha_interna(todos_filtros, pagina=st.session_state['pag_campanha'], itens_por_pagina=50)
-                
                 st.session_state['resultado_campanha_df'] = df_res
                 st.session_state['resultado_campanha_total'] = total
 
-            # --- RESULTADOS ---
             if 'resultado_campanha_df' in st.session_state and st.session_state['resultado_campanha_df'] is not None:
                 df_r = st.session_state['resultado_campanha_df']
                 tot = st.session_state['resultado_campanha_total']
                 
                 st.markdown(f"### Resultados: {tot} encontrados")
-                
-                # Exportação
                 csv = df_r.to_csv(index=False, sep=';', encoding='utf-8-sig')
                 st.download_button("⬇️ Exportar CSV", data=csv, file_name="campanha_resultado.csv", mime="text/csv")
                 
-                # Tabela de Resultados (Estilo Pesquisa Ampla)
                 if not df_r.empty:
                     st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 1;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
-                    
                     for _, row in df_r.iterrows():
                         rc1, rc2, rc3, rc4 = st.columns([1, 1, 2, 4])
                         with rc1:
                             if st.button("👁️", key=f"v_camp_{row['id']}", help="Visualizar Cliente"):
                                 pf_core.dialog_visualizar_cliente(str(row['cpf']))
-                        
                         rc2.write(str(row['id']))
                         rc3.write(pf_core.formatar_cpf_visual(row['cpf']))
                         rc4.write(row['nome'])
                         st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                     
-                    # Paginação Simples
                     cp1, cp2, cp3 = st.columns([1, 3, 1])
                     if cp1.button("⬅️ Ant.") and st.session_state['pag_campanha'] > 1:
                         st.session_state['pag_campanha'] -= 1; st.rerun()
@@ -458,15 +413,12 @@ def app_campanhas():
 
                 st.divider()
                 st.info(f"Ao confirmar abaixo, o ID da campanha **{campanha['id']}** será aplicado no cadastro desses clientes.")
-                
                 if st.button(f"✅ CONFIRMAR VÍNCULO ({tot} CLIENTES)"):
-                    # Recalcula sem limite para pegar todos os IDs
-                    ids = df_r['id'].tolist() # Aqui pega só a página atual para demonstração rápida
-                    # Para vincular TODOS, idealmente reexecutamos a query sem LIMIT, mas para segurança de performance vamos vincular os listados.
+                    ids = df_r['id'].tolist()
                     if ids:
                         qtd = vincular_campanha_aos_clientes(campanha['id'], campanha['nome_campanha'], ids)
                         st.balloons()
                         st.success(f"{qtd} clientes atualizados com a campanha '{campanha['nome_campanha']}'.")
                         st.session_state['resultado_campanha_df'] = None
                     else:
-                        st.error("Nenhum cliente na lista atual.")
+                        st.error("Lista vazia.")

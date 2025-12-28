@@ -16,7 +16,7 @@ def get_table_columns(table_name):
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute(f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table_name}'")
+            cur.execute(f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table_name}' AND table_schema = 'banco_pf'")
             cols = cur.fetchall()
             conn.close()
         except: pass
@@ -29,8 +29,9 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         df_proc = pd.DataFrame()
         cols_order = []
         
-        # Atualiza o caminho do arquivo no banco
-        cur.execute("UPDATE pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
+        table_full_name = f"banco_pf.{table_name}"
+        
+        cur.execute("UPDATE banco_pf.pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
 
         if table_name == 'pf_telefones':
             col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
@@ -73,7 +74,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cols_order = list(df_proc.columns)
 
         staging_table = f"staging_import_{import_id}"
-        cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_name} INCLUDING DEFAULTS) ON COMMIT DROP")
+        cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         output = io.StringIO()
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
@@ -83,21 +84,20 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         qtd_novos, qtd_atualizados = 0, 0
         if pk_field:
             set_clause = ', '.join([f'{c} = s.{c}' for c in cols_order if c != pk_field])
-            cur.execute(f"UPDATE {table_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
+            cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
             qtd_atualizados = cur.rowcount
-            cur.execute(f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_name} t WHERE t.{pk_field} = s.{pk_field})")
+            cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
-            cur.execute(f"INSERT INTO {table_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
+            cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
-                cur.execute(f"UPDATE pf_dados d SET importacao_id = %s FROM {staging_table} s WHERE d.cpf = s.cpf_ref", (import_id,))
+                cur.execute(f"UPDATE banco_pf.pf_dados d SET importacao_id = %s FROM {staging_table} s WHERE d.cpf = s.cpf_ref", (import_id,))
             elif table_name == 'pf_contratos':
-                cur.execute(f"UPDATE pf_dados d SET importacao_id = %s FROM pf_emprego_renda e JOIN {staging_table} s ON e.matricula = s.matricula_ref WHERE d.cpf = e.cpf_ref", (import_id,))
+                cur.execute(f"UPDATE banco_pf.pf_dados d SET importacao_id = %s FROM banco_pf.pf_emprego_renda e JOIN {staging_table} s ON e.matricula = s.matricula_ref WHERE d.cpf = e.cpf_ref", (import_id,))
         return qtd_novos, qtd_atualizados, erros
     except Exception as e: raise e
 
-# --- NOVA FUNÇÃO: VISUALIZAR HISTÓRICO ---
 def interface_historico():
     st.markdown("### 📜 Histórico de Importações")
     if st.button("⬅️ Voltar para Importação"):
@@ -108,10 +108,9 @@ def interface_historico():
     if not conn: return
 
     try:
-        # Busca os dados do histórico ordenados por data
         df_hist = pd.read_sql("""
             SELECT id, nome_arquivo, data_importacao, qtd_novos, qtd_atualizados, qtd_erros, caminho_arquivo_original, caminho_arquivo_erro 
-            FROM pf_historico_importacoes 
+            FROM banco_pf.pf_historico_importacoes 
             ORDER BY id DESC
         """, conn)
         conn.close()
@@ -120,69 +119,38 @@ def interface_historico():
             st.info("Nenhum histórico encontrado.")
             return
 
-        # Cabeçalho da Tabela
-        st.markdown("""
-        <div style="display: flex; font-weight: bold; padding: 10px; background-color: #f0f2f6; border-radius: 5px;">
-            <div style="flex: 0.5;">ID</div>
-            <div style="flex: 2;">Arquivo</div>
-            <div style="flex: 1.5;">Data</div>
-            <div style="flex: 1.5;">Status (N/A/E)</div>
-            <div style="flex: 1.5; text-align: center;">Arquivo Original</div>
-            <div style="flex: 1.5; text-align: center;">Arquivo Erros</div>
-        </div>
-        <hr style="margin: 5px 0;">
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style="display: flex; font-weight: bold; padding: 10px; background-color: #f0f2f6; border-radius: 5px;"><div style="flex: 0.5;">ID</div><div style="flex: 2;">Arquivo</div><div style="flex: 1.5;">Data</div><div style="flex: 1.5;">Status (N/A/E)</div><div style="flex: 1.5; text-align: center;">Arquivo Original</div><div style="flex: 1.5; text-align: center;">Arquivo Erros</div></div><hr style="margin: 5px 0;">""", unsafe_allow_html=True)
 
         for _, row in df_hist.iterrows():
             c1, c2, c3, c4, c5, c6 = st.columns([0.5, 2, 1.5, 1.5, 1.5, 1.5])
-            
             c1.write(f"#{row['id']}")
             c2.write(row['nome_arquivo'])
             c3.write(pd.to_datetime(row['data_importacao']).strftime('%d/%m/%Y %H:%M'))
             c4.write(f"✅{row['qtd_novos']} 🔄{row['qtd_atualizados']} ❌{row['qtd_erros']}")
-            
-            # Botão Download Original
             with c5:
                 path_orig = row['caminho_arquivo_original']
                 if path_orig and os.path.exists(path_orig):
                     try:
-                        with open(path_orig, "rb") as f:
-                            st.download_button("⬇️ Baixar", f, file_name=os.path.basename(path_orig), key=f"dw_orig_{row['id']}")
+                        with open(path_orig, "rb") as f: st.download_button("⬇️ Baixar", f, file_name=os.path.basename(path_orig), key=f"dw_orig_{row['id']}")
                     except: st.error("Erro leitura")
-                else:
-                    st.caption("-")
-
-            # Botão Download Erro
+                else: st.caption("-")
             with c6:
                 path_erro = row['caminho_arquivo_erro']
                 if path_erro and os.path.exists(path_erro):
                     try:
-                        with open(path_erro, "rb") as f:
-                            st.download_button("⚠️ Ver Erros", f, file_name=os.path.basename(path_erro), key=f"dw_err_{row['id']}")
+                        with open(path_erro, "rb") as f: st.download_button("⚠️ Ver Erros", f, file_name=os.path.basename(path_erro), key=f"dw_err_{row['id']}")
                     except: st.error("Erro leitura")
-                else:
-                    st.caption("-")
-            
+                else: st.caption("-")
             st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+    except Exception as e: st.error(f"Erro ao carregar histórico: {e}")
 
-    except Exception as e:
-        st.error(f"Erro ao carregar histórico: {e}")
-
-# --- FUNÇÃO PRINCIPAL ---
 def interface_importacao():
-    # Se o estado for 'historico', mostra a tela de histórico
     if st.session_state.get('import_step') == 'historico':
-        interface_historico()
-        return
+        interface_historico(); return
 
     c_cancel, c_hist = st.columns([1, 4])
     if c_cancel.button("⬅️ Cancelar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
-    
-    # Botão para ativar o modo histórico
-    if c_hist.button("📜 Ver Histórico Importação"): 
-        st.session_state['import_step'] = 'historico'
-        st.rerun()
-        
+    if c_hist.button("📜 Ver Histórico Importação"): st.session_state['import_step'] = 'historico'; st.rerun()
     st.divider()
     
     mapa_tabelas = {
@@ -198,7 +166,6 @@ def interface_importacao():
     if st.session_state.get('import_step', 1) == 1:
         st.markdown("### 📤 Etapa 1: Upload")
         st.warning("⚠️ **Atenção:** Ao salvar no Excel, escolha a opção: **CSV UTF-8 (Delimitado por vírgulas) (*.csv)**.")
-        
         sel_amigavel = st.selectbox("Selecione o Tipo de Dado para Importar", opcoes_tabelas)
         st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
         
@@ -211,8 +178,7 @@ def interface_importacao():
             with st.expander("📋 Ver colunas esperadas para este arquivo", expanded=False):
                 st.info(f"O sistema espera um arquivo contendo informações para os seguintes campos:")
                 st.markdown(" ".join([f"`{c}`" for c in campos_visiveis]), unsafe_allow_html=True)
-        else:
-            st.warning("Não foi possível ler as colunas da tabela selecionada.")
+        else: st.warning("Não foi possível ler as colunas da tabela selecionada (verifique se a tabela existe no schema banco_pf).")
 
         uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
         if uploaded_file:
@@ -220,14 +186,12 @@ def interface_importacao():
                 uploaded_file.seek(0)
                 df = None
                 erro_leitura = None
-
                 try: df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
                 except UnicodeDecodeError:
                     uploaded_file.seek(0)
                     try: df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
                     except: pass
                 except Exception: pass
-
                 if df is None:
                     uploaded_file.seek(0)
                     try: df = pd.read_csv(uploaded_file, sep=',', encoding='utf-8')
@@ -239,23 +203,18 @@ def interface_importacao():
                 if df is not None:
                     st.session_state['import_df'] = df
                     st.session_state['uploaded_file_name'] = uploaded_file.name
-                    
-                    # SALVAR ARQUIVO NO DISCO PARA DOWNLOAD POSTERIOR
                     caminho_fisico = os.path.join(BASE_DIR_IMPORTS, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}")
                     with open(caminho_fisico, "wb") as f:
                         uploaded_file.seek(0)
                         f.write(uploaded_file.getbuffer())
-                    st.session_state['uploaded_file_path'] = caminho_fisico # Guarda para usar no banco
-                    
+                    st.session_state['uploaded_file_path'] = caminho_fisico
                     st.success(f"Carregado com sucesso! {len(df)} linhas identificadas.")
                     if st.button("Ir para Mapeamento", type="primary"):
                         st.session_state['csv_map'] = {col: None for col in df.columns}
                         st.session_state['current_csv_idx'] = 0
                         st.session_state['import_step'] = 2
                         st.rerun()
-                else:
-                    st.error(f"Não foi possível ler o arquivo. Verifique se é um CSV válido.\nDetalhe: {erro_leitura}")
-
+                else: st.error(f"Não foi possível ler o arquivo. Verifique se é um CSV válido.\nDetalhe: {erro_leitura}")
             except Exception as e: st.error(f"Erro crítico no upload: {e}")
 
     elif st.session_state['import_step'] == 2:
@@ -300,19 +259,17 @@ def interface_importacao():
                 with st.spinner("Processando..."):
                     try:
                         cur = conn.cursor()
-                        cur.execute("INSERT INTO pf_historico_importacoes (nome_arquivo) VALUES (%s) RETURNING id", (st.session_state['uploaded_file_name'],))
+                        cur.execute("INSERT INTO banco_pf.pf_historico_importacoes (nome_arquivo) VALUES (%s) RETURNING id", (st.session_state['uploaded_file_name'],))
                         imp_id = cur.fetchone()[0]
                         conn.commit()
                         final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
-                        
-                        # Passamos o caminho do arquivo salvo
                         path_file = st.session_state.get('uploaded_file_path', '')
                         
                         novos, atualizados, erros = processar_importacao_lote(conn, df, table_name, final_map, imp_id, path_file)
                         conn.commit()
                         
                         cur = conn.cursor()
-                        cur.execute("UPDATE pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s WHERE id=%s", (novos, atualizados, len(erros), imp_id))
+                        cur.execute("UPDATE banco_pf.pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s WHERE id=%s", (novos, atualizados, len(erros), imp_id))
                         conn.commit(); conn.close()
                         
                         st.session_state['import_stats'] = {'novos': novos, 'atualizados': atualizados, 'erros': len(erros)}
