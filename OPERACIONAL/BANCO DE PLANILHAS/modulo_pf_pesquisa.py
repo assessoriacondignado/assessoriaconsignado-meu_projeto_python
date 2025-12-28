@@ -12,7 +12,6 @@ CAMPOS_CONFIG = {
         {"label": "CPF", "coluna": "d.cpf", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "RG", "coluna": "d.rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
-        # CAMPO NOVO
         {"label": "Idade", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
         {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
     ],
@@ -81,7 +80,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
-            # Alias corrigido e schema atualizado
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
@@ -210,18 +208,58 @@ def interface_pesquisa_rapida():
     
     if busca:
         df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
+        
         if not df_lista.empty:
-            st.markdown("""<div style="background-color: #e6e9ef; padding: 10px; border-radius: 5px; font-weight: bold; border-bottom: 2px solid #ccc; display: flex;"><div style="width: 10%;">Cód.</div><div style="width: 25%;">CPF</div><div style="width: 40%;">Nome</div><div style="width: 25%; text-align: center;">Ações</div></div>""", unsafe_allow_html=True)
+            st.markdown(f"**Resultados encontrados: {total}**")
+            
+            # --- LAYOUT ATUALIZADO (IGUAL PESQUISA AMPLA) ---
+            # Cabeçalho da tabela
+            st.markdown("""
+            <div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;">
+                <div style="flex: 2;">Ações</div>
+                <div style="flex: 1;">ID</div>
+                <div style="flex: 2;">CPF</div>
+                <div style="flex: 4;">Nome</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Linhas da tabela
             for _, row in df_lista.iterrows():
-                c_id, c_cpf, c_nome, c_act = st.columns([1, 2.5, 4, 2.5])
-                c_id.write(str(row['id']))
-                c_cpf.write(pf_core.formatar_cpf_visual(row['cpf']))
-                c_nome.write(row['nome'])
-                if c_act.button("👁️ Visualizar", key=f"v_list_{row['id']}", use_container_width=True):
-                    pf_core.dialog_visualizar_cliente(str(row['cpf']))
-                st.markdown("<div style='border-bottom: 1px solid #f0f0f0; margin-bottom: 4px;'></div>", unsafe_allow_html=True)
-        else: st.warning("Nenhum registro encontrado.")
-    else: st.info("Utilize a busca para listar clientes.")
+                c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
+                
+                # Coluna de Ações (Botões)
+                with c1:
+                    b1, b2, b3 = st.columns(3)
+                    with b1:
+                        if st.button("👁️", key=f"v_fast_{row['id']}", help="Visualizar"): 
+                            pf_core.dialog_visualizar_cliente(str(row['cpf']))
+                    with b2:
+                        if st.button("✏️", key=f"e_fast_{row['id']}", help="Editar"): 
+                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
+                            st.rerun()
+                    with b3:
+                        if st.button("🗑️", key=f"d_fast_{row['id']}", help="Excluir"): 
+                            pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
+                
+                # Dados
+                c2.write(str(row['id']))
+                c3.write(pf_core.formatar_cpf_visual(row['cpf']))
+                c4.write(row['nome'])
+                
+                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+            
+            # Paginação
+            cp1, cp2, cp3 = st.columns([1, 3, 1])
+            if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pagina_atual', 1) > 1: 
+                st.session_state['pagina_atual'] -= 1
+                st.rerun()
+            if cp3.button("Próx. ➡️", key="next_fast"): 
+                st.session_state['pagina_atual'] = st.session_state.get('pagina_atual', 1) + 1
+                st.rerun()
+        else: 
+            st.warning("Nenhum registro encontrado.")
+    else:
+        st.info("Utilize a busca para listar clientes.")
 
 def interface_pesquisa_ampla():
     c_nav_esq, c_nav_dir = st.columns([1, 6])
