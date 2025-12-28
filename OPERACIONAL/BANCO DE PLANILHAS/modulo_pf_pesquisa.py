@@ -143,6 +143,64 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
         except Exception as e: st.error(f"Erro SQL: {e}"); return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
+# --- FUNÇÃO DE EXCLUSÃO EM LOTE ---
+def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
+    """Executa a exclusão baseada na lista de CPFs filtrados"""
+    conn = pf_core.get_conn()
+    if not conn: return False, "Erro de conexão."
+    
+    try:
+        cur = conn.cursor()
+        cpfs_tuple = tuple(str(c) for c in cpfs_alvo)
+        
+        if not cpfs_tuple: return False, "Nenhum CPF na lista."
+
+        # Monta a query baseada no tipo
+        if tipo == "Cadastro Completo":
+            # DELETE CASCADE na tabela pai remove tudo
+            query = "DELETE FROM pf_dados WHERE cpf IN %s"
+            cur.execute(query, (cpfs_tuple,))
+            
+        elif tipo == "Telefones":
+            query = "DELETE FROM pf_telefones WHERE cpf_ref IN %s"
+            cur.execute(query, (cpfs_tuple,))
+            
+        elif tipo == "E-mails":
+            query = "DELETE FROM pf_emails WHERE cpf_ref IN %s"
+            cur.execute(query, (cpfs_tuple,))
+            
+        elif tipo == "Endereços":
+            query = "DELETE FROM pf_enderecos WHERE cpf_ref IN %s"
+            cur.execute(query, (cpfs_tuple,))
+            
+        elif tipo == "Emprego e Renda":
+            if not convenio: return False, "Convênio não selecionado."
+            
+            if sub_opcao == "Excluir Vínculo Completo (Matrícula + Contratos)":
+                # Remove da tabela de emprego (Cascade leva os contratos)
+                query = "DELETE FROM pf_emprego_renda WHERE cpf_ref IN %s AND convenio = %s"
+                cur.execute(query, (cpfs_tuple, convenio))
+                
+            elif sub_opcao == "Excluir Apenas Contratos":
+                # Remove apenas contratos vinculados às matrículas desse convênio para esses CPFs
+                query = """
+                    DELETE FROM pf_contratos 
+                    WHERE matricula_ref IN (
+                        SELECT matricula FROM pf_emprego_renda 
+                        WHERE cpf_ref IN %s AND convenio = %s
+                    )
+                """
+                cur.execute(query, (cpfs_tuple, convenio))
+
+        registros = cur.rowcount
+        conn.commit()
+        conn.close()
+        return True, f"Operação realizada com sucesso! {registros} registros afetados."
+
+    except Exception as e:
+        if conn: conn.close()
+        return False, f"Erro na execução: {e}"
+
 # --- INTERFACES VISUAIS ---
 
 def interface_pesquisa_rapida():
@@ -194,11 +252,20 @@ def interface_pesquisa_ampla():
 
     conn = pf_core.get_conn()
     ops_cache = {'texto': [], 'numero': [], 'data': []}
+    lista_convenios = []
+    
     if conn:
         try:
+            # Cache de operadores
             df_ops = pd.read_sql("SELECT tipo, simbolo, descricao FROM pf_operadores_de_filtro", conn)
             for _, r in df_ops.iterrows():
-                ops_cache[r['tipo']].append(f"{r['simbolo']} : {r['descricao']}") 
+                ops_cache[r['tipo']].append(f"{r['simbolo']} : {r['descricao']}")
+            
+            # Cache de convênios para exclusão
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT convenio FROM pf_emprego_renda WHERE convenio IS NOT NULL ORDER BY convenio")
+            lista_convenios = [r[0] for r in cur.fetchall()]
+            cur.close()
         except: pass
         conn.close()
 
@@ -259,17 +326,62 @@ def interface_pesquisa_ampla():
         st.write(f"**Resultados:** {total}")
         
         if not df_res.empty:
-            # --- BOTÃO DE EXPORTAÇÃO ---
-            with st.expander("📂 Opções de Exportação", expanded=True):
+            # --- ÁREA DE AÇÕES EM MASSA ---
+            st.divider()
+            with st.expander("📂 Exportar Dados (CSV)", expanded=False):
                 c_csv, c_info = st.columns([1, 3])
                 csv_data = df_res.to_csv(sep=';', index=False, encoding='utf-8-sig')
-                c_csv.download_button(
-                    label="⬇️ Baixar CSV",
-                    data=csv_data,
-                    file_name="resultado_pesquisa_pf.csv",
-                    mime="text/csv"
-                )
+                c_csv.download_button(label="⬇️ Baixar CSV", data=csv_data, file_name="resultado_pesquisa_pf.csv", mime="text/csv")
                 c_info.caption("O arquivo CSV pode ser aberto no Excel.")
+            
+            with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
+                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual.")
+                
+                modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]
+                tipo_exc = st.selectbox("O que deseja excluir?", modulos_exclusao)
+                
+                convenio_sel = None
+                sub_opcao_sel = None
+                
+                if tipo_exc == "Emprego e Renda":
+                    c_emp1, c_emp2 = st.columns(2)
+                    convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios)
+                    sub_opcao_sel = c_emp2.radio("Nível de Exclusão", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
+                    
+                if tipo_exc != "Selecione...":
+                    if st.button("Preparar Exclusão"):
+                        st.session_state['confirm_delete_lote'] = True
+                    
+                    if st.session_state.get('confirm_delete_lote'):
+                        st.warning(f"Você está prestes a excluir **{tipo_exc}** de **{total}** clientes.")
+                        if tipo_exc == "Emprego e Renda":
+                            st.warning(f"Convênio: {convenio_sel} | Ação: {sub_opcao_sel}")
+                            
+                        c_sim, c_nao = st.columns(2)
+                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary"):
+                            # Coleta todos os CPFs (não apenas a página atual) para exclusão
+                            # Atenção: Se forem muitos, isso pode demorar.
+                            # Para simplificar aqui, vamos pegar os IDs da query atual (que já tem paginação)
+                            # O ideal seria rodar a query sem limit, mas vamos usar os CPFs visíveis + aviso.
+                            # *Ajuste*: Vamos pegar os CPFs do DF atual. Se precisar de TODOS, teria que rodar a query sem limit.
+                            # Assumindo que a ação é no resultado total:
+                            
+                            # Recriando a query sem limit para pegar todos os IDs
+                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999) # Pega tudo
+                            lista_cpfs = df_total['cpf'].tolist()
+                            
+                            ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
+                            if ok:
+                                st.success(msg)
+                                st.session_state['confirm_delete_lote'] = False
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error(f"Erro: {msg}")
+                                
+                        if c_nao.button("Cancelar"):
+                            st.session_state['confirm_delete_lote'] = False
+                            st.rerun()
             st.divider()
             # ---------------------------
 
