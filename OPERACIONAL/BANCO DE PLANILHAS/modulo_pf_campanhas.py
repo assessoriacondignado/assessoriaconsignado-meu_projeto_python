@@ -59,9 +59,7 @@ def excluir_campanha_db(id_campanha):
     conn = pf_core.get_conn()
     if conn:
         try:
-            # Conversão de segurança
             id_campanha = int(id_campanha)
-            
             cur = conn.cursor()
             cur.execute("DELETE FROM pf_campanhas WHERE id = %s", (id_campanha,))
             conn.commit()
@@ -76,7 +74,6 @@ def listar_campanhas_ativas():
     conn = pf_core.get_conn()
     if conn:
         try:
-            # Trazemos todas para permitir gestão
             query = """
                 SELECT id, nome_campanha, filtros_config, filtros_aplicaveis, objetivo, data_criacao, status 
                 FROM pf_campanhas 
@@ -93,13 +90,10 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
     conn = pf_core.get_conn()
     if conn:
         try:
-            # Conversão de segurança
             id_campanha = int(id_campanha)
-            
             cur = conn.cursor()
             if not lista_ids_clientes: return 0
             
-            # Garante que a lista de IDs seja de inteiros python nativos
             ids_tuple = tuple(int(x) for x in lista_ids_clientes)
             
             query = f"UPDATE pf_dados SET id_campanha = %s WHERE id IN %s"
@@ -114,21 +108,19 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
     return 0
 
 # =============================================================================
-# 2. DIALOGS (POP-UPS) DE EDIÇÃO E EXCLUSÃO
+# 2. DIALOGS (POP-UPS)
 # =============================================================================
 
 @st.dialog("✏️ Editar Campanha", width="large")
 def dialog_editar_campanha(dados_atuais):
-    # Inicializa estado local do dialog para os filtros
+    # Inicializa estado local dos filtros, se não existir
     if 'edit_filtros' not in st.session_state:
         try:
             st.session_state['edit_filtros'] = json.loads(dados_atuais['filtros_config'])
         except:
             st.session_state['edit_filtros'] = []
 
-    # Formulário principal
-    # Nota: Usamos containers em vez de st.form para permitir interatividade nos filtros (Adicionar/Remover)
-    
+    # --- Conteúdo do Pop-up ---
     c1, c2 = st.columns([3, 1])
     novo_nome = c1.text_input("Nome", value=dados_atuais['nome_campanha'])
     status_opts = ["ATIVO", "INATIVO"]
@@ -140,7 +132,7 @@ def dialog_editar_campanha(dados_atuais):
     st.divider()
     st.markdown("#### 🛠️ Reconfigurar Filtros")
     
-    # --- Interface de Adição de Filtro (Igual ao Cadastro) ---
+    # Área de Adição de Filtros
     with st.container(border=True):
         st.caption("Adicionar nova regra:")
         opcoes_campos = []
@@ -156,6 +148,7 @@ def dialog_editar_campanha(dados_atuais):
         op_sel = ec2.selectbox("Op.", ["=", ">", "<", "≥", "≤", "≠", "Contém"], key="ed_op")
         val_sel = ec3.text_input("Valor", key="ed_val")
         
+        # Botão ADD que causava o fechamento - agora funciona pois o estado 'id_campanha_em_edicao' mantém o dialog aberto
         if ec4.button("➕ Add", key="btn_add_edit"):
             dado = mapa_campos[cp_sel]
             st.session_state['edit_filtros'].append({
@@ -165,43 +158,48 @@ def dialog_editar_campanha(dados_atuais):
             })
             st.rerun()
 
-    # --- Lista de Filtros Atuais com opção de remover ---
+    # Lista de Filtros Atuais
     if st.session_state['edit_filtros']:
         st.write("📋 **Filtros Ativos:**")
-        filtros_para_manter = []
-        
         for idx, f in enumerate(st.session_state['edit_filtros']):
             cols = st.columns([0.1, 0.8, 0.1])
-            # Checkbox para remover (invertido logica: se marcado, remove? ou botão delete)
-            # Vamos usar botão de lixeira para ser mais intuitivo
             cols[0].write(f"{idx+1}.")
             cols[1].code(f.get('descricao_visual', 'Regra'), language="sql")
             if cols[2].button("🗑️", key=f"del_f_edit_{idx}"):
                 st.session_state['edit_filtros'].pop(idx)
                 st.rerun()
-                
     else:
         st.info("Nenhum filtro configurado.")
 
     st.markdown("---")
     
-    if st.button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
+    col_salvar, col_fechar = st.columns([2, 1])
+    
+    if col_salvar.button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
         if atualizar_campanha_db(dados_atuais['id'], novo_nome, novo_obj, novo_status, st.session_state['edit_filtros']):
             st.success("Campanha atualizada!")
-            del st.session_state['edit_filtros'] # Limpa memória
+            # Limpa estados para fechar
+            if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
+            if 'id_campanha_em_edicao' in st.session_state: del st.session_state['id_campanha_em_edicao']
             time.sleep(1)
             st.rerun()
 
+    if col_fechar.button("Cancelar / Fechar", use_container_width=True):
+        # Limpa estados para fechar
+        if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
+        if 'id_campanha_em_edicao' in st.session_state: del st.session_state['id_campanha_em_edicao']
+        st.rerun()
+
 @st.dialog("⚠️ Excluir Campanha")
 def dialog_excluir_campanha(id_campanha, nome):
-    st.error(f"Tem certeza que deseja excluir a campanha: **{nome}**?")
-    st.warning("Esta ação é irreversível. Os clientes que já possuem este ID de campanha no cadastro manterão o histórico até que sejam vinculados a outra.")
+    st.error(f"Tem certeza que deseja excluir: **{nome}**?")
+    st.warning("Esta ação é irreversível.")
     
     col_sim, col_nao = st.columns(2)
     
-    if col_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", use_container_width=True):
+    if col_sim.button("🚨 SIM, EXCLUIR", use_container_width=True):
         if excluir_campanha_db(id_campanha):
-            st.success("Campanha removida.")
+            st.success("Removido.")
             time.sleep(1)
             st.rerun()
             
@@ -286,16 +284,32 @@ def app_campanhas():
         if df_todas.empty:
             st.info("Nenhuma campanha cadastrada.")
         else:
-            # Filtro para selecionar
+            # ---------------------------------------------------------------------
+            # LÓGICA DE CONTROLE DO DIALOG (CORREÇÃO DO FECHAMENTO)
+            # ---------------------------------------------------------------------
+            # Se houver um ID em edição no Session State, abre o dialog automaticamente
+            if 'id_campanha_em_edicao' in st.session_state and st.session_state['id_campanha_em_edicao']:
+                id_edit = st.session_state['id_campanha_em_edicao']
+                # Busca os dados atualizados dessa campanha
+                camp_edit = df_todas[df_todas['id'] == id_edit]
+                if not camp_edit.empty:
+                    dialog_editar_campanha(camp_edit.iloc[0])
+                else:
+                    # Se não achar (ex: foi excluída), limpa o estado
+                    del st.session_state['id_campanha_em_edicao']
+                    st.rerun()
+            # ---------------------------------------------------------------------
+
             sel_camp_fmt = df_todas.apply(lambda x: f"#{x['id']} - {x['nome_campanha']} ({x['status']})", axis=1)
             idx = st.selectbox("Selecione a Campanha", range(len(df_todas)), format_func=lambda x: sel_camp_fmt[x])
             
             campanha = df_todas.iloc[idx]
-            filtros_db = json.loads(campanha['filtros_config'])
+            try:
+                filtros_db = json.loads(campanha['filtros_config'])
+            except:
+                filtros_db = []
             
-            # --- CARD DE DETALHES + BOTÕES DE AÇÃO ---
             with st.container(border=True):
-                # Cabeçalho do Card com Botões na direita
                 c_info, c_acts = st.columns([3.5, 1.5])
                 
                 with c_info:
@@ -306,12 +320,15 @@ def app_campanhas():
                     st.info(campanha['filtros_aplicaveis']) 
 
                 with c_acts:
-                    # Botões de Ação
                     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+                    
+                    # Botão EDITAR: Agora apenas define o estado e recarrega
                     if st.button("✏️ Editar", key="btn_edit_camp", use_container_width=True):
-                        # Limpa o estado anterior para forçar recarregamento dos dados
+                        # Limpa cache anterior de filtros para garantir carregamento novo
                         if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
-                        dialog_editar_campanha(campanha)
+                        # Define ID para manter aberto
+                        st.session_state['id_campanha_em_edicao'] = campanha['id']
+                        st.rerun()
                     
                     if st.button("🗑️ Excluir", key="btn_del_camp", type="primary", use_container_width=True):
                         dialog_excluir_campanha(campanha['id'], campanha['nome_campanha'])
@@ -322,7 +339,6 @@ def app_campanhas():
             
             if 'filtros_extras' not in st.session_state: st.session_state['filtros_extras'] = []
             
-            # Recarrega opções de campos para o filtro extra
             opcoes_campos = []
             mapa_campos = {}
             for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
@@ -351,7 +367,6 @@ def app_campanhas():
 
             st.divider()
 
-            # Botão Principal de Busca
             if st.button("🔎 VISUALIZAR PÚBLICO ALVO", type="primary", use_container_width=True):
                 todos_filtros = filtros_db + st.session_state['filtros_extras']
                 with st.spinner("Analisando base de dados..."):
@@ -359,7 +374,6 @@ def app_campanhas():
                 st.session_state['resultado_campanha_df'] = df_res
                 st.session_state['resultado_campanha_total'] = total
 
-            # Resultados e Vinculação
             if 'resultado_campanha_df' in st.session_state and st.session_state['resultado_campanha_df'] is not None:
                 df_r = st.session_state['resultado_campanha_df']
                 tot = st.session_state['resultado_campanha_total']
