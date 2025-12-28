@@ -59,7 +59,9 @@ def excluir_campanha_db(id_campanha):
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Conversão de segurança
             id_campanha = int(id_campanha)
+            
             cur = conn.cursor()
             cur.execute("DELETE FROM pf_campanhas WHERE id = %s", (id_campanha,))
             conn.commit()
@@ -74,6 +76,7 @@ def listar_campanhas_ativas():
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Trazemos todas para permitir gestão
             query = """
                 SELECT id, nome_campanha, filtros_config, filtros_aplicaveis, objetivo, data_criacao, status 
                 FROM pf_campanhas 
@@ -90,10 +93,13 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Conversão de segurança
             id_campanha = int(id_campanha)
+            
             cur = conn.cursor()
             if not lista_ids_clientes: return 0
             
+            # Garante que a lista de IDs seja de inteiros python nativos
             ids_tuple = tuple(int(x) for x in lista_ids_clientes)
             
             query = f"UPDATE pf_dados SET id_campanha = %s WHERE id IN %s"
@@ -108,7 +114,7 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
     return 0
 
 # =============================================================================
-# 2. DIALOGS (POP-UPS)
+# 2. DIALOGS (POP-UPS) DE EDIÇÃO E EXCLUSÃO
 # =============================================================================
 
 @st.dialog("✏️ Editar Campanha", width="large")
@@ -121,6 +127,8 @@ def dialog_editar_campanha(dados_atuais):
             st.session_state['edit_filtros'] = []
 
     # --- Conteúdo do Pop-up ---
+    # Usamos st.container para permitir interatividade (Add/Remove) sem fechar o dialog
+    
     c1, c2 = st.columns([3, 1])
     novo_nome = c1.text_input("Nome", value=dados_atuais['nome_campanha'])
     status_opts = ["ATIVO", "INATIVO"]
@@ -158,7 +166,7 @@ def dialog_editar_campanha(dados_atuais):
             })
             st.rerun()
 
-    # Lista de Filtros Atuais
+    # Lista de Filtros Atuais com opção de remover
     if st.session_state['edit_filtros']:
         st.write("📋 **Filtros Ativos:**")
         for idx, f in enumerate(st.session_state['edit_filtros']):
@@ -178,7 +186,7 @@ def dialog_editar_campanha(dados_atuais):
     if col_salvar.button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
         if atualizar_campanha_db(dados_atuais['id'], novo_nome, novo_obj, novo_status, st.session_state['edit_filtros']):
             st.success("Campanha atualizada!")
-            # Limpa estados para fechar
+            # Limpa estados para fechar e voltar ao normal
             if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
             if 'id_campanha_em_edicao' in st.session_state: del st.session_state['id_campanha_em_edicao']
             time.sleep(1)
@@ -288,14 +296,16 @@ def app_campanhas():
             # LÓGICA DE CONTROLE DO DIALOG (CORREÇÃO DO FECHAMENTO)
             # ---------------------------------------------------------------------
             # Se houver um ID em edição no Session State, abre o dialog automaticamente
+            # Isso faz com que, mesmo que a página recarregue (st.rerun) ao clicar em "Add"
+            # o Streamlit saiba que deve reabrir o modal imediatamente.
             if 'id_campanha_em_edicao' in st.session_state and st.session_state['id_campanha_em_edicao']:
                 id_edit = st.session_state['id_campanha_em_edicao']
-                # Busca os dados atualizados dessa campanha
+                # Busca os dados atualizados dessa campanha para preencher o form
                 camp_edit = df_todas[df_todas['id'] == id_edit]
                 if not camp_edit.empty:
                     dialog_editar_campanha(camp_edit.iloc[0])
                 else:
-                    # Se não achar (ex: foi excluída), limpa o estado
+                    # Se não achar (ex: foi excluída por outro user), limpa o estado
                     del st.session_state['id_campanha_em_edicao']
                     st.rerun()
             # ---------------------------------------------------------------------
@@ -322,11 +332,11 @@ def app_campanhas():
                 with c_acts:
                     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
                     
-                    # Botão EDITAR: Agora apenas define o estado e recarrega
+                    # Botão EDITAR: Agora apenas define o estado para "travar" o modal aberto
                     if st.button("✏️ Editar", key="btn_edit_camp", use_container_width=True):
-                        # Limpa cache anterior de filtros para garantir carregamento novo
+                        # Limpa cache anterior de filtros para garantir carregamento novo do banco
                         if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
-                        # Define ID para manter aberto
+                        # Define ID para manter aberto no próximo refresh
                         st.session_state['id_campanha_em_edicao'] = campanha['id']
                         st.rerun()
                     
