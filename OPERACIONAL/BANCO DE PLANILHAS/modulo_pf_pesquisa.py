@@ -349,8 +349,10 @@ def interface_pesquisa_ampla():
                     sub_opcao_sel = c_emp2.radio("Nível de Exclusão", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
                     
                 if tipo_exc != "Selecione...":
-                    if st.button("Preparar Exclusão"):
+                    # Botão para preparar (Abre a confirmação)
+                    if st.button("Preparar Exclusão", key="btn_prep_exc"):
                         st.session_state['confirm_delete_lote'] = True
+                        st.rerun()
                     
                     if st.session_state.get('confirm_delete_lote'):
                         st.warning(f"Você está prestes a excluir **{tipo_exc}** de **{total}** clientes.")
@@ -358,16 +360,11 @@ def interface_pesquisa_ampla():
                             st.warning(f"Convênio: {convenio_sel} | Ação: {sub_opcao_sel}")
                             
                         c_sim, c_nao = st.columns(2)
-                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary"):
-                            # Coleta todos os CPFs (não apenas a página atual) para exclusão
-                            # Atenção: Se forem muitos, isso pode demorar.
-                            # Para simplificar aqui, vamos pegar os IDs da query atual (que já tem paginação)
-                            # O ideal seria rodar a query sem limit, mas vamos usar os CPFs visíveis + aviso.
-                            # *Ajuste*: Vamos pegar os CPFs do DF atual. Se precisar de TODOS, teria que rodar a query sem limit.
-                            # Assumindo que a ação é no resultado total:
-                            
-                            # Recriando a query sem limit para pegar todos os IDs
-                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999) # Pega tudo
+                        
+                        # Botão de confirmação final
+                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary", key="btn_conf_exc"):
+                            # Recriando a query sem limit para pegar todos os CPFs
+                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999) 
                             lista_cpfs = df_total['cpf'].tolist()
                             
                             ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
@@ -379,7 +376,7 @@ def interface_pesquisa_ampla():
                             else:
                                 st.error(f"Erro: {msg}")
                                 
-                        if c_nao.button("Cancelar"):
+                        if c_nao.button("Cancelar", key="btn_canc_exc"):
                             st.session_state['confirm_delete_lote'] = False
                             st.rerun()
             st.divider()
@@ -405,4 +402,3 @@ def interface_pesquisa_ampla():
             if cp1.button("⬅️ Ant.") and st.session_state['pagina_atual'] > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
             if cp3.button("Próx. ➡️"): st.session_state['pagina_atual'] += 1; st.rerun()
         else: st.warning("Nenhum registro encontrado.")
-        
