@@ -19,6 +19,7 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
+            # ATUALIZADO: JOINs com banco_pf
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
@@ -43,7 +44,6 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                     active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
-                # LÓGICA DE IDADE
                 if coluna == 'virtual_idade':
                     col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
 
@@ -53,7 +53,6 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                 
                 valores = [v.strip() for v in str(val_raw).split(',') if v.strip()]
                 conds_or = []
-                
                 for val in valores:
                     if 'cpf' in coluna or 'cnpj' in coluna: val = pf_core.limpar_normalizar_cpf(val)
                     if tipo == 'numero': val = re.sub(r'\D', '', val)
@@ -91,7 +90,6 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
             return df.fillna(""), total
-            
         except Exception as e: 
             st.error(f"Erro SQL Interno: {e}")
             conn.close()
@@ -110,6 +108,7 @@ def salvar_campanha(nome, objetivo, status, filtros_lista):
             filtros_json = json.dumps(filtros_lista, default=str)
             txt_visual = "; ".join([f.get('descricao_visual', '') for f in filtros_lista])
             cur = conn.cursor()
+            # ATUALIZADO: banco_pf.pf_campanhas
             cur.execute("""
                 INSERT INTO banco_pf.pf_campanhas (nome_campanha, objetivo, status, filtros_config, filtros_aplicaveis, data_criacao)
                 VALUES (%s, %s, %s, %s, %s, %s)
@@ -162,6 +161,7 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
             cur = conn.cursor()
             if not lista_ids_clientes: return 0
             ids_tuple = tuple(int(x) for x in lista_ids_clientes)
+            # ATUALIZADO: banco_pf.pf_dados
             query = f"UPDATE banco_pf.pf_dados SET id_campanha = %s WHERE id IN %s"
             cur.execute(query, (str(id_campanha), ids_tuple))
             afetados = cur.rowcount
@@ -202,7 +202,7 @@ def dialog_editar_campanha(dados_atuais):
 
         ec1, ec2, ec3, ec4 = st.columns([2, 1.5, 2, 1])
         cp_sel = ec1.selectbox("Campo", opcoes_campos, key="ed_cp")
-        op_sel = ec2.selectbox("Op.", ["=", ">", "<", "≥", "≤", "≠", "Contém"], key="ed_op")
+        op_sel = ec2.selectbox("Op.", ["=", ">", "<", "≥", "≤", "≠", "Contém", "Começa com"], key="ed_op")
         val_sel = ec3.text_input("Valor", key="ed_val")
         
         if ec4.button("➕ Add", key="btn_add_edit"):

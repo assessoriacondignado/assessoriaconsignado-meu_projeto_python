@@ -4,7 +4,6 @@ from datetime import date
 import re
 import time
 import modulo_pf_cadastro as pf_core
-# Importação do novo módulo de exportação
 import modulo_pf_exportacao as pf_export
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
@@ -35,6 +34,7 @@ CAMPOS_CONFIG = {
         {"label": "Contrato Empréstimo", "coluna": "ctr.contrato", "tipo": "texto", "tabela": "banco_pf.pf_contratos"}
     ],
     "Contratos CLT / CAGED": [
+        # ATUALIZADO PARA BANCO_PF
         {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CBO (Cargo)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
@@ -84,6 +84,7 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
+            # ATUALIZADO: JOIN com banco_pf.pf_contratos_clt
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
@@ -234,6 +235,8 @@ def interface_pesquisa_rapida():
 
             for _, row in df_lista.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
+                
+                # Coluna de Ações (Botões)
                 with c1:
                     b1, b2, b3 = st.columns(3)
                     with b1:
@@ -247,9 +250,11 @@ def interface_pesquisa_rapida():
                         if st.button("🗑️", key=f"d_fast_{row['id']}", help="Excluir"): 
                             pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                 
+                # Dados
                 c2.write(str(row['id']))
                 c3.write(pf_core.formatar_cpf_visual(row['cpf']))
                 c4.write(row['nome'])
+                
                 st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
             
             # Paginação
@@ -344,15 +349,15 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
             
-            # --- ÁREA DE EXPORTAÇÃO ATUALIZADA ---
+            # --- ÁREA DE EXPORTAÇÃO (INTEGRADA COM MÓDULO EXPORTAÇÃO) ---
             with st.expander("📂 Exportar Dados", expanded=False):
-                # Consulta ao Módulo de Exportação para pegar modelos
+                # Busca modelos do novo módulo
                 df_modelos = pf_export.listar_modelos_ativos()
                 
                 if not df_modelos.empty:
                     c_sel, c_btn = st.columns([3, 1])
                     
-                    # Dropdown com os modelos cadastrados
+                    # Dropdown de modelos
                     opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
                     idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x])
                     modelo_selecionado = df_modelos.iloc[idx_mod]
@@ -361,11 +366,11 @@ def interface_pesquisa_ampla():
                     
                     if c_btn.button("⬇️ Gerar Arquivo"):
                         with st.spinner("Processando exportação..."):
-                            # Busca TODOS os CPFs da pesquisa atual (sem limite de página)
+                            # Busca TODOS os CPFs da pesquisa (sem limite de página)
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999)
                             lista_cpfs = df_total['cpf'].unique().tolist()
                             
-                            # Chama a função do novo módulo para gerar o DataFrame
+                            # Chama o novo módulo para gerar o DF
                             df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], lista_cpfs)
                             
                             if not df_final.empty:
@@ -380,13 +385,15 @@ def interface_pesquisa_ampla():
                             else:
                                 st.warning("A exportação retornou vazio (verifique se os clientes possuem os dados requeridos pelo modelo).")
                 else:
-                    st.warning("Nenhum modelo de exportação cadastrado. Vá em 'Modelos Exp.' para criar.")
+                    st.warning("Nenhum modelo de exportação configurado.")
 
             # --- ÁREA DE EXCLUSÃO EM LOTE ---
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
                 st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual.")
+                
                 modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]
                 tipo_exc = st.selectbox("O que deseja excluir?", modulos_exclusao)
+                
                 convenio_sel = None
                 sub_opcao_sel = None
                 
@@ -399,23 +406,33 @@ def interface_pesquisa_ampla():
                     if st.button("Preparar Exclusão", key="btn_prep_exc"):
                         st.session_state['confirm_delete_lote'] = True
                         st.rerun()
+                    
                     if st.session_state.get('confirm_delete_lote'):
                         st.warning(f"Você está prestes a excluir **{tipo_exc}** de **{total}** clientes.")
+                        if tipo_exc == "Emprego e Renda":
+                            st.warning(f"Convênio: {convenio_sel} | Ação: {sub_opcao_sel}")
+                            
                         c_sim, c_nao = st.columns(2)
+                        
                         if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary", key="btn_conf_exc"):
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999) 
                             lista_cpfs = df_total['cpf'].tolist()
+                            
                             ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
                             if ok:
                                 st.success(msg)
                                 st.session_state['confirm_delete_lote'] = False
-                                time.sleep(2); st.rerun()
-                            else: st.error(f"Erro: {msg}")
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error(f"Erro: {msg}")
+                                
                         if c_nao.button("Cancelar", key="btn_canc_exc"):
-                            st.session_state['confirm_delete_lote'] = False; st.rerun()
+                            st.session_state['confirm_delete_lote'] = False
+                            st.rerun()
             st.divider()
-
-            # --- TABELA DE RESULTADOS ---
+            
+            # Tabela de Resultados Visual
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
