@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import re
-import time  # <--- FALTAVA ESTA IMPORTAÇÃO
+import time
 import modulo_pf_cadastro as pf_core
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
+# CORREÇÃO: Alterado alias 'end' para 'ende' para evitar conflito com palavra reservada SQL
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "pf_dados"},
@@ -15,11 +16,11 @@ CAMPOS_CONFIG = {
         {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "pf_dados"}
     ],
     "Endereços": [
-        {"label": "Logradouro", "coluna": "end.rua", "tipo": "texto", "tabela": "pf_enderecos"},
-        {"label": "Bairro", "coluna": "end.bairro", "tipo": "texto", "tabela": "pf_enderecos"},
-        {"label": "Cidade", "coluna": "end.cidade", "tipo": "texto", "tabela": "pf_enderecos"},
-        {"label": "UF", "coluna": "end.uf", "tipo": "texto", "tabela": "pf_enderecos"},
-        {"label": "CEP", "coluna": "end.cep", "tipo": "texto", "tabela": "pf_enderecos"}
+        {"label": "Logradouro", "coluna": "ende.rua", "tipo": "texto", "tabela": "pf_enderecos"},
+        {"label": "Bairro", "coluna": "ende.bairro", "tipo": "texto", "tabela": "pf_enderecos"},
+        {"label": "Cidade", "coluna": "ende.cidade", "tipo": "texto", "tabela": "pf_enderecos"},
+        {"label": "UF", "coluna": "ende.uf", "tipo": "texto", "tabela": "pf_enderecos"},
+        {"label": "CEP", "coluna": "ende.cep", "tipo": "texto", "tabela": "pf_enderecos"}
     ],
     "Contatos": [
         {"label": "Telefone", "coluna": "tel.numero", "tipo": "texto", "tabela": "pf_telefones"},
@@ -77,10 +78,12 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
         try:
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM pf_dados d "
+            
+            # CORREÇÃO: Alterado alias 'end' para 'ende' aqui também
             joins_map = {
                 'pf_telefones': "JOIN pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'pf_emails': "JOIN pf_emails em ON d.cpf = em.cpf_ref",
-                'pf_enderecos': "JOIN pf_enderecos end ON d.cpf = end.cpf_ref",
+                'pf_enderecos': "JOIN pf_enderecos ende ON d.cpf = ende.cpf_ref",
                 'pf_emprego_renda': "JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref",
                 'pf_contratos': "JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref JOIN pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
                 'admin.pf_contratos_clt': "JOIN pf_emprego_renda emp ON d.cpf = emp.cpf_ref LEFT JOIN admin.pf_contratos_clt clt ON emp.matricula = clt.matricula_ref"
@@ -141,7 +144,9 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}"
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close(); return df.fillna(""), total
-        except Exception as e: st.error(f"Erro SQL: {e}"); return pd.DataFrame(), 0
+        except Exception as e: 
+            st.error(f"Erro SQL: {e}"); 
+            return pd.DataFrame(), 0
     return pd.DataFrame(), 0
 
 # --- FUNÇÃO DE EXCLUSÃO EM LOTE ---
