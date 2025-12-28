@@ -35,6 +35,9 @@ def atualizar_campanha_db(id_campanha, nome, objetivo, status, filtros_lista):
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Conversão de segurança para evitar erro numpy.int64
+            id_campanha = int(id_campanha)
+            
             filtros_json = json.dumps(filtros_lista, default=str)
             txt_visual = "; ".join([f.get('descricao_visual', '') for f in filtros_lista])
 
@@ -56,6 +59,9 @@ def excluir_campanha_db(id_campanha):
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Conversão de segurança
+            id_campanha = int(id_campanha)
+            
             cur = conn.cursor()
             cur.execute("DELETE FROM pf_campanhas WHERE id = %s", (id_campanha,))
             conn.commit()
@@ -70,7 +76,7 @@ def listar_campanhas_ativas():
     conn = pf_core.get_conn()
     if conn:
         try:
-            # Trazemos todas (ativas e inativas) para permitir gestão, ou filtramos na tela
+            # Trazemos todas para permitir gestão
             query = """
                 SELECT id, nome_campanha, filtros_config, filtros_aplicaveis, objetivo, data_criacao, status 
                 FROM pf_campanhas 
@@ -87,9 +93,15 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Conversão de segurança
+            id_campanha = int(id_campanha)
+            
             cur = conn.cursor()
             if not lista_ids_clientes: return 0
-            ids_tuple = tuple(lista_ids_clientes)
+            
+            # Garante que a lista de IDs seja de inteiros python nativos
+            ids_tuple = tuple(int(x) for x in lista_ids_clientes)
+            
             query = f"UPDATE pf_dados SET id_campanha = %s WHERE id IN %s"
             cur.execute(query, (str(id_campanha), ids_tuple))
             afetados = cur.rowcount
@@ -114,19 +126,23 @@ def dialog_editar_campanha(dados_atuais):
         except:
             st.session_state['edit_filtros'] = []
 
-    with st.form("form_editar_campanha"):
-        c1, c2 = st.columns([3, 1])
-        novo_nome = c1.text_input("Nome", value=dados_atuais['nome_campanha'])
-        status_opts = ["ATIVO", "INATIVO"]
-        idx_st = status_opts.index(dados_atuais['status']) if dados_atuais['status'] in status_opts else 0
-        novo_status = c2.selectbox("Status", status_opts, index=idx_st)
-        
-        novo_obj = st.text_area("Objetivo", value=dados_atuais['objetivo'])
-        
-        st.divider()
-        st.markdown("#### 🛠️ Reconfigurar Filtros")
-        
-        # --- Lógica de Adicionar Filtro (Igual ao Cadastro) ---
+    # Formulário principal
+    # Nota: Usamos containers em vez de st.form para permitir interatividade nos filtros (Adicionar/Remover)
+    
+    c1, c2 = st.columns([3, 1])
+    novo_nome = c1.text_input("Nome", value=dados_atuais['nome_campanha'])
+    status_opts = ["ATIVO", "INATIVO"]
+    idx_st = status_opts.index(dados_atuais['status']) if dados_atuais['status'] in status_opts else 0
+    novo_status = c2.selectbox("Status", status_opts, index=idx_st)
+    
+    novo_obj = st.text_area("Objetivo", value=dados_atuais['objetivo'])
+    
+    st.divider()
+    st.markdown("#### 🛠️ Reconfigurar Filtros")
+    
+    # --- Interface de Adição de Filtro (Igual ao Cadastro) ---
+    with st.container(border=True):
+        st.caption("Adicionar nova regra:")
         opcoes_campos = []
         mapa_campos = {}
         for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
@@ -140,7 +156,7 @@ def dialog_editar_campanha(dados_atuais):
         op_sel = ec2.selectbox("Op.", ["=", ">", "<", "≥", "≤", "≠", "Contém"], key="ed_op")
         val_sel = ec3.text_input("Valor", key="ed_val")
         
-        if ec4.form_submit_button("➕ Add"):
+        if ec4.button("➕ Add", key="btn_add_edit"):
             dado = mapa_campos[cp_sel]
             st.session_state['edit_filtros'].append({
                 'label': dado['label'], 'coluna': dado['coluna'], 'tabela': dado['tabela'],
@@ -149,41 +165,47 @@ def dialog_editar_campanha(dados_atuais):
             })
             st.rerun()
 
-        # Lista e Remoção
-        if st.session_state['edit_filtros']:
-            st.write("Filtros Atuais:")
-            filtros_para_manter = []
-            for idx, f in enumerate(st.session_state['edit_filtros']):
-                cols = st.columns([6, 1])
-                cols[0].code(f.get('descricao_visual', 'Regra'), language="sql")
-                if not cols[1].checkbox("❌", key=f"del_f_{idx}"):
-                    filtros_para_manter.append(f)
-            # Atualiza lista se houver remoção (gambiarra visual pois form não atualiza na hora sem rerun)
-            st.session_state['edit_filtros'] = filtros_para_manter
-
-        st.markdown("---")
+    # --- Lista de Filtros Atuais com opção de remover ---
+    if st.session_state['edit_filtros']:
+        st.write("📋 **Filtros Ativos:**")
+        filtros_para_manter = []
         
-        if st.form_submit_button("💾 SALVAR ALTERAÇÕES", type="primary"):
-            if atualizar_campanha_db(dados_atuais['id'], novo_nome, novo_obj, novo_status, st.session_state['edit_filtros']):
-                st.success("Campanha atualizada!")
-                del st.session_state['edit_filtros'] # Limpa memória
-                time.sleep(1)
+        for idx, f in enumerate(st.session_state['edit_filtros']):
+            cols = st.columns([0.1, 0.8, 0.1])
+            # Checkbox para remover (invertido logica: se marcado, remove? ou botão delete)
+            # Vamos usar botão de lixeira para ser mais intuitivo
+            cols[0].write(f"{idx+1}.")
+            cols[1].code(f.get('descricao_visual', 'Regra'), language="sql")
+            if cols[2].button("🗑️", key=f"del_f_edit_{idx}"):
+                st.session_state['edit_filtros'].pop(idx)
                 st.rerun()
+                
+    else:
+        st.info("Nenhum filtro configurado.")
+
+    st.markdown("---")
+    
+    if st.button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
+        if atualizar_campanha_db(dados_atuais['id'], novo_nome, novo_obj, novo_status, st.session_state['edit_filtros']):
+            st.success("Campanha atualizada!")
+            del st.session_state['edit_filtros'] # Limpa memória
+            time.sleep(1)
+            st.rerun()
 
 @st.dialog("⚠️ Excluir Campanha")
 def dialog_excluir_campanha(id_campanha, nome):
     st.error(f"Tem certeza que deseja excluir a campanha: **{nome}**?")
-    st.warning("Esta ação é irreversível. O histórico de vínculo nos clientes, porém, permanecerá até ser substituído.")
+    st.warning("Esta ação é irreversível. Os clientes que já possuem este ID de campanha no cadastro manterão o histórico até que sejam vinculados a outra.")
     
     col_sim, col_nao = st.columns(2)
     
-    if col_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE"):
+    if col_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", use_container_width=True):
         if excluir_campanha_db(id_campanha):
             st.success("Campanha removida.")
             time.sleep(1)
             st.rerun()
             
-    if col_nao.button("Cancelar"):
+    if col_nao.button("Cancelar", use_container_width=True):
         st.rerun()
 
 # =============================================================================
@@ -264,7 +286,7 @@ def app_campanhas():
         if df_todas.empty:
             st.info("Nenhuma campanha cadastrada.")
         else:
-            # Filtro para selecionar apenas ativas se quiser, mas aqui mostra tudo com status no nome
+            # Filtro para selecionar
             sel_camp_fmt = df_todas.apply(lambda x: f"#{x['id']} - {x['nome_campanha']} ({x['status']})", axis=1)
             idx = st.selectbox("Selecione a Campanha", range(len(df_todas)), format_func=lambda x: sel_camp_fmt[x])
             
@@ -274,7 +296,7 @@ def app_campanhas():
             # --- CARD DE DETALHES + BOTÕES DE AÇÃO ---
             with st.container(border=True):
                 # Cabeçalho do Card com Botões na direita
-                c_info, c_acts = st.columns([4, 1.5])
+                c_info, c_acts = st.columns([3.5, 1.5])
                 
                 with c_info:
                     st.markdown(f"**Campanha:** {campanha['nome_campanha']}")
@@ -284,12 +306,13 @@ def app_campanhas():
                     st.info(campanha['filtros_aplicaveis']) 
 
                 with c_acts:
-                    st.markdown("<br>", unsafe_allow_html=True) # Espaçamento
-                    # Botão Editar
+                    # Botões de Ação
+                    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
                     if st.button("✏️ Editar", key="btn_edit_camp", use_container_width=True):
+                        # Limpa o estado anterior para forçar recarregamento dos dados
+                        if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
                         dialog_editar_campanha(campanha)
                     
-                    # Botão Excluir
                     if st.button("🗑️ Excluir", key="btn_del_camp", type="primary", use_container_width=True):
                         dialog_excluir_campanha(campanha['id'], campanha['nome_campanha'])
 
