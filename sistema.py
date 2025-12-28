@@ -17,13 +17,15 @@ st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon=
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 pastas_modulos = [
     "OPERACIONAL/CLIENTES E USUARIOS",
-    "OPERACIONAL/BANCO DE PLANILHAS",  # <--- NOVA PASTA ADICIONADA AQUI
+    "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
+    "OPERACIONAL/MODULO_CHAT",  # <--- NOVA PASTA DO CHAT
     "COMERCIAL/PRODUTOS E SERVICOS",
     "COMERCIAL/PEDIDOS",
     "COMERCIAL/TAREFAS",
     "COMERCIAL/RENOVACAO E FEEDBACK"
 ]
+
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if caminho not in sys.path:
@@ -35,20 +37,27 @@ try:
     import modulo_cliente
     import modulo_usuario
     import modulo_wapi
-    import modulo_whats_controlador  # <--- NOVO CONTROLADOR ADICIONADO
+    import modulo_whats_controlador
     
-    # Importação do novo módulo com tratamento de erro
+    # Importação do novo módulo de Chat
+    modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
+    
+    # Importação do novo módulo Pessoa Física
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     
+    # Módulos Comerciais
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
     modulo_pedidos = __import__('modulo_pedidos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS/modulo_pedidos.py")) else None
     modulo_tarefas = __import__('modulo_tarefas') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS/modulo_tarefas.py")) else None
     modulo_rf = __import__('modulo_renovacao_feedback') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py")) else None
+    
+    # Módulo de Campanhas (se existir)
+    modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
+
 except Exception as e:
     st.error(f"Erro ao carregar módulos: {e}")
 
-# ... (restante das funções de banco e login permanecem iguais) ...
-# ... (funções verificar_senha, validar_login_db, dialog_mensagem_rapida, dialog_reset_senha) ...
+# --- 4. FUNÇÕES DE BANCO E SEGURANÇA ---
 
 @st.cache_resource(ttl=600)
 def get_conn():
@@ -91,6 +100,8 @@ def validar_login_db(usuario_input, senha_input):
                 return {"status": "erro_senha", "restantes": 4 - falhas}
     except: return None
     return None
+
+# --- 5. DIALOGS E UTILITÁRIOS ---
 
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
@@ -157,11 +168,13 @@ def dialog_reset_senha():
 
 # --- 7. INTERFACE PRINCIPAL ---
 def main():
+    # Timeout de sessão
     if 'last_action' not in st.session_state: st.session_state['last_action'] = datetime.now()
     if st.session_state.get('logado') and datetime.now() - st.session_state['last_action'] > timedelta(minutes=30):
         st.session_state.clear(); st.warning("Sessão encerrada por inatividade."); st.rerun()
     st.session_state['last_action'] = datetime.now()
 
+    # TELA DE LOGIN
     if not st.session_state.get('logado'):
         st.markdown('<div style="text-align:center; padding:40px;"><h2>Assessoria Consignado</h2><p>Portal Integrado</p></div>', unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -178,40 +191,68 @@ def main():
                     else: st.error(f"Senha incorreta. Tentativas restantes: {res.get('restantes')}")
                 else: st.error("Acesso negado.")
             if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
+    
+    # ÁREA LOGADA
     else:
+        # Botão de ação global no topo
         col_m1, col_m2 = st.columns([10, 2])
         with col_m2:
             if st.button("🟢 Mensagem Rápida", use_container_width=True): dialog_mensagem_rapida()
 
+        # MENU LATERAL
         with st.sidebar:
             st.markdown('<div style="font-size:16px; font-weight:800; color:#333;">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
             st.caption(f"👤 {st.session_state['usuario_nome']} ({st.session_state['usuario_cargo']})")
-            if st.button("🏠 Home"): st.rerun()
-            st.divider()
-            cargo = st.session_state.get('usuario_cargo', 'Cliente')
-            opcoes = ["OPERACIONAL"]
-            if cargo in ["Admin", "Gerente"]: opcoes = ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"]
-            mod = option_menu("MENU PRINCIPAL", opcoes, icons=["cart", "cash", "gear"], default_index=0)
             
+            if st.button("🏠 Home / Chat"): st.rerun()
+            st.divider()
+            
+            cargo = st.session_state.get('usuario_cargo', 'Cliente')
+            
+            # ATUALIZAÇÃO: "Início" como primeira opção para abrir o Chat
+            opcoes = ["Início"]
+            if cargo in ["Admin", "Gerente"]:
+                opcoes += ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"]
+            else:
+                opcoes += ["OPERACIONAL"]
+                
+            mod = option_menu("MENU PRINCIPAL", opcoes, 
+                              icons=["chat-dots", "cart", "cash", "gear"], 
+                              default_index=0)
+            
+            sub = None
             if mod == "COMERCIAL":
                 sub = option_menu(None, ["Produtos", "Pedidos", "Tarefas", "Renovação"], 
                                   icons=["box", "cart-check", "check2-all", "arrow-repeat"])
             elif mod == "OPERACIONAL":
-                # MENU ATUALIZADO AQUI
-                sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "WhatsApp"], 
-                                  icons=["people", "lock", "person-vcard", "whatsapp"])
-            else: sub = None
+                sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "Campanhas", "WhatsApp"], 
+                                  icons=["people", "lock", "person-vcard", "megaphone", "whatsapp"])
+            
             if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
 
-        if mod == "COMERCIAL":
+        # ROTEAMENTO DOS MÓDULOS
+        
+        # 1. TELA INICIAL (CHAT)
+        if mod == "Início":
+            if modulo_chat:
+                modulo_chat.app_chat_screen()
+            else:
+                st.info("Bem-vindo! Selecione um módulo no menu lateral.")
+                st.warning("Módulo de Chat não encontrado na pasta OPERACIONAL/MODULO_CHAT.")
+
+        # 2. MÓDULOS COMERCIAIS
+        elif mod == "COMERCIAL":
             if sub == "Produtos" and modulo_produtos: modulo_produtos.app_produtos()
             elif sub == "Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
             elif sub == "Tarefas" and modulo_tarefas: modulo_tarefas.app_tarefas()
             elif sub == "Renovação" and modulo_rf: modulo_rf.app_renovacao_feedback()
+            
+        # 3. MÓDULOS OPERACIONAIS
         elif mod == "OPERACIONAL":
             if sub == "Clientes": modulo_cliente.app_clientes()
             elif sub == "Usuários": modulo_usuario.app_usuarios()
-            elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica() 
-            elif sub == "WhatsApp": modulo_whats_controlador.app_wapi() # <--- CHAMADA CORRIGIDA AQUI
+            elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica()
+            elif sub == "Campanhas" and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
+            elif sub == "WhatsApp": modulo_whats_controlador.app_wapi()
 
 if __name__ == "__main__": main()
