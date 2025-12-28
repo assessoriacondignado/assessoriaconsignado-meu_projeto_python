@@ -408,3 +408,4 @@ def interface_pesquisa_ampla():
             if cp1.button("⬅️ Ant.") and st.session_state['pagina_atual'] > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
             if cp3.button("Próx. ➡️"): st.session_state['pagina_atual'] += 1; st.rerun()
         else: st.warning("Nenhum registro encontrado.")
+        
