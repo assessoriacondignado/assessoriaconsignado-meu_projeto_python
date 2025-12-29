@@ -105,6 +105,7 @@ def carregar_dados_completos(cpf):
     
     if conn:
         try:
+            # Prepara CPF em dois formatos para garantir o vínculo
             cpf_norm = limpar_normalizar_cpf(cpf)      # Ex: '123'
             cpf_full = str(cpf_norm).zfill(11)         # Ex: '00000000123'
             
@@ -120,10 +121,11 @@ def carregar_dados_completos(cpf):
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # 3. Emprego e Renda
+            # 3. Emprego e Renda (CORREÇÃO DE BUSCA)
+            # Busca explicitamente na tabela de emprego usando a tupla de CPFs
             dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
 
-            # 4. Busca Dinâmica de Contratos
+            # 4. Busca Dinâmica de Contratos (Baseada nas matrículas encontradas)
             if dados['empregos']:
                 matr_list = [str(e['matricula']) for e in dados['empregos'] if e.get('matricula')]
                 
@@ -142,6 +144,7 @@ def carregar_dados_completos(cpf):
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
                         try:
+                            # Busca contratos vinculados às matrículas deste cliente
                             query = f"SELECT * FROM {nome_completo} WHERE matricula_ref IN ({placeholders})"
                             df_temp = pd.read_sql(query, conn, params=tuple(matr_list)).fillna("")
                             if not df_temp.empty:
@@ -274,10 +277,14 @@ def dialog_visualizar_cliente(cpf_cliente):
         # --- VÍNCULOS PROFISSIONAIS ---
         st.markdown("##### 💼 Vínculos Profissionais")
         emps = dados.get('empregos', [])
+        
+        # CORREÇÃO CRÍTICA: Se não houver emprego, mostra mensagem amigável.
+        # Se houver, mostra os cartões com a matrícula, independente de contratos.
         if emps:
             for emp in emps:
                 matr = safe_view(emp.get('matricula'))
                 conv = safe_view(emp.get('convenio'))
+                
                 with st.expander(f"🏢 {conv} | Matrícula: {matr}", expanded=True):
                     if matr: st.write(f"**Matrícula:** {matr}")
                     if emp.get('dados_extras'):
@@ -300,18 +307,22 @@ def dialog_visualizar_cliente(cpf_cliente):
                     else:
                         st.warning("⚠️ Nenhum contrato detalhado vinculado a esta matrícula.")
         else:
-            st.info("Nenhum vínculo profissional cadastrado.")
+            st.info("Nenhum vínculo profissional cadastrado para este CPF.")
 
         st.markdown("---")
         # --- ENDEREÇOS ---
         st.markdown("##### 🏠 Endereços")
-        for end in dados.get('enderecos', []):
-            rua = safe_view(end.get('rua'))
-            bairro = safe_view(end.get('bairro'))
-            cid = safe_view(end.get('cidade'))
-            uf = safe_view(end.get('uf'))
-            cep = safe_view(end.get('cep'))
-            st.success(f"📍 {rua}, {bairro} - {cid}/{uf} ({cep})")
+        ends = dados.get('enderecos', [])
+        if ends:
+            for end in ends:
+                rua = safe_view(end.get('rua'))
+                bairro = safe_view(end.get('bairro'))
+                cid = safe_view(end.get('cidade'))
+                uf = safe_view(end.get('uf'))
+                cep = safe_view(end.get('cep'))
+                st.success(f"📍 {rua}, {bairro} - {cid}/{uf} ({cep})")
+        else:
+            st.caption("Sem endereço cadastrado.")
 
     with t2:
         # ABA SECUNDÁRIA DE CONTRATOS (Visão Geral)
@@ -334,9 +345,11 @@ def dialog_visualizar_cliente(cpf_cliente):
         for t in dados.get('telefones', []): 
             num = safe_view(t.get('numero'))
             wh = safe_view(t.get('tag_whats'))
-            st.write(f"📱 {num} ({wh})")
+            if num: st.write(f"📱 {num} ({wh})")
+        
         for m in dados.get('emails', []): 
-            st.write(f"📧 {safe_view(m.get('email'))}")
+            em = safe_view(m.get('email'))
+            if em: st.write(f"📧 {em}")
 
 # --- CONFIGURAÇÃO E STAGING (MANTIDA IGUAL) ---
 CONFIG_CADASTRO = {
@@ -505,6 +518,7 @@ def interface_cadastro_pf():
         st.warning("📞 Contatos")
         tels = st.session_state['dados_staging'].get('telefones', [])
         mails = st.session_state['dados_staging'].get('emails', [])
+        
         if tels:
             for i, t in enumerate(tels):
                 c1, c2, c3 = st.columns([4, 2, 1])
