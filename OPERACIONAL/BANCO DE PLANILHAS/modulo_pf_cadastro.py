@@ -25,15 +25,13 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
-            # Cria o schema se não existir
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
-            # Cria tabela de referências dentro do schema correto
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             conn.commit()
             conn.close()
         except: pass
 
-# --- HELPERS DE FORMATAÇÃO E VALIDAÇÃO ---
+# --- HELPERS ---
 def formatar_cpf_visual(cpf_db):
     if not cpf_db: return ""
     cpf_limpo = str(cpf_db).strip()
@@ -82,7 +80,6 @@ def converter_data_br_iso(valor):
     return None
 
 def calcular_idade_hoje(dt_nasc):
-    """Calcula a idade baseada na data de nascimento"""
     if not dt_nasc: return None
     hoje = date.today()
     if isinstance(dt_nasc, datetime): dt_nasc = dt_nasc.date()
@@ -98,7 +95,7 @@ def buscar_referencias(tipo):
         except: conn.close()
     return []
 
-# --- CRUD COM BUSCA DINÂMICA DE CONTRATOS ---
+# --- CRUD COM BUSCA DINÂMICA ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {
@@ -110,30 +107,32 @@ def carregar_dados_completos(cpf):
         try:
             cpf_norm = limpar_normalizar_cpf(cpf)
             
-            # 1. Dados Gerais (Atualizado para banco_pf)
+            # 1. Dados Gerais
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df_d.empty: 
                 dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # 2. Tabelas Padrão (Atualizado para banco_pf)
+            # 2. Tabelas Padrão
             dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
+            
+            # CORREÇÃO: Garante que busca TODOS os campos de emprego, incluindo matricula
             dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
 
-            # 3. Busca Dinâmica de Contratos e CLT
+            # 3. Busca Dinâmica de Contratos
             if dados['empregos']:
-                matr_list = tuple([e['matricula'] for e in dados['empregos'] if e.get('matricula')])
+                # Cria lista de matrículas para buscar contratos vinculados
+                matr_list = [e['matricula'] for e in dados['empregos'] if e.get('matricula')]
                 
                 if matr_list:
                     placeholders = ",".join(["%s"] * len(matr_list))
                     cur = conn.cursor()
                     
-                    # Busca tabelas no schema 'banco_pf' ou 'admin'
                     cur.execute("""
                         SELECT table_schema, table_name 
                         FROM information_schema.tables 
-                        WHERE (table_schema = 'banco_pf' AND table_name LIKE 'pf_contratos%') 
+                        WHERE (table_schema = 'banco_pf' AND table_name LIKE 'pf_contratos%')
                            OR (table_schema = 'admin' AND table_name LIKE 'pf_contratos%')
                     """)
                     tabelas_contratos = cur.fetchall()
@@ -141,23 +140,20 @@ def carregar_dados_completos(cpf):
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
                         try:
+                            # Busca contratos onde a matricula_ref bate com alguma matrícula do cliente
                             query = f"SELECT * FROM {nome_completo} WHERE matricula_ref IN ({placeholders})"
-                            df_temp = pd.read_sql(query, conn, params=matr_list).fillna("")
+                            df_temp = pd.read_sql(query, conn, params=tuple(matr_list)).fillna("")
                             
                             if not df_temp.empty:
                                 records = df_temp.to_dict('records')
                                 for r in records:
                                     r['origem_tabela'] = tabela
                                     dados['contratos'].append(r)
-                                    if 'clt' in tabela:
-                                        dados['dados_clt'].append(r)
+                                    if 'clt' in tabela: dados['dados_clt'].append(r)
                         except: continue
-                    
-        except Exception as e:
-            print(f"Erro ao carregar dados: {e}") 
-        finally: 
-            conn.close()
-            
+        except Exception as e: 
+            print(f"Erro ao carregar dados: {e}")
+        finally: conn.close()
     return dados
 
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
@@ -170,7 +166,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
-            # Atualizado para banco_pf
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
                 placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
@@ -246,7 +241,6 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t1:
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
-        # Cálculo de Idade
         idade = calcular_idade_hoje(nasc)
         txt_nasc = f"{nasc.strftime('%d/%m/%Y')} ({idade} anos)" if idade is not None and isinstance(nasc, (date, datetime)) else "-"
         
@@ -254,9 +248,6 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1.write(f"**RG:** {g.get('rg', '-')}")
         c2.write(f"**PIS:** {g.get('pis', '-')}")
         c2.write(f"**CNH:** {g.get('cnh', '-')}")
-        
-        if g.get('id_campanha'):
-            st.markdown(f"**🆔 ID Campanha:** {g.get('id_campanha')}")
 
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
@@ -265,32 +256,40 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t2:
         emps = dados.get('empregos', [])
         all_contratos = dados.get('contratos', [])
-        if not emps: st.info("Sem vínculos profissionais.")
         
-        for emp in emps:
-            matr = emp.get('matricula')
-            with st.expander(f"🏢 {emp.get('convenio')} | Matr: {matr}", expanded=True):
-                st.caption(f"Extras: {emp.get('dados_extras', '-')}")
-                ctrs_vinc = [c for c in all_contratos if c.get('matricula_ref') == matr]
-                
-                if ctrs_vinc:
-                    df_ctrs = pd.DataFrame(ctrs_vinc)
-                    if 'origem_tabela' in df_ctrs.columns:
-                        grupos = df_ctrs.groupby('origem_tabela')
-                        for origem, grupo in grupos:
-                            st.markdown(f"**📄 Fonte: {origem.replace('pf_contratos_', '').upper()}**")
-                            cols_show = [c for c in grupo.columns if c not in ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'origem_tabela']]
-                            st.dataframe(grupo[cols_show], hide_index=True)
+        # CORREÇÃO: Mostra "Sem vínculos" apenas se realmente não houver emprego
+        if not emps: 
+            st.info("Sem vínculos profissionais.")
+        else:
+            for emp in emps:
+                matr = emp.get('matricula')
+                # Exibe o card do emprego mesmo sem contratos
+                with st.expander(f"🏢 {emp.get('convenio')} | Matr: {matr}", expanded=True):
+                    st.caption(f"Extras: {emp.get('dados_extras', '-')}")
+                    
+                    # Filtra contratos vinculados a esta matrícula
+                    ctrs_vinc = [c for c in all_contratos if c.get('matricula_ref') == matr]
+                    
+                    if ctrs_vinc:
+                        df_ctrs = pd.DataFrame(ctrs_vinc)
+                        if 'origem_tabela' in df_ctrs.columns:
+                            grupos = df_ctrs.groupby('origem_tabela')
+                            for origem, grupo in grupos:
+                                st.markdown(f"**📄 Fonte: {origem.replace('pf_contratos_', '').upper()}**")
+                                # Remove colunas técnicas da visualização
+                                cols_ocultar = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela']
+                                cols_show = [c for c in grupo.columns if c not in cols_ocultar]
+                                st.dataframe(grupo[cols_show], hide_index=True)
+                        else:
+                            st.table(df_ctrs[['contrato', 'dados_extras']])
                     else:
-                        st.table(df_ctrs[['contrato', 'dados_extras']])
-                else:
-                    st.caption("Nenhum contrato localizado para esta matrícula.")
+                        st.caption("Nenhum contrato localizado para esta matrícula.")
 
     with t3:
         for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
         for m in dados.get('emails', []): st.write(f"📧 {m.get('email')}")
 
-# --- CONFIGURAÇÃO E STAGING ---
+# --- CONFIGURAÇÃO E STAGING (MANTIDA IGUAL) ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
@@ -301,7 +300,6 @@ CONFIG_CADASTRO = {
         {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
         {"label": "PIS", "key": "pis", "tabela": "geral", "tipo": "texto"},
         {"label": "CNH", "key": "cnh", "tabela": "geral", "tipo": "texto"},
-        {"label": "ID Campanha", "key": "id_campanha", "tabela": "geral", "tipo": "texto"},
     ],
     "Contatos": [
         {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True, "extras": ["tag_whats", "tag_qualificacao"]},
@@ -458,7 +456,6 @@ def interface_cadastro_pf():
         st.warning("📞 Contatos")
         tels = st.session_state['dados_staging'].get('telefones', [])
         mails = st.session_state['dados_staging'].get('emails', [])
-        
         if tels:
             for i, t in enumerate(tels):
                 c1, c2, c3 = st.columns([4, 2, 1])
