@@ -1,12 +1,8 @@
-CREATE TABLE IF NOT EXISTS banco_pf.cpf_convenio (
+CREATE TABLE IF NOT EXISTS banco_pf.convenio_por_planilha (
     id SERIAL PRIMARY KEY,
-    convenio VARCHAR(100),
-    cpf_ref VARCHAR(11) NOT NULL, -- Limite de 11 caracteres
+    convenio VARCHAR(100) NOT NULL,       -- Nome do Convênio (Ex: INSS, SIAPE)
+    nome_planilha_sql VARCHAR(100) NOT NULL, -- Nome da tabela no banco (Ex: pf_contratos_inss)
     
-    -- Regra de Validação (CHECK CONSTRAINT)
-    -- Garante que o CPF tenha apenas números e exatamente 11 dígitos
-    CONSTRAINT check_cpf_formato CHECK (cpf_ref ~ '^[0-9]{11}$')
+    -- Opcional: Garante que não tenha dois cadastros iguais
+    UNIQUE(convenio, nome_planilha_sql)
 );
-
--- Opcional: Cria um índice para deixar a busca por CPF muito mais rápida
-CREATE INDEX IF NOT EXISTS idx_cpf_convenio_ref ON banco_pf.cpf_convenio(cpf_ref);
