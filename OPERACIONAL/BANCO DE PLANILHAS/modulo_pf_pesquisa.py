@@ -4,7 +4,6 @@ from datetime import date
 import re
 import time
 import modulo_pf_cadastro as pf_core
-# Importação do novo módulo de exportação
 import modulo_pf_exportacao as pf_export
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
@@ -16,7 +15,6 @@ CAMPOS_CONFIG = {
         {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
         {"label": "Idade", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
         {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
-        # ID Campanha removido conforme solicitado
     ],
     "Endereços": [
         {"label": "Logradouro", "coluna": "ende.rua", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"},
@@ -37,13 +35,13 @@ CAMPOS_CONFIG = {
     "Contratos CLT / CAGED": [
         {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
+        {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"}, # <--- CAMPO NOVO ADICIONADO
         {"label": "CBO (Cargo)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CNAE (Atividade)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_contratos_clt"}
     ],
     "Controle de Importação": [
-        # Alterado para 'texto' para permitir busca "Contém" (ex: "13, 15")
         {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
     ]
 }
@@ -103,7 +101,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                     active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
-                # LÓGICA DE IDADE (Campo Virtual)
                 if coluna == 'virtual_idade':
                     col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
 
@@ -151,7 +148,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             
             # Busca paginada
             offset = (pagina - 1) * itens_por_pagina
-            # Se for exportação total (limite muito alto), ajusta
             limit_clause = f"LIMIT {itens_por_pagina} OFFSET {offset}" if itens_por_pagina < 9999999 else ""
             
             query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome {limit_clause}"
@@ -224,7 +220,6 @@ def interface_pesquisa_rapida():
         if not df_lista.empty:
             st.markdown(f"**Resultados encontrados: {total}**")
             
-            # --- LAYOUT ATUALIZADO (IGUAL PESQUISA AMPLA) ---
             st.markdown("""
             <div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;">
                 <div style="flex: 2;">Ações</div>
@@ -237,7 +232,6 @@ def interface_pesquisa_rapida():
             for _, row in df_lista.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
                 
-                # Coluna de Ações (Botões)
                 with c1:
                     b1, b2, b3 = st.columns(3)
                     with b1:
@@ -245,20 +239,16 @@ def interface_pesquisa_rapida():
                             pf_core.dialog_visualizar_cliente(str(row['cpf']))
                     with b2:
                         if st.button("✏️", key=f"e_fast_{row['id']}", help="Editar"): 
-                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
-                            st.rerun()
+                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False}); st.rerun()
                     with b3:
                         if st.button("🗑️", key=f"d_fast_{row['id']}", help="Excluir"): 
                             pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                 
-                # Dados
                 c2.write(str(row['id']))
                 c3.write(pf_core.formatar_cpf_visual(row['cpf']))
                 c4.write(row['nome'])
-                
                 st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
             
-            # Paginação
             cp1, cp2, cp3 = st.columns([1, 3, 1])
             if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pagina_atual', 1) > 1: 
                 st.session_state['pagina_atual'] -= 1
@@ -350,14 +340,11 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
             
-            # --- ÁREA DE EXPORTAÇÃO INTEGRADA ---
             with st.expander("📂 Exportar Dados", expanded=False):
-                # Busca modelos do módulo de exportação
                 df_modelos = pf_export.listar_modelos_ativos()
                 
                 if not df_modelos.empty:
                     c_sel, c_btn = st.columns([3, 1])
-                    
                     opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
                     idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x])
                     modelo_selecionado = df_modelos.iloc[idx_mod]
@@ -366,34 +353,23 @@ def interface_pesquisa_ampla():
                     
                     if c_btn.button("⬇️ Gerar Arquivo"):
                         with st.spinner("Processando exportação..."):
-                            # Busca TODOS os CPFs da pesquisa (sem limite de página)
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999)
                             lista_cpfs = df_total['cpf'].unique().tolist()
-                            
-                            # Chama o novo módulo de exportação
                             df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], lista_cpfs)
                             
                             if not df_final.empty:
                                 csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
-                                st.download_button(
-                                    label="💾 Baixar CSV",
-                                    data=csv,
-                                    file_name=f"export_{modelo_selecionado['tipo_processamento'].lower()}.csv",
-                                    mime="text/csv"
-                                )
+                                st.download_button(label="💾 Baixar CSV", data=csv, file_name=f"export_{modelo_selecionado['tipo_processamento'].lower()}.csv", mime="text/csv")
                                 st.success(f"Arquivo gerado com {len(df_final)} linhas!")
                             else:
                                 st.warning("A exportação retornou vazio.")
                 else:
                     st.warning("Nenhum modelo de exportação configurado.")
 
-            # --- ÁREA DE EXCLUSÃO EM LOTE ---
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
                 st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual.")
-                
                 modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]
                 tipo_exc = st.selectbox("O que deseja excluir?", modulos_exclusao)
-                
                 convenio_sel = None
                 sub_opcao_sel = None
                 
@@ -406,33 +382,22 @@ def interface_pesquisa_ampla():
                     if st.button("Preparar Exclusão", key="btn_prep_exc"):
                         st.session_state['confirm_delete_lote'] = True
                         st.rerun()
-                    
                     if st.session_state.get('confirm_delete_lote'):
                         st.warning(f"Você está prestes a excluir **{tipo_exc}** de **{total}** clientes.")
-                        if tipo_exc == "Emprego e Renda":
-                            st.warning(f"Convênio: {convenio_sel} | Ação: {sub_opcao_sel}")
-                            
                         c_sim, c_nao = st.columns(2)
-                        
                         if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary", key="btn_conf_exc"):
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999) 
                             lista_cpfs = df_total['cpf'].tolist()
-                            
                             ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
                             if ok:
                                 st.success(msg)
                                 st.session_state['confirm_delete_lote'] = False
-                                time.sleep(2)
-                                st.rerun()
-                            else:
-                                st.error(f"Erro: {msg}")
-                                
+                                time.sleep(2); st.rerun()
+                            else: st.error(f"Erro: {msg}")
                         if c_nao.button("Cancelar", key="btn_canc_exc"):
-                            st.session_state['confirm_delete_lote'] = False
-                            st.rerun()
+                            st.session_state['confirm_delete_lote'] = False; st.rerun()
             st.divider()
-            
-            # Tabela de Resultados Visual (Igual Pesquisa Rápida)
+
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
