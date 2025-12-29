@@ -117,18 +117,20 @@ def carregar_dados_completos(cpf):
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             
-            # CORREÇÃO: Garante que busca TODOS os campos de emprego, incluindo matricula
+            # 3. Emprego e Renda (Fundamental para aparecer na visualização)
             dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
 
-            # 3. Busca Dinâmica de Contratos
+            # 4. Busca Dinâmica de Contratos (Vinculados à matrícula)
             if dados['empregos']:
-                # Cria lista de matrículas para buscar contratos vinculados
-                matr_list = [e['matricula'] for e in dados['empregos'] if e.get('matricula')]
+                # Cria lista de matrículas encontradas
+                matr_list = [str(e['matricula']) for e in dados['empregos'] if e.get('matricula')]
                 
                 if matr_list:
+                    # Prepara placeholders para SQL IN
                     placeholders = ",".join(["%s"] * len(matr_list))
                     cur = conn.cursor()
                     
+                    # Busca quais tabelas de contrato existem no banco
                     cur.execute("""
                         SELECT table_schema, table_name 
                         FROM information_schema.tables 
@@ -140,7 +142,7 @@ def carregar_dados_completos(cpf):
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
                         try:
-                            # Busca contratos onde a matricula_ref bate com alguma matrícula do cliente
+                            # Busca contratos vinculados às matrículas deste cliente
                             query = f"SELECT * FROM {nome_completo} WHERE matricula_ref IN ({placeholders})"
                             df_temp = pd.read_sql(query, conn, params=tuple(matr_list)).fillna("")
                             
@@ -248,7 +250,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1.write(f"**RG:** {g.get('rg', '-')}")
         c2.write(f"**PIS:** {g.get('pis', '-')}")
         c2.write(f"**CNH:** {g.get('cnh', '-')}")
-
+        
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
             st.info(f"📍 {end.get('rua')}, {end.get('bairro')} - {end.get('cidade')}/{end.get('uf')}")
@@ -257,33 +259,37 @@ def dialog_visualizar_cliente(cpf_cliente):
         emps = dados.get('empregos', [])
         all_contratos = dados.get('contratos', [])
         
-        # CORREÇÃO: Mostra "Sem vínculos" apenas se realmente não houver emprego
+        # CORREÇÃO: Mostra a lista de empregos mesmo que não tenha contratos
         if not emps: 
             st.info("Sem vínculos profissionais.")
         else:
             for emp in emps:
                 matr = emp.get('matricula')
-                # Exibe o card do emprego mesmo sem contratos
-                with st.expander(f"🏢 {emp.get('convenio')} | Matr: {matr}", expanded=True):
-                    st.caption(f"Extras: {emp.get('dados_extras', '-')}")
-                    
-                    # Filtra contratos vinculados a esta matrícula
-                    ctrs_vinc = [c for c in all_contratos if c.get('matricula_ref') == matr]
+                conv = emp.get('convenio')
+                
+                # Exibe o card do emprego (Expander)
+                with st.expander(f"🏢 {conv} | Matrícula: {matr}", expanded=True):
+                    # Se tiver dados extras no emprego, mostra
+                    if emp.get('dados_extras'):
+                        st.caption(f"ℹ️ {emp.get('dados_extras')}")
+
+                    # Filtra contratos vinculados a esta matrícula ESPECÍFICA
+                    ctrs_vinc = [c for c in all_contratos if str(c.get('matricula_ref')) == str(matr)]
                     
                     if ctrs_vinc:
                         df_ctrs = pd.DataFrame(ctrs_vinc)
                         if 'origem_tabela' in df_ctrs.columns:
                             grupos = df_ctrs.groupby('origem_tabela')
                             for origem, grupo in grupos:
-                                st.markdown(f"**📄 Fonte: {origem.replace('pf_contratos_', '').upper()}**")
+                                st.markdown(f"**📄 Contratos ({origem.replace('pf_contratos_', '').upper()}):**")
                                 # Remove colunas técnicas da visualização
                                 cols_ocultar = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela']
                                 cols_show = [c for c in grupo.columns if c not in cols_ocultar]
-                                st.dataframe(grupo[cols_show], hide_index=True)
+                                st.dataframe(grupo[cols_show], hide_index=True, use_container_width=True)
                         else:
                             st.table(df_ctrs[['contrato', 'dados_extras']])
                     else:
-                        st.caption("Nenhum contrato localizado para esta matrícula.")
+                        st.warning("⚠️ Nenhum contrato detalhado vinculado a esta matrícula.")
 
     with t3:
         for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
