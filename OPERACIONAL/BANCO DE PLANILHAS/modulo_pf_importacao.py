@@ -50,8 +50,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             for _, row in df.iterrows():
                 cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
                 cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
-                
-                # Validação Básica de Existência
                 if not cpf_limpo: continue
                 
                 whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
@@ -83,7 +81,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             df_proc.drop_duplicates(subset=['cpf_ref', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
 
-        # --- LÓGICA GENÉRICA (DADOS, EMPREGO, ETC) ---
+        # --- LÓGICA GENÉRICA (DADOS, EMPREGO, CONTRATOS) ---
         else:
             df_proc = df.rename(columns=mapping)
             cols_db = list(mapping.values())
@@ -94,17 +92,15 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             # --- 1. VALIDAÇÃO DE CPF (Igual ao módulo de Cadastro) ---
             def validar_cpf_11_digitos(val):
-                # Usa a mesma lógica do cadastro: deve ter 11 dígitos numéricos
                 nums = pf_core.limpar_apenas_numeros(val)
                 return len(nums) == 11
 
             # Aplica validação para Tabela Principal (pf_dados)
             if 'cpf' in df_proc.columns:
-                # Filtra apenas CPFs válidos (11 dígitos)
                 mask_valid = df_proc['cpf'].astype(str).apply(validar_cpf_11_digitos)
                 df_proc = df_proc[mask_valid]
-                # Limpa para o formato do banco (remove zeros à esquerda se for o padrão)
                 df_proc['cpf'] = df_proc['cpf'].astype(str).apply(pf_core.limpar_normalizar_cpf)
+                if table_name == 'pf_dados': df_proc = df_proc[df_proc['cpf'] != ""]
 
             # Aplica validação para Tabelas Vinculadas (cpf_ref)
             if 'cpf_ref' in df_proc.columns:
@@ -116,12 +112,10 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if table_name == 'pf_emprego_renda' and 'matricula' in df_proc.columns:
                 def gerar_matricula_se_vazio(row):
                     mat = str(row.get('matricula', '')).strip()
-                    # Se matrícula for vazia, nula ou 'nan'
                     if not mat or mat.lower() == 'nan' or mat == 'None':
                         conv = str(row.get('convenio', '')).strip()
                         cpf = str(row.get('cpf_ref', '')).strip()
                         dt = datetime.now().strftime('%d%m%Y')
-                        # Formato: CONVENIO + CPF + NULO + DATA
                         return f"{conv}{cpf}NULO{dt}"
                     return mat
                 
@@ -134,12 +128,12 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             cols_order = list(df_proc.columns)
             
-            # Deduplicação interna antes de enviar
+            # Deduplicação interna
             pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
             if pk_field:
                 df_proc.drop_duplicates(subset=[pk_field], keep='last', inplace=True)
 
-        # 3. Processo de Carga (Bulk Insert/Update)
+        # 3. Processo de Carga
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
@@ -174,7 +168,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
             
-            # Atualização de vínculo (Import ID Append)
+            # --- ATUALIZAÇÃO DO VÍNCULO NA TABELA PAI (PF_DADOS) COM APPEND ---
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
                 cur.execute(f"""
@@ -187,7 +181,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                     WHERE d.cpf = s.cpf_ref
                 """, (str_imp, str_imp))
                 
-            elif table_name == 'pf_contratos':
+            elif table_name in ['pf_contratos', 'pf_contratos_clt']:
                 cur.execute(f"""
                     UPDATE banco_pf.pf_dados d 
                     SET importacao_id = CASE 
@@ -263,7 +257,8 @@ def interface_importacao():
         "E-mails": "pf_emails",
         "Endereços": "pf_enderecos",
         "Emprego e Renda": "pf_emprego_renda",
-        "Contratos": "pf_contratos"
+        "Contratos": "pf_contratos",
+        "Contratos CLT": "pf_contratos_clt"
     }
     opcoes_tabelas = list(mapa_tabelas.keys())
 
@@ -275,7 +270,11 @@ def interface_importacao():
         
         tabela_selecionada = st.session_state['import_table']
         cols_info = get_table_columns(tabela_selecionada)
+        
+        # CORREÇÃO: Removemos cpf_ref e matricula_ref da lista de ignorados
+        # para que o usuário POSSA mapeá-los.
         ignorar = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
+        
         campos_visiveis = [col[0] for col in cols_info if col[0] not in ignorar]
         
         if campos_visiveis:
@@ -331,7 +330,10 @@ def interface_importacao():
             db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
         else:
             db_cols_info = get_table_columns(table_name)
-            ignore = ['id', 'data_criacao', 'data_atualizacao', 'cpf_ref', 'matricula_ref', 'importacao_id']
+            
+            # CORREÇÃO: Lista de ignorados reduzida também na etapa 2
+            ignore = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
+            
             db_fields = [c[0] for c in db_cols_info if c[0] not in ignore]
 
         c_l, c_r = st.columns([1, 2])
