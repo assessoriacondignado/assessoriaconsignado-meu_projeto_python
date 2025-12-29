@@ -197,15 +197,10 @@ def listar_tabelas_por_convenio(convenio):
     return tabelas
 
 def get_colunas_tabela(nome_tabela_completo):
-    """
-    Busca o nome das colunas e o tipo de dado de uma tabela específica no banco.
-    Retorna lista de tuplas: (nome_coluna, tipo_dado)
-    """
     conn = get_conn()
     colunas = []
     if conn:
         try:
-            # Separa schema e tabela (ex: banco_pf.pf_dados -> schema=banco_pf, table=pf_dados)
             if '.' in nome_tabela_completo:
                 schema, tabela = nome_tabela_completo.split('.')
             else:
@@ -425,6 +420,10 @@ def interface_cadastro_pf():
                         inputs_gerados['matricula_ref'] = dados_vinc['matricula']
                         inputs_gerados['origem_tabela'] = nome_tabela
                         inputs_gerados['tipo_origem'] = tipo_tabela
+                        
+                        # --- ADICIONADO: Preenchimento automático do convenio ---
+                        if 'convenio' in [c[0] for c in colunas_banco]:
+                            inputs_gerados['convenio'] = dados_vinc['convenio']
                         
                         if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
                         st.session_state['dados_staging']['contratos'].append(inputs_gerados)
