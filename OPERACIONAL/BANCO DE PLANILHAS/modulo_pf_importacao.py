@@ -76,7 +76,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                                 'data_atualizacao': datetime.now().strftime('%Y-%m-%d')
                             }
                             if 'importacao_id' in cols_banco:
-                                row_dict['importacao_id'] = import_id
+                                row_dict['importacao_id'] = str(import_id)
                             new_rows.append(row_dict)
                             
             if not new_rows: return 0, 0, ["Nenhum telefone válido encontrado após limpeza."]
@@ -87,77 +87,77 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         # --- LÓGICA GENÉRICA (DADOS, EMPREGO, CONTRATOS) ---
         else:
             df_proc = df.rename(columns=mapping)
-            cols_db = list(mapping.values())
-            df_proc = df_proc[cols_db].copy()
+            # Remove colunas mapeadas que não existem no banco
+            cols_db_validas = [col for col in df_proc.columns if col in cols_banco or col in ['cpf', 'cpf_ref', 'matricula', 'matricula_ref']]
             
-            # === [NOVO] PADRONIZAÇÃO TOTAL EM MAIÚSCULO ===
-            # Converte todas as colunas de texto para maiúsculo automaticamente
-            # Isso garante que "inss", "Inss" e "INSS" virem "INSS"
+            # Preserva coluna temporária de CPF para gerar matrícula se necessário
+            col_cpf_temp = None
+            if 'cpf_gerador_key' in mapping.values():
+                 csv_col_cpf = next((k for k, v in mapping.items() if v == 'cpf_gerador_key'), None)
+                 if csv_col_cpf:
+                     col_cpf_temp = csv_col_cpf
+                     df_proc['cpf_temp_gen'] = df[col_cpf_temp]
+
+            # Filtra colunas úteis
+            df_proc = df_proc[[c for c in df_proc.columns if c in cols_banco or c == 'cpf_temp_gen']]
+
+            # Padronização Maiúscula
             df_proc = df_proc.applymap(lambda x: str(x).upper().strip() if isinstance(x, str) else x)
-            # ===============================================
 
             if 'importacao_id' in cols_banco:
-                df_proc['importacao_id'] = str(import_id) # Garante que ID é string
-            
-            # --- 1. VALIDAÇÃO DE CPF (11 DÍGITOS) ---
+                df_proc['importacao_id'] = str(import_id)
+
+            # Validação CPF (11 dígitos)
             def validar_cpf_11_digitos(val):
                 nums = pf_core.limpar_apenas_numeros(val)
                 return len(nums) == 11
 
-            # Valida Tabela Principal
-            if 'cpf' in df_proc.columns:
-                mask_valid = df_proc['cpf'].astype(str).apply(validar_cpf_11_digitos)
-                df_proc = df_proc[mask_valid]
-                df_proc['cpf'] = df_proc['cpf'].astype(str).apply(pf_core.limpar_normalizar_cpf)
-                if table_name == 'pf_dados': df_proc = df_proc[df_proc['cpf'] != ""]
+            for c in ['cpf', 'cpf_ref']:
+                if c in df_proc.columns:
+                    mask = df_proc[c].astype(str).apply(validar_cpf_11_digitos)
+                    df_proc = df_proc[mask]
+                    df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
-            # Valida Tabelas Vinculadas
-            if 'cpf_ref' in df_proc.columns:
-                mask_valid = df_proc['cpf_ref'].astype(str).apply(validar_cpf_11_digitos)
-                df_proc = df_proc[mask_valid]
-                df_proc['cpf_ref'] = df_proc['cpf_ref'].astype(str).apply(pf_core.limpar_normalizar_cpf)
-            
-            # --- 2. GERADOR DE MATRÍCULA AUTOMÁTICA ---
-            if table_name == 'pf_emprego_renda':
-                if 'matricula' not in df_proc.columns:
-                    df_proc['matricula'] = ""
-
-                def regra_matricula(row):
-                    mat = str(row.get('matricula', '')).strip()
-                    # Verifica se é vazio/nulo/nan/none
-                    if not mat or mat.upper() == 'NAN' or mat.upper() == 'NONE':
-                        conv = str(row.get('convenio', '')).strip().upper()
-                        cpf = str(row.get('cpf_ref', '')).strip()
-                        dt = datetime.now().strftime('%d%m%Y')
-                        # Formato: CONVENIO + CPF + NULO + DATA
-                        return f"{conv}{cpf}NULO{dt}"
-                    return mat
+            # Gerador de Matrícula
+            target_matricula = 'matricula' if 'matricula' in cols_banco else 'matricula_ref'
+            if target_matricula in cols_banco:
+                if target_matricula not in df_proc.columns:
+                    df_proc[target_matricula] = ""
                 
-                df_proc['matricula'] = df_proc.apply(regra_matricula, axis=1)
+                def gerar_mat(row):
+                    mat = str(row.get(target_matricula, '')).strip()
+                    if not mat or mat in ['NAN', 'NONE', '']:
+                        cpf_origem = row.get('cpf_ref') or row.get('cpf') or row.get('cpf_temp_gen', '')
+                        cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_origem)
+                        if cpf_limpo:
+                            conv = str(row.get('convenio', 'CLT')).strip().upper()
+                            if table_name == 'pf_contratos_clt': conv = 'CLT'
+                            dt = datetime.now().strftime('%d%m%Y')
+                            return f"{conv}{cpf_limpo}NULO{dt}"
+                    return mat
 
-            # --- 3. Limpeza de Datas ---
-            # Como aplicamos .upper() em tudo, datas como "20/jan/2023" viram "20/JAN/2023"
-            # O conversor deve lidar com isso (mas o ideal é formato numérico dd/mm/aaaa)
-            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego']
+                df_proc[target_matricula] = df_proc.apply(gerar_mat, axis=1)
+
+            if 'cpf_temp_gen' in df_proc.columns: df_proc.drop(columns=['cpf_temp_gen'], inplace=True)
+                
+            # Limpeza de Datas
+            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego', 'data_abertura_empresa']
             for col in cols_data:
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
             
             cols_order = list(df_proc.columns)
             
-            # Deduplicação interna
-            pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
-            if pk_field:
-                df_proc.drop_duplicates(subset=[pk_field], keep='last', inplace=True)
+            # Deduplicação
+            pk = 'cpf' if 'cpf' in df_proc.columns else (target_matricula if target_matricula in df_proc.columns else None)
+            if pk: df_proc.drop_duplicates(subset=[pk], keep='last', inplace=True)
 
-        # 3. Processo de Carga (Bulk)
+        # 3. Carga no Banco (Bulk)
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
         output = io.StringIO()
-        # CSV com separador TAB, tratando nulos
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
-        
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
@@ -174,32 +174,40 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                 else:
                     set_parts.append(f"{c} = s.{c}")
             
-            set_clause = ', '.join(set_parts)
+            if set_parts:
+                set_clause = ', '.join(set_parts)
+                cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
+                qtd_atualizados = cur.rowcount
             
-            cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
-            qtd_atualizados = cur.rowcount
-            
-            # INSERT
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
-            cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
+            # --- REGRA DE IMPORTAÇÃO DE CONTRATOS (IGNORAR SEM VÍNCULO) ---
+            if table_name in ['pf_contratos', 'pf_contratos_clt']:
+                # Só insere se a matrícula existir na tabela de emprego
+                query_insert_safe = f"""
+                    INSERT INTO {table_full_name} ({', '.join(cols_order)}) 
+                    SELECT {', '.join(cols_order)} 
+                    FROM {staging_table} s 
+                    WHERE EXISTS (
+                        SELECT 1 FROM banco_pf.pf_emprego_renda e 
+                        WHERE e.matricula = s.matricula_ref
+                    )
+                """
+                cur.execute(query_insert_safe)
+            else:
+                # Inserção normal para outras tabelas
+                cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
+            
             qtd_novos = cur.rowcount
             
             # Atualização de Vínculo na Tabela Pai
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
-                cur.execute(f"""
-                    UPDATE banco_pf.pf_dados d 
-                    SET importacao_id = CASE 
-                        WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s 
-                        ELSE d.importacao_id || ', ' || %s 
-                    END 
-                    FROM {staging_table} s 
-                    WHERE d.cpf = s.cpf_ref
-                """, (str_imp, str_imp))
+                cur.execute(f"""UPDATE banco_pf.pf_dados d SET importacao_id = CASE WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s ELSE d.importacao_id || ', ' || %s END FROM {staging_table} s WHERE d.cpf = s.cpf_ref""", (str_imp, str_imp))
                 
             elif table_name in ['pf_contratos', 'pf_contratos_clt']:
+                # Vínculo: Contrato -> Matrícula -> CPF
                 cur.execute(f"""
                     UPDATE banco_pf.pf_dados d 
                     SET importacao_id = CASE 
@@ -218,59 +226,25 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
 # --- INTERFACE HISTÓRICO E PRINCIPAL ---
 def interface_historico():
     st.markdown("### 📜 Histórico de Importações")
-    if st.button("⬅️ Voltar para Importação"):
-        st.session_state['import_step'] = 1
-        st.rerun()
-    
+    if st.button("⬅️ Voltar"): st.session_state['import_step'] = 1; st.rerun()
     conn = pf_core.get_conn()
     if not conn: return
-
     try:
-        df_hist = pd.read_sql("""
-            SELECT id, nome_arquivo, data_importacao, qtd_novos, qtd_atualizados, qtd_erros, caminho_arquivo_original, caminho_arquivo_erro 
-            FROM banco_pf.pf_historico_importacoes 
-            ORDER BY id DESC
-        """, conn)
+        df_hist = pd.read_sql("SELECT * FROM banco_pf.pf_historico_importacoes ORDER BY id DESC", conn)
         conn.close()
-
-        if df_hist.empty: st.info("Nenhum histórico encontrado."); return
-
-        st.markdown("""<div style="display: flex; font-weight: bold; padding: 10px; background-color: #f0f2f6; border-radius: 5px;"><div style="flex: 0.5;">ID</div><div style="flex: 2;">Arquivo</div><div style="flex: 1.5;">Data</div><div style="flex: 1.5;">Status (N/A/E)</div><div style="flex: 1.5; text-align: center;">Arquivo Original</div><div style="flex: 1.5; text-align: center;">Arquivo Erros</div></div><hr style="margin: 5px 0;">""", unsafe_allow_html=True)
-
-        for _, row in df_hist.iterrows():
-            c1, c2, c3, c4, c5, c6 = st.columns([0.5, 2, 1.5, 1.5, 1.5, 1.5])
-            c1.write(f"#{row['id']}")
-            c2.write(row['nome_arquivo'])
-            c3.write(pd.to_datetime(row['data_importacao']).strftime('%d/%m/%Y %H:%M'))
-            c4.write(f"✅{row['qtd_novos']} 🔄{row['qtd_atualizados']} ❌{row['qtd_erros']}")
-            with c5:
-                path_orig = row['caminho_arquivo_original']
-                if path_orig and os.path.exists(path_orig):
-                    try:
-                        with open(path_orig, "rb") as f: st.download_button("⬇️ Baixar", f, file_name=os.path.basename(path_orig), key=f"dw_orig_{row['id']}")
-                    except: st.error("Erro")
-                else: st.caption("-")
-            with c6:
-                path_erro = row['caminho_arquivo_erro']
-                if path_erro and os.path.exists(path_erro):
-                    try:
-                        with open(path_erro, "rb") as f: st.download_button("⚠️ Ver Erros", f, file_name=os.path.basename(path_erro), key=f"dw_err_{row['id']}")
-                    except: st.error("Erro")
-                else: st.caption("-")
-            st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
-    except Exception as e: st.error(f"Erro ao carregar histórico: {e}")
+        st.dataframe(df_hist, hide_index=True)
+    except: st.error("Erro histórico")
 
 def interface_importacao():
-    if st.session_state.get('import_step') == 'historico':
-        interface_historico(); return
+    if st.session_state.get('import_step') == 'historico': interface_historico(); return
 
-    c_cancel, c_hist = st.columns([1, 4])
-    if c_cancel.button("⬅️ Cancelar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
-    if c_hist.button("📜 Ver Histórico Importação"): st.session_state['import_step'] = 'historico'; st.rerun()
-    st.divider()
+    c1, c2 = st.columns([1, 4])
+    if c1.button("⬅️ Cancelar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
+    if c2.button("📜 Histórico"): st.session_state['import_step'] = 'historico'; st.rerun()
     
-    mapa_tabelas = {
-        "Dados Cadastrais (CPF, Nome, RG...)": "pf_dados",
+    st.divider()
+    mapa = {
+        "Dados Cadastrais": "pf_dados",
         "Telefones": "pf_telefones",
         "E-mails": "pf_emails",
         "Endereços": "pf_enderecos",
@@ -278,126 +252,90 @@ def interface_importacao():
         "Contratos": "pf_contratos",
         "Contratos CLT": "pf_contratos_clt"
     }
-    opcoes_tabelas = list(mapa_tabelas.keys())
-
+    
     if st.session_state.get('import_step', 1) == 1:
-        st.markdown("### 📤 Etapa 1: Upload")
-        st.warning("⚠️ **Atenção:** Ao salvar no Excel, escolha a opção: **CSV UTF-8 (Delimitado por vírgulas) (*.csv)**.")
-        sel_amigavel = st.selectbox("Selecione o Tipo de Dado para Importar", opcoes_tabelas)
-        st.session_state['import_table'] = mapa_tabelas[sel_amigavel]
+        sel = st.selectbox("Tipo de Importação", list(mapa.keys()))
+        st.session_state['import_table'] = mapa[sel]
         
-        tabela_selecionada = st.session_state['import_table']
-        cols_info = get_table_columns(tabela_selecionada)
-        
-        ignorar = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
-        
-        campos_visiveis = [col[0] for col in cols_info if col[0] not in ignorar]
-        
-        if campos_visiveis:
-            with st.expander("📋 Ver colunas esperadas para este arquivo", expanded=False):
-                st.info(f"O sistema espera um arquivo contendo informações para os seguintes campos:")
-                st.markdown(" ".join([f"`{c}`" for c in campos_visiveis]), unsafe_allow_html=True)
-        else: st.warning("Não foi possível ler as colunas da tabela selecionada (verifique se a tabela existe no schema banco_pf).")
-
-        uploaded_file = st.file_uploader("Carregar Arquivo CSV", type=['csv'])
-        if uploaded_file:
+        uploaded = st.file_uploader("Arquivo CSV", type=['csv'])
+        if uploaded:
             try:
-                uploaded_file.seek(0)
-                df = None
-                erro_leitura = None
-                try: df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
-                except UnicodeDecodeError:
-                    uploaded_file.seek(0)
-                    try: df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
-                    except: pass
-                except Exception: pass
-                if df is None:
-                    uploaded_file.seek(0)
-                    try: df = pd.read_csv(uploaded_file, sep=',', encoding='utf-8')
-                    except UnicodeDecodeError:
-                        uploaded_file.seek(0)
-                        try: df = pd.read_csv(uploaded_file, sep=',', encoding='latin-1')
-                        except Exception as e: erro_leitura = str(e)
+                df = pd.read_csv(uploaded, sep=';', encoding='utf-8')
+            except:
+                try: df = pd.read_csv(uploaded, sep=',', encoding='latin-1')
+                except: df = None
+            
+            if df is not None:
+                st.session_state['import_df'] = df
+                st.session_state['uploaded_file_name'] = uploaded.name
+                path = os.path.join(BASE_DIR_IMPORTS, f"{datetime.now().strftime('%Y%m%d%H%M')}_{uploaded.name}")
+                with open(path, "wb") as f: f.write(uploaded.getbuffer())
+                st.session_state['uploaded_file_path'] = path
                 
-                if df is not None:
-                    st.session_state['import_df'] = df
-                    st.session_state['uploaded_file_name'] = uploaded_file.name
-                    caminho_fisico = os.path.join(BASE_DIR_IMPORTS, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}")
-                    with open(caminho_fisico, "wb") as f:
-                        uploaded_file.seek(0)
-                        f.write(uploaded_file.getbuffer())
-                    st.session_state['uploaded_file_path'] = caminho_fisico
-                    st.success(f"Carregado com sucesso! {len(df)} linhas identificadas.")
-                    if st.button("Ir para Mapeamento", type="primary"):
-                        st.session_state['csv_map'] = {col: None for col in df.columns}
-                        st.session_state['current_csv_idx'] = 0
-                        st.session_state['import_step'] = 2
-                        st.rerun()
-                else: st.error(f"Não foi possível ler o arquivo. Verifique se é um CSV válido.\nDetalhe: {erro_leitura}")
-            except Exception as e: st.error(f"Erro crítico no upload: {e}")
+                st.success(f"{len(df)} linhas lidas.")
+                if st.button("Avançar"):
+                    st.session_state['csv_map'] = {col: None for col in df.columns}
+                    st.session_state['current_csv_idx'] = 0
+                    st.session_state['import_step'] = 2
+                    st.rerun()
+            else: st.error("Erro leitura CSV.")
 
     elif st.session_state['import_step'] == 2:
-        st.markdown("### 🔗 Etapa 2: Mapeamento Visual")
+        st.markdown("### Mapeamento")
         df = st.session_state['import_df']
-        csv_cols = list(df.columns)
-        table_name = st.session_state['import_table']
+        cols_csv = list(df.columns)
+        tbl = st.session_state['import_table']
+        cols_db = [c[0] for c in get_table_columns(tbl) if c[0] not in ['id', 'data_criacao', 'importacao_id']]
         
-        if table_name == 'pf_telefones':
-            db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
-        else:
-            db_cols_info = get_table_columns(table_name)
-            ignore = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
-            db_fields = [c[0] for c in db_cols_info if c[0] not in ignore]
+        if tbl in ['pf_contratos', 'pf_contratos_clt']:
+            cols_db.insert(0, "cpf_gerador_key")
 
         c_l, c_r = st.columns([1, 2])
         with c_l:
-            for idx, col in enumerate(csv_cols):
+            for idx, col in enumerate(cols_csv):
                 mapped = st.session_state['csv_map'].get(col)
-                txt = f"{idx+1}. {col} -> {'✅ '+mapped if mapped else '❓'}"
-                if idx == st.session_state.get('current_csv_idx', 0): st.info(txt, icon="👉")
+                txt = f"{col} -> {mapped if mapped else '❓'}"
+                if idx == st.session_state.get('current_csv_idx', 0): st.info(txt)
                 else: 
-                    if st.button(txt, key=f"s_{idx}"): st.session_state['current_csv_idx'] = idx; st.rerun()
+                    if st.button(txt, key=f"btn_{idx}"): st.session_state['current_csv_idx'] = idx; st.rerun()
+        
         with c_r:
-            cols_b = st.columns(4)
-            if cols_b[0].button("🚫 IGNORAR", type="secondary"):
-                curr = csv_cols[st.session_state['current_csv_idx']]
-                st.session_state['csv_map'][curr] = "IGNORAR"
-                if st.session_state['current_csv_idx'] < len(csv_cols) - 1: st.session_state['current_csv_idx'] += 1
+            st.write(f"Mapeando: **{cols_csv[st.session_state['current_csv_idx']]}**")
+            if st.button("IGNORAR"): 
+                st.session_state['csv_map'][cols_csv[st.session_state['current_csv_idx']]] = "IGNORAR"
+                if st.session_state['current_csv_idx'] < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
                 st.rerun()
-            for i, field in enumerate(db_fields):
-                if cols_b[(i+1)%4].button(f"📌 {field}", key=f"m_{field}"):
-                    curr = csv_cols[st.session_state['current_csv_idx']]
-                    st.session_state['csv_map'][curr] = field
-                    if st.session_state['current_csv_idx'] < len(csv_cols) - 1: st.session_state['current_csv_idx'] += 1
+            
+            for field in cols_db:
+                if st.button(f"📌 {field}", key=f"map_{field}"):
+                    st.session_state['csv_map'][cols_csv[st.session_state['current_csv_idx']]] = field
+                    if st.session_state['current_csv_idx'] < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
                     st.rerun()
 
         st.divider()
-        if st.button("🚀 INICIAR IMPORTAÇÃO (BULK)", type="primary"):
+        if st.button("🚀 IMPORTAR"):
             conn = pf_core.get_conn()
             if conn:
-                with st.spinner("Processando..."):
+                with st.spinner("Importando..."):
                     try:
                         cur = conn.cursor()
                         cur.execute("INSERT INTO banco_pf.pf_historico_importacoes (nome_arquivo) VALUES (%s) RETURNING id", (st.session_state['uploaded_file_name'],))
                         imp_id = cur.fetchone()[0]
                         conn.commit()
-                        final_map = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
-                        path_file = st.session_state.get('uploaded_file_path', '')
                         
-                        novos, atualizados, erros = processar_importacao_lote(conn, df, table_name, final_map, imp_id, path_file)
+                        mapping = {k: v for k, v in st.session_state['csv_map'].items() if v and v != "IGNORAR"}
+                        res = processar_importacao_lote(conn, df, tbl, mapping, imp_id, st.session_state['uploaded_file_path'])
                         conn.commit()
                         
-                        cur = conn.cursor()
-                        cur.execute("UPDATE banco_pf.pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s, qtd_erros=%s WHERE id=%s", (novos, atualizados, len(erros), imp_id))
+                        cur.execute("UPDATE banco_pf.pf_historico_importacoes SET qtd_novos=%s, qtd_atualizados=%s WHERE id=%s", (res[0], res[1], imp_id))
                         conn.commit(); conn.close()
                         
-                        st.session_state['import_stats'] = {'novos': novos, 'atualizados': atualizados, 'erros': len(erros)}
+                        st.session_state['import_stats'] = res
                         st.session_state['import_step'] = 3; st.rerun()
                     except Exception as e: st.error(f"Erro: {e}")
 
     elif st.session_state['import_step'] == 3:
-        st.markdown("### ✅ Concluído")
-        s = st.session_state.get('import_stats', {})
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Novos", s.get('novos', 0)); c2.metric("Atualizados", s.get('atualizados', 0)); c3.metric("Erros", s.get('erros', 0))
-        if st.button("Finalizar"): st.session_state.update({'pf_view': 'lista', 'import_step': 1}); st.rerun()
+        st.success("Importação Concluída!")
+        res = st.session_state.get('import_stats', (0,0,[]))
+        st.write(f"Novos: {res[0]} | Atualizados: {res[1]}")
+        if st.button("Finalizar"): st.session_state['import_step'] = 1; st.rerun()
