@@ -595,4 +595,3 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t3:
         for t in dados.get('telefones', []): st.write(f"📱 {safe_view(t.get('numero'))} ({safe_view(t.get('tag_whats'))})")
         for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
-        
