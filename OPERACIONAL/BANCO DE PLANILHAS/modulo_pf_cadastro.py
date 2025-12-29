@@ -25,13 +25,15 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
+            # Cria o schema se não existir
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
+            # Cria tabela de referências dentro do schema correto
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             conn.commit()
             conn.close()
         except: pass
 
-# --- HELPERS ---
+# --- HELPERS DE FORMATAÇÃO E VALIDAÇÃO ---
 def formatar_cpf_visual(cpf_db):
     if not cpf_db: return ""
     cpf_limpo = str(cpf_db).strip()
@@ -80,6 +82,7 @@ def converter_data_br_iso(valor):
     return None
 
 def calcular_idade_hoje(dt_nasc):
+    """Calcula a idade baseada na data de nascimento"""
     if not dt_nasc: return None
     hoje = date.today()
     if isinstance(dt_nasc, datetime): dt_nasc = dt_nasc.date()
@@ -95,7 +98,7 @@ def buscar_referencias(tipo):
         except: conn.close()
     return []
 
-# --- CRUD COM BUSCA DINÂMICA ---
+# --- CRUD COM BUSCA DINÂMICA DE CONTRATOS ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {
@@ -105,20 +108,24 @@ def carregar_dados_completos(cpf):
     
     if conn:
         try:
-            cpf_norm = limpar_normalizar_cpf(cpf)
+            cpf_norm = limpar_normalizar_cpf(cpf)      # Ex: '123'
+            cpf_full = str(cpf_norm).zfill(11)         # Ex: '00000000123'
             
-            # 1. Dados Gerais
-            df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
+            # 1. Dados Gerais (Tenta buscar por CPF limpo ou formatado com zeros)
+            df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s OR cpf = %s", conn, params=(cpf_norm, cpf_full))
             if not df_d.empty: 
                 dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
+            # Tupla para buscar nas tabelas filhas (aceita ambos os formatos de CPF)
+            params_busca = (cpf_norm, cpf_full)
+
             # 2. Tabelas Padrão
-            dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
-            dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
-            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
+            dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
+            dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
+            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
             # 3. Emprego e Renda (Fundamental para aparecer na visualização)
-            dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
+            dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
 
             # 4. Busca Dinâmica de Contratos (Vinculados à matrícula)
             if dados['empregos']:
@@ -126,7 +133,6 @@ def carregar_dados_completos(cpf):
                 matr_list = [str(e['matricula']) for e in dados['empregos'] if e.get('matricula')]
                 
                 if matr_list:
-                    # Prepara placeholders para SQL IN
                     placeholders = ",".join(["%s"] * len(matr_list))
                     cur = conn.cursor()
                     
@@ -142,7 +148,7 @@ def carregar_dados_completos(cpf):
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
                         try:
-                            # Busca contratos vinculados às matrículas deste cliente
+                            # Busca contratos onde a matricula_ref bate com alguma matrícula do cliente
                             query = f"SELECT * FROM {nome_completo} WHERE matricula_ref IN ({placeholders})"
                             df_temp = pd.read_sql(query, conn, params=tuple(matr_list)).fillna("")
                             
@@ -153,9 +159,11 @@ def carregar_dados_completos(cpf):
                                     dados['contratos'].append(r)
                                     if 'clt' in tabela: dados['dados_clt'].append(r)
                         except: continue
-        except Exception as e: 
-            print(f"Erro ao carregar dados: {e}")
-        finally: conn.close()
+        except Exception as e:
+            print(f"Erro ao carregar dados: {e}") 
+        finally: 
+            conn.close()
+            
     return dados
 
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
@@ -250,7 +258,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1.write(f"**RG:** {g.get('rg', '-')}")
         c2.write(f"**PIS:** {g.get('pis', '-')}")
         c2.write(f"**CNH:** {g.get('cnh', '-')}")
-        
+
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
             st.info(f"📍 {end.get('rua')}, {end.get('bairro')} - {end.get('cidade')}/{end.get('uf')}")
@@ -259,7 +267,6 @@ def dialog_visualizar_cliente(cpf_cliente):
         emps = dados.get('empregos', [])
         all_contratos = dados.get('contratos', [])
         
-        # CORREÇÃO: Mostra a lista de empregos mesmo que não tenha contratos
         if not emps: 
             st.info("Sem vínculos profissionais.")
         else:
@@ -267,9 +274,8 @@ def dialog_visualizar_cliente(cpf_cliente):
                 matr = emp.get('matricula')
                 conv = emp.get('convenio')
                 
-                # Exibe o card do emprego (Expander)
+                # Exibe o card do emprego mesmo sem contratos
                 with st.expander(f"🏢 {conv} | Matrícula: {matr}", expanded=True):
-                    # Se tiver dados extras no emprego, mostra
                     if emp.get('dados_extras'):
                         st.caption(f"ℹ️ {emp.get('dados_extras')}")
 
@@ -295,7 +301,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
         for m in dados.get('emails', []): st.write(f"📧 {m.get('email')}")
 
-# --- CONFIGURAÇÃO E STAGING (MANTIDA IGUAL) ---
+# --- CONFIGURAÇÃO E STAGING ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
