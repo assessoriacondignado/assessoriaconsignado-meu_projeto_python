@@ -91,10 +91,9 @@ def converter_data_br_iso(valor):
     return None
 
 def calcular_idade_hoje(dt_nasc):
-    if not dt_nasc: return None
+    if not dt_nasc: return 0
     hoje = date.today()
     if isinstance(dt_nasc, datetime): dt_nasc = dt_nasc.date()
-    # Verifica se é uma data válida antes de calcular
     if not isinstance(dt_nasc, date): return 0
     return hoje.year - dt_nasc.year - ((hoje.month, hoje.day) < (dt_nasc.month, dt_nasc.day))
 
@@ -127,6 +126,7 @@ def carregar_dados_completos(cpf):
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
             # EMPREGO E RENDA
+            # ATUALIZADO: Busca usando coluna 'cpf' (não cpf_ref) e sem dados_extras
             query_emp = "SELECT convenio, matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN %s"
             df_emp = pd.read_sql(query_emp, conn, params=(params_busca,))
             
@@ -151,7 +151,6 @@ def carregar_dados_completos(cpf):
                     if tabelas_mapeadas:
                         for tabela_destino, tipo_destino in tabelas_mapeadas:
                             try:
-                                # Verifica se a tabela existe
                                 cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                                 if cur.fetchone()[0]:
                                     # Verifica nome da coluna de chave (matricula ou matricula_ref)
@@ -395,18 +394,17 @@ def interface_cadastro_pf():
                     colunas_banco = get_colunas_tabela(nome_tabela)
                     
                     # 2. Gera Inputs Dinâmicos
-                    campos_ignorados = ['id', 'matricula_ref', 'matricula', 'convenio', 'importacao_id', 'data_criacao', 'data_atualizacao']
+                    # ATUALIZADO: 'tipo_planilha' ignorado visualmente (preenchido auto)
+                    campos_ignorados = ['id', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha', 'importacao_id', 'data_criacao', 'data_atualizacao']
                     inputs_gerados = {}
                     
                     # --- MAPA DE DEPENDÊNCIA PARA CÁLCULO AUTOMÁTICO ---
-                    # Coluna de Tempo -> Coluna de Data que a origina
                     mapa_calculo_datas = {
                         'tempo_abertura_anos': 'data_abertura_empresa',
                         'tempo_admissao_anos': 'data_admissao',
                         'tempo_inicio_emprego_anos': 'data_inicio_emprego'
                     }
                     
-                    # Dicionário temporário para guardar os valores das datas preenchidas neste formulário
                     datas_preenchidas = {} 
 
                     cols_ui = st.columns(2)
@@ -419,19 +417,15 @@ def interface_cadastro_pf():
                         with cols_ui[idx_col % 2]:
                             key_input = f"inp_{col_nome}_{sufixo}"
                             
-                            # VERIFICAÇÃO 1: É um campo de Tempo calculado?
+                            # CÁLCULO AUTOMÁTICO DE ANOS
                             if col_nome in mapa_calculo_datas:
                                 col_data_ref = mapa_calculo_datas[col_nome]
                                 valor_data = datas_preenchidas.get(col_data_ref)
-                                
-                                # Calcula se houver data, senão 0
                                 anos_calc = calcular_idade_hoje(valor_data) if valor_data else 0
                                 val = st.number_input(label_fmt, value=anos_calc, disabled=True, key=key_input)
                                 
-                            # VERIFICAÇÃO 2: É uma data normal?
                             elif 'date' in col_tipo.lower() or 'data' in col_nome.lower():
                                 val = st.date_input(label_fmt, value=None, format="DD/MM/YYYY", key=key_input)
-                                # Guarda o valor para usar no cálculo subsequente
                                 datas_preenchidas[col_nome] = val
                                 
                             elif 'int' in col_tipo.lower() or 'numeric' in col_tipo.lower():
@@ -450,7 +444,12 @@ def interface_cadastro_pf():
                         if 'matricula' in nomes_cols_tabela: inputs_gerados['matricula'] = dados_vinc['matricula']
                         elif 'matricula_ref' in nomes_cols_tabela: inputs_gerados['matricula_ref'] = dados_vinc['matricula']
                         
+                        # Preenche CONVENIO automaticamente
                         if 'convenio' in nomes_cols_tabela: inputs_gerados['convenio'] = dados_vinc['convenio']
+                        
+                        # Preenche TIPO_PLANILHA automaticamente
+                        if 'tipo_planilha' in nomes_cols_tabela and tipo_tabela:
+                            inputs_gerados['tipo_planilha'] = tipo_tabela
                         
                         inputs_gerados['origem_tabela'] = nome_tabela
                         inputs_gerados['tipo_origem'] = tipo_tabela
@@ -493,7 +492,8 @@ def interface_cadastro_pf():
                 c1, c2 = st.columns([5, 1])
                 origem_nome = c.get('tipo_origem') or c.get('origem_tabela', 'Dado')
                 
-                chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref', 'matricula', 'convenio']]
+                # Exibe resumo visual
+                chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha']]
                 display_txt = f"[{origem_nome}] "
                 if len(chaves) > 0: display_txt += f"{c[chaves[0]]} "
                 if len(chaves) > 1: display_txt += f"| {c[chaves[1]]}"
@@ -579,6 +579,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
             
             # EMPREGO E RENDA (UPSERT)
+            # ATUALIZADO: Remove dados_extras (coluna não existe)
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows():
                     matr = r['matricula']
@@ -596,7 +597,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     r_dict.pop('origem_tabela', None)
                     r_dict.pop('tipo_origem', None)
                     
-                    # --- LIMPEZA CRÍTICA ---
+                    # --- LIMPEZA CRÍTICA: Remove chaves com valores NaN ou Nulos para evitar erro de coluna inexistente ---
                     r_dict = {k: v for k, v in r_dict.items() if pd.notna(v) and v != ""}
                     
                     cols = list(r_dict.keys())
@@ -665,9 +666,11 @@ def dialog_visualizar_cliente(cpf_cliente):
         for v in dados.get('empregos', []):
             ctrs = v.get('contratos', [])
             if ctrs:
+                # Mostra o tipo/nome da tabela no título do expander se disponível
                 tipo_display = v.get('contratos')[0].get('tipo_origem') or 'Detalhes'
                 with st.expander(f"📂 {v['convenio'].upper()} | {tipo_display} | Matr: {v['matricula']}", expanded=True):
                     df_ex = pd.DataFrame(ctrs)
+                    # Limpa colunas técnicas da visualização
                     cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
             else:
