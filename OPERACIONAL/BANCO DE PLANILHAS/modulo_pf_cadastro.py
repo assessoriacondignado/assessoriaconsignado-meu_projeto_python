@@ -106,9 +106,10 @@ def safe_view(valor):
 # --- CARREGAMENTO INTELIGENTE (ATUALIZADO) ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
+    # CORREÇÃO: Chave 'empregos' usada para alinhar com o frontend
     dados = {
         'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 
-        'vinculos_completos': [] 
+        'empregos': [] 
     }
     
     if conn:
@@ -165,8 +166,8 @@ def carregar_dados_completos(cpf):
                                     vinculo['contratos'] = df_contratos.to_dict('records')
                         except: pass
                     
-                    # Se não achar mapeamento, adiciona o vínculo mesmo sem contratos
-                    dados['vinculos_completos'].append(vinculo)
+                    # CORREÇÃO: Adiciona na lista correta 'empregos'
+                    dados['empregos'].append(vinculo)
 
         except Exception as e:
             print(f"Erro ao carregar dados completos: {e}") 
@@ -274,7 +275,8 @@ def dialog_visualizar_cliente(cpf_cliente):
         
         # VÍNCULOS (CONVÊNIO + MATRÍCULA)
         st.markdown("##### 🔗 Vínculos Identificados")
-        vinculos = dados.get('vinculos_completos', [])
+        # CORREÇÃO: Usa a chave 'empregos'
+        vinculos = dados.get('empregos', [])
         
         if vinculos:
             for v in vinculos:
@@ -553,3 +555,4 @@ def interface_cadastro_pf():
                     st.rerun()
                 else:
                     st.error(msg)
+                
