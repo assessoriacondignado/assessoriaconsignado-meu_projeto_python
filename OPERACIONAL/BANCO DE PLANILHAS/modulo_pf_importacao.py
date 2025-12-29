@@ -85,7 +85,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             df_proc = df.rename(columns=mapping)
             cols_db_validas = [col for col in df_proc.columns if col in cols_banco or col in ['cpf', 'cpf_ref', 'matricula', 'matricula_ref']]
             
-            # Preserva coluna temporária para gerar matrícula
             col_cpf_temp = None
             if 'cpf_gerador_key' in mapping.values():
                  csv_col_cpf = next((k for k, v in mapping.items() if v == 'cpf_gerador_key'), None)
@@ -93,7 +92,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                      col_cpf_temp = csv_col_cpf
                      df_proc['cpf_temp_gen'] = df[col_cpf_temp]
 
-            # Filtra colunas úteis
             df_proc = df_proc[[c for c in df_proc.columns if c in cols_banco or c == 'cpf_temp_gen']]
 
             # Padronização Maiúscula
@@ -102,19 +100,28 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if 'importacao_id' in cols_banco:
                 df_proc['importacao_id'] = str(import_id)
 
-            # --- Validação CPF (11 dígitos) ---
-            # Aplicada em cpf, cpf_ref e agora TAMBÉM para a tabela 'cpf_convenio'
-            def validar_cpf_11_digitos(val):
+            # --- Validação e Normalização de CPF (AJUSTADO PARA PONTUAÇÃO) ---
+            def validar_cpf_digitos(val):
+                # Remove pontuação (., -) e deixa só números
                 nums = pf_core.limpar_apenas_numeros(val)
-                return len(nums) == 11
+                # Aceita se tiver entre 10 e 11 dígitos (para aceitar CPFs sem zero a esquerda vindo do Excel)
+                return 10 <= len(nums) <= 11
 
             for c in ['cpf', 'cpf_ref']:
                 if c in df_proc.columns:
-                    mask = df_proc[c].astype(str).apply(validar_cpf_11_digitos)
+                    # 1. Filtra CPFs inválidos (muito curtos ou muito longos)
+                    mask = df_proc[c].astype(str).apply(validar_cpf_digitos)
                     df_proc = df_proc[mask]
-                    df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
+                    
+                    # 2. Aplica Formatação
+                    if table_name == 'cpf_convenio':
+                        # Para cpf_convenio: Remove pontuação E força 11 dígitos (adiciona zero se faltar)
+                        df_proc[c] = df_proc[c].astype(str).apply(lambda x: pf_core.limpar_apenas_numeros(x).zfill(11))
+                    else:
+                        # Para outras tabelas: Remove pontuação e remove zeros à esquerda (Padrão do sistema)
+                        df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
-            # Gerador de Matrícula (Se necessário)
+            # Gerador de Matrícula
             target_matricula = 'matricula' if 'matricula' in cols_banco else 'matricula_ref'
             if target_matricula in cols_banco:
                 if target_matricula not in df_proc.columns:
@@ -145,12 +152,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             # Deduplicação
             pk = 'cpf' if 'cpf' in df_proc.columns else (target_matricula if target_matricula in df_proc.columns else None)
+            if table_name == 'cpf_convenio': pk = 'cpf_ref' 
             
-            # Para a nova tabela cpf_convenio, a chave pode ser composta ou apenas o cpf_ref,
-            # mas vamos manter a lógica padrão de deduplicação simples.
-            if table_name == 'cpf_convenio' and 'cpf_ref' in df_proc.columns:
-                pk = 'cpf_ref'
-
             if pk: df_proc.drop_duplicates(subset=[pk], keep='last', inplace=True)
 
         # 3. Carga no Banco (Bulk)
@@ -163,8 +166,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
-        
-        # Ajuste para a nova tabela cpf_convenio (que não tem pk 'cpf' mas tem 'cpf_ref' único)
         if table_name == 'cpf_convenio': pk_field = 'cpf_ref'
 
         qtd_novos, qtd_atualizados = 0, 0
@@ -181,15 +182,12 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             if set_parts:
                 set_clause = ', '.join(set_parts)
-                # No caso de cpf_convenio, o UPSERT pode falhar se houver duplicatas de chave.
-                # A lógica abaixo tenta atualizar se existir.
                 cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
                 qtd_atualizados = cur.rowcount
             
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
-            # REGRA DE CONTRATOS (IGNORAR SEM VÍNCULO)
             if table_name in ['pf_contratos', 'pf_contratos_clt']:
                 query_insert_safe = f"""
                     INSERT INTO {table_full_name} ({', '.join(cols_order)}) 
@@ -206,10 +204,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             qtd_novos = cur.rowcount
             
-            # ATUALIZAÇÃO DO VÍNCULO NA TABELA PAI
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'cpf_convenio']:
-                # A nova tabela cpf_convenio também atualiza o cadastro principal pelo CPF
                 cur.execute(f"""UPDATE banco_pf.pf_dados d SET importacao_id = CASE WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s ELSE d.importacao_id || ', ' || %s END FROM {staging_table} s WHERE d.cpf = s.cpf_ref""", (str_imp, str_imp))
                 
             elif table_name in ['pf_contratos', 'pf_contratos_clt']:
@@ -249,7 +245,6 @@ def interface_importacao():
     
     st.divider()
     
-    # ATUALIZADO: Incluída a nova tabela na lista
     mapa = {
         "Dados Cadastrais": "pf_dados",
         "Telefones": "pf_telefones",
@@ -258,7 +253,7 @@ def interface_importacao():
         "Emprego e Renda": "pf_emprego_renda",
         "Contratos": "pf_contratos",
         "Contratos CLT": "pf_contratos_clt",
-        "CPF x Convênio": "cpf_convenio"  # <-- NOVA OPÇÃO
+        "CPF x Convênio": "cpf_convenio"
     }
     
     if st.session_state.get('import_step', 1) == 1:
