@@ -83,6 +83,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         # --- LÓGICA GENÉRICA ---
         else:
             df_proc = df.rename(columns=mapping)
+            # Remove colunas mapeadas que não existem no banco
             cols_db_validas = [col for col in df_proc.columns if col in cols_banco or col in ['cpf', 'cpf_ref', 'matricula', 'matricula_ref']]
             
             col_cpf_temp = None
@@ -100,25 +101,19 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if 'importacao_id' in cols_banco:
                 df_proc['importacao_id'] = str(import_id)
 
-            # --- Validação e Normalização de CPF (AJUSTADO PARA PONTUAÇÃO) ---
+            # --- Validação CPF (11 dígitos) ---
             def validar_cpf_digitos(val):
-                # Remove pontuação (., -) e deixa só números
                 nums = pf_core.limpar_apenas_numeros(val)
-                # Aceita se tiver entre 10 e 11 dígitos (para aceitar CPFs sem zero a esquerda vindo do Excel)
                 return 10 <= len(nums) <= 11
 
             for c in ['cpf', 'cpf_ref']:
                 if c in df_proc.columns:
-                    # 1. Filtra CPFs inválidos (muito curtos ou muito longos)
                     mask = df_proc[c].astype(str).apply(validar_cpf_digitos)
                     df_proc = df_proc[mask]
                     
-                    # 2. Aplica Formatação
                     if table_name == 'cpf_convenio':
-                        # Para cpf_convenio: Remove pontuação E força 11 dígitos (adiciona zero se faltar)
                         df_proc[c] = df_proc[c].astype(str).apply(lambda x: pf_core.limpar_apenas_numeros(x).zfill(11))
                     else:
-                        # Para outras tabelas: Remove pontuação e remove zeros à esquerda (Padrão do sistema)
                         df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
             # Gerador de Matrícula
@@ -143,7 +138,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
 
             if 'cpf_temp_gen' in df_proc.columns: df_proc.drop(columns=['cpf_temp_gen'], inplace=True)
                 
-            # Limpeza de Datas
             cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego', 'data_abertura_empresa']
             for col in cols_data:
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
@@ -153,6 +147,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             # Deduplicação
             pk = 'cpf' if 'cpf' in df_proc.columns else (target_matricula if target_matricula in df_proc.columns else None)
             if table_name == 'cpf_convenio': pk = 'cpf_ref' 
+            # ATUALIZADO: Deduplicação para Convenio x Planilha
+            if table_name == 'convenio_por_planilha': pk = 'convenio' 
             
             if pk: df_proc.drop_duplicates(subset=[pk], keep='last', inplace=True)
 
@@ -167,6 +163,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
         if table_name == 'cpf_convenio': pk_field = 'cpf_ref'
+        # ATUALIZADO: PK para Convenio x Planilha
+        if table_name == 'convenio_por_planilha': pk_field = 'convenio'
 
         qtd_novos, qtd_atualizados = 0, 0
         
@@ -245,6 +243,7 @@ def interface_importacao():
     
     st.divider()
     
+    # ATUALIZADO: Incluída a nova opção na lista
     mapa = {
         "Dados Cadastrais": "pf_dados",
         "Telefones": "pf_telefones",
@@ -253,7 +252,8 @@ def interface_importacao():
         "Emprego e Renda": "pf_emprego_renda",
         "Contratos": "pf_contratos",
         "Contratos CLT": "pf_contratos_clt",
-        "CPF x Convênio": "cpf_convenio"
+        "CPF x Convênio": "cpf_convenio",
+        "Convênio x Planilha": "convenio_por_planilha" # <--- NOVA OPÇÃO
     }
     
     if st.session_state.get('import_step', 1) == 1:
