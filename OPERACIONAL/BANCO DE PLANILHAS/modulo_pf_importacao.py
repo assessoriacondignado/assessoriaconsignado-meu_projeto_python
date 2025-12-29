@@ -50,10 +50,13 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             for _, row in df.iterrows():
                 cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
                 cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
+                
+                # Validação de CPF
                 if not cpf_limpo: continue
                 
-                whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
-                qualif_val = str(row[col_qualif]) if col_qualif and pd.notna(row[col_qualif]) else None
+                # Padronização Maiúscula para Tags
+                whats_val = str(row[col_whats]).upper().strip() if col_whats and pd.notna(row[col_whats]) else None
+                qualif_val = str(row[col_qualif]).upper().strip() if col_qualif and pd.notna(row[col_qualif]) else None
                 
                 for col_origin, _ in map_tels.items():
                     tel_raw = row[col_origin]
@@ -87,41 +90,54 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cols_db = list(mapping.values())
             df_proc = df_proc[cols_db].copy()
             
+            # === [NOVO] PADRONIZAÇÃO TOTAL EM MAIÚSCULO ===
+            # Converte todas as colunas de texto para maiúsculo automaticamente
+            # Isso garante que "inss", "Inss" e "INSS" virem "INSS"
+            df_proc = df_proc.applymap(lambda x: str(x).upper().strip() if isinstance(x, str) else x)
+            # ===============================================
+
             if 'importacao_id' in cols_banco:
-                df_proc['importacao_id'] = import_id
+                df_proc['importacao_id'] = str(import_id) # Garante que ID é string
             
-            # --- 1. VALIDAÇÃO DE CPF (Igual ao módulo de Cadastro) ---
+            # --- 1. VALIDAÇÃO DE CPF (11 DÍGITOS) ---
             def validar_cpf_11_digitos(val):
                 nums = pf_core.limpar_apenas_numeros(val)
                 return len(nums) == 11
 
-            # Aplica validação para Tabela Principal (pf_dados)
+            # Valida Tabela Principal
             if 'cpf' in df_proc.columns:
                 mask_valid = df_proc['cpf'].astype(str).apply(validar_cpf_11_digitos)
                 df_proc = df_proc[mask_valid]
                 df_proc['cpf'] = df_proc['cpf'].astype(str).apply(pf_core.limpar_normalizar_cpf)
                 if table_name == 'pf_dados': df_proc = df_proc[df_proc['cpf'] != ""]
 
-            # Aplica validação para Tabelas Vinculadas (cpf_ref)
+            # Valida Tabelas Vinculadas
             if 'cpf_ref' in df_proc.columns:
                 mask_valid = df_proc['cpf_ref'].astype(str).apply(validar_cpf_11_digitos)
                 df_proc = df_proc[mask_valid]
                 df_proc['cpf_ref'] = df_proc['cpf_ref'].astype(str).apply(pf_core.limpar_normalizar_cpf)
             
             # --- 2. GERADOR DE MATRÍCULA AUTOMÁTICA ---
-            if table_name == 'pf_emprego_renda' and 'matricula' in df_proc.columns:
-                def gerar_matricula_se_vazio(row):
+            if table_name == 'pf_emprego_renda':
+                if 'matricula' not in df_proc.columns:
+                    df_proc['matricula'] = ""
+
+                def regra_matricula(row):
                     mat = str(row.get('matricula', '')).strip()
-                    if not mat or mat.lower() == 'nan' or mat == 'None':
-                        conv = str(row.get('convenio', '')).strip()
+                    # Verifica se é vazio/nulo/nan/none
+                    if not mat or mat.upper() == 'NAN' or mat.upper() == 'NONE':
+                        conv = str(row.get('convenio', '')).strip().upper()
                         cpf = str(row.get('cpf_ref', '')).strip()
                         dt = datetime.now().strftime('%d%m%Y')
+                        # Formato: CONVENIO + CPF + NULO + DATA
                         return f"{conv}{cpf}NULO{dt}"
                     return mat
                 
-                df_proc['matricula'] = df_proc.apply(gerar_matricula_se_vazio, axis=1)
+                df_proc['matricula'] = df_proc.apply(regra_matricula, axis=1)
 
             # --- 3. Limpeza de Datas ---
+            # Como aplicamos .upper() em tudo, datas como "20/jan/2023" viram "20/JAN/2023"
+            # O conversor deve lidar com isso (mas o ideal é formato numérico dd/mm/aaaa)
             cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego']
             for col in cols_data:
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
@@ -133,11 +149,12 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if pk_field:
                 df_proc.drop_duplicates(subset=[pk_field], keep='last', inplace=True)
 
-        # 3. Processo de Carga
+        # 3. Processo de Carga (Bulk)
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
         output = io.StringIO()
+        # CSV com separador TAB, tratando nulos
         df_proc.to_csv(output, sep='\t', header=False, index=False, na_rep='\\N')
         output.seek(0)
         
@@ -147,7 +164,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         qtd_novos, qtd_atualizados = 0, 0
         
         if pk_field:
-            # Lógica de UPDATE com APPEND para importacao_id
+            # UPDATE (com append para importacao_id)
             set_parts = []
             for c in cols_order:
                 if c == pk_field: continue
@@ -162,13 +179,14 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
             qtd_atualizados = cur.rowcount
             
+            # INSERT
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
             
-            # --- ATUALIZAÇÃO DO VÍNCULO NA TABELA PAI (PF_DADOS) COM APPEND ---
+            # Atualização de Vínculo na Tabela Pai
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
                 cur.execute(f"""
@@ -271,8 +289,6 @@ def interface_importacao():
         tabela_selecionada = st.session_state['import_table']
         cols_info = get_table_columns(tabela_selecionada)
         
-        # CORREÇÃO: Removemos cpf_ref e matricula_ref da lista de ignorados
-        # para que o usuário POSSA mapeá-los.
         ignorar = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
         
         campos_visiveis = [col[0] for col in cols_info if col[0] not in ignorar]
@@ -330,10 +346,7 @@ def interface_importacao():
             db_fields = ['cpf_ref (Vínculo)', 'tag_whats', 'tag_qualificacao'] + [f'telefone_{i}' for i in range(1, 11)]
         else:
             db_cols_info = get_table_columns(table_name)
-            
-            # CORREÇÃO: Lista de ignorados reduzida também na etapa 2
             ignore = ['id', 'data_criacao', 'data_atualizacao', 'importacao_id']
-            
             db_fields = [c[0] for c in db_cols_info if c[0] not in ignore]
 
         c_l, c_r = st.columns([1, 2])
