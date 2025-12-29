@@ -105,8 +105,8 @@ def carregar_dados_completos(cpf):
     
     if conn:
         try:
-            cpf_norm = limpar_normalizar_cpf(cpf)      # Ex: '123'
-            cpf_full = str(cpf_norm).zfill(11)         # Ex: '00000000123'
+            cpf_norm = limpar_normalizar_cpf(cpf)      
+            cpf_full = str(cpf_norm).zfill(11)         
             
             # 1. Dados Gerais
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s OR cpf = %s", conn, params=(cpf_norm, cpf_full))
@@ -259,18 +259,16 @@ def dialog_visualizar_cliente(cpf_cliente):
         emps = dados.get('empregos', [])
         all_contratos = dados.get('contratos', [])
         
-        # CORREÇÃO: Mostra "Sem vínculos" apenas se realmente não houver emprego
         if not emps: 
             st.info("Sem vínculos profissionais.")
         else:
             for emp in emps:
-                matr = emp.get('matricula')
-                conv = emp.get('convenio')
+                matr = emp.get('matricula') or "N/A"
+                conv = emp.get('convenio') or "Desconhecido"
                 
-                # Exibe o card do emprego mesmo sem contratos
+                # --- AJUSTE SOLICITADO: Título do Expander com Convênio e Matrícula ---
                 with st.expander(f"🏢 {conv} | Matrícula: {matr}", expanded=True):
-                    # GARANTINDO A EXIBIÇÃO DA MATRÍCULA NO CORPO TAMBÉM
-                    if matr: st.write(f"**Matrícula:** {matr}")
+                    
                     if emp.get('dados_extras'):
                         st.caption(f"ℹ️ {emp.get('dados_extras')}")
 
