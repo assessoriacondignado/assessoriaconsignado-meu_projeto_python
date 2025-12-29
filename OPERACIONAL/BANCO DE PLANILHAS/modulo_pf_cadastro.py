@@ -20,7 +20,6 @@ def get_conn():
     except Exception as e:
         return None
 
-# --- FUNÇÃO RESTAURADA (CORREÇÃO DO ERRO) ---
 def init_db_structures():
     conn = get_conn()
     if conn:
@@ -122,24 +121,25 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf IN %s", conn, params=(params_busca,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
+            # Tabelas Satélites (Ainda usam cpf_ref)
             dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # EMPREGO E RENDA
-            query_emp = "SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf IN %s"
+            # EMPREGO E RENDA (Agora usa cpf e sem dados_extras)
+            query_emp = "SELECT convenio, matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN %s"
             df_emp = pd.read_sql(query_emp, conn, params=(params_busca,))
             
             if not df_emp.empty:
                 for _, row_emp in df_emp.iterrows():
                     conv_nome = str(row_emp['convenio']).strip() 
                     matricula = str(row_emp['matricula']).strip()
-                    extras = row_emp['dados_extras']
+                    # dados_extras removido pois não existe na tabela
                     
                     vinculo = {
                         'convenio': conv_nome,
                         'matricula': matricula,
-                        'dados_extras': extras,
+                        'dados_extras': '', # Mantido vazio para compatibilidade de estrutura interna
                         'contratos': []
                     }
 
@@ -159,12 +159,11 @@ def carregar_dados_completos(cpf):
                                 df_contratos = pd.read_sql(query_contratos, conn, params=(matricula,))
                                 if not df_contratos.empty:
                                     df_contratos = df_contratos.astype(object).where(pd.notnull(df_contratos), None)
-                                    # Adiciona o nome da tabela de origem para saber como salvar depois
                                     df_contratos['origem_tabela'] = tabela_destino
                                     vinculo['contratos'] = df_contratos.to_dict('records')
                         except: pass
                     else:
-                        # Fallback para tabela padrão se não houver mapeamento
+                        # Fallback para tabela padrão
                         try:
                             query_padrao = "SELECT * FROM banco_pf.pf_contratos WHERE matricula_ref = %s"
                             df_contratos = pd.read_sql(query_padrao, conn, params=(matricula,))
@@ -320,17 +319,16 @@ def interface_cadastro_pf():
                 cfg = [c for c in CONFIG_CADASTRO["Endereços"] if c['key'] == 'cep'][0]
                 inserir_dado_staging(cfg, obj_end)
 
-        # 4. EMPREGO E RENDA (SEPARADO)
+        # 4. EMPREGO E RENDA (VÍNCULO) - ATUALIZADO: SEM DADOS EXTRAS
         with st.expander("Emprego e Renda (Vínculo)"):
             st.caption("Cadastre aqui o vínculo principal.")
             conv = st.text_input("Convênio (Ex: CLT, INSS)", key="in_emp_conv")
             matr = st.text_input("Matrícula", key="in_emp_matr")
-            extra = st.text_input("Dados Extras", key="in_emp_extra")
+            # Campo Dados Extras removido conforme solicitação
             
             if st.button("Inserir Vínculo"):
                 if conv and matr:
-                    obj_emp = {'convenio': conv, 'matricula': matr, 'dados_extras': extra}
-                    # Adiciona diretamente na lista de empregos
+                    obj_emp = {'convenio': conv, 'matricula': matr, 'dados_extras': ''}
                     if 'empregos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['empregos'] = []
                     st.session_state['dados_staging']['empregos'].append(obj_emp)
                     st.toast("✅ Vínculo adicionado!")
@@ -340,7 +338,6 @@ def interface_cadastro_pf():
 
         # 5. CONTRATOS (DINÂMICO)
         with st.expander("Contratos"):
-            # Só permite adicionar contrato se houver um vínculo (matricula) cadastrado
             lista_empregos = st.session_state['dados_staging'].get('empregos', [])
             if not lista_empregos:
                 st.info("Insira um vínculo em 'Emprego e Renda' primeiro.")
@@ -348,18 +345,13 @@ def interface_cadastro_pf():
                 opcoes_matr = [f"{e['matricula']} - {e['convenio']}" for e in lista_empregos]
                 sel_vinculo = st.selectbox("Vincular à Matrícula:", opcoes_matr, key="sel_vinc_contr")
                 
-                # Identifica a matrícula e convênio selecionados
                 idx_vinc = opcoes_matr.index(sel_vinculo)
                 dados_vinc = lista_empregos[idx_vinc]
-                
-                # Descobre qual tabela usar baseada no convênio
                 tabela_destino = descobrir_tabela_contrato(dados_vinc['convenio'])
                 
                 st.caption(f"Destino: {tabela_destino}")
                 
-                # FORMULÁRIO DINÂMICO BASEADO NA TABELA
                 if 'pf_contratos_clt' in tabela_destino:
-                    # Campos específicos para CLT
                     c_emp, c_cnpj = st.columns(2)
                     nm_emp = c_emp.text_input("Nome Empresa", key="in_clt_emp")
                     cnpj_emp = c_cnpj.text_input("CNPJ", key="in_clt_cnpj")
@@ -382,7 +374,6 @@ def interface_cadastro_pf():
                         st.toast("✅ Contrato CLT adicionado!")
                         
                 else:
-                    # Campos Padrão (pf_contratos)
                     ctr_num = st.text_input("Nº Contrato", key="in_ctr_num")
                     ctr_det = st.text_input("Detalhes / Valor", key="in_ctr_det")
                     
@@ -401,7 +392,6 @@ def interface_cadastro_pf():
     with c_preview:
         st.markdown("### 📋 Resumo do Cadastro")
         
-        # Resumo Pessoal
         st.info("👤 Dados Pessoais")
         geral = st.session_state['dados_staging'].get('geral', {})
         if geral:
@@ -413,7 +403,6 @@ def interface_cadastro_pf():
                     cols[idx%3].text_input(k.upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
                     idx += 1
         
-        # Resumo Vínculos (Empregos)
         st.warning("💼 Vínculos (Emprego e Renda)")
         emps = st.session_state['dados_staging'].get('empregos', [])
         if emps:
@@ -425,7 +414,6 @@ def interface_cadastro_pf():
         else:
             st.caption("Nenhum vínculo inserido.")
 
-        # Resumo Contratos
         st.success("📝 Contratos")
         ctrs = st.session_state['dados_staging'].get('contratos', [])
         
@@ -509,15 +497,17 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if not df_end.empty:
                 for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
             
+            # ATUALIZADO: Emprego e Renda (Usa CPF, sem dados_extras)
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows():
                     matr = r['matricula']
                     cur.execute("SELECT 1 FROM banco_pf.pf_emprego_renda WHERE matricula = %s", (matr,))
                     if cur.fetchone():
-                        cur.execute("UPDATE banco_pf.pf_emprego_renda SET cpf = %s, convenio = %s, data_atualizacao = %s, dados_extras = %s WHERE matricula = %s", (cpf_chave, r['convenio'], datetime.now(), r['dados_extras'], matr))
+                        cur.execute("UPDATE banco_pf.pf_emprego_renda SET cpf = %s, convenio = %s, data_atualizacao = %s WHERE matricula = %s", (cpf_chave, r['convenio'], datetime.now(), matr))
                     else:
-                        cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, dados_extras, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, r['dados_extras'], datetime.now()))
+                        cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
             
+            # Contratos
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
@@ -532,6 +522,15 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                         cur.execute(query, vals)
                     except Exception as e_contr:
                         print(f"Erro ao inserir contrato na tabela {tabela}: {e_contr}")
+            
+            # Limpeza de contratos antigos para matrículas que não existem mais?
+            # Se for necessário, descomente abaixo. O código anterior apagava contratos da matrícula vinculada ao CPF.
+            # Como agora a matrícula pode ter mudado, é seguro limpar os contratos da matrícula antiga se ela foi removida?
+            # A lógica atual não remove vínculos de emprego, apenas atualiza ou insere.
+            # Se desejar remover contratos órfãos, seria necessário uma lógica mais complexa.
+            # O código anterior para remover contratos usava:
+            # cur.execute("DELETE FROM banco_pf.pf_contratos WHERE matricula_ref IN (SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf = %s)", (cpf_chave,))
+            # Mas como não apagamos pf_emprego_renda, não podemos apagar os contratos cegamente.
 
             conn.commit(); conn.close(); return True, "Salvo com sucesso!"
         except Exception as e: return False, str(e)
@@ -580,7 +579,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []):
             st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
-            if v.get('dados_extras'): st.caption(f"Obs: {safe_view(v['dados_extras'])}")
+            # dados_extras removido da visualização
         st.markdown("---")
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
