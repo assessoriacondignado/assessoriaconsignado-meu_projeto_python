@@ -25,15 +25,13 @@ def init_db_structures():
     if conn:
         try:
             cur = conn.cursor()
-            # Cria o schema se não existir
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
-            # Cria tabela de referências dentro do schema correto
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             conn.commit()
             conn.close()
         except: pass
 
-# --- HELPERS DE FORMATAÇÃO E VALIDAÇÃO ---
+# --- HELPERS ---
 def formatar_cpf_visual(cpf_db):
     if not cpf_db: return ""
     cpf_limpo = str(cpf_db).strip()
@@ -82,7 +80,6 @@ def converter_data_br_iso(valor):
     return None
 
 def calcular_idade_hoje(dt_nasc):
-    """Calcula a idade baseada na data de nascimento"""
     if not dt_nasc: return None
     hoje = date.today()
     if isinstance(dt_nasc, datetime): dt_nasc = dt_nasc.date()
@@ -98,7 +95,7 @@ def buscar_referencias(tipo):
         except: conn.close()
     return []
 
-# --- CRUD COM BUSCA DINÂMICA DE CONTRATOS ---
+# --- CRUD COM BUSCA DINÂMICA ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {
@@ -111,12 +108,11 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)      # Ex: '123'
             cpf_full = str(cpf_norm).zfill(11)         # Ex: '00000000123'
             
-            # 1. Dados Gerais (Tenta buscar por CPF limpo ou formatado com zeros)
+            # 1. Dados Gerais
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s OR cpf = %s", conn, params=(cpf_norm, cpf_full))
             if not df_d.empty: 
                 dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # Tupla para buscar nas tabelas filhas (aceita ambos os formatos de CPF)
             params_busca = (cpf_norm, cpf_full)
 
             # 2. Tabelas Padrão
@@ -124,19 +120,17 @@ def carregar_dados_completos(cpf):
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # 3. Emprego e Renda (Fundamental para aparecer na visualização)
+            # 3. Emprego e Renda
             dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
 
-            # 4. Busca Dinâmica de Contratos (Vinculados à matrícula)
+            # 4. Busca Dinâmica de Contratos
             if dados['empregos']:
-                # Cria lista de matrículas encontradas
                 matr_list = [str(e['matricula']) for e in dados['empregos'] if e.get('matricula')]
                 
                 if matr_list:
                     placeholders = ",".join(["%s"] * len(matr_list))
                     cur = conn.cursor()
                     
-                    # Busca quais tabelas de contrato existem no banco
                     cur.execute("""
                         SELECT table_schema, table_name 
                         FROM information_schema.tables 
@@ -148,10 +142,8 @@ def carregar_dados_completos(cpf):
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
                         try:
-                            # Busca contratos onde a matricula_ref bate com alguma matrícula do cliente
                             query = f"SELECT * FROM {nome_completo} WHERE matricula_ref IN ({placeholders})"
                             df_temp = pd.read_sql(query, conn, params=tuple(matr_list)).fillna("")
-                            
                             if not df_temp.empty:
                                 records = df_temp.to_dict('records')
                                 for r in records:
@@ -267,6 +259,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         emps = dados.get('empregos', [])
         all_contratos = dados.get('contratos', [])
         
+        # CORREÇÃO: Mostra "Sem vínculos" apenas se realmente não houver emprego
         if not emps: 
             st.info("Sem vínculos profissionais.")
         else:
@@ -276,10 +269,12 @@ def dialog_visualizar_cliente(cpf_cliente):
                 
                 # Exibe o card do emprego mesmo sem contratos
                 with st.expander(f"🏢 {conv} | Matrícula: {matr}", expanded=True):
+                    # GARANTINDO A EXIBIÇÃO DA MATRÍCULA NO CORPO TAMBÉM
+                    if matr: st.write(f"**Matrícula:** {matr}")
                     if emp.get('dados_extras'):
                         st.caption(f"ℹ️ {emp.get('dados_extras')}")
 
-                    # Filtra contratos vinculados a esta matrícula ESPECÍFICA
+                    # Filtra contratos vinculados a esta matrícula
                     ctrs_vinc = [c for c in all_contratos if str(c.get('matricula_ref')) == str(matr)]
                     
                     if ctrs_vinc:
@@ -288,7 +283,6 @@ def dialog_visualizar_cliente(cpf_cliente):
                             grupos = df_ctrs.groupby('origem_tabela')
                             for origem, grupo in grupos:
                                 st.markdown(f"**📄 Contratos ({origem.replace('pf_contratos_', '').upper()}):**")
-                                # Remove colunas técnicas da visualização
                                 cols_ocultar = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela']
                                 cols_show = [c for c in grupo.columns if c not in cols_ocultar]
                                 st.dataframe(grupo[cols_show], hide_index=True, use_container_width=True)
@@ -301,7 +295,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
         for m in dados.get('emails', []): st.write(f"📧 {m.get('email')}")
 
-# --- CONFIGURAÇÃO E STAGING ---
+# --- CONFIGURAÇÃO E STAGING (MANTIDA IGUAL) ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
