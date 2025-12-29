@@ -103,32 +103,34 @@ def safe_view(valor):
     if v_str.lower() in ['none', 'nan', 'null', 'nat', '']: return ""
     return v_str
 
-# --- CARREGAMENTO INTELIGENTE ---
+# --- CARREGAMENTO INTELIGENTE (LÓGICA SITUAÇÃO 2) ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
     dados = {
         'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 
-        'empregos': [] 
+        'empregos': [], 'contratos': [] # Inicializa contratos vazio para evitar KeyError
     }
     
     if conn:
         try:
-            # 1. Padronização do CPF para busca
+            # 1. Padronização do CPF
             cpf_norm = limpar_normalizar_cpf(cpf)      
             cpf_full = str(cpf_norm).zfill(11)         
             params_busca = (cpf_norm, cpf_full)
             
-            # 2. Dados Gerais
+            # 2. Dados Gerais, Contatos, Endereços
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf IN %s", conn, params=(params_busca,))
-            if not df_d.empty: 
-                dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
+            if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # 3. Contatos e Endereços
             dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # 4. LÓGICA DE VÍNCULO (EMPREGO E RENDA)
+            # ==============================================================================
+            # NOVA LÓGICA: Vínculo -> Tabela Mapeada -> Contratos via Matrícula
+            # ==============================================================================
+            
+            # Passo A: Obter Vínculos (Matrícula e Convênio) na tabela de emprego
             query_emp = """
                 SELECT convenio, matricula, dados_extras 
                 FROM banco_pf.pf_emprego_renda 
@@ -138,35 +140,45 @@ def carregar_dados_completos(cpf):
             
             if not df_emp.empty:
                 for _, row_emp in df_emp.iterrows():
-                    conv_nome = str(row_emp['convenio']).strip().upper()
+                    conv_nome = str(row_emp['convenio']).strip() # Mantém case original para busca, ou use .upper() se padronizado
                     matricula = str(row_emp['matricula']).strip()
                     extras = row_emp['dados_extras']
                     
-                    # Objeto de Vínculo
+                    # Estrutura do Vínculo
                     vinculo = {
                         'convenio': conv_nome,
                         'matricula': matricula,
                         'dados_extras': extras,
-                        'contratos': []
+                        'contratos': [] # Lista específica para este vínculo
                     }
 
-                    # Identifica se há contratos detalhados em outras tabelas
-                    query_map = "SELECT nome_planilha_sql FROM banco_pf.convenio_por_planilha WHERE UPPER(convenio) = %s"
-                    df_map = pd.read_sql(query_map, conn, params=(conv_nome,))
+                    # Passo B: Verificar na tabela de mapeamento onde estão os contratos desse convênio
+                    # Usa ILIKE para ignorar maiúsculas/minúsculas no nome do convênio
+                    query_map = "SELECT nome_planilha_sql FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s LIMIT 1"
+                    cur = conn.cursor()
+                    cur.execute(query_map, (conv_nome,))
+                    res_map = cur.fetchone()
                     
-                    if not df_map.empty:
-                        tabela_destino = df_map.iloc[0]['nome_planilha_sql']
+                    if res_map:
+                        tabela_destino = res_map[0] # Ex: admin.pf_contratos_clt
+                        
+                        # Passo C: Buscar na tabela específica usando a MATRÍCULA
                         try:
-                            cur = conn.cursor()
-                            # Verifica se a tabela existe antes de consultar
+                            # Verificação de segurança se tabela existe
                             cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                             if cur.fetchone()[0]:
+                                # Busca dinâmica na tabela encontrada
                                 query_contratos = f"SELECT * FROM {tabela_destino} WHERE matricula_ref = %s"
                                 df_contratos = pd.read_sql(query_contratos, conn, params=(matricula,))
+                                
                                 if not df_contratos.empty:
+                                    # Converte datas para string para evitar erro de serialização
+                                    df_contratos = df_contratos.astype(object).where(pd.notnull(df_contratos), None)
                                     vinculo['contratos'] = df_contratos.to_dict('records')
-                        except: pass
+                        except Exception as e_sql:
+                            print(f"Erro ao buscar contratos na tabela {tabela_destino}: {e_sql}")
                     
+                    # Adiciona o vínculo (com seus contratos dentro) à lista principal
                     dados['empregos'].append(vinculo)
 
         except Exception as e:
@@ -182,17 +194,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
     if conn:
         try:
             cur = conn.cursor()
-            # Garante CPF limpo e normalizado
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
-            
-            if cpf_original: 
-                cpf_original = limpar_normalizar_cpf(cpf_original)
-            
-            # Normaliza textos para maiúsculo
+            if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
-            # 1. SALVA/ATUALIZA DADOS PESSOAIS
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
                 placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
@@ -202,54 +208,29 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 vals = list(dados_gerais.values()) + [cpf_original]
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
-            # Define o CPF chave para as tabelas relacionadas
             cpf_chave = dados_gerais['cpf']
-            
-            # 2. LIMPEZA PRÉVIA (DELETE) PARA INSERÇÃO LIMPA (UPDATE)
             if modo == "editar":
-                # Remove dados antigos para inserir os novos (estratégia de substituição)
-                tabelas_satelites = [
-                    'banco_pf.pf_telefones', 
-                    'banco_pf.pf_emails', 
-                    'banco_pf.pf_enderecos', 
-                    'banco_pf.pf_emprego_renda' # Remove vínculos antigos para recriar
-                ]
-                for tb in tabelas_satelites:
+                for tb in ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos', 'banco_pf.pf_emprego_renda']:
                     cur.execute(f"DELETE FROM {tb} WHERE cpf_ref = %s", (cpf_chave,))
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
-
-            # 3. REINSERÇÃO DOS DADOS RELACIONADOS
             
             if not df_tel.empty:
-                for _, r in df_upper(df_tel).iterrows(): 
-                    cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
-            
+                for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
             if not df_email.empty:
-                for _, r in df_upper(df_email).iterrows(): 
-                    cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, r['email']))
-            
+                for _, r in df_upper(df_email).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, r['email']))
             if not df_end.empty:
-                for _, r in df_upper(df_end).iterrows(): 
-                    cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
+                for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
             
-            # --- ATUALIZAÇÃO DO EMPREGO/RENDA (PROFISSIONAL) ---
-            # Aqui garantimos a atualização do CPF_REF e da DATA_ATUALIZACAO
+            # Salva Emprego/Renda
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows(): 
                     cur.execute("""
-                        INSERT INTO banco_pf.pf_emprego_renda 
-                        (cpf_ref, convenio, matricula, dados_extras, data_atualizacao) 
+                        INSERT INTO banco_pf.pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras, data_atualizacao) 
                         VALUES (%s, %s, %s, %s, %s)
-                    """, (
-                        cpf_chave,          # cpf_ref (Atualizado/Confirmado)
-                        r['convenio'],      # Convenio
-                        r['matricula'],     # Matricula
-                        r['dados_extras'],  # Extras
-                        datetime.now()      # Data Atualização (Timestamp atual)
-                    ))
+                    """, (cpf_chave, r['convenio'], r['matricula'], r['dados_extras'], datetime.now()))
             
-            # 4. CONTRATOS MANUAIS
+            # Contratos manuais (Mantidos para compatibilidade, mas a lógica principal agora é leitura via matrícula)
             if not df_contr.empty:
                 df_padrao = df_contr[df_contr.get('origem_tabela', 'pf_contratos') == 'pf_contratos']
                 if not df_padrao.empty:
@@ -259,9 +240,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                         if cur.fetchone(): 
                             cur.execute("INSERT INTO banco_pf.pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (r['matricula_ref'], r['contrato'], r['dados_extras']))
 
-            conn.commit(); conn.close()
-            return True, "Salvo com sucesso!"
-            
+            conn.commit(); conn.close(); return True, "Salvo com sucesso!"
         except Exception as e: return False, str(e)
     return False, "Erro conexão"
 
@@ -313,13 +292,14 @@ def dialog_visualizar_cliente(cpf_cliente):
         
         st.markdown("---")
         
-        # VÍNCULOS
+        # VÍNCULOS IDENTIFICADOS (Apenas Matrícula e Convênio)
         st.markdown("##### 🔗 Vínculos Identificados")
         vinculos = dados.get('empregos', [])
         
         if vinculos:
             for v in vinculos:
-                st.info(f"🆔 **{v['matricula']}** - {v['convenio']}")
+                # Exibe: MATRICULA - CONVENIO
+                st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
                 if v.get('dados_extras'):
                     st.caption(f"Obs: {safe_view(v['dados_extras'])}")
         else:
@@ -331,20 +311,37 @@ def dialog_visualizar_cliente(cpf_cliente):
             st.success(f"📍 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))}")
 
     with t2:
-        st.markdown("##### 💰 Contratos por Vínculo")
+        # DETALHES FINANCEIROS (Carregados via Matrícula na tabela específica)
+        st.markdown("##### 💰 Detalhes Financeiros & Contratos")
+        
         if vinculos:
+            tem_contratos = False
             for v in vinculos:
                 contratos = v.get('contratos', [])
-                with st.expander(f"{v['convenio']} ({len(contratos)} contratos)", expanded=True):
-                    if contratos:
+                if contratos:
+                    tem_contratos = True
+                    # Título do bloco com Matrícula e Convênio
+                    with st.expander(f"📂 {v['convenio'].upper()} | Matrícula: {v['matricula']} ({len(contratos)} registros)", expanded=True):
+                        
                         df_c = pd.DataFrame(contratos)
+                        
+                        # Remove colunas técnicas para limpar visualização
                         cols_hide = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
                         cols_show = [c for c in df_c.columns if c not in cols_hide]
-                        st.dataframe(df_c[cols_show], hide_index=True, use_container_width=True)
-                    else:
-                        st.caption("Matrícula encontrada, mas sem contratos na tabela específica.")
+                        
+                        # Formatação de nomes de coluna para ficar bonito
+                        df_c.columns = [c.replace('_', ' ').title() for c in df_c.columns]
+                        cols_show_fmt = [c.replace('_', ' ').title() for c in cols_show]
+                        
+                        st.dataframe(df_c[cols_show_fmt], hide_index=True, use_container_width=True)
+                else:
+                    # Se tiver vínculo mas não achou contrato na tabela específica
+                    st.caption(f"⚠️ Vínculo **{v['convenio']}** ({v['matricula']}): Sem dados detalhados na tabela mapeada.")
+            
+            if not tem_contratos:
+                st.info("Nenhum contrato detalhado encontrado para as matrículas vinculadas.")
         else:
-            st.info("Sem dados financeiros disponíveis.")
+            st.info("Sem vínculos profissionais para buscar contratos.")
 
     with t3:
         for t in dados.get('telefones', []): 
@@ -352,7 +349,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         for m in dados.get('emails', []): 
             st.write(f"📧 {safe_view(m.get('email'))}")
 
-# --- CONFIGURAÇÃO E STAGING ---
+# --- CONFIGURAÇÃO E STAGING (Restante do código mantido igual) ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
