@@ -42,7 +42,7 @@ def init_db_structures():
             conn.close()
         except: pass
 
-# --- HELPERS DE FORMATAÇÃO ---
+# --- HELPERS DE FORMATAÇÃO E CÁLCULO ---
 def formatar_cpf_visual(cpf_db):
     if not cpf_db: return ""
     cpf_limpo = str(cpf_db).strip()
@@ -94,6 +94,8 @@ def calcular_idade_hoje(dt_nasc):
     if not dt_nasc: return None
     hoje = date.today()
     if isinstance(dt_nasc, datetime): dt_nasc = dt_nasc.date()
+    # Verifica se é uma data válida antes de calcular
+    if not isinstance(dt_nasc, date): return 0
     return hoje.year - dt_nasc.year - ((hoje.month, hoje.day) < (dt_nasc.month, dt_nasc.day))
 
 def safe_view(valor):
@@ -185,7 +187,7 @@ def carregar_dados_completos(cpf):
             
     return dados
 
-# --- NOVO: FUNÇÃO PARA LISTAR E INSPECIONAR TABELAS DO CONVÊNIO ---
+# --- FUNÇÕES AUXILIARES ---
 def listar_tabelas_por_convenio(convenio):
     conn = get_conn()
     tabelas = []
@@ -392,49 +394,66 @@ def interface_cadastro_pf():
                     # 1. Pega colunas do banco
                     colunas_banco = get_colunas_tabela(nome_tabela)
                     
-                    # 2. Gera Inputs Dinâmicos (Ignora ID, campos de controle e CHAVES ESTRANGEIRAS que serão auto-preenchidas)
-                    campos_ignorados = ['id', 'matricula_ref', 'matricula', 'importacao_id', 'data_criacao', 'data_atualizacao']
+                    # 2. Gera Inputs Dinâmicos
+                    campos_ignorados = ['id', 'matricula_ref', 'matricula', 'convenio', 'importacao_id', 'data_criacao', 'data_atualizacao']
                     inputs_gerados = {}
                     
-                    # Grid layout para ficar bonito (2 colunas)
+                    # --- MAPA DE DEPENDÊNCIA PARA CÁLCULO AUTOMÁTICO ---
+                    # Coluna de Tempo -> Coluna de Data que a origina
+                    mapa_calculo_datas = {
+                        'tempo_abertura_anos': 'data_abertura_empresa',
+                        'tempo_admissao_anos': 'data_admissao',
+                        'tempo_inicio_emprego_anos': 'data_inicio_emprego'
+                    }
+                    
+                    # Dicionário temporário para guardar os valores das datas preenchidas neste formulário
+                    datas_preenchidas = {} 
+
                     cols_ui = st.columns(2)
                     
                     for idx_col, (col_nome, col_tipo) in enumerate(colunas_banco):
                         if col_nome in campos_ignorados: continue
                         
-                        # Formatação do nome (Ex: data_nascimento -> Data Nascimento)
                         label_fmt = col_nome.replace('_', ' ').title()
                         
-                        # Alterna colunas do Streamlit
                         with cols_ui[idx_col % 2]:
                             key_input = f"inp_{col_nome}_{sufixo}"
                             
-                            # Tenta adivinhar o tipo de input pelo nome ou tipo SQL
-                            if 'date' in col_tipo.lower() or 'data' in col_nome.lower():
+                            # VERIFICAÇÃO 1: É um campo de Tempo calculado?
+                            if col_nome in mapa_calculo_datas:
+                                col_data_ref = mapa_calculo_datas[col_nome]
+                                valor_data = datas_preenchidas.get(col_data_ref)
+                                
+                                # Calcula se houver data, senão 0
+                                anos_calc = calcular_idade_hoje(valor_data) if valor_data else 0
+                                val = st.number_input(label_fmt, value=anos_calc, disabled=True, key=key_input)
+                                
+                            # VERIFICAÇÃO 2: É uma data normal?
+                            elif 'date' in col_tipo.lower() or 'data' in col_nome.lower():
                                 val = st.date_input(label_fmt, value=None, format="DD/MM/YYYY", key=key_input)
+                                # Guarda o valor para usar no cálculo subsequente
+                                datas_preenchidas[col_nome] = val
+                                
                             elif 'int' in col_tipo.lower() or 'numeric' in col_tipo.lower():
-                                val = st.text_input(label_fmt, key=key_input) # Texto para numeros grandes/CNPJ
+                                val = st.text_input(label_fmt, key=key_input)
                             else:
                                 val = st.text_input(label_fmt, key=key_input)
                             
                             inputs_gerados[col_nome] = val
                     
-                    # Botão Salvar Específico dessa Tabela
+                    # Botão Salvar Específico
                     if st.button(f"Inserir em {tipo_tabela or nome_tabela}", key=f"btn_save_{sufixo}"):
                         
-                        # --- LÓGICA INTELIGENTE DE CHAVE ESTRANGEIRA (Matrícula) ---
+                        # Preenche chaves automaticamente
                         nomes_cols_tabela = [c[0] for c in colunas_banco]
-                        if 'matricula' in nomes_cols_tabela:
-                            inputs_gerados['matricula'] = dados_vinc['matricula']
-                        else:
-                            inputs_gerados['matricula_ref'] = dados_vinc['matricula']
+                        
+                        if 'matricula' in nomes_cols_tabela: inputs_gerados['matricula'] = dados_vinc['matricula']
+                        elif 'matricula_ref' in nomes_cols_tabela: inputs_gerados['matricula_ref'] = dados_vinc['matricula']
+                        
+                        if 'convenio' in nomes_cols_tabela: inputs_gerados['convenio'] = dados_vinc['convenio']
                         
                         inputs_gerados['origem_tabela'] = nome_tabela
                         inputs_gerados['tipo_origem'] = tipo_tabela
-                        
-                        # Preenchimento automático do convenio se existir a coluna
-                        if 'convenio' in nomes_cols_tabela:
-                            inputs_gerados['convenio'] = dados_vinc['convenio']
                         
                         if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
                         st.session_state['dados_staging']['contratos'].append(inputs_gerados)
@@ -469,7 +488,6 @@ def interface_cadastro_pf():
         st.success("📝 Dados Financeiros / Planilhas")
         ctrs = st.session_state['dados_staging'].get('contratos', [])
         
-        # EXIBIÇÃO
         if ctrs:
             for i, c in enumerate(ctrs):
                 c1, c2 = st.columns([5, 1])
@@ -485,7 +503,6 @@ def interface_cadastro_pf():
                 if c2.button("🗑️", key=f"rm_ctr_{i}"):
                     st.session_state['dados_staging']['contratos'].pop(i); st.rerun()
         
-        # Exibe dados existentes (vindos do banco)
         for emp in emps:
             if 'contratos' in emp and emp['contratos']:
                 df_temp = pd.DataFrame(emp['contratos'])
@@ -571,7 +588,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     else:
                         cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
             
-            # CONTRATOS (DINÂMICO TOTAL COM LIMPEZA DE NANs)
+            # CONTRATOS (DINÂMICO TOTAL)
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
@@ -579,7 +596,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     r_dict.pop('origem_tabela', None)
                     r_dict.pop('tipo_origem', None)
                     
-                    # --- LIMPEZA CRÍTICA: Remove chaves com valores NaN ou Nulos para evitar erro de coluna inexistente ---
+                    # --- LIMPEZA CRÍTICA ---
                     r_dict = {k: v for k, v in r_dict.items() if pd.notna(v) and v != ""}
                     
                     cols = list(r_dict.keys())
@@ -648,11 +665,9 @@ def dialog_visualizar_cliente(cpf_cliente):
         for v in dados.get('empregos', []):
             ctrs = v.get('contratos', [])
             if ctrs:
-                # Mostra o tipo/nome da tabela no título do expander se disponível
                 tipo_display = v.get('contratos')[0].get('tipo_origem') or 'Detalhes'
                 with st.expander(f"📂 {v['convenio'].upper()} | {tipo_display} | Matr: {v['matricula']}", expanded=True):
                     df_ex = pd.DataFrame(ctrs)
-                    # Limpa colunas técnicas da visualização
                     cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
             else:
