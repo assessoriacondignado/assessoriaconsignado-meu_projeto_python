@@ -113,7 +113,7 @@ def carregar_dados_completos(cpf):
     
     if conn:
         try:
-            # 1. Padronização do CPF para busca (Testa com e sem zeros à esquerda)
+            # 1. Padronização do CPF para busca
             cpf_norm = limpar_normalizar_cpf(cpf)      
             cpf_full = str(cpf_norm).zfill(11)         
             params_busca = (cpf_norm, cpf_full)
@@ -129,7 +129,6 @@ def carregar_dados_completos(cpf):
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
             # 4. LÓGICA DE VÍNCULO (EMPREGO E RENDA)
-            # Busca na tabela correta: banco_pf.pf_emprego_renda usando a coluna cpf_ref
             query_emp = """
                 SELECT convenio, matricula, dados_extras 
                 FROM banco_pf.pf_emprego_renda 
@@ -168,7 +167,6 @@ def carregar_dados_completos(cpf):
                                     vinculo['contratos'] = df_contratos.to_dict('records')
                         except: pass
                     
-                    # Adiciona à lista de empregos encontrados
                     dados['empregos'].append(vinculo)
 
         except Exception as e:
@@ -184,11 +182,17 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
     if conn:
         try:
             cur = conn.cursor()
+            # Garante CPF limpo e normalizado
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
-            if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
+            
+            if cpf_original: 
+                cpf_original = limpar_normalizar_cpf(cpf_original)
+            
+            # Normaliza textos para maiúsculo
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
+            # 1. SALVA/ATUALIZA DADOS PESSOAIS
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
                 placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
@@ -198,31 +202,66 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 vals = list(dados_gerais.values()) + [cpf_original]
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
+            # Define o CPF chave para as tabelas relacionadas
             cpf_chave = dados_gerais['cpf']
+            
+            # 2. LIMPEZA PRÉVIA (DELETE) PARA INSERÇÃO LIMPA (UPDATE)
             if modo == "editar":
-                # Limpa dados antigos para recriar (estratégia de replace)
-                for tb in ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos', 'banco_pf.pf_emprego_renda']:
+                # Remove dados antigos para inserir os novos (estratégia de substituição)
+                tabelas_satelites = [
+                    'banco_pf.pf_telefones', 
+                    'banco_pf.pf_emails', 
+                    'banco_pf.pf_enderecos', 
+                    'banco_pf.pf_emprego_renda' # Remove vínculos antigos para recriar
+                ]
+                for tb in tabelas_satelites:
                     cur.execute(f"DELETE FROM {tb} WHERE cpf_ref = %s", (cpf_chave,))
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
-            if not df_tel.empty:
-                for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
-            if not df_email.empty:
-                for _, r in df_upper(df_email).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, r['email']))
-            if not df_end.empty:
-                for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
-            if not df_emp.empty:
-                for _, r in df_upper(df_emp).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], r['matricula'], r['dados_extras']))
+
+            # 3. REINSERÇÃO DOS DADOS RELACIONADOS
             
+            if not df_tel.empty:
+                for _, r in df_upper(df_tel).iterrows(): 
+                    cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
+            
+            if not df_email.empty:
+                for _, r in df_upper(df_email).iterrows(): 
+                    cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, r['email']))
+            
+            if not df_end.empty:
+                for _, r in df_upper(df_end).iterrows(): 
+                    cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
+            
+            # --- ATUALIZAÇÃO DO EMPREGO/RENDA (PROFISSIONAL) ---
+            # Aqui garantimos a atualização do CPF_REF e da DATA_ATUALIZACAO
+            if not df_emp.empty:
+                for _, r in df_upper(df_emp).iterrows(): 
+                    cur.execute("""
+                        INSERT INTO banco_pf.pf_emprego_renda 
+                        (cpf_ref, convenio, matricula, dados_extras, data_atualizacao) 
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        cpf_chave,          # cpf_ref (Atualizado/Confirmado)
+                        r['convenio'],      # Convenio
+                        r['matricula'],     # Matricula
+                        r['dados_extras'],  # Extras
+                        datetime.now()      # Data Atualização (Timestamp atual)
+                    ))
+            
+            # 4. CONTRATOS MANUAIS
             if not df_contr.empty:
                 df_padrao = df_contr[df_contr.get('origem_tabela', 'pf_contratos') == 'pf_contratos']
                 if not df_padrao.empty:
                      cur.execute("DELETE FROM banco_pf.pf_contratos WHERE matricula_ref IN (SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s)", (cpf_chave,))
                      for _, r in df_upper(df_padrao).iterrows():
                         cur.execute("SELECT 1 FROM banco_pf.pf_emprego_renda WHERE matricula=%s", (r['matricula_ref'],))
-                        if cur.fetchone(): cur.execute("INSERT INTO banco_pf.pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (r['matricula_ref'], r['contrato'], r['dados_extras']))
+                        if cur.fetchone(): 
+                            cur.execute("INSERT INTO banco_pf.pf_contratos (matricula_ref, contrato, dados_extras) VALUES (%s, %s, %s)", (r['matricula_ref'], r['contrato'], r['dados_extras']))
 
-            conn.commit(); conn.close(); return True, "Salvo com sucesso!"
+            conn.commit(); conn.close()
+            return True, "Salvo com sucesso!"
+            
         except Exception as e: return False, str(e)
     return False, "Erro conexão"
 
@@ -274,17 +313,13 @@ def dialog_visualizar_cliente(cpf_cliente):
         
         st.markdown("---")
         
-        # VÍNCULOS (CONVÊNIO + MATRÍCULA)
+        # VÍNCULOS
         st.markdown("##### 🔗 Vínculos Identificados")
-        
         vinculos = dados.get('empregos', [])
         
         if vinculos:
             for v in vinculos:
-                # --- VISUALIZAÇÃO FORMATADA: MATRICULA - CONVENIO ---
-                # Exibe a matrícula em negrito seguido do convênio
                 st.info(f"🆔 **{v['matricula']}** - {v['convenio']}")
-                
                 if v.get('dados_extras'):
                     st.caption(f"Obs: {safe_view(v['dados_extras'])}")
         else:
@@ -296,7 +331,6 @@ def dialog_visualizar_cliente(cpf_cliente):
             st.success(f"📍 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))}")
 
     with t2:
-        # DETALHES DOS CONTRATOS (Vindo da tabela dinâmica)
         st.markdown("##### 💰 Contratos por Vínculo")
         if vinculos:
             for v in vinculos:
@@ -304,7 +338,6 @@ def dialog_visualizar_cliente(cpf_cliente):
                 with st.expander(f"{v['convenio']} ({len(contratos)} contratos)", expanded=True):
                     if contratos:
                         df_c = pd.DataFrame(contratos)
-                        # Remove colunas técnicas e ajusta visualização
                         cols_hide = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
                         cols_show = [c for c in df_c.columns if c not in cols_hide]
                         st.dataframe(df_c[cols_show], hide_index=True, use_container_width=True)
