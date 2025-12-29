@@ -1,1 +1,1 @@
-TRUNCATE TABLE banco_pf.pf_emprego_renda RESTART IDENTITY CASCADE;
+ALTER TABLE banco_pf.pf_emprego_renda RENAME COLUMN cpf_ref TO cpf;
