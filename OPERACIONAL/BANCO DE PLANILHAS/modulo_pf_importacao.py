@@ -31,7 +31,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         table_full_name = f"banco_pf.{table_name}"
         
-        # 1. Atualiza caminho do arquivo
+        # 1. Atualiza caminho do arquivo no banco
         cur.execute("UPDATE banco_pf.pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
 
         # Verifica colunas do banco
@@ -50,6 +50,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             for _, row in df.iterrows():
                 cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
                 cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
+                
+                # Validação Básica de Existência
                 if not cpf_limpo: continue
                 
                 whats_val = str(row[col_whats]) if col_whats and pd.notna(row[col_whats]) else None
@@ -81,7 +83,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             df_proc.drop_duplicates(subset=['cpf_ref', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
 
-        # --- LÓGICA GENÉRICA ---
+        # --- LÓGICA GENÉRICA (DADOS, EMPREGO, ETC) ---
         else:
             df_proc = df.rename(columns=mapping)
             cols_db = list(mapping.values())
@@ -90,20 +92,54 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if 'importacao_id' in cols_banco:
                 df_proc['importacao_id'] = import_id
             
+            # --- 1. VALIDAÇÃO DE CPF (Igual ao módulo de Cadastro) ---
+            def validar_cpf_11_digitos(val):
+                # Usa a mesma lógica do cadastro: deve ter 11 dígitos numéricos
+                nums = pf_core.limpar_apenas_numeros(val)
+                return len(nums) == 11
+
+            # Aplica validação para Tabela Principal (pf_dados)
             if 'cpf' in df_proc.columns:
+                # Filtra apenas CPFs válidos (11 dígitos)
+                mask_valid = df_proc['cpf'].astype(str).apply(validar_cpf_11_digitos)
+                df_proc = df_proc[mask_valid]
+                # Limpa para o formato do banco (remove zeros à esquerda se for o padrão)
                 df_proc['cpf'] = df_proc['cpf'].astype(str).apply(pf_core.limpar_normalizar_cpf)
-                if table_name == 'pf_dados': df_proc = df_proc[df_proc['cpf'] != ""]
+
+            # Aplica validação para Tabelas Vinculadas (cpf_ref)
+            if 'cpf_ref' in df_proc.columns:
+                mask_valid = df_proc['cpf_ref'].astype(str).apply(validar_cpf_11_digitos)
+                df_proc = df_proc[mask_valid]
+                df_proc['cpf_ref'] = df_proc['cpf_ref'].astype(str).apply(pf_core.limpar_normalizar_cpf)
             
+            # --- 2. GERADOR DE MATRÍCULA AUTOMÁTICA ---
+            if table_name == 'pf_emprego_renda' and 'matricula' in df_proc.columns:
+                def gerar_matricula_se_vazio(row):
+                    mat = str(row.get('matricula', '')).strip()
+                    # Se matrícula for vazia, nula ou 'nan'
+                    if not mat or mat.lower() == 'nan' or mat == 'None':
+                        conv = str(row.get('convenio', '')).strip()
+                        cpf = str(row.get('cpf_ref', '')).strip()
+                        dt = datetime.now().strftime('%d%m%Y')
+                        # Formato: CONVENIO + CPF + NULO + DATA
+                        return f"{conv}{cpf}NULO{dt}"
+                    return mat
+                
+                df_proc['matricula'] = df_proc.apply(gerar_matricula_se_vazio, axis=1)
+
+            # --- 3. Limpeza de Datas ---
             cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego']
             for col in cols_data:
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
             
             cols_order = list(df_proc.columns)
+            
+            # Deduplicação interna antes de enviar
             pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
             if pk_field:
                 df_proc.drop_duplicates(subset=[pk_field], keep='last', inplace=True)
 
-        # 3. Processo de Carga
+        # 3. Processo de Carga (Bulk Insert/Update)
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
@@ -117,13 +153,11 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         qtd_novos, qtd_atualizados = 0, 0
         
         if pk_field:
-            # --- LÓGICA DE UPDATE COM APPEND (ACUMULAR ID) ---
+            # Lógica de UPDATE com APPEND para importacao_id
             set_parts = []
             for c in cols_order:
                 if c == pk_field: continue
-                
                 if c == 'importacao_id' and table_name == 'pf_dados':
-                    # Concatena: Se já tem valor, adiciona vírgula. Se não, usa o novo.
                     expr = f"CASE WHEN t.importacao_id IS NULL OR t.importacao_id = '' THEN s.importacao_id::text ELSE t.importacao_id || ', ' || s.importacao_id::text END"
                     set_parts.append(f"{c} = {expr}")
                 else:
@@ -134,14 +168,13 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
             qtd_atualizados = cur.rowcount
             
-            # INSERT PARA NOVOS
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
             
-            # ATUALIZAÇÃO DO VÍNCULO NA TABELA PAI (PF_DADOS) COM APPEND
+            # Atualização de vínculo (Import ID Append)
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
                 cur.execute(f"""
@@ -170,7 +203,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
 
     except Exception as e: raise e
 
-# --- INTERFACE HISTÓRICO E PRINCIPAL (MANTIDAS IGUAIS) ---
+# --- INTERFACE HISTÓRICO E PRINCIPAL ---
 def interface_historico():
     st.markdown("### 📜 Histórico de Importações")
     if st.button("⬅️ Voltar para Importação"):
