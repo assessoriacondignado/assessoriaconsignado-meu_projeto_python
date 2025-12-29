@@ -108,29 +108,22 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)      
             cpf_full = str(cpf_norm).zfill(11)         
             
-            # 1. Dados Gerais
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s OR cpf = %s", conn, params=(cpf_norm, cpf_full))
             if not df_d.empty: 
                 dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
             params_busca = (cpf_norm, cpf_full)
 
-            # 2. Tabelas Padrão
             dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
-            
-            # 3. Emprego e Renda
             dados['empregos'] = pd.read_sql("SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
 
-            # 4. Busca Dinâmica de Contratos
             if dados['empregos']:
                 matr_list = [str(e['matricula']) for e in dados['empregos'] if e.get('matricula')]
-                
                 if matr_list:
                     placeholders = ",".join(["%s"] * len(matr_list))
                     cur = conn.cursor()
-                    
                     cur.execute("""
                         SELECT table_schema, table_name 
                         FROM information_schema.tables 
@@ -138,7 +131,6 @@ def carregar_dados_completos(cpf):
                            OR (table_schema = 'admin' AND table_name LIKE 'pf_contratos%')
                     """)
                     tabelas_contratos = cur.fetchall()
-                    
                     for schema, tabela in tabelas_contratos:
                         nome_completo = f"{schema}.{tabela}"
                         try:
@@ -149,13 +141,9 @@ def carregar_dados_completos(cpf):
                                 for r in records:
                                     r['origem_tabela'] = tabela
                                     dados['contratos'].append(r)
-                                    if 'clt' in tabela: dados['dados_clt'].append(r)
                         except: continue
-        except Exception as e:
-            print(f"Erro ao carregar dados: {e}") 
-        finally: 
-            conn.close()
-            
+        except Exception as e: print(f"Erro: {e}")
+        finally: conn.close()
     return dados
 
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
@@ -231,63 +219,76 @@ def dialog_visualizar_cliente(cpf_cliente):
     
     if not g: st.error("Cliente não encontrado."); return
     
-    nome_display = g.get('nome')
-    if nome_display is None or str(nome_display).strip() == "":
-        nome_display = "Nome não informado"
-
+    nome_display = g.get('nome') or "Nome não informado"
     st.markdown(f"### 👤 {nome_display}")
     st.markdown(f"**CPF:** {cpf_vis}")
     st.divider()
-    t1, t2, t3 = st.tabs(["📋 Cadastro", "💼 Profissional & Contratos", "📞 Contatos"])
+    
+    # Abas organizadas
+    t1, t2, t3 = st.tabs(["📋 Cadastro & Profissional", "💼 Detalhes de Contratos", "📞 Contatos"])
     
     with t1:
+        # --- BLOCO 1: DADOS PESSOAIS ---
+        st.markdown("##### 🆔 Dados Pessoais")
         c1, c2 = st.columns(2)
+        
         nasc = g.get('data_nascimento')
         idade = calcular_idade_hoje(nasc)
-        txt_nasc = f"{nasc.strftime('%d/%m/%Y')} ({idade} anos)" if idade is not None and isinstance(nasc, (date, datetime)) else "-"
+        txt_nasc = f"{nasc.strftime('%d/%m/%Y')} ({idade} anos)" if idade and isinstance(nasc, (date, datetime)) else "-"
         
         c1.write(f"**Nascimento:** {txt_nasc}")
         c1.write(f"**RG:** {g.get('rg', '-')}")
+        c1.write(f"**UF RG:** {g.get('uf_rg', '-')}")
+        c1.write(f"**Expedição RG:** {g.get('data_exp_rg', '-')}")
+        
         c2.write(f"**PIS:** {g.get('pis', '-')}")
         c2.write(f"**CNH:** {g.get('cnh', '-')}")
+        c2.write(f"**CTPS Série:** {g.get('ctps_serie', '-')}")
+        
+        st.markdown("---")
+        # --- BLOCO 2: FILIAÇÃO E PROCURADOR ---
+        cc1, cc2 = st.columns(2)
+        cc1.write(f"**Mãe:** {g.get('nome_mae', '-')}")
+        cc1.write(f"**Pai:** {g.get('nome_pai', '-')}")
+        cc2.write(f"**Procurador:** {g.get('nome_procurador', '-')}")
+        cc2.write(f"**CPF Procurador:** {g.get('cpf_procurador', '-')}")
 
+        st.markdown("---")
+        # --- BLOCO 3: PROFISSIONAL (CONVÊNIO E MATRÍCULA) ---
+        st.markdown("##### 💼 Vínculos Profissionais")
+        emps = dados.get('empregos', [])
+        if emps:
+            for emp in emps:
+                mc1, mc2 = st.columns(2)
+                mc1.info(f"**Convênio:** {emp.get('convenio', '-')}")
+                mc2.warning(f"**Matrícula:** {emp.get('matricula', '-')}")
+                if emp.get('dados_extras'):
+                    st.caption(f"Extras: {emp.get('dados_extras')}")
+        else:
+            st.info("Nenhum vínculo profissional cadastrado.")
+
+        st.markdown("---")
+        # --- BLOCO 4: ENDEREÇO ---
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
-            st.info(f"📍 {end.get('rua')}, {end.get('bairro')} - {end.get('cidade')}/{end.get('uf')}")
+            st.success(f"📍 {end.get('rua')}, {end.get('bairro')} - {end.get('cidade')}/{end.get('uf')} ({end.get('cep')})")
 
     with t2:
-        emps = dados.get('empregos', [])
+        # --- ABA 2: CONTRATOS DETALHADOS ---
         all_contratos = dados.get('contratos', [])
-        
-        if not emps: 
-            st.info("Sem vínculos profissionais.")
+        if not all_contratos:
+            st.warning("Nenhum contrato detalhado encontrado.")
         else:
-            for emp in emps:
-                matr = emp.get('matricula') or "N/A"
-                conv = emp.get('convenio') or "Desconhecido"
-                
-                # --- AJUSTE SOLICITADO: Título do Expander com Convênio e Matrícula ---
-                with st.expander(f"🏢 {conv} | Matrícula: {matr}", expanded=True):
-                    
-                    if emp.get('dados_extras'):
-                        st.caption(f"ℹ️ {emp.get('dados_extras')}")
-
-                    # Filtra contratos vinculados a esta matrícula
-                    ctrs_vinc = [c for c in all_contratos if str(c.get('matricula_ref')) == str(matr)]
-                    
-                    if ctrs_vinc:
-                        df_ctrs = pd.DataFrame(ctrs_vinc)
-                        if 'origem_tabela' in df_ctrs.columns:
-                            grupos = df_ctrs.groupby('origem_tabela')
-                            for origem, grupo in grupos:
-                                st.markdown(f"**📄 Contratos ({origem.replace('pf_contratos_', '').upper()}):**")
-                                cols_ocultar = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela']
-                                cols_show = [c for c in grupo.columns if c not in cols_ocultar]
-                                st.dataframe(grupo[cols_show], hide_index=True, use_container_width=True)
-                        else:
-                            st.table(df_ctrs[['contrato', 'dados_extras']])
-                    else:
-                        st.warning("⚠️ Nenhum contrato detalhado vinculado a esta matrícula.")
+            df_ctrs = pd.DataFrame(all_contratos)
+            if 'origem_tabela' in df_ctrs.columns:
+                grupos = df_ctrs.groupby('origem_tabela')
+                for origem, grupo in grupos:
+                    st.markdown(f"**📄 Fonte: {origem.replace('pf_contratos_', '').upper()}**")
+                    cols_ocultar = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela']
+                    cols_show = [c for c in grupo.columns if c not in cols_ocultar]
+                    st.dataframe(grupo[cols_show], hide_index=True, use_container_width=True)
+            else:
+                st.table(df_ctrs[['contrato', 'dados_extras']])
 
     with t3:
         for t in dados.get('telefones', []): st.write(f"📱 {t.get('numero')} ({t.get('tag_whats')})")
