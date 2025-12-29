@@ -142,24 +142,38 @@ def carregar_dados_completos(cpf):
                         'contratos': []
                     }
 
-                    # Identifica Tabela de Contratos Dinamicamente
-                    query_map = "SELECT nome_planilha_sql FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s LIMIT 1"
+                    # --- BUSCA DINÂMICA DE TABELAS VINCULADAS ---
+                    # Busca TODAS as tabelas mapeadas para este convênio
+                    query_map = "SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s"
                     cur = conn.cursor()
                     cur.execute(query_map, (conv_nome,))
-                    res_map = cur.fetchone()
+                    tabelas_mapeadas = cur.fetchall()
                     
-                    if res_map:
-                        tabela_destino = res_map[0]
+                    if tabelas_mapeadas:
+                        for tabela_destino, tipo_destino in tabelas_mapeadas:
+                            try:
+                                # Verifica se a tabela existe
+                                cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
+                                if cur.fetchone()[0]:
+                                    query_contratos = f"SELECT * FROM {tabela_destino} WHERE matricula_ref = %s"
+                                    df_contratos = pd.read_sql(query_contratos, conn, params=(matricula,))
+                                    if not df_contratos.empty:
+                                        df_contratos = df_contratos.astype(object).where(pd.notnull(df_contratos), None)
+                                        df_contratos['origem_tabela'] = tabela_destino
+                                        df_contratos['tipo_origem'] = tipo_destino # Guarda o tipo para exibição
+                                        
+                                        # Adiciona os registros encontrados à lista do vínculo
+                                        vinculo['contratos'].extend(df_contratos.to_dict('records'))
+                            except: pass
+                    else:
+                        # Fallback padrão
                         try:
-                            # Busca contratos
-                            cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
-                            if cur.fetchone()[0]:
-                                query_contratos = f"SELECT * FROM {tabela_destino} WHERE matricula_ref = %s"
-                                df_contratos = pd.read_sql(query_contratos, conn, params=(matricula,))
-                                if not df_contratos.empty:
-                                    df_contratos = df_contratos.astype(object).where(pd.notnull(df_contratos), None)
-                                    df_contratos['origem_tabela'] = tabela_destino
-                                    vinculo['contratos'] = df_contratos.to_dict('records')
+                            query_padrao = "SELECT * FROM banco_pf.pf_contratos WHERE matricula_ref = %s"
+                            df_contratos = pd.read_sql(query_padrao, conn, params=(matricula,))
+                            if not df_contratos.empty:
+                                df_contratos['origem_tabela'] = 'banco_pf.pf_contratos'
+                                df_contratos['tipo_origem'] = 'Geral'
+                                vinculo['contratos'] = df_contratos.to_dict('records')
                         except: pass
                     
                     dados['empregos'].append(vinculo)
@@ -171,19 +185,24 @@ def carregar_dados_completos(cpf):
             
     return dados
 
-# --- FUNÇÃO AUXILIAR: DESCOBRIR TABELA DO CONVÊNIO ---
-def descobrir_tabela_contrato(convenio):
+# --- NOVA FUNÇÃO: LISTAR TODAS AS TABELAS DO CONVÊNIO ---
+def listar_tabelas_por_convenio(convenio):
     conn = get_conn()
-    tabela = "banco_pf.pf_contratos" # Padrão
+    tabelas = []
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("SELECT nome_planilha_sql FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s LIMIT 1", (convenio,))
-            res = cur.fetchone()
-            if res: tabela = res[0]
+            # Busca todas as planilhas associadas ao convênio
+            cur.execute("SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s", (convenio,))
+            tabelas = cur.fetchall()
             conn.close()
         except: conn.close()
-    return tabela
+    
+    # Se não houver mapeamento, retorna a tabela padrão de contratos
+    if not tabelas:
+        tabelas = [('banco_pf.pf_contratos', 'Contratos Gerais')]
+        
+    return tabelas
 
 # --- CONFIGURAÇÃO VISUAL ---
 CONFIG_CADASTRO = {
@@ -325,8 +344,8 @@ def interface_cadastro_pf():
                 else:
                     st.warning("Convênio e Matrícula são obrigatórios.")
 
-        # 5. CONTRATOS (DINÂMICO)
-        with st.expander("Contratos"):
+        # 5. CONTRATOS (DINÂMICO E MULTI-TABELA)
+        with st.expander("Contratos / Dados Financeiros"):
             lista_empregos = st.session_state['dados_staging'].get('empregos', [])
             if not lista_empregos:
                 st.info("Insira um vínculo em 'Emprego e Renda' primeiro.")
@@ -336,47 +355,65 @@ def interface_cadastro_pf():
                 
                 idx_vinc = opcoes_matr.index(sel_vinculo)
                 dados_vinc = lista_empregos[idx_vinc]
-                tabela_destino = descobrir_tabela_contrato(dados_vinc['convenio'])
                 
-                st.caption(f"Destino: {tabela_destino}")
+                # BUSCA TODAS AS TABELAS MAPEADAS PARA O CONVÊNIO
+                tabelas_destino = listar_tabelas_por_convenio(dados_vinc['convenio'])
                 
-                # --- AQUI ESTÁ A MUDANÇA: Verifica o nome novo da tabela ---
-                if 'pf_matricula_dados_clt' in tabela_destino:
-                    c_emp, c_cnpj = st.columns(2)
-                    nm_emp = c_emp.text_input("Nome Empresa", key="in_clt_emp")
-                    cnpj_emp = c_cnpj.text_input("CNPJ", key="in_clt_cnpj")
+                if not tabelas_destino:
+                    st.warning(f"Não há tabelas configuradas para o convênio {dados_vinc['convenio']}.")
+                
+                # --- LOOP PARA GERAR FORMULÁRIOS PARA CADA TABELA MAPEADA ---
+                for nome_tabela, tipo_tabela in tabelas_destino:
+                    st.markdown(f"---")
+                    st.markdown(f"###### 📝 {tipo_tabela or 'Dados Adicionais'} ({nome_tabela})")
                     
-                    c_adm, c_cargo = st.columns(2)
-                    dt_adm = c_adm.date_input("Data Admissão", value=None, format="DD/MM/YYYY", key="in_clt_adm")
-                    cargo = c_cargo.text_input("Cargo (CBO)", key="in_clt_cargo")
+                    # Usa o nome da tabela como sufixo para garantir chaves únicas
+                    sufixo = f"{nome_tabela}_{idx_vinc}"
                     
-                    if st.button("Inserir Contrato CLT"):
-                        novo_contrato = {
-                            'matricula_ref': dados_vinc['matricula'],
-                            'nome_empresa': nm_emp,
-                            'cnpj_empresa': cnpj_emp,
-                            'data_admissao': dt_adm,
-                            'cbo_nome': cargo,
-                            'origem_tabela': tabela_destino
-                        }
-                        if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
-                        st.session_state['dados_staging']['contratos'].append(novo_contrato)
-                        st.toast("✅ Contrato CLT adicionado!")
+                    # >>> FORMULÁRIO 1: DADOS CLT / MATRÍCULA
+                    if 'pf_matricula_dados_clt' in nome_tabela:
+                        c_emp, c_cnpj = st.columns(2)
+                        nm_emp = c_emp.text_input("Nome Empresa", key=f"nm_{sufixo}")
+                        cnpj_emp = c_cnpj.text_input("CNPJ", key=f"cnpj_{sufixo}")
                         
-                else:
-                    ctr_num = st.text_input("Nº Contrato", key="in_ctr_num")
-                    ctr_det = st.text_input("Detalhes / Valor", key="in_ctr_det")
+                        c_adm, c_cargo = st.columns(2)
+                        dt_adm = c_adm.date_input("Data Admissão", value=None, format="DD/MM/YYYY", key=f"dt_{sufixo}")
+                        cargo = c_cargo.text_input("Cargo (CBO)", key=f"cbo_{sufixo}")
+                        
+                        if st.button(f"Inserir em {tipo_tabela or 'Dados'}", key=f"btn_{sufixo}"):
+                            novo_dado = {
+                                'matricula_ref': dados_vinc['matricula'],
+                                'nome_empresa': nm_emp,
+                                'cnpj_empresa': cnpj_emp,
+                                'data_admissao': dt_adm,
+                                'cbo_nome': cargo,
+                                'origem_tabela': nome_tabela
+                            }
+                            if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
+                            st.session_state['dados_staging']['contratos'].append(novo_dado)
+                            st.toast(f"✅ {tipo_tabela} adicionado!")
+
+                    # >>> FORMULÁRIO 2: CONTRATOS FINANCEIROS (PADRÃO)
+                    elif 'pf_contratos' in nome_tabela:
+                        c_ctr, c_det = st.columns([1, 2])
+                        ctr_num = c_ctr.text_input("Nº Contrato", key=f"nctr_{sufixo}")
+                        ctr_det = c_det.text_input("Detalhes / Valor", key=f"det_{sufixo}")
+                        
+                        if st.button(f"Inserir Contrato", key=f"btn_c_{sufixo}"):
+                            novo_contrato = {
+                                'matricula_ref': dados_vinc['matricula'],
+                                'contrato': ctr_num,
+                                'dados_extras': ctr_det,
+                                'origem_tabela': nome_tabela
+                            }
+                            if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
+                            st.session_state['dados_staging']['contratos'].append(novo_contrato)
+                            st.toast("✅ Contrato adicionado!")
                     
-                    if st.button("Inserir Contrato Padrão"):
-                        novo_contrato = {
-                            'matricula_ref': dados_vinc['matricula'],
-                            'contrato': ctr_num,
-                            'dados_extras': ctr_det,
-                            'origem_tabela': tabela_destino
-                        }
-                        if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
-                        st.session_state['dados_staging']['contratos'].append(novo_contrato)
-                        st.toast("✅ Contrato adicionado!")
+                    # >>> OUTROS TIPOS (Expansão futura)
+                    else:
+                        st.info(f"Formulário genérico para {nome_tabela}")
+                        # Pode adicionar campos genéricos aqui se necessário
 
     # --- COLUNA DA DIREITA (RESUMO E SALVAR) ---
     with c_preview:
@@ -404,26 +441,33 @@ def interface_cadastro_pf():
         else:
             st.caption("Nenhum vínculo inserido.")
 
-        st.success("📝 Contratos")
+        st.success("📝 Dados Financeiros / Contratos")
         ctrs = st.session_state['dados_staging'].get('contratos', [])
         
+        # EXIBIÇÃO AGRUPADA POR TABELA/TIPO
         if ctrs:
             for i, c in enumerate(ctrs):
                 c1, c2 = st.columns([5, 1])
+                origem = c.get('origem_tabela', 'Desconhecido')
+                
+                # Formata exibição dependendo do tipo de dado
                 if 'nome_empresa' in c:
-                    texto = f"CLT | {c.get('nome_empresa')} | Adm: {c.get('data_admissao')}"
+                    texto = f"[{origem}] {c.get('nome_empresa')} | CNPJ: {c.get('cnpj_empresa')}"
                 else:
-                    texto = f"Contrato: {c.get('contrato')} | {c.get('dados_extras')}"
+                    texto = f"[{origem}] Contrato: {c.get('contrato')} | {c.get('dados_extras')}"
                 
                 c1.write(f"📌 {texto} (Ref: {c.get('matricula_ref')})")
                 if c2.button("🗑️", key=f"rm_ctr_{i}"):
                     st.session_state['dados_staging']['contratos'].pop(i); st.rerun()
         
+        # Exibe também os dados que já vieram do banco (agrupados nos empregos)
         for emp in emps:
-            ctrs_db = emp.get('contratos', [])
-            if ctrs_db:
-                with st.expander(f"Contratos Existentes em {emp['matricula']}"):
-                    st.dataframe(pd.DataFrame(ctrs_db), hide_index=True)
+            if 'contratos' in emp and emp['contratos']:
+                with st.expander(f"Dados Existentes em {emp['matricula']}"):
+                    df_ex = pd.DataFrame(emp['contratos'])
+                    # Remove colunas técnicas da visualização
+                    cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
+                    st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True)
 
         st.divider()
         
@@ -497,12 +541,17 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     else:
                         cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
             
-            # CONTRATOS
+            # CONTRATOS (DINÂMICO)
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
+                    # Pega o nome da tabela alvo que foi salvo na sessão
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
+                    
                     r_dict = r.to_dict()
+                    # Remove campos de controle que não existem no banco
                     r_dict.pop('origem_tabela', None)
+                    r_dict.pop('tipo_origem', None)
+                    
                     cols = list(r_dict.keys())
                     vals = list(r_dict.values())
                     placeholders = ", ".join(["%s"] * len(vals))
@@ -559,20 +608,4 @@ def dialog_visualizar_cliente(cpf_cliente):
         st.markdown("---")
         st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []):
-            st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
-        st.markdown("---")
-        st.markdown("##### 🏠 Endereços")
-        for end in dados.get('enderecos', []):
-            st.success(f"📍 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))}")
-    with t2:
-        st.markdown("##### 💰 Detalhes Financeiros & Contratos")
-        for v in dados.get('empregos', []):
-            ctrs = v.get('contratos', [])
-            if ctrs:
-                with st.expander(f"📂 {v['convenio'].upper()} | Matr: {v['matricula']}", expanded=True):
-                    st.dataframe(pd.DataFrame(ctrs), hide_index=True, use_container_width=True)
-            else:
-                st.caption(f"Sem contratos detalhados para {v['convenio']}.")
-    with t3:
-        for t in dados.get('telefones', []): st.write(f"📱 {safe_view(t.get('numero'))} ({safe_view(t.get('tag_whats'))})")
-        for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
+            st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper
