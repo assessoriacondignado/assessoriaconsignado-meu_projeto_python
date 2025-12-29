@@ -166,7 +166,7 @@ def carregar_dados_completos(cpf):
                                         vinculo['contratos'].extend(df_contratos.to_dict('records'))
                             except: pass
                     else:
-                        # Fallback padrão
+                        # Fallback padrão se não houver mapeamento
                         try:
                             query_padrao = "SELECT * FROM banco_pf.pf_contratos WHERE matricula_ref = %s"
                             df_contratos = pd.read_sql(query_padrao, conn, params=(matricula,))
@@ -466,7 +466,7 @@ def interface_cadastro_pf():
                 with st.expander(f"Dados Existentes em {emp['matricula']}"):
                     df_ex = pd.DataFrame(emp['contratos'])
                     # Remove colunas técnicas da visualização
-                    cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
+                    cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True)
 
         st.divider()
@@ -544,11 +544,8 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             # CONTRATOS (DINÂMICO)
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
-                    # Pega o nome da tabela alvo que foi salvo na sessão
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
-                    
                     r_dict = r.to_dict()
-                    # Remove campos de controle que não existem no banco
                     r_dict.pop('origem_tabela', None)
                     r_dict.pop('tipo_origem', None)
                     
@@ -608,4 +605,25 @@ def dialog_visualizar_cliente(cpf_cliente):
         st.markdown("---")
         st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []):
-            st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper
+            st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
+        st.markdown("---")
+        st.markdown("##### 🏠 Endereços")
+        for end in dados.get('enderecos', []):
+            st.success(f"📍 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))}")
+    with t2:
+        st.markdown("##### 💰 Detalhes Financeiros & Contratos")
+        for v in dados.get('empregos', []):
+            ctrs = v.get('contratos', [])
+            if ctrs:
+                # Mostra o tipo/nome da tabela no título do expander se disponível
+                tipo_display = v.get('contratos')[0].get('tipo_origem') or 'Detalhes'
+                with st.expander(f"📂 {v['convenio'].upper()} | {tipo_display} | Matr: {v['matricula']}", expanded=True):
+                    df_ex = pd.DataFrame(ctrs)
+                    # Limpa colunas técnicas da visualização
+                    cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
+                    st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
+            else:
+                st.caption(f"Sem contratos detalhados para {v['convenio']}.")
+    with t3:
+        for t in dados.get('telefones', []): st.write(f"📱 {safe_view(t.get('numero'))} ({safe_view(t.get('tag_whats'))})")
+        for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
