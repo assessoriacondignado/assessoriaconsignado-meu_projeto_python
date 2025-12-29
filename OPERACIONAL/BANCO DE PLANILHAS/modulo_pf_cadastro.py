@@ -140,7 +140,7 @@ def carregar_dados_completos(cpf):
                         'contratos': []
                     }
 
-                    # Busca TODAS as tabelas mapeadas para este convênio
+                    # --- BUSCA DINÂMICA DE TABELAS VINCULADAS ---
                     query_map = "SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s"
                     cur = conn.cursor()
                     cur.execute(query_map, (conv_nome,))
@@ -149,7 +149,6 @@ def carregar_dados_completos(cpf):
                     if tabelas_mapeadas:
                         for tabela_destino, tipo_destino in tabelas_mapeadas:
                             try:
-                                # Verifica se a tabela existe
                                 cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                                 if cur.fetchone()[0]:
                                     query_contratos = f"SELECT * FROM {tabela_destino} WHERE matricula_ref = %s"
@@ -157,7 +156,7 @@ def carregar_dados_completos(cpf):
                                     if not df_contratos.empty:
                                         df_contratos = df_contratos.astype(object).where(pd.notnull(df_contratos), None)
                                         df_contratos['origem_tabela'] = tabela_destino
-                                        df_contratos['tipo_origem'] = tipo_destino
+                                        df_contratos['tipo_origem'] = tipo_destino 
                                         vinculo['contratos'].extend(df_contratos.to_dict('records'))
                             except: pass
                     else:
@@ -464,7 +463,6 @@ def interface_cadastro_pf():
                 c1, c2 = st.columns([5, 1])
                 origem_nome = c.get('tipo_origem') or c.get('origem_tabela', 'Dado')
                 
-                # Tenta mostrar 2 campos relevantes para identificar
                 chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref']]
                 display_txt = f"[{origem_nome}] "
                 if len(chaves) > 0: display_txt += f"{c[chaves[0]]} "
@@ -477,7 +475,6 @@ def interface_cadastro_pf():
         # Exibe dados existentes (vindos do banco)
         for emp in emps:
             if 'contratos' in emp and emp['contratos']:
-                # Agrupa por tipo de tabela para exibição organizada
                 df_temp = pd.DataFrame(emp['contratos'])
                 if 'tipo_origem' in df_temp.columns:
                     grupos = df_temp.groupby('tipo_origem')
@@ -602,7 +599,8 @@ def dialog_excluir_pf(cpf, nome):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pf(cpf): st.success("Apagado!"); time.sleep(1); st.rerun()
 
-@st.dialog("👁️ Detalhes do Cliente")
+# --- AQUI ESTÁ A ALTERAÇÃO SOLICITADA PARA LARGURA DO POPUP ---
+@st.dialog("👁️ Detalhes do Cliente", width="large")
 def dialog_visualizar_cliente(cpf_cliente):
     cpf_vis = formatar_cpf_visual(cpf_cliente)
     dados = carregar_dados_completos(cpf_cliente)
@@ -635,9 +633,11 @@ def dialog_visualizar_cliente(cpf_cliente):
         for v in dados.get('empregos', []):
             ctrs = v.get('contratos', [])
             if ctrs:
+                # Mostra o tipo/nome da tabela no título do expander se disponível
                 tipo_display = v.get('contratos')[0].get('tipo_origem') or 'Detalhes'
                 with st.expander(f"📂 {v['convenio'].upper()} | {tipo_display} | Matr: {v['matricula']}", expanded=True):
                     df_ex = pd.DataFrame(ctrs)
+                    # Limpa colunas técnicas da visualização
                     cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
             else:
