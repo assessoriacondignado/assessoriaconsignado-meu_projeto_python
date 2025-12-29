@@ -103,10 +103,9 @@ def safe_view(valor):
     if v_str.lower() in ['none', 'nan', 'null', 'nat', '']: return ""
     return v_str
 
-# --- CARREGAMENTO INTELIGENTE (ATUALIZADO) ---
+# --- CARREGAMENTO INTELIGENTE ---
 def carregar_dados_completos(cpf):
     conn = get_conn()
-    # CORREÇÃO: Chave 'empregos' usada para alinhar com o frontend
     dados = {
         'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 
         'empregos': [] 
@@ -114,7 +113,7 @@ def carregar_dados_completos(cpf):
     
     if conn:
         try:
-            # 1. Padronização do CPF (Busca flexível: com e sem zeros)
+            # 1. Padronização do CPF para busca (Testa com e sem zeros à esquerda)
             cpf_norm = limpar_normalizar_cpf(cpf)      
             cpf_full = str(cpf_norm).zfill(11)         
             params_busca = (cpf_norm, cpf_full)
@@ -129,9 +128,13 @@ def carregar_dados_completos(cpf):
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # 4. LÓGICA DE VÍNCULO DIRETA
-            # Busca todos os empregos vinculados a este CPF diretamente na tabela principal
-            query_emp = "SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s"
+            # 4. LÓGICA DE VÍNCULO (EMPREGO E RENDA)
+            # Busca na tabela correta: banco_pf.pf_emprego_renda usando a coluna cpf_ref
+            query_emp = """
+                SELECT convenio, matricula, dados_extras 
+                FROM banco_pf.pf_emprego_renda 
+                WHERE cpf_ref IN %s
+            """
             df_emp = pd.read_sql(query_emp, conn, params=(params_busca,))
             
             if not df_emp.empty:
@@ -148,16 +151,15 @@ def carregar_dados_completos(cpf):
                         'contratos': []
                     }
 
-                    # Identifica Tabela de Contratos (Tabela: convenio_por_planilha)
+                    # Identifica se há contratos detalhados em outras tabelas
                     query_map = "SELECT nome_planilha_sql FROM banco_pf.convenio_por_planilha WHERE UPPER(convenio) = %s"
                     df_map = pd.read_sql(query_map, conn, params=(conv_nome,))
                     
                     if not df_map.empty:
                         tabela_destino = df_map.iloc[0]['nome_planilha_sql']
                         try:
-                            # Busca contratos na tabela específica usando a matrícula
                             cur = conn.cursor()
-                            # Validação de segurança simples para garantir que a tabela existe
+                            # Verifica se a tabela existe antes de consultar
                             cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                             if cur.fetchone()[0]:
                                 query_contratos = f"SELECT * FROM {tabela_destino} WHERE matricula_ref = %s"
@@ -166,7 +168,7 @@ def carregar_dados_completos(cpf):
                                     vinculo['contratos'] = df_contratos.to_dict('records')
                         except: pass
                     
-                    # CORREÇÃO: Adiciona na lista correta 'empregos'
+                    # Adiciona à lista de empregos encontrados
                     dados['empregos'].append(vinculo)
 
         except Exception as e:
@@ -198,6 +200,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             cpf_chave = dados_gerais['cpf']
             if modo == "editar":
+                # Limpa dados antigos para recriar (estratégia de replace)
                 for tb in ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos', 'banco_pf.pf_emprego_renda']:
                     cur.execute(f"DELETE FROM {tb} WHERE cpf_ref = %s", (cpf_chave,))
             
@@ -211,8 +214,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], r['matricula'], r['dados_extras']))
             
-            # Nota: Edição manual de contratos mantida no padrão básico
-            # Para contratos específicos, use a importação
             if not df_contr.empty:
                 df_padrao = df_contr[df_contr.get('origem_tabela', 'pf_contratos') == 'pf_contratos']
                 if not df_padrao.empty:
@@ -275,13 +276,15 @@ def dialog_visualizar_cliente(cpf_cliente):
         
         # VÍNCULOS (CONVÊNIO + MATRÍCULA)
         st.markdown("##### 🔗 Vínculos Identificados")
-        # CORREÇÃO: Usa a chave 'empregos'
+        
         vinculos = dados.get('empregos', [])
         
         if vinculos:
             for v in vinculos:
-                # Exibe Convênio e Matrícula encontrados
-                st.info(f"🏢 **{v['convenio']}** | Matrícula: **{v['matricula']}**")
+                # --- VISUALIZAÇÃO FORMATADA: MATRICULA - CONVENIO ---
+                # Exibe a matrícula em negrito seguido do convênio
+                st.info(f"🆔 **{v['matricula']}** - {v['convenio']}")
+                
                 if v.get('dados_extras'):
                     st.caption(f"Obs: {safe_view(v['dados_extras'])}")
         else:
@@ -316,7 +319,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         for m in dados.get('emails', []): 
             st.write(f"📧 {safe_view(m.get('email'))}")
 
-# --- CONFIGURAÇÃO E STAGING (MANTIDA IGUAL) ---
+# --- CONFIGURAÇÃO E STAGING ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
@@ -555,4 +558,3 @@ def interface_cadastro_pf():
                     st.rerun()
                 else:
                     st.error(msg)
-                
