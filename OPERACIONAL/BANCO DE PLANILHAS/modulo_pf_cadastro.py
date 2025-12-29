@@ -149,16 +149,23 @@ def carregar_dados_completos(cpf):
                     if tabelas_mapeadas:
                         for tabela_destino, tipo_destino in tabelas_mapeadas:
                             try:
+                                # Verifica se a tabela existe
                                 cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                                 if cur.fetchone()[0]:
-                                    query_contratos = f"SELECT * FROM {tabela_destino} WHERE matricula_ref = %s"
+                                    # Verifica qual o nome da coluna de ligação (matricula ou matricula_ref)
+                                    colunas_tb = get_colunas_tabela(tabela_destino)
+                                    nomes_cols = [c[0] for c in colunas_tb]
+                                    col_chave = 'matricula' if 'matricula' in nomes_cols else 'matricula_ref'
+                                    
+                                    query_contratos = f"SELECT * FROM {tabela_destino} WHERE {col_chave} = %s"
                                     df_contratos = pd.read_sql(query_contratos, conn, params=(matricula,))
                                     if not df_contratos.empty:
                                         df_contratos = df_contratos.astype(object).where(pd.notnull(df_contratos), None)
                                         df_contratos['origem_tabela'] = tabela_destino
                                         df_contratos['tipo_origem'] = tipo_destino 
                                         vinculo['contratos'].extend(df_contratos.to_dict('records'))
-                            except: pass
+                            except Exception as e_dyn:
+                                print(f"Erro ao carregar tabela {tabela_destino}: {e_dyn}")
                     else:
                         # Fallback padrão
                         try:
@@ -179,7 +186,7 @@ def carregar_dados_completos(cpf):
             
     return dados
 
-# --- NOVO: FUNÇÃO PARA LISTAR E INSPECIONAR TABELAS DO CONVÊNIO ---
+# --- FUNÇÕES AUXILIARES ---
 def listar_tabelas_por_convenio(convenio):
     conn = get_conn()
     tabelas = []
@@ -386,8 +393,9 @@ def interface_cadastro_pf():
                     # 1. Pega colunas do banco
                     colunas_banco = get_colunas_tabela(nome_tabela)
                     
-                    # 2. Gera Inputs Dinâmicos (Ignora ID, matricula_ref, campos de controle)
-                    campos_ignorados = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao']
+                    # 2. Gera Inputs Dinâmicos 
+                    # ATUALIZADO: Ignora matricula e matricula_ref
+                    campos_ignorados = ['id', 'matricula_ref', 'matricula', 'importacao_id', 'data_criacao', 'data_atualizacao']
                     inputs_gerados = {}
                     
                     # Grid layout para ficar bonito (2 colunas)
@@ -415,13 +423,20 @@ def interface_cadastro_pf():
                     
                     # Botão Salvar Específico dessa Tabela
                     if st.button(f"Inserir em {tipo_tabela or nome_tabela}", key=f"btn_save_{sufixo}"):
-                        # Adiciona a matrícula ref automaticamente
-                        inputs_gerados['matricula_ref'] = dados_vinc['matricula']
+                        
+                        # --- LÓGICA INTELIGENTE DE CHAVE ESTRANGEIRA ---
+                        # Verifica se a tabela usa 'matricula' ou 'matricula_ref'
+                        nomes_cols_tabela = [c[0] for c in colunas_banco]
+                        if 'matricula' in nomes_cols_tabela:
+                            inputs_gerados['matricula'] = dados_vinc['matricula']
+                        else:
+                            inputs_gerados['matricula_ref'] = dados_vinc['matricula']
+                        
                         inputs_gerados['origem_tabela'] = nome_tabela
                         inputs_gerados['tipo_origem'] = tipo_tabela
                         
-                        # --- ADICIONADO: Preenchimento automático do convenio ---
-                        if 'convenio' in [c[0] for c in colunas_banco]:
+                        # Preenchimento automático do convenio se existir a coluna
+                        if 'convenio' in nomes_cols_tabela:
                             inputs_gerados['convenio'] = dados_vinc['convenio']
                         
                         if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
@@ -463,12 +478,13 @@ def interface_cadastro_pf():
                 c1, c2 = st.columns([5, 1])
                 origem_nome = c.get('tipo_origem') or c.get('origem_tabela', 'Dado')
                 
-                chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref']]
+                chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref', 'matricula', 'convenio']]
                 display_txt = f"[{origem_nome}] "
                 if len(chaves) > 0: display_txt += f"{c[chaves[0]]} "
                 if len(chaves) > 1: display_txt += f"| {c[chaves[1]]}"
                 
-                c1.write(f"📌 {display_txt}")
+                ref_matr = c.get('matricula') or c.get('matricula_ref')
+                c1.write(f"📌 {display_txt} (Ref: {ref_matr})")
                 if c2.button("🗑️", key=f"rm_ctr_{i}"):
                     st.session_state['dados_staging']['contratos'].pop(i); st.rerun()
         
@@ -599,7 +615,6 @@ def dialog_excluir_pf(cpf, nome):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pf(cpf): st.success("Apagado!"); time.sleep(1); st.rerun()
 
-# --- AQUI ESTÁ A ALTERAÇÃO SOLICITADA PARA LARGURA DO POPUP ---
 @st.dialog("👁️ Detalhes do Cliente", width="large")
 def dialog_visualizar_cliente(cpf_cliente):
     cpf_vis = formatar_cpf_visual(cpf_cliente)
