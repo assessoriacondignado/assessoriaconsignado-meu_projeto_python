@@ -31,6 +31,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         table_full_name = f"banco_pf.{table_name}"
         
+        # 1. Atualiza caminho do arquivo no banco
         cur.execute("UPDATE banco_pf.pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
 
         # Verifica colunas do banco
@@ -49,8 +50,11 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             for _, row in df.iterrows():
                 cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
                 cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
+                
+                # Validação de CPF
                 if not cpf_limpo: continue
                 
+                # Padronização Maiúscula para Tags
                 whats_val = str(row[col_whats]).upper().strip() if col_whats and pd.notna(row[col_whats]) else None
                 qualif_val = str(row[col_qualif]).upper().strip() if col_qualif and pd.notna(row[col_qualif]) else None
                 
@@ -80,12 +84,13 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             df_proc.drop_duplicates(subset=['cpf_ref', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
 
-        # --- LÓGICA GENÉRICA ---
+        # --- LÓGICA GENÉRICA (DADOS, EMPREGO, CONTRATOS) ---
         else:
             df_proc = df.rename(columns=mapping)
+            # Remove colunas mapeadas que não existem no banco
             cols_db_validas = [col for col in df_proc.columns if col in cols_banco or col in ['cpf', 'cpf_ref', 'matricula', 'matricula_ref']]
             
-            # Preserva coluna temporária para gerar matrícula
+            # Preserva coluna temporária de CPF para gerar matrícula se necessário
             col_cpf_temp = None
             if 'cpf_gerador_key' in mapping.values():
                  csv_col_cpf = next((k for k, v in mapping.items() if v == 'cpf_gerador_key'), None)
@@ -102,8 +107,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if 'importacao_id' in cols_banco:
                 df_proc['importacao_id'] = str(import_id)
 
-            # --- Validação CPF (11 dígitos) ---
-            # Aplicada em cpf, cpf_ref e agora TAMBÉM para a tabela 'cpf_convenio'
+            # Validação CPF (11 dígitos)
             def validar_cpf_11_digitos(val):
                 nums = pf_core.limpar_apenas_numeros(val)
                 return len(nums) == 11
@@ -114,7 +118,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                     df_proc = df_proc[mask]
                     df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
-            # Gerador de Matrícula (Se necessário)
+            # Gerador de Matrícula
             target_matricula = 'matricula' if 'matricula' in cols_banco else 'matricula_ref'
             if target_matricula in cols_banco:
                 if target_matricula not in df_proc.columns:
@@ -145,12 +149,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             # Deduplicação
             pk = 'cpf' if 'cpf' in df_proc.columns else (target_matricula if target_matricula in df_proc.columns else None)
-            
-            # Para a nova tabela cpf_convenio, a chave pode ser composta ou apenas o cpf_ref,
-            # mas vamos manter a lógica padrão de deduplicação simples.
-            if table_name == 'cpf_convenio' and 'cpf_ref' in df_proc.columns:
-                pk = 'cpf_ref'
-
             if pk: df_proc.drop_duplicates(subset=[pk], keep='last', inplace=True)
 
         # 3. Carga no Banco (Bulk)
@@ -163,13 +161,10 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
-        
-        # Ajuste para a nova tabela cpf_convenio (que não tem pk 'cpf' mas tem 'cpf_ref' único)
-        if table_name == 'cpf_convenio': pk_field = 'cpf_ref'
-
         qtd_novos, qtd_atualizados = 0, 0
         
         if pk_field:
+            # UPDATE (com append para importacao_id)
             set_parts = []
             for c in cols_order:
                 if c == pk_field: continue
@@ -181,16 +176,15 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             if set_parts:
                 set_clause = ', '.join(set_parts)
-                # No caso de cpf_convenio, o UPSERT pode falhar se houver duplicatas de chave.
-                # A lógica abaixo tenta atualizar se existir.
                 cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
                 qtd_atualizados = cur.rowcount
             
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
-            # REGRA DE CONTRATOS (IGNORAR SEM VÍNCULO)
+            # --- REGRA DE IMPORTAÇÃO DE CONTRATOS (IGNORAR SEM VÍNCULO) ---
             if table_name in ['pf_contratos', 'pf_contratos_clt']:
+                # Só insere se a matrícula existir na tabela de emprego
                 query_insert_safe = f"""
                     INSERT INTO {table_full_name} ({', '.join(cols_order)}) 
                     SELECT {', '.join(cols_order)} 
@@ -202,17 +196,18 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                 """
                 cur.execute(query_insert_safe)
             else:
+                # Inserção normal para outras tabelas
                 cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             
             qtd_novos = cur.rowcount
             
-            # ATUALIZAÇÃO DO VÍNCULO NA TABELA PAI
+            # Atualização de Vínculo na Tabela Pai
             str_imp = str(import_id)
-            if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'cpf_convenio']:
-                # A nova tabela cpf_convenio também atualiza o cadastro principal pelo CPF
+            if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda']:
                 cur.execute(f"""UPDATE banco_pf.pf_dados d SET importacao_id = CASE WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s ELSE d.importacao_id || ', ' || %s END FROM {staging_table} s WHERE d.cpf = s.cpf_ref""", (str_imp, str_imp))
                 
             elif table_name in ['pf_contratos', 'pf_contratos_clt']:
+                # Vínculo: Contrato -> Matrícula -> CPF
                 cur.execute(f"""
                     UPDATE banco_pf.pf_dados d 
                     SET importacao_id = CASE 
@@ -235,9 +230,9 @@ def interface_historico():
     conn = pf_core.get_conn()
     if not conn: return
     try:
-        df = pd.read_sql("SELECT * FROM banco_pf.pf_historico_importacoes ORDER BY id DESC", conn)
+        df_hist = pd.read_sql("SELECT * FROM banco_pf.pf_historico_importacoes ORDER BY id DESC", conn)
         conn.close()
-        st.dataframe(df, hide_index=True)
+        st.dataframe(df_hist, hide_index=True)
     except: st.error("Erro histórico")
 
 def interface_importacao():
@@ -248,8 +243,6 @@ def interface_importacao():
     if c2.button("📜 Histórico"): st.session_state['import_step'] = 'historico'; st.rerun()
     
     st.divider()
-    
-    # ATUALIZADO: Incluída a nova tabela na lista
     mapa = {
         "Dados Cadastrais": "pf_dados",
         "Telefones": "pf_telefones",
@@ -257,8 +250,7 @@ def interface_importacao():
         "Endereços": "pf_enderecos",
         "Emprego e Renda": "pf_emprego_renda",
         "Contratos": "pf_contratos",
-        "Contratos CLT": "pf_contratos_clt",
-        "CPF x Convênio": "cpf_convenio"  # <-- NOVA OPÇÃO
+        "Contratos CLT": "pf_contratos_clt"
     }
     
     if st.session_state.get('import_step', 1) == 1:
