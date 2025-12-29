@@ -152,7 +152,7 @@ def carregar_dados_completos(cpf):
                                 # Verifica se a tabela existe
                                 cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                                 if cur.fetchone()[0]:
-                                    # Verifica qual o nome da coluna de ligação (matricula ou matricula_ref)
+                                    # Verifica nome da coluna de chave (matricula ou matricula_ref)
                                     colunas_tb = get_colunas_tabela(tabela_destino)
                                     nomes_cols = [c[0] for c in colunas_tb]
                                     col_chave = 'matricula' if 'matricula' in nomes_cols else 'matricula_ref'
@@ -164,8 +164,7 @@ def carregar_dados_completos(cpf):
                                         df_contratos['origem_tabela'] = tabela_destino
                                         df_contratos['tipo_origem'] = tipo_destino 
                                         vinculo['contratos'].extend(df_contratos.to_dict('records'))
-                            except Exception as e_dyn:
-                                print(f"Erro ao carregar tabela {tabela_destino}: {e_dyn}")
+                            except: pass
                     else:
                         # Fallback padrão
                         try:
@@ -186,7 +185,7 @@ def carregar_dados_completos(cpf):
             
     return dados
 
-# --- FUNÇÕES AUXILIARES ---
+# --- NOVO: FUNÇÃO PARA LISTAR E INSPECIONAR TABELAS DO CONVÊNIO ---
 def listar_tabelas_por_convenio(convenio):
     conn = get_conn()
     tabelas = []
@@ -393,8 +392,7 @@ def interface_cadastro_pf():
                     # 1. Pega colunas do banco
                     colunas_banco = get_colunas_tabela(nome_tabela)
                     
-                    # 2. Gera Inputs Dinâmicos 
-                    # ATUALIZADO: Ignora matricula e matricula_ref
+                    # 2. Gera Inputs Dinâmicos (Ignora ID, campos de controle e CHAVES ESTRANGEIRAS que serão auto-preenchidas)
                     campos_ignorados = ['id', 'matricula_ref', 'matricula', 'importacao_id', 'data_criacao', 'data_atualizacao']
                     inputs_gerados = {}
                     
@@ -424,8 +422,7 @@ def interface_cadastro_pf():
                     # Botão Salvar Específico dessa Tabela
                     if st.button(f"Inserir em {tipo_tabela or nome_tabela}", key=f"btn_save_{sufixo}"):
                         
-                        # --- LÓGICA INTELIGENTE DE CHAVE ESTRANGEIRA ---
-                        # Verifica se a tabela usa 'matricula' ou 'matricula_ref'
+                        # --- LÓGICA INTELIGENTE DE CHAVE ESTRANGEIRA (Matrícula) ---
                         nomes_cols_tabela = [c[0] for c in colunas_banco]
                         if 'matricula' in nomes_cols_tabela:
                             inputs_gerados['matricula'] = dados_vinc['matricula']
@@ -574,13 +571,16 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     else:
                         cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
             
-            # CONTRATOS (DINÂMICO TOTAL)
+            # CONTRATOS (DINÂMICO TOTAL COM LIMPEZA DE NANs)
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
                     r_dict = r.to_dict()
                     r_dict.pop('origem_tabela', None)
                     r_dict.pop('tipo_origem', None)
+                    
+                    # --- LIMPEZA CRÍTICA: Remove chaves com valores NaN ou Nulos para evitar erro de coluna inexistente ---
+                    r_dict = {k: v for k, v in r_dict.items() if pd.notna(v) and v != ""}
                     
                     cols = list(r_dict.keys())
                     vals = list(r_dict.values())
