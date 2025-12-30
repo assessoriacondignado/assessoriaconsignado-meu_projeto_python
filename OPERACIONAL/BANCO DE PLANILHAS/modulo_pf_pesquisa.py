@@ -6,7 +6,7 @@ import time
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS (MANTIDA IGUAL AO ÚLTIMO UPDATE) ---
+# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADO) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -49,16 +49,9 @@ CAMPOS_CONFIG = {
         {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "CBO (Nome)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "CBO (Código)", "coluna": "clt.cbo_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "CNAE (Nome)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "CNAE (Código)", "coluna": "clt.cnae_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CBO (Cargo)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CNAE (Atividade)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "Tempo Admissão (Anos)", "coluna": "clt.tempo_admissao_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "Data Início Emprego", "coluna": "clt.data_inicio_emprego", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "Tempo Início (Anos)", "coluna": "clt.tempo_inicio_emprego_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "Data Abertura Empresa", "coluna": "clt.data_abertura_empresa", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "Tempo Abertura (Anos)", "coluna": "clt.tempo_abertura_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"}
     ],
     "Controle e Sistema": [
@@ -81,9 +74,8 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             conds = ["d.nome ILIKE %s"]
             params = [param_nome]
             if termo_limpo: 
-                # Ajuste: Assumindo que você também vai renomear cpf_ref para cpf nas tabelas de telefone
-                # Se ainda for cpf_ref, mude t.cpf para t.cpf_ref abaixo
-                sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf_ref" 
+                # ATUALIZADO: JOIN com pf_telefones usa 'cpf' agora
+                sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf" 
                 conds.append("d.cpf ILIKE %s"); conds.append("t.numero ILIKE %s")
                 params.append(f"%{termo_limpo}%"); params.append(f"%{termo_limpo}%")
             
@@ -107,12 +99,13 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
+            # ATUALIZADO: JOINs agora usam .cpf para todas as tabelas satélites
             joins_map = {
-                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
-                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
-                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf_ref",
+                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
+                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
+                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf",
                 'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
-                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
+                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula",
                 'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
             active_joins = []; conditions = []; params = []
@@ -199,13 +192,13 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
             query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Telefones":
-            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf_ref IN %s"
+            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf IN %s" # Atualizado para cpf
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "E-mails":
-            query = "DELETE FROM banco_pf.pf_emails WHERE cpf_ref IN %s"
+            query = "DELETE FROM banco_pf.pf_emails WHERE cpf IN %s" # Atualizado para cpf
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Endereços":
-            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s"
+            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf IN %s" # Atualizado para cpf
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Emprego e Renda":
             if not convenio: return False, "Convênio não selecionado."
@@ -215,7 +208,7 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
             elif sub_opcao == "Excluir Apenas Contratos":
                 query = """
                     DELETE FROM banco_pf.pf_contratos 
-                    WHERE matricula_ref IN (
+                    WHERE matricula IN (
                         SELECT matricula FROM banco_pf.pf_emprego_renda 
                         WHERE cpf IN %s AND convenio = %s
                     )
