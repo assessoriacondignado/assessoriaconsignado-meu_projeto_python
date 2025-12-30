@@ -81,6 +81,22 @@ def validar_formatar_cep(cep_raw):
     if len(numeros) != 8: return None, "CEP deve ter 8 dígitos."
     return f"{numeros[:5]}-{numeros[5:]}", None
 
+# --- NOVO: FORMATAÇÃO DE CNPJ ---
+def formatar_cnpj(valor):
+    """
+    Recebe um CNPJ (com ou sem pontuação, com ou sem zeros à esquerda).
+    Retorna formatado: XX.XXX.XXX/XXXX-XX
+    """
+    if not valor: return None
+    numeros = re.sub(r'\D', '', str(valor))
+    if not numeros: return None
+    
+    # Garante 14 dígitos (preenche com zeros à esquerda se necessário)
+    numeros = numeros.zfill(14)
+    
+    # Aplica a máscara
+    return f"{numeros[:2]}.{numeros[2:5]}.{numeros[5:8]}/{numeros[8:12]}-{numeros[12:]}"
+
 def converter_data_br_iso(valor):
     if not valor or pd.isna(valor): return None
     valor_str = str(valor).strip().split(' ')[0]
@@ -399,6 +415,7 @@ def interface_cadastro_pf():
                     inputs_gerados = {}
                     
                     # --- MAPA DE DEPENDÊNCIA PARA CÁLCULO AUTOMÁTICO ---
+                    # Coluna de Tempo -> Coluna de Data que a origina
                     mapa_calculo_datas = {
                         'tempo_abertura_anos': 'data_abertura_empresa',
                         'tempo_admissao_anos': 'data_admissao',
@@ -487,6 +504,7 @@ def interface_cadastro_pf():
         st.success("📝 Dados Financeiros / Planilhas")
         ctrs = st.session_state['dados_staging'].get('contratos', [])
         
+        # EXIBIÇÃO
         if ctrs:
             for i, c in enumerate(ctrs):
                 c1, c2 = st.columns([5, 1])
@@ -597,11 +615,22 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     r_dict.pop('origem_tabela', None)
                     r_dict.pop('tipo_origem', None)
                     
-                    # --- LIMPEZA CRÍTICA: Remove chaves com valores NaN ou Nulos para evitar erro de coluna inexistente ---
-                    r_dict = {k: v for k, v in r_dict.items() if pd.notna(v) and v != ""}
+                    # --- LIMPEZA E FORMATAÇÃO ESPECÍFICA ---
+                    final_dict = {}
+                    for k, v in r_dict.items():
+                        # Ignora valores vazios/nulos
+                        if pd.isna(v) or v == "": continue
+                        
+                        # Formata CNPJ se o nome da coluna contiver 'cnpj'
+                        if 'cnpj' in k.lower():
+                            final_dict[k] = formatar_cnpj(v)
+                        else:
+                            final_dict[k] = v
                     
-                    cols = list(r_dict.keys())
-                    vals = list(r_dict.values())
+                    if not final_dict: continue
+
+                    cols = list(final_dict.keys())
+                    vals = list(final_dict.values())
                     placeholders = ", ".join(["%s"] * len(vals))
                     col_names = ", ".join(cols)
                     try:
@@ -640,9 +669,17 @@ def dialog_visualizar_cliente(cpf_cliente):
     g = dados.get('geral', {})
     if not g: st.error("Cliente não encontrado."); return
     
-    st.markdown(f"### 👤 {g.get('nome', 'Nome não informado')}")
+    # CSS para ajustar fino do espaçamento
+    st.markdown("""
+        <style>
+        .compact-header { margin-bottom: -15px; }
+        .stMarkdown hr { margin-top: 5px; margin-bottom: 5px; }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown(f"<h3 class='compact-header'>👤 {g.get('nome', 'Nome não informado')}</h3>", unsafe_allow_html=True)
     st.markdown(f"**CPF:** {cpf_vis}")
-    st.divider()
+    st.write("") # Pequeno espaçamento
     
     t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos"])
     with t1:
@@ -653,24 +690,29 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1.write(f"**Nascimento:** {txt_nasc}")
         c1.write(f"**RG:** {safe_view(g.get('rg'))}")
         c2.write(f"**Mãe:** {safe_view(g.get('nome_mae'))}")
-        st.markdown("---")
+        
+        st.divider() # Substituto compacto para st.markdown("---")
+        
         st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []):
             st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
-        st.markdown("---")
+        
+        if not dados.get('empregos'):
+            st.warning("Nenhum vínculo localizado.")
+            
+        st.divider()
         st.markdown("##### 🏠 Endereços")
         for end in dados.get('enderecos', []):
             st.success(f"📍 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))}")
+            
     with t2:
         st.markdown("##### 💰 Detalhes Financeiros & Contratos")
         for v in dados.get('empregos', []):
             ctrs = v.get('contratos', [])
             if ctrs:
-                # Mostra o tipo/nome da tabela no título do expander se disponível
                 tipo_display = v.get('contratos')[0].get('tipo_origem') or 'Detalhes'
                 with st.expander(f"📂 {v['convenio'].upper()} | {tipo_display} | Matr: {v['matricula']}", expanded=True):
                     df_ex = pd.DataFrame(ctrs)
-                    # Limpa colunas técnicas da visualização
                     cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
             else:
