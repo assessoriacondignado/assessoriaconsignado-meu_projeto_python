@@ -84,8 +84,8 @@ def app_pessoa_fisica():
         c1, c2 = st.columns([2, 2])
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
         
-        # MENU SUPERIOR (Agora com 6 colunas para incluir a Configuração)
-        col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1, 1, 1, 1, 1, 1])
+        # MENU SUPERIOR (Ajustado para 5 colunas)
+        col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1, 1, 1, 1, 1])
         
         if col_b1.button("➕ Novo", use_container_width=True): 
             st.session_state.update({'pf_view': 'novo', 'form_loaded': False})
@@ -103,12 +103,10 @@ def app_pessoa_fisica():
             st.session_state.update({'pf_view': 'campanhas'})
             st.rerun()
 
-        if col_b5.button("📤 Modelos Exp.", help="Modelos Simples (Legado)", use_container_width=True): 
-            st.session_state.update({'pf_view': 'modelos_exportacao'})
-            st.rerun()
-
-        # NOVO BOTÃO DE CONFIGURAÇÃO
-        if col_b6.button("⚙️ Config Exp.", help="Configurar Layouts de Exportação", use_container_width=True):
+        # O botão "Modelos Exp." foi removido daqui.
+        
+        # Botão de Configuração movido para a coluna 5
+        if col_b5.button("⚙️ Config Exp.", help="Configurar Layouts de Exportação", use_container_width=True):
             st.session_state.update({'pf_view': 'config_exportacao'})
             st.rerun()
         
