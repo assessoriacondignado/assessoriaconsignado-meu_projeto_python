@@ -14,6 +14,12 @@ try:
 except ImportError:
     pf_export = None
 
+# --- NOVO: Importação do módulo de Configuração de Exportação ---
+try:
+    import modulo_pf_config_exportacao as pf_config_exp
+except ImportError:
+    pf_config_exp = None
+
 def app_pessoa_fisica():
     pf_core.init_db_structures()
     
@@ -51,7 +57,7 @@ def app_pessoa_fisica():
         else:
             st.error("O módulo 'modulo_pf_campanhas.py' não foi encontrado na pasta.")
 
-    # --- 3. GESTÃO DE MODELOS DE EXPORTAÇÃO (NOVO) ---
+    # --- 3. GESTÃO DE MODELOS DE EXPORTAÇÃO (LEGADO/SIMPLES) ---
     elif st.session_state['pf_view'] == 'modelos_exportacao':
         if st.button("⬅️ Voltar para Lista"):
             st.session_state['pf_view'] = 'lista'
@@ -62,32 +68,48 @@ def app_pessoa_fisica():
         else:
             st.error("O módulo 'modulo_pf_exportacao.py' não foi encontrado na pasta.")
 
-    # --- 4. TELA INICIAL (LISTA + MENU) ---
+    # --- 4. CONFIGURAÇÃO DE EXPORTAÇÃO (NOVO MÓDULO AVANÇADO) ---
+    elif st.session_state['pf_view'] == 'config_exportacao':
+        if st.button("⬅️ Voltar para Lista"):
+            st.session_state['pf_view'] = 'lista'
+            st.rerun()
+            
+        if pf_config_exp:
+            pf_config_exp.app_config_exportacao()
+        else:
+            st.warning("O arquivo 'modulo_pf_config_exportacao.py' ainda não foi criado na pasta OPERACIONAL/BANCO DE PLANILHAS.")
+
+    # --- 5. TELA INICIAL (LISTA + MENU) ---
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
         
-        # MENU SUPERIOR (5 Botões)
-        col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1, 1, 1, 1, 1])
+        # MENU SUPERIOR (Agora com 6 colunas para incluir a Configuração)
+        col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1, 1, 1, 1, 1, 1])
         
-        if col_b1.button("➕ Novo"): 
+        if col_b1.button("➕ Novo", use_container_width=True): 
             st.session_state.update({'pf_view': 'novo', 'form_loaded': False})
             st.rerun()
             
-        if col_b2.button("🔍 Pesq. Ampla"): 
+        if col_b2.button("🔍 Pesq. Ampla", use_container_width=True): 
             st.session_state.update({'pf_view': 'pesquisa_ampla'})
             st.rerun()
             
-        if col_b3.button("📥 Importar"): 
+        if col_b3.button("📥 Importar", use_container_width=True): 
             st.session_state.update({'pf_view': 'importacao', 'import_step': 1})
             st.rerun()
             
-        if col_b4.button("📢 Campanhas"): 
+        if col_b4.button("📢 Campanhas", use_container_width=True): 
             st.session_state.update({'pf_view': 'campanhas'})
             st.rerun()
 
-        if col_b5.button("📤 Modelos Exp."): 
+        if col_b5.button("📤 Modelos Exp.", help="Modelos Simples (Legado)", use_container_width=True): 
             st.session_state.update({'pf_view': 'modelos_exportacao'})
+            st.rerun()
+
+        # NOVO BOTÃO DE CONFIGURAÇÃO
+        if col_b6.button("⚙️ Config Exp.", help="Configurar Layouts de Exportação", use_container_width=True):
+            st.session_state.update({'pf_view': 'config_exportacao'})
             st.rerun()
         
         # RESULTADO DA BUSCA RÁPIDA
@@ -125,7 +147,7 @@ def app_pessoa_fisica():
         else:
             st.info("Utilize a busca acima para localizar clientes.")
 
-    # --- 5. TELAS DE IMPORTAÇÃO E CADASTRO ---
+    # --- 6. TELAS DE IMPORTAÇÃO E CADASTRO ---
     elif st.session_state['pf_view'] == 'importacao':
         pf_importacao.interface_importacao()
 
