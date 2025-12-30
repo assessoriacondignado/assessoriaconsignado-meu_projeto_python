@@ -84,7 +84,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         else:
             df_proc = df.rename(columns=mapping)
             
-            # ATUALIZADO: Aceita 'cpf', 'matricula', 'convenio'
+            # Aceita 'cpf', 'matricula', 'convenio'
             cols_permitidas = cols_banco + ['cpf', 'matricula', 'convenio']
             
             # Filtra apenas colunas que existem no banco ou são chaves de ligação
@@ -111,7 +111,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                     else:
                         df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
-            # Gerador de Matrícula (para tabelas que exigem mas o CSV não tem)
+            # Gerador de Matrícula
             target_matricula = 'matricula'
             if target_matricula in cols_banco:
                 if target_matricula not in df_proc.columns:
@@ -251,10 +251,9 @@ def interface_importacao():
         # --- AVISO E CABEÇALHO DO CSV ESPERADO ---
         st.warning("⚠️ Atenção: O arquivo deve estar no formato **CSV (Separado por vírgulas ou ponto e vírgula)** e codificação **UTF-8**.")
         
-        # Gera lista de colunas esperadas para ajudar o usuário
+        # Gera lista de colunas esperadas
         tbl = mapa[sel]
         cols_esperadas = [c[0] for c in get_table_columns(tbl) if c[0] not in ['id', 'data_criacao', 'importacao_id', 'data_atualizacao']]
-        # Adiciona chaves estrangeiras comuns se não existirem na tabela física mas forem necessárias para o processo
         if tbl == 'pf_telefones': cols_esperadas = ['cpf', 'telefone_1', 'telefone_2', '...']
         elif tbl == 'pf_matricula_dados_clt': cols_esperadas += ['cpf (opcional para gerar matricula)']
         
@@ -265,7 +264,7 @@ def interface_importacao():
         if uploaded:
             try:
                 df = pd.read_csv(uploaded, sep=';', encoding='utf-8')
-                if len(df.columns) <= 1: # Tenta vírgula se ponto e vírgula falhar
+                if len(df.columns) <= 1: 
                      uploaded.seek(0)
                      df = pd.read_csv(uploaded, sep=',', encoding='utf-8')
             except:
@@ -296,7 +295,6 @@ def interface_importacao():
         tbl = st.session_state['import_table']
         cols_db = [c[0] for c in get_table_columns(tbl) if c[0] not in ['id', 'data_criacao', 'importacao_id']]
         
-        # Garante que chaves essenciais apareçam na lista de destino
         if tbl == 'pf_telefones' and 'cpf' not in cols_db: cols_db.insert(0, 'cpf')
         if tbl in ['pf_contratos', 'pf_matricula_dados_clt']:
              if 'matricula' in cols_db: cols_db.remove('matricula')
@@ -312,8 +310,8 @@ def interface_importacao():
                 
                 btn_label = f"{status_icon} {col} -> {mapped if mapped else '...'}"
                 
-                # Destaca o botão atual
-                 tipo_btn = "primary" if idx == st.session_state.get('current_csv_idx', 0) else "secondary"
+                # CORREÇÃO DA INDENTAÇÃO AQUI
+                tipo_btn = "primary" if idx == st.session_state.get('current_csv_idx', 0) else "secondary"
                 if st.button(btn_label, key=f"btn_col_{idx}", type=tipo_btn, use_container_width=True): 
                     st.session_state['current_csv_idx'] = idx; st.rerun()
         
@@ -322,7 +320,6 @@ def interface_importacao():
             col_atual = cols_csv[curr_idx]
             st.info(f"Mapeando coluna do CSV: **{col_atual}**")
             
-            # Amostra de dados
             st.write("Amostra de dados desta coluna:")
             st.code(df[col_atual].head(3).to_string(index=False))
 
@@ -334,13 +331,12 @@ def interface_importacao():
                 if curr_idx < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
                 st.rerun()
             
-            # Botões de campos do banco
             cols_banco_cols = st.columns(3)
             for i, field in enumerate(cols_db):
                 with cols_banco_cols[i % 3]:
                     if st.button(f"📥 {field}", key=f"map_to_{field}"):
                         st.session_state['csv_map'][col_atual] = 'cpf' if 'cpf' in field else ('matricula' if 'matricula' == field else field)
-                        if 'Gerar Matrícula' in field: st.session_state['csv_map'][col_atual] = 'cpf' # Caso especial
+                        if 'Gerar Matrícula' in field: st.session_state['csv_map'][col_atual] = 'cpf' 
                         
                         if curr_idx < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
                         st.rerun()
