@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date
 import re
 import time
+import json  # Necessário para salvar a lista de colunas
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
@@ -225,7 +226,7 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         return False, f"Erro na execução: {e}"
 
 # =============================================================================
-# NOVAS FUNÇÕES PARA "TIPOS DE FILTRO" (MODELO FIXO)
+# NOVAS FUNÇÕES PARA "TIPOS DE FILTRO" (MODELO FIXO) - ATUALIZADO MULTI COLUNA
 # =============================================================================
 
 def listar_tabelas_pf(conn):
@@ -258,15 +259,18 @@ def listar_colunas_tabela(conn, tabela):
         return res
     except: return []
 
-def salvar_modelo_fixo(nome, tabela, coluna, resumo):
+def salvar_modelo_fixo(nome, tabela, lista_colunas, resumo):
     conn = pf_core.get_conn()
     if conn:
         try:
+            # Converte a lista de colunas para JSON String
+            colunas_json = json.dumps(lista_colunas)
+            
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO banco_pf.pf_modelos_filtro_fixo (nome_modelo, tabela_alvo, coluna_alvo, resumo)
                 VALUES (%s, %s, %s, %s)
-            """, (nome, tabela, coluna, resumo))
+            """, (nome, tabela, colunas_json, resumo))
             conn.commit()
             conn.close()
             return True
@@ -285,14 +289,22 @@ def listar_modelos_fixos():
         except: conn.close()
     return pd.DataFrame()
 
-def executar_filtro_fixo(tabela, coluna):
+def executar_filtro_fixo(tabela, colunas_alvo):
     conn = pf_core.get_conn()
     if conn:
         try:
-            # Query Dinâmica Segura (Identificadores não podem ser parâmetros bind comuns em alguns drivers,
-            # mas aqui usamos validação prévia de nomes de tabela/coluna se necessário, ou formatação direta controlada)
-            # Para segurança extra em produção, validar se tabela/coluna existem no schema antes de rodar.
-            query = f"SELECT DISTINCT {coluna} as Resultado FROM banco_pf.{tabela} ORDER BY {coluna}"
+            # Tenta decodificar se for JSON, senão usa como string única (compatibilidade)
+            try:
+                lista_cols = json.loads(colunas_alvo)
+                if not isinstance(lista_cols, list): lista_cols = [str(lista_cols)]
+            except:
+                lista_cols = [str(colunas_alvo)]
+            
+            # Monta a parte dos campos separados por vírgula
+            cols_str = ", ".join(lista_cols)
+            
+            # Query Dinâmica para múltiplas colunas
+            query = f"SELECT DISTINCT {cols_str} FROM banco_pf.{tabela} ORDER BY {lista_cols[0]}"
             df = pd.read_sql(query, conn)
             conn.close()
             return df
@@ -318,7 +330,8 @@ def dialog_tipos_filtro():
             if sel_tabela:
                 cols = listar_colunas_tabela(conn, sel_tabela)
             
-            sel_coluna = st.selectbox("2. Selecione o Item (Cabeçalho)", options=cols)
+            # ALTERADO PARA MULTISELECT (Permite mais de uma coluna)
+            sel_colunas = st.multiselect("2. Selecione os Itens (Cabeçalhos)", options=cols)
             conn.close()
             
             st.divider()
@@ -326,13 +339,13 @@ def dialog_tipos_filtro():
             resumo_modelo = st.text_area("4. Resumo / Descrição")
             
             if st.button("💾 Salvar Modelo"):
-                if nome_modelo and sel_tabela and sel_coluna:
-                    if salvar_modelo_fixo(nome_modelo, sel_tabela, sel_coluna, resumo_modelo):
+                if nome_modelo and sel_tabela and sel_colunas:
+                    if salvar_modelo_fixo(nome_modelo, sel_tabela, sel_colunas, resumo_modelo):
                         st.success("Modelo salvo com sucesso!")
                         time.sleep(1)
                         st.rerun()
                 else:
-                    st.warning("Preencha todos os campos.")
+                    st.warning("Preencha todos os campos e selecione ao menos uma coluna.")
         else:
             st.error("Erro de conexão.")
 
@@ -350,7 +363,15 @@ def dialog_tipos_filtro():
                 modelo = df_modelos[df_modelos['id'] == id_sel].iloc[0]
                 
                 st.info(f"**Resumo:** {modelo['resumo']}")
-                st.caption(f"Fonte: Tabela `{modelo['tabela_alvo']}` | Coluna `{modelo['coluna_alvo']}`")
+                
+                # Exibe colunas de forma amigável
+                try:
+                    cols_list = json.loads(modelo['coluna_alvo'])
+                    cols_str = ", ".join(cols_list)
+                except:
+                    cols_str = str(modelo['coluna_alvo'])
+                    
+                st.caption(f"Fonte: Tabela `{modelo['tabela_alvo']}` | Colunas: `{cols_str}`")
                 
                 if st.button("👁️ Ver Resultado (Dados Únicos)"):
                     with st.spinner("Buscando dados únicos..."):
