@@ -1,12 +1,12 @@
--- Criação da tabela para Exportação Ampla (Processos Complexos)
-CREATE TABLE IF NOT EXISTS banco_pf.pf_campanhas_exportacao (
-    id SERIAL PRIMARY KEY,
-    nome_campanha VARCHAR(150) NOT NULL,
-    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    objetivo TEXT,
-    funcao_codigo VARCHAR(100) NOT NULL, -- Nome da função Python que será chamada
-    status VARCHAR(20) DEFAULT 'ATIVO'
-);
+-- 1. Excluir as colunas indesejadas
+ALTER TABLE banco_pf.pf_modelos_exportacao 
+DROP COLUMN IF EXISTS tipo_processamento,
+DROP COLUMN IF EXISTS colunas_visiveis;
 
--- Comentário de ajuda para organização
-COMMENT ON COLUMN banco_pf.pf_campanhas_exportacao.funcao_codigo IS 'Nome da função interna no modulo_pf_exportacao.py';
+-- 2. Incluir a nova coluna 'codigo_de_consulta' 
+-- O tipo TEXT é o ideal para textos longos com parágrafos
+ALTER TABLE banco_pf.pf_modelos_exportacao 
+ADD COLUMN IF NOT EXISTS codigo_de_consulta TEXT;
+
+-- 3. Comentário opcional para organização no banco de dados
+COMMENT ON COLUMN banco_pf.pf_modelos_exportacao.codigo_de_consulta IS 'Armazena os códigos de consulta formatados com parágrafos';
