@@ -33,6 +33,7 @@ CAMPOS_CONFIG = {
         {"label": "CEP", "coluna": "ende.cep", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"}
     ],
     "Contatos": [
+        {"label": "DDD (Telefone)", "coluna": "virtual_ddd", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
         {"label": "Telefone (Número)", "coluna": "tel.numero", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
         {"label": "Tag WhatsApp", "coluna": "tel.tag_whats", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
         {"label": "Tag Qualificação", "coluna": "tel.tag_qualificacao", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
@@ -114,22 +115,30 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 val_raw = regra['valor']; tipo = regra['tipo']
                 if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
                 if tabela in joins_map and joins_map[tabela] not in active_joins: active_joins.append(joins_map[tabela])
+                
                 col_sql = f"{coluna}"
+                # Lógica para campos virtuais (Idade e DDD)
                 if coluna == 'virtual_idade': col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
+                if coluna == 'virtual_ddd': col_sql = "SUBSTRING(tel.numero, 1, 2)"
+                
                 if op == "∅" or op == "Vazio": 
-                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')"); continue
+                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')")
+                    continue
                 if val_raw is None or str(val_raw).strip() == "": continue
+                
                 valores = [v.strip() for v in str(val_raw).split(',') if v.strip()]
                 conds_or = []
                 for val in valores:
                     if 'cpf' in coluna or 'cnpj' in coluna: val = pf_core.limpar_normalizar_cpf(val)
                     if tipo == 'numero': val = re.sub(r'\D', '', val)
+
                     if tipo == 'data':
                         if op == "=": conds_or.append(f"{col_sql} = %s"); params.append(val)
                         elif op == "≥" or op == "A Partir": conds_or.append(f"{col_sql} >= %s"); params.append(val)
                         elif op == "≤" or op == "Até": conds_or.append(f"{col_sql} <= %s"); params.append(val)
                         elif op == "≠": conds_or.append(f"{col_sql} <> %s"); params.append(val)
                         continue 
+
                     if op == "=>" or op == "Começa com": conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"{val}%")
                     elif op == "<=>" or op == "Contém": conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"%{val}%")
                     elif op == "=" or op == "Igual": 
@@ -140,19 +149,24 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                     elif op in [">", "<", "≥", "≤"]:
                         sym = {">":">", "<":"<", "≥":">=", "≤":"<="}[op]
                         conds_or.append(f"{col_sql} {sym} %s"); params.append(val)
+                
                 if op == "o":
                     placeholders = ','.join(['%s'] * len(valores))
-                    conditions.append(f"{col_sql} IN ({placeholders})"); params.extend(valores)
+                    conditions.append(f"{col_sql} IN ({placeholders})")
+                    params.extend(valores)
                 elif conds_or: conditions.append(f"({' OR '.join(conds_or)})")
 
             full_joins = " ".join(active_joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {full_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total = cur.fetchone()[0]
+            
             offset = (pagina - 1) * itens_por_pagina
             limit_clause = f"LIMIT {itens_por_pagina} OFFSET {offset}" if itens_por_pagina < 9999999 else ""
+            
             query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome {limit_clause}"
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
@@ -169,6 +183,7 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         cur = conn.cursor()
         cpfs_tuple = tuple(str(c) for c in cpfs_alvo)
         if not cpfs_tuple: return False, "Nenhum CPF na lista."
+
         if tipo == "Cadastro Completo":
             query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
@@ -187,17 +202,12 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
                 query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"
                 cur.execute(query, (cpfs_tuple, convenio))
             elif sub_opcao == "Excluir Apenas Contratos":
-                query = """
-                    DELETE FROM banco_pf.pf_contratos 
-                    WHERE matricula IN (
-                        SELECT matricula FROM banco_pf.pf_emprego_renda 
-                        WHERE cpf IN %s AND convenio = %s
-                    )
-                """
+                query = "DELETE FROM banco_pf.pf_contratos WHERE matricula IN (SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s)"
                 cur.execute(query, (cpfs_tuple, convenio))
 
         registros = cur.rowcount
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
         return True, f"Operação realizada com sucesso! {registros} registros afetados."
     except Exception as e:
         if conn: conn.close()
@@ -350,8 +360,8 @@ def interface_pesquisa_ampla():
                 elif regra['tipo'] == 'data': novo_valor = c_val.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
                 else: novo_valor = c_val.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
                 st.session_state['regras_pesquisa'][i]['operador'] = novo_op_full; st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
-                if c_del.button("🗑️", key=f"del_{i}"): regras_rem.append(i)
-        if regras_rem:
+                if c_del.button("🗑️", key=f"del_{i}"):  regras_rem.append(i)
+        if  regras_rem:
             for idx in sorted(regras_rem, reverse=True): st.session_state['regras_pesquisa'].pop(idx)
             st.rerun()
         st.divider()
@@ -368,7 +378,7 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
 
-            # --- NOVO: ÁREA DE EXPORTAÇÃO MASSIVA POR LOTES ---
+            # --- ÁREA DE EXPORTAÇÃO MASSIVA POR LOTES ---
             with st.expander("📂 Exportar Dados", expanded=False):
                 df_modelos = pf_export.listar_modelos_ativos()
                 if not df_modelos.empty:
@@ -406,9 +416,9 @@ def interface_pesquisa_ampla():
                                     )
 
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
-                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados."); modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]; tipo_exc = st.selectbox("O que excluir?", modulos_exclusao); convenio_sel = None; sub_opcao_sel = None
+                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual."); tipo_exc = st.selectbox("O que excluir?", ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]); convenio_sel = None; sub_opcao_sel = None
                 if tipo_exc == "Emprego e Renda":
-                    c_emp1, c_emp2 = st.columns(2); convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios); sub_opcao_sel = c_emp2.radio("Nível", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
+                    c_emp1, c_emp2 = st.columns(2); convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios); sub_opcao_sel = c_emp2.radio("Nível de Exclusão", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
                 if tipo_exc != "Selecione...":
                     if st.button("Preparar Exclusão", key="btn_prep_exc"): st.session_state['confirm_delete_lote'] = True; st.rerun()
                     if st.session_state.get('confirm_delete_lote'):
