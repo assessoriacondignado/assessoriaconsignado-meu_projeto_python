@@ -142,8 +142,12 @@ def carregar_dados_completos(cpf):
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
             # EMPREGO E RENDA
-            # ATUALIZADO: Busca usando coluna 'cpf' (não cpf_ref) e sem dados_extras
-            query_emp = "SELECT convenio, matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN %s"
+            # ATUALIZADO: Busca robusta usando TRIM e CAST para evitar erros de formatação/tipo
+            query_emp = """
+                SELECT convenio, matricula 
+                FROM banco_pf.pf_emprego_renda 
+                WHERE TRIM(CAST(cpf AS TEXT)) IN %s
+            """
             df_emp = pd.read_sql(query_emp, conn, params=(params_busca,))
             
             if not df_emp.empty:
@@ -560,9 +564,6 @@ def interface_cadastro_pf():
                     st.rerun()
                 else:
                     st.error(msg)
-    
-    # Rodapé de atualização na tela principal
-    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 20px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
 
 # --- FUNÇÃO DE SALVAMENTO (DINÂMICA) ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
