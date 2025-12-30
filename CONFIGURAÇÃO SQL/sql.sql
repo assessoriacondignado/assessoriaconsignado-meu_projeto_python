@@ -1,10 +1,9 @@
-CREATE TABLE IF NOT EXISTS banco_pf.pf_tipos_exportacao (
+-- Criação da tabela para salvar os Modelos de Filtro Fixo
+CREATE TABLE IF NOT EXISTS banco_pf.pf_modelos_filtro_fixo (
     id SERIAL PRIMARY KEY,
-    nome_exportacao VARCHAR(150) NOT NULL,
-    colunas_exportacao TEXT, -- Guardará o JSON com a lista e ordem das colunas
-    modulo_vinculado VARCHAR(50), -- 'CAMPANHA' ou 'PESQUISA_AMPLA'
-    descricao TEXT,
-    status VARCHAR(20) DEFAULT 'ATIVO',
-    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    nome_modelo VARCHAR(150) NOT NULL,
+    tabela_alvo VARCHAR(100) NOT NULL, -- Ex: pf_dados
+    coluna_alvo VARCHAR(100) NOT NULL, -- Ex: id_campanha
+    resumo TEXT,
+    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

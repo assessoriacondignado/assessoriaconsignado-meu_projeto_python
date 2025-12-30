@@ -6,7 +6,7 @@ import time
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADO) ---
+# --- CONFIGURAÇÕES DE CAMPOS (MANTIDO INTACTO) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -61,7 +61,7 @@ CAMPOS_CONFIG = {
     ]
 }
 
-# --- FUNÇÕES SQL ---
+# --- FUNÇÕES SQL EXISTENTES ---
 
 def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50):
     conn = pf_core.get_conn()
@@ -224,7 +224,148 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         if conn: conn.close()
         return False, f"Erro na execução: {e}"
 
-# --- INTERFACES VISUAIS ---
+# =============================================================================
+# NOVAS FUNÇÕES PARA "TIPOS DE FILTRO" (MODELO FIXO)
+# =============================================================================
+
+def listar_tabelas_pf(conn):
+    """Lista todas as tabelas do schema banco_pf que começam com 'pf_'"""
+    try:
+        query = """
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'banco_pf' AND table_name LIKE 'pf_%'
+            ORDER BY table_name
+        """
+        cur = conn.cursor()
+        cur.execute(query)
+        res = [r[0] for r in cur.fetchall()]
+        return res
+    except: return []
+
+def listar_colunas_tabela(conn, tabela):
+    """Lista colunas de uma tabela específica"""
+    try:
+        query = """
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'banco_pf' AND table_name = %s
+            ORDER BY ordinal_position
+        """
+        cur = conn.cursor()
+        cur.execute(query, (tabela,))
+        res = [r[0] for r in cur.fetchall()]
+        return res
+    except: return []
+
+def salvar_modelo_fixo(nome, tabela, coluna, resumo):
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO banco_pf.pf_modelos_filtro_fixo (nome_modelo, tabela_alvo, coluna_alvo, resumo)
+                VALUES (%s, %s, %s, %s)
+            """, (nome, tabela, coluna, resumo))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao salvar: {e}")
+            conn.close()
+    return False
+
+def listar_modelos_fixos():
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            df = pd.read_sql("SELECT * FROM banco_pf.pf_modelos_filtro_fixo ORDER BY id DESC", conn)
+            conn.close()
+            return df
+        except: conn.close()
+    return pd.DataFrame()
+
+def executar_filtro_fixo(tabela, coluna):
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            # Query Dinâmica Segura (Identificadores não podem ser parâmetros bind comuns em alguns drivers,
+            # mas aqui usamos validação prévia de nomes de tabela/coluna se necessário, ou formatação direta controlada)
+            # Para segurança extra em produção, validar se tabela/coluna existem no schema antes de rodar.
+            query = f"SELECT DISTINCT {coluna} as Resultado FROM banco_pf.{tabela} ORDER BY {coluna}"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df
+        except Exception as e:
+            st.error(f"Erro ao executar filtro: {e}")
+            conn.close()
+    return pd.DataFrame()
+
+# --- DIALOG DO NOVO RECURSO ---
+@st.dialog("📂 Tipos de Filtro (Modelos Fixos)", width="large")
+def dialog_tipos_filtro():
+    t1, t2 = st.tabs(["CRIAR MODELO", "CONSULTAR FILTRO"])
+    
+    # ABA 1: CRIAR
+    with t1:
+        st.markdown("#### 🆕 Novo Modelo de Filtro")
+        conn = pf_core.get_conn()
+        if conn:
+            tabelas = listar_tabelas_pf(conn)
+            sel_tabela = st.selectbox("1. Selecione a Lista (Tabela SQL)", options=tabelas)
+            
+            cols = []
+            if sel_tabela:
+                cols = listar_colunas_tabela(conn, sel_tabela)
+            
+            sel_coluna = st.selectbox("2. Selecione o Item (Cabeçalho)", options=cols)
+            conn.close()
+            
+            st.divider()
+            nome_modelo = st.text_input("3. Nome do Modelo de Filtro")
+            resumo_modelo = st.text_area("4. Resumo / Descrição")
+            
+            if st.button("💾 Salvar Modelo"):
+                if nome_modelo and sel_tabela and sel_coluna:
+                    if salvar_modelo_fixo(nome_modelo, sel_tabela, sel_coluna, resumo_modelo):
+                        st.success("Modelo salvo com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.warning("Preencha todos os campos.")
+        else:
+            st.error("Erro de conexão.")
+
+    # ABA 2: CONSULTAR
+    with t2:
+        st.markdown("#### 🔎 Consultar Dados por Modelo")
+        df_modelos = listar_modelos_fixos()
+        
+        if not df_modelos.empty:
+            opcoes = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
+            sel_modelo = st.selectbox("Selecione o Modelo", options=opcoes)
+            
+            if sel_modelo:
+                id_sel = int(sel_modelo.split(' - ')[0])
+                modelo = df_modelos[df_modelos['id'] == id_sel].iloc[0]
+                
+                st.info(f"**Resumo:** {modelo['resumo']}")
+                st.caption(f"Fonte: Tabela `{modelo['tabela_alvo']}` | Coluna `{modelo['coluna_alvo']}`")
+                
+                if st.button("👁️ Ver Resultado (Dados Únicos)"):
+                    with st.spinner("Buscando dados únicos..."):
+                        df_res = executar_filtro_fixo(modelo['tabela_alvo'], modelo['coluna_alvo'])
+                    
+                    if not df_res.empty:
+                        st.dataframe(df_res, use_container_width=True, hide_index=True)
+                        st.write(f"Total de itens únicos: {len(df_res)}")
+                    else:
+                        st.warning("Nenhum dado encontrado.")
+        else:
+            st.info("Nenhum modelo cadastrado ainda.")
+
+
+# --- INTERFACES VISUAIS (ATUALIZADAS) ---
 
 def interface_pesquisa_rapida():
     c1, c2 = st.columns([2, 2])
@@ -284,7 +425,15 @@ def interface_pesquisa_rapida():
 def interface_pesquisa_ampla():
     c_nav_esq, c_nav_dir = st.columns([1, 6])
     if c_nav_esq.button("⬅️ Voltar"): st.session_state.update({'pf_view': 'lista'}); st.rerun()
-    if c_nav_dir.button("🗑️ Limpar Filtros"): st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pagina_atual'] = 1; st.rerun()
+    
+    # ATUALIZAÇÃO NO LAYOUT DO TOPO
+    with c_nav_dir:
+        c_btn_filtros, c_btn_limpar = st.columns([2, 2])
+        if c_btn_filtros.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"):
+            dialog_tipos_filtro()
+        if c_btn_limpar.button("🗑️ Limpar Filtros"): 
+            st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pagina_atual'] = 1; st.rerun()
+    
     st.divider()
 
     conn = pf_core.get_conn()
@@ -301,18 +450,16 @@ def interface_pesquisa_ampla():
         except: pass
         conn.close()
 
-    # --- ALTERAÇÃO DE LAYOUT: Colunas para Botões ---
-    # c_menu (Campos) = 4, c_regras (Regras) = 1.5 (proporção 4:1.5 para dar mais espaço aos botões)
+    # --- LAYOUT: Colunas para Botões ---
     c_menu, c_regras = st.columns([4, 2]) 
     
     with c_menu:
         st.markdown("### 🗂️ Campos Disponíveis")
         for grupo, campos in CAMPOS_CONFIG.items():
             with st.expander(grupo, expanded=False):
-                # Cria 4 colunas dentro do expander para os botões ficarem lado a lado
                 colunas_botoes = st.columns(4)
                 for idx, campo in enumerate(campos):
-                    with colunas_botoes[idx % 4]: # Distribui em carrossel nas 4 colunas
+                    with colunas_botoes[idx % 4]: 
                         if st.button(f"➕ {campo['label']}", key=f"add_{campo['coluna']}", use_container_width=True):
                             st.session_state['regras_pesquisa'].append({
                                 'label': campo['label'], 'coluna': campo['coluna'], 'tabela': campo['tabela'],
@@ -328,7 +475,6 @@ def interface_pesquisa_ampla():
         regras_rem = []
         for i, regra in enumerate(st.session_state['regras_pesquisa']):
             with st.container(border=True):
-                # Layout mais compacto para a regra
                 st.caption(f"**{regra['label']}**")
                 
                 c_op, c_val, c_del = st.columns([2, 3, 1])
