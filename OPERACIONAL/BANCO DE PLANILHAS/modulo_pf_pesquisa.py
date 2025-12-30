@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import date
 import re
 import time
-import json  # Adicionado para suportar lista de colunas no filtro fixo
+import json  # Suporta lista de colunas no filtro fixo
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
@@ -76,16 +76,13 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             params = [param_nome]
             if termo_limpo: 
                 sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf" 
-                conds.append("d.cpf ILIKE %s")
-                conds.append("t.numero ILIKE %s")
-                params.append(f"%{termo_limpo}%")
-                params.append(f"%{termo_limpo}%")
+                conds.append("d.cpf ILIKE %s"); conds.append("t.numero ILIKE %s")
+                params.append(f"%{termo_limpo}%"); params.append(f"%{termo_limpo}%")
             
             where = " WHERE " + " OR ".join(conds)
             cur = conn.cursor()
             cur.execute(f"SELECT COUNT(DISTINCT d.id) FROM banco_pf.pf_dados d {sql_base.split('banco_pf.pf_dados d')[1]} {where}", tuple(params))
             total = cur.fetchone()[0]
-            
             offset = (pagina-1)*itens_por_pagina
             df = pd.read_sql(f"{sql_base} {where} GROUP BY d.id ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}", conn, params=tuple(params))
             conn.close()
@@ -117,13 +114,11 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 if tabela in joins_map and joins_map[tabela] not in active_joins: active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
-                # Lógica para campos virtuais (Idade e DDD)
                 if coluna == 'virtual_idade': col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
                 if coluna == 'virtual_ddd': col_sql = "SUBSTRING(tel.numero, 1, 2)"
-                
+
                 if op == "∅" or op == "Vazio": 
-                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')")
-                    continue
+                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')"); continue
                 if val_raw is None or str(val_raw).strip() == "": continue
                 
                 valores = [v.strip() for v in str(val_raw).split(',') if v.strip()]
@@ -131,14 +126,12 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 for val in valores:
                     if 'cpf' in coluna or 'cnpj' in coluna: val = pf_core.limpar_normalizar_cpf(val)
                     if tipo == 'numero': val = re.sub(r'\D', '', val)
-
                     if tipo == 'data':
                         if op == "=": conds_or.append(f"{col_sql} = %s"); params.append(val)
                         elif op == "≥" or op == "A Partir": conds_or.append(f"{col_sql} >= %s"); params.append(val)
                         elif op == "≤" or op == "Até": conds_or.append(f"{col_sql} <= %s"); params.append(val)
                         elif op == "≠": conds_or.append(f"{col_sql} <> %s"); params.append(val)
                         continue 
-
                     if op == "=>" or op == "Começa com": conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"{val}%")
                     elif op == "<=>" or op == "Contém": conds_or.append(f"{col_sql} ILIKE %s"); params.append(f"%{val}%")
                     elif op == "=" or op == "Igual": 
@@ -152,21 +145,17 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 
                 if op == "o":
                     placeholders = ','.join(['%s'] * len(valores))
-                    conditions.append(f"{col_sql} IN ({placeholders})")
-                    params.extend(valores)
+                    conditions.append(f"{col_sql} IN ({placeholders})"); params.extend(valores)
                 elif conds_or: conditions.append(f"({' OR '.join(conds_or)})")
 
             full_joins = " ".join(active_joins)
             sql_where = " WHERE " + " AND ".join(conditions) if conditions else ""
-            
             count_sql = f"SELECT COUNT(DISTINCT d.id) {sql_from} {full_joins} {sql_where}"
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total = cur.fetchone()[0]
-            
             offset = (pagina - 1) * itens_por_pagina
             limit_clause = f"LIMIT {itens_por_pagina} OFFSET {offset}" if itens_por_pagina < 9999999 else ""
-            
             query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome {limit_clause}"
             df = pd.read_sql(query, conn, params=tuple(params))
             conn.close()
@@ -183,7 +172,6 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         cur = conn.cursor()
         cpfs_tuple = tuple(str(c) for c in cpfs_alvo)
         if not cpfs_tuple: return False, "Nenhum CPF na lista."
-
         if tipo == "Cadastro Completo":
             query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
@@ -202,12 +190,17 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
                 query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"
                 cur.execute(query, (cpfs_tuple, convenio))
             elif sub_opcao == "Excluir Apenas Contratos":
-                query = "DELETE FROM banco_pf.pf_contratos WHERE matricula IN (SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s)"
+                query = """
+                    DELETE FROM banco_pf.pf_contratos 
+                    WHERE matricula IN (
+                        SELECT matricula FROM banco_pf.pf_emprego_renda 
+                        WHERE cpf IN %s AND convenio = %s
+                    )
+                """
                 cur.execute(query, (cpfs_tuple, convenio))
 
         registros = cur.rowcount
-        conn.commit()
-        conn.close()
+        conn.commit(); conn.close()
         return True, f"Operação realizada com sucesso! {registros} registros afetados."
     except Exception as e:
         if conn: conn.close()
@@ -295,15 +288,38 @@ def dialog_tipos_filtro():
 # --- INTERFACES VISUAIS ---
 
 def interface_pesquisa_rapida():
-    c1, c2 = st.columns([2, 2]); busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
+    c1, c2 = st.columns([2, 2])
+    busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
     col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
     if col_b1.button("➕ Novo"): st.session_state.update({'pf_view': 'novo', 'form_loaded': False}); st.rerun()
     if col_b2.button("🔍 Pesquisa Ampla"): st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
     if col_b3.button("📥 Importar"): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
+    
     if busca:
         df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
         if not df_lista.empty:
             st.markdown(f"**Resultados encontrados: {total}**")
+            
+            # BLOCO DE EXPORTAÇÃO PARA PESQUISA RÁPIDA
+            with st.expander("📂 Exportar Resultados da Busca", expanded=False):
+                df_modelos = pf_export.listar_modelos_ativos()
+                if not df_modelos.empty:
+                    c_sel, c_btn = st.columns([3, 1])
+                    opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
+                    idx_mod = c_sel.selectbox("Layout de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_fast")
+                    if c_btn.button("⬇️ Gerar Arquivos", key="btn_fast_exp"):
+                        with st.spinner("Preparando arquivos..."):
+                            df_total, _ = buscar_pf_simples(busca, pagina=1, itens_por_pagina=9999999)
+                            lista_cpfs = df_total['cpf'].unique().tolist()
+                            limite = 200000
+                            partes = (len(lista_cpfs) // limite) + (1 if len(lista_cpfs) % limite > 0 else 0)
+                            for p in range(partes):
+                                cpfs_lote = lista_cpfs[p*limite : (p+1)*limite]
+                                df_final = pf_export.gerar_dataframe_por_modelo(df_modelos.iloc[idx_mod]['id'], cpfs_lote)
+                                if not df_final.empty:
+                                    csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                                    st.download_button(label=f"💾 Baixar Parte {p+1}", data=csv, file_name=f"busca_p{p+1}.csv", key=f"dl_fast_{p}")
+
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_lista.iterrows():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
@@ -315,7 +331,9 @@ def interface_pesquisa_rapida():
                         if st.button("✏️", key=f"e_fast_{row['id']}"): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False}); st.rerun()
                     with b3:
                         if st.button("🗑️", key=f"d_fast_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
-                c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome']); st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+                c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome'])
+                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+            
             cp1, cp2, cp3 = st.columns([1, 3, 1])
             if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pagina_atual', 1) > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
             if cp3.button("Próx. ➡️", key="next_fast"): st.session_state['pagina_atual'] = st.session_state.get('pagina_atual', 1) + 1; st.rerun()
@@ -360,8 +378,8 @@ def interface_pesquisa_ampla():
                 elif regra['tipo'] == 'data': novo_valor = c_val.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
                 else: novo_valor = c_val.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
                 st.session_state['regras_pesquisa'][i]['operador'] = novo_op_full; st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
-                if c_del.button("🗑️", key=f"del_{i}"):  regras_rem.append(i)
-        if  regras_rem:
+                if c_del.button("🗑️", key=f"del_{i}"): regras_rem.append(i)
+        if regras_rem:
             for idx in sorted(regras_rem, reverse=True): st.session_state['regras_pesquisa'].pop(idx)
             st.rerun()
         st.divider()
@@ -384,50 +402,37 @@ def interface_pesquisa_ampla():
                 if not df_modelos.empty:
                     c_sel, c_btn = st.columns([3, 1])
                     opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
-                    idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x])
+                    idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_ampla")
                     modelo_selecionado = df_modelos.iloc[idx_mod]
                     st.caption(f"📝 {modelo_selecionado['descricao']}")
-                    
-                    if c_btn.button("⬇️ Gerar Arquivos"):
+                    if c_btn.button("⬇️ Gerar Arquivos", key="btn_ampla_exp"):
                         with st.spinner("Processando exportação por lotes..."):
-                            # Recupera todos os CPFs filtrados (sem limite de paginação)
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 9999999)
                             lista_cpfs_total = df_total['cpf'].unique().tolist()
-                            total_reg = len(lista_cpfs_total)
-                            
-                            # Regra de particionamento: 200 mil linhas
-                            limite_lote = 200000
-                            num_partes = (total_reg // limite_lote) + (1 if total_reg % limite_lote > 0 else 0)
-                            
-                            st.info(f"Total: {total_reg} registros. Gerando {num_partes} lote(s) de 200 mil.")
-                            
-                            for p in range(num_partes):
-                                cpfs_lote = lista_cpfs_total[p*limite_lote : (p+1)*limite_lote]
+                            limite = 200000
+                            partes = (len(lista_cpfs_total) // limite) + (1 if len(lista_cpfs_total) % limite > 0 else 0)
+                            st.info(f"Gerando {partes} lote(s) de 200 mil.")
+                            for p in range(partes):
+                                cpfs_lote = lista_cpfs_total[p*limite : (p+1)*limite]
                                 df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], cpfs_lote)
-                                
                                 if not df_final.empty:
                                     csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
-                                    st.download_button(
-                                        label=f"💾 Baixar Parte {p+1} ({len(df_final)} linhas)", 
-                                        data=csv, 
-                                        file_name=f"export_{modelo_selecionado['tipo_processamento'].lower()}_p{p+1}.csv", 
-                                        mime="text/csv",
-                                        key=f"dl_btn_{p}"
-                                    )
+                                    st.download_button(label=f"💾 Baixar Parte {p+1}", data=csv, file_name=f"export_p{p+1}.csv", key=f"dl_ampla_{p}")
 
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
-                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual."); tipo_exc = st.selectbox("O que excluir?", ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]); convenio_sel = None; sub_opcao_sel = None
+                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados."); tipo_exc = st.selectbox("O que excluir?", ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"])
+                convenio_sel = None; sub_opcao_sel = None
                 if tipo_exc == "Emprego e Renda":
-                    c_emp1, c_emp2 = st.columns(2); convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios); sub_opcao_sel = c_emp2.radio("Nível de Exclusão", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
+                    c_emp1, c_emp2 = st.columns(2); convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios); sub_opcao_sel = c_emp2.radio("Nível", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
                 if tipo_exc != "Selecione...":
                     if st.button("Preparar Exclusão", key="btn_prep_exc"): st.session_state['confirm_delete_lote'] = True; st.rerun()
                     if st.session_state.get('confirm_delete_lote'):
                         st.warning(f"Excluir definitivamente {tipo_exc} de {total} clientes?"); c_sim, c_nao = st.columns(2)
-                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary"):
-                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999); lista_cpfs = df_total['cpf'].tolist(); ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
+                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary", key="btn_conf_exc"):
+                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 9999999); lista_cpfs = df_total['cpf'].tolist(); ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
                             if ok: st.success(msg); st.session_state['confirm_delete_lote'] = False; time.sleep(2); st.rerun()
                             else: st.error(f"Erro: {msg}")
-                        if c_nao.button("Cancelar"): st.session_state['confirm_delete_lote'] = False; st.rerun()
+                        if c_nao.button("Cancelar", key="btn_canc_exc"): st.session_state['confirm_delete_lote'] = False; st.rerun()
             st.divider()
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
