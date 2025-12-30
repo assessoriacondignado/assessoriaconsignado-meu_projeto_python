@@ -1,90 +1,143 @@
 import streamlit as st
 import pandas as pd
-import json
-import time
-from datetime import datetime
 import modulo_pf_cadastro as pf_core
-import modulo_pf_exportacao as pf_export
 
-def app_config_exportacao():
-    st.markdown("## ⚙️ Configuração de Modelos de Exportação")
-    st.caption("Gerencie as chaves que conectam os modelos de tela às regras de código (motor fixo).")
+# =============================================================================
+# 1. FUNÇÕES DE BANCO (CRUD MODELOS) - ATUALIZADO PARA NOVA COLUNA
+# =============================================================================
 
-    # Bloco para Criar Novo (Expander)
-    with st.expander("➕ Criar Novo Modelo de Exportação", expanded=False):
-        with st.form("form_novo_modelo"):
-            nome = st.text_input("Nome Comercial do Modelo", placeholder="Ex: Dados Cadastrais Simples")
-            chave_motor = st.text_input("Chave do Motor (Código de Consulta)", 
-                                        help="Esta chave deve ser a mesma definida no roteamento do modulo_pf_exportacao.py")
-            desc = st.text_area("Descrição / Observações")
-            
-            if st.form_submit_button("💾 Salvar Modelo"):
-                if nome and chave_motor:
-                    # A 'chave_motor' é salva na coluna 'codigo_de_consulta' do banco de dados
-                    if pf_export.salvar_modelo(nome, chave_motor, desc):
-                        st.success(f"Modelo '{nome}' vinculado à chave '{chave_motor}' com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
-                else:
-                    st.warning("Nome e Chave do Motor são obrigatórios.")
+def listar_modelos_ativos():
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            # Seleciona a nova coluna 'codigo_de_consulta' em vez da antiga
+            df = pd.read_sql("SELECT id, nome_modelo, descricao, data_criacao, status, codigo_de_consulta FROM banco_pf.pf_modelos_exportacao WHERE status='ATIVO' ORDER BY id", conn)
+            conn.close()
+            return df
+        except Exception as e:
+            st.error(f"Erro ao listar modelos: {e}")
+            conn.close()
+    return pd.DataFrame()
 
-    st.divider()
-    st.subheader("📋 Modelos Cadastrados")
+def salvar_modelo(nome, chave, desc):
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # CORREÇÃO: SQL agora aponta para 'codigo_de_consulta'
+            sql = """
+                INSERT INTO banco_pf.pf_modelos_exportacao 
+                (nome_modelo, codigo_de_consulta, descricao, status, data_criacao) 
+                VALUES (%s, %s, %s, 'ATIVO', CURRENT_DATE)
+            """
+            cur.execute(sql, (nome, chave, desc))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro técnico ao salvar no banco: {e}")
+            conn.close()
+            return False
+    return False
 
-    # Listagem de modelos existentes resgatados do banco de dados
-    df_modelos = pf_export.listar_modelos_ativos()
-    if not df_modelos.empty:
-        for _, row in df_modelos.iterrows():
-            # Exibe cada modelo em um bloco retrátil (Expander)
-            with st.expander(f"📦 {row['nome_modelo']} (Chave: {row['codigo_de_consulta']})"):
-                st.write(f"**Descrição:** {row['descricao']}")
-                st.caption(f"Criado em: {row['data_criacao']} | Status: {row['status']}")
-                
-                # Botões de ação: Edição e Exclusão
-                c1, c2 = st.columns([1, 1])
-                
-                with c1:
-                    if st.button(f"✏️ Editar", key=f"edit_{row['id']}", use_container_width=True):
-                        dialog_editar_modelo(row)
-                
-                with c2:
-                    if st.button(f"🗑️ Excluir", key=f"del_{row['id']}", use_container_width=True):
-                        dialog_excluir_modelo(row['id'], row['nome_modelo'])
-    else:
-        st.info("Nenhum modelo configurado no momento.")
+def atualizar_modelo(id_mod, nome, chave, desc):
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # CORREÇÃO: UPDATE agora aponta para 'codigo_de_consulta'
+            sql = """
+                UPDATE banco_pf.pf_modelos_exportacao 
+                SET nome_modelo=%s, codigo_de_consulta=%s, descricao=%s 
+                WHERE id=%s
+            """
+            cur.execute(sql, (nome, chave, desc, id_mod))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao atualizar: {e}")
+            conn.close()
+            return False
+    return False
 
-# --- DIÁLOGOS (POP-UPS) ---
+def excluir_modelo(id_mod):
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM banco_pf.pf_modelos_exportacao WHERE id=%s", (id_mod,))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            conn.close()
+            return False
+    return False
 
-@st.dialog("✏️ Editar Modelo")
-def dialog_editar_modelo(modelo):
-    """Pop-up para editar dados do modelo e sua chave de consulta técnica"""
-    with st.form("form_edit_modelo"):
-        novo_nome = st.text_input("Nome do Modelo", value=modelo['nome_modelo'])
-        nova_chave = st.text_input("Chave do Motor (Código de Consulta)", value=modelo['codigo_de_consulta'])
-        nova_desc = st.text_area("Descrição", value=modelo['descricao'])
+# =============================================================================
+# 2. MOTOR DE EXPORTAÇÃO FIXO (10 TELS / 3 EMAILS / 3 ENDS)
+# ==========================================================
+
+def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
+    conn = pf_core.get_conn()
+    if not conn or not lista_cpfs: 
+        return pd.DataFrame()
+    
+    try:
+        placeholders = ",".join(["%s"] * len(lista_cpfs))
+        params = tuple(lista_cpfs)
+
+        # 1. BUSCA DADOS PESSOAIS (pf_dados)
+        df_dados = pd.read_sql(f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})", conn, params=params)
+        df_dados['cpf'] = df_dados['cpf'].apply(pf_core.formatar_cpf_visual)
+
+        # 2. BUSCA TELEFONES (pf_telefones)
+        df_tel = pd.read_sql(f"SELECT cpf, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf IN ({placeholders})", conn, params=params)
+        df_tel['numero'] = df_tel['numero'].apply(lambda x: pf_core.limpar_apenas_numeros(x))
         
-        c1, c2 = st.columns(2)
-        if c1.form_submit_button("💾 Salvar Alterações"):
-            if pf_export.atualizar_modelo(modelo['id'], novo_nome, nova_chave, nova_desc):
-                st.success("Alterações salvas!")
-                time.sleep(1)
-                st.rerun()
-        if c2.form_submit_button("Cancelar"):
-            st.rerun()
+        # 3. BUSCA E-MAILS (pf_emails)
+        df_mail = pd.read_sql(f"SELECT cpf, email FROM banco_pf.pf_emails WHERE cpf IN ({placeholders})", conn, params=params)
 
-@st.dialog("⚠️ Confirmar Exclusão")
-def dialog_excluir_modelo(id_modelo, nome_modelo):
-    """Pop-up de segurança para confirmar a remoção definitiva do modelo"""
-    st.warning(f"Excluir definitivamente o modelo: **{nome_modelo}**?")
-    st.error("Isso removerá a conexão entre a interface e o motor de exportação no código.")
-    
-    confirmar = st.checkbox("Eu entendo que esta ação não pode ser desfeita.")
-    
-    if st.button("🚨 CONFIRMAR EXCLUSÃO", use_container_width=True, disabled=not confirmar):
-        if pf_export.excluir_modelo(id_modelo):
-            st.success("Modelo removido!")
-            time.sleep(1)
-            st.rerun()
-    
-    if st.button("Cancelar", use_container_width=True):
-        st.rerun()
+        # 4. BUSCA ENDEREÇOS (pf_enderecos)
+        df_end = pd.read_sql(f"SELECT cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN ({placeholders})", conn, params=params)
+
+        # LÓGICA DE PIVOTAGEM COM COLUNAS FIXAS
+        def pivotar_fixo(df, qtd_max, col_id='cpf'):
+            if df.empty:
+                return pd.DataFrame(columns=[col_id])
+            
+            df['seq'] = df.groupby(col_id).cumcount() + 1
+            df = df[df['seq'] <= qtd_max] 
+            
+            df_pivot = df.pivot(index=col_id, columns='seq')
+            df_pivot.columns = [f"{c[0]}_{c[1]}" for c in df_pivot.columns]
+            df_pivot = df_pivot.reset_index()
+
+            colunas_originais = [c for c in df.columns if c not in [col_id, 'seq']]
+            for i in range(1, qtd_max + 1):
+                for col in colunas_originais:
+                    nome_col = f"{col}_{i}"
+                    if nome_col not in df_pivot.columns:
+                        df_pivot[nome_col] = ""
+            return df_pivot
+
+        df_tel_p = pivotar_fixo(df_tel, 10)
+        df_mail_p = pivotar_fixo(df_mail, 3)
+        df_end_p = pivotar_fixo(df_end, 3)
+
+        # 5. MERGE FINAL E FORMATAÇÃO (TUDO MAIÚSCULO)
+        df_final = df_dados.merge(df_tel_p, on='cpf', how='left')\
+                           .merge(df_mail_p, on='cpf', how='left')\
+                           .merge(df_end_p, on='cpf', how='left')
+
+        df_final = df_final.astype(str).apply(lambda x: x.str.upper())
+        df_final = df_final.replace(['NONE', 'NAN', 'NAT', '#N/D', 'NULL'], '')
+
+        conn.close()
+        return df_final
+
+    except Exception as e:
+        st.error(f"Erro na exportação fixa: {e}")
+        if conn: conn.close()
+        return pd.DataFrame()
