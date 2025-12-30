@@ -6,7 +6,7 @@ import time
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADO COM TABELA pf_telefones COMPLETA) ---
+# --- CONFIGURAÇÕES DE CAMPOS (MANTIDA IGUAL AO ÚLTIMO UPDATE) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -41,19 +41,28 @@ CAMPOS_CONFIG = {
     "Profissional (Geral)": [
         {"label": "Matrícula", "coluna": "emp.matricula", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
         {"label": "Convênio", "coluna": "emp.convenio", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
+        {"label": "Data Atualização (Emp)", "coluna": "emp.data_atualizacao", "tipo": "data", "tabela": "banco_pf.pf_emprego_renda"},
+        {"label": "ID Importação (Emp)", "coluna": "emp.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
         {"label": "Contrato Empréstimo", "coluna": "ctr.contrato", "tipo": "texto", "tabela": "banco_pf.pf_contratos"}
     ],
     "Contratos CLT / CAGED": [
-        {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "CBO (Cargo)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "CNAE (Atividade)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_contratos_clt"}
+        {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CBO (Nome)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CBO (Código)", "coluna": "clt.cbo_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CNAE (Nome)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CNAE (Código)", "coluna": "clt.cnae_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Tempo Admissão (Anos)", "coluna": "clt.tempo_admissao_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Data Início Emprego", "coluna": "clt.data_inicio_emprego", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Tempo Início (Anos)", "coluna": "clt.tempo_inicio_emprego_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Data Abertura Empresa", "coluna": "clt.data_abertura_empresa", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Tempo Abertura (Anos)", "coluna": "clt.tempo_abertura_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"}
     ],
     "Controle e Sistema": [
-        {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "ID da Importação (Geral)", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "ID da Campanha", "coluna": "d.id_campanha", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "Data Criação (Cadastro)", "coluna": "d.data_criacao", "tipo": "data", "tabela": "banco_pf.pf_dados"}
     ]
@@ -72,7 +81,9 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             conds = ["d.nome ILIKE %s"]
             params = [param_nome]
             if termo_limpo: 
-                sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf_ref"
+                # Ajuste: Assumindo que você também vai renomear cpf_ref para cpf nas tabelas de telefone
+                # Se ainda for cpf_ref, mude t.cpf para t.cpf_ref abaixo
+                sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf_ref" 
                 conds.append("d.cpf ILIKE %s"); conds.append("t.numero ILIKE %s")
                 params.append(f"%{termo_limpo}%"); params.append(f"%{termo_limpo}%")
             
@@ -100,9 +111,9 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
                 'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf_ref",
-                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref",
-                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
-                'banco_pf.pf_contratos_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref LEFT JOIN banco_pf.pf_contratos_clt clt ON emp.matricula = clt.matricula_ref"
+                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
+                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
+                'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
             active_joins = []; conditions = []; params = []
 
@@ -110,6 +121,9 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 tabela = regra['tabela']; coluna = regra['coluna']; op = regra['operador']
                 val_raw = regra['valor']; tipo = regra['tipo']
                 
+                # Tratamento para garantir nome correto da tabela
+                if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
+
                 if tabela in joins_map and joins_map[tabela] not in active_joins:
                     active_joins.append(joins_map[tabela])
                 
@@ -196,14 +210,14 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         elif tipo == "Emprego e Renda":
             if not convenio: return False, "Convênio não selecionado."
             if sub_opcao == "Excluir Vínculo Completo (Matrícula + Contratos)":
-                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s AND convenio = %s"
+                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"
                 cur.execute(query, (cpfs_tuple, convenio))
             elif sub_opcao == "Excluir Apenas Contratos":
                 query = """
                     DELETE FROM banco_pf.pf_contratos 
                     WHERE matricula_ref IN (
                         SELECT matricula FROM banco_pf.pf_emprego_renda 
-                        WHERE cpf_ref IN %s AND convenio = %s
+                        WHERE cpf IN %s AND convenio = %s
                     )
                 """
                 cur.execute(query, (cpfs_tuple, convenio))
@@ -294,43 +308,55 @@ def interface_pesquisa_ampla():
         except: pass
         conn.close()
 
-    c_menu, c_regras = st.columns([1.5, 3.5])
+    # --- ALTERAÇÃO DE LAYOUT: Colunas para Botões ---
+    # c_menu (Campos) = 4, c_regras (Regras) = 1.5 (proporção 4:1.5 para dar mais espaço aos botões)
+    c_menu, c_regras = st.columns([4, 2]) 
+    
     with c_menu:
         st.markdown("### 🗂️ Campos Disponíveis")
         for grupo, campos in CAMPOS_CONFIG.items():
-            with st.expander(grupo):
-                for campo in campos:
-                    if st.button(f"➕ {campo['label']}", key=f"add_{campo['coluna']}"):
-                        st.session_state['regras_pesquisa'].append({
-                            'label': campo['label'], 'coluna': campo['coluna'], 'tabela': campo['tabela'],
-                            'tipo': campo['tipo'], 'operador': None, 'valor': ''
-                        })
-                        st.rerun()
+            with st.expander(grupo, expanded=False):
+                # Cria 4 colunas dentro do expander para os botões ficarem lado a lado
+                colunas_botoes = st.columns(4)
+                for idx, campo in enumerate(campos):
+                    with colunas_botoes[idx % 4]: # Distribui em carrossel nas 4 colunas
+                        if st.button(f"➕ {campo['label']}", key=f"add_{campo['coluna']}", use_container_width=True):
+                            st.session_state['regras_pesquisa'].append({
+                                'label': campo['label'], 'coluna': campo['coluna'], 'tabela': campo['tabela'],
+                                'tipo': campo['tipo'], 'operador': None, 'valor': ''
+                            })
+                            st.rerun()
 
     with c_regras:
         st.markdown("### 🎯 Regras Ativas")
-        if not st.session_state['regras_pesquisa']: st.info("Nenhuma regra selecionada. Clique nos itens à esquerda.")
+        if not st.session_state['regras_pesquisa']: 
+            st.info("Nenhuma regra. Selecione ao lado.")
+        
         regras_rem = []
         for i, regra in enumerate(st.session_state['regras_pesquisa']):
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 2, 3, 0.5])
-                c1.markdown(f"**{regra['label']}**")
+                # Layout mais compacto para a regra
+                st.caption(f"**{regra['label']}**")
+                
+                c_op, c_val, c_del = st.columns([2, 3, 1])
+                
                 opcoes = ops_cache.get(regra['tipo'], [])
                 idx_sel = opcoes.index(regra['operador']) if regra['operador'] in opcoes else 0
-                novo_op_full = c2.selectbox("Op.", opcoes, index=idx_sel, key=f"op_{i}", label_visibility="collapsed")
+                novo_op_full = c_op.selectbox("Op.", opcoes, index=idx_sel, key=f"op_{i}", label_visibility="collapsed")
                 novo_op_simbolo = novo_op_full.split(' : ')[0] if novo_op_full else "="
                 
                 if novo_op_simbolo == '∅':
-                    c3.text_input("Valor", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed")
+                    c_val.text_input("Valor", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed")
                     novo_valor = None
                 elif regra['tipo'] == 'data':
-                    novo_valor = c3.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
+                    novo_valor = c_val.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
                 else:
-                    novo_valor = c3.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
+                    novo_valor = c_val.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
 
                 st.session_state['regras_pesquisa'][i]['operador'] = novo_op_full
                 st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
-                if c4.button("🗑️", key=f"del_{i}"): regras_rem.append(i)
+                
+                if c_del.button("🗑️", key=f"del_{i}"): regras_rem.append(i)
 
         if regras_rem:
             for idx in sorted(regras_rem, reverse=True): st.session_state['regras_pesquisa'].pop(idx)
