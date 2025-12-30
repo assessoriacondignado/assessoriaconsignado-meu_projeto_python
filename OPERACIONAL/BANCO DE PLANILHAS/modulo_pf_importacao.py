@@ -38,12 +38,12 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
 
         # --- LÓGICA ESPECÍFICA PARA TELEFONES ---
         if table_name == 'pf_telefones':
-            col_cpf = next((k for k, v in mapping.items() if v == 'cpf_ref (Vínculo)'), None)
+            col_cpf = next((k for k, v in mapping.items() if v == 'cpf'), None)
             col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
             col_qualif = next((k for k, v in mapping.items() if v == 'tag_qualificacao'), None)
             map_tels = {k: v for k, v in mapping.items() if v and v.startswith('telefone_')}
             
-            if not col_cpf: return 0, 0, ["Erro: Coluna 'CPF (Vínculo)' é obrigatória."]
+            if not col_cpf: return 0, 0, ["Erro: Coluna 'CPF' é obrigatória."]
             
             new_rows = []
             for _, row in df.iterrows():
@@ -65,7 +65,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                         
                         if numero_final: 
                             row_dict = {
-                                'cpf_ref': cpf_limpo, 
+                                'cpf': cpf_limpo, 
                                 'numero': numero_final, 
                                 'tag_whats': whats_val, 
                                 'tag_qualificacao': qualif_val, 
@@ -77,23 +77,18 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                             
             if not new_rows: return 0, 0, ["Nenhum telefone válido encontrado após limpeza."]
             df_proc = pd.DataFrame(new_rows)
-            df_proc.drop_duplicates(subset=['cpf_ref', 'numero'], inplace=True)
+            df_proc.drop_duplicates(subset=['cpf', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
 
         # --- LÓGICA GENÉRICA ---
         else:
             df_proc = df.rename(columns=mapping)
-            # Remove colunas mapeadas que não existem no banco
-            cols_db_validas = [col for col in df_proc.columns if col in cols_banco or col in ['cpf', 'cpf_ref', 'matricula', 'matricula_ref']]
             
-            col_cpf_temp = None
-            if 'cpf_gerador_key' in mapping.values():
-                 csv_col_cpf = next((k for k, v in mapping.items() if v == 'cpf_gerador_key'), None)
-                 if csv_col_cpf:
-                     col_cpf_temp = csv_col_cpf
-                     df_proc['cpf_temp_gen'] = df[col_cpf_temp]
-
-            df_proc = df_proc[[c for c in df_proc.columns if c in cols_banco or c == 'cpf_temp_gen']]
+            # ATUALIZADO: Aceita 'cpf', 'matricula', 'convenio'
+            cols_permitidas = cols_banco + ['cpf', 'matricula', 'convenio']
+            
+            # Filtra apenas colunas que existem no banco ou são chaves de ligação
+            df_proc = df_proc[[c for c in df_proc.columns if c in cols_permitidas]]
 
             # Padronização Maiúscula
             df_proc = df_proc.applymap(lambda x: str(x).upper().strip() if isinstance(x, str) else x)
@@ -106,7 +101,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                 nums = pf_core.limpar_apenas_numeros(val)
                 return 10 <= len(nums) <= 11
 
-            for c in ['cpf', 'cpf_ref']:
+            for c in ['cpf']:
                 if c in df_proc.columns:
                     mask = df_proc[c].astype(str).apply(validar_cpf_digitos)
                     df_proc = df_proc[mask]
@@ -116,8 +111,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                     else:
                         df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
-            # Gerador de Matrícula
-            target_matricula = 'matricula' if 'matricula' in cols_banco else 'matricula_ref'
+            # Gerador de Matrícula (para tabelas que exigem mas o CSV não tem)
+            target_matricula = 'matricula'
             if target_matricula in cols_banco:
                 if target_matricula not in df_proc.columns:
                     df_proc[target_matricula] = ""
@@ -125,19 +120,17 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                 def gerar_mat(row):
                     mat = str(row.get(target_matricula, '')).strip()
                     if not mat or mat in ['NAN', 'NONE', '']:
-                        cpf_origem = row.get('cpf_ref') or row.get('cpf') or row.get('cpf_temp_gen', '')
+                        cpf_origem = row.get('cpf')
                         cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_origem)
                         if cpf_limpo:
                             conv = str(row.get('convenio', 'CLT')).strip().upper()
-                            if table_name == 'pf_contratos_clt': conv = 'CLT'
+                            if table_name == 'pf_matricula_dados_clt': conv = 'CLT'
                             dt = datetime.now().strftime('%d%m%Y')
                             return f"{conv}{cpf_limpo}NULO{dt}"
                     return mat
 
                 df_proc[target_matricula] = df_proc.apply(gerar_mat, axis=1)
 
-            if 'cpf_temp_gen' in df_proc.columns: df_proc.drop(columns=['cpf_temp_gen'], inplace=True)
-                
             cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_atualizacao', 'data_admissao', 'data_inicio_emprego', 'data_abertura_empresa']
             for col in cols_data:
                 if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
@@ -145,9 +138,7 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cols_order = list(df_proc.columns)
             
             # Deduplicação
-            pk = 'cpf' if 'cpf' in df_proc.columns else (target_matricula if target_matricula in df_proc.columns else None)
-            if table_name == 'cpf_convenio': pk = 'cpf_ref' 
-            # ATUALIZADO: Deduplicação para Convenio x Planilha
+            pk = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
             if table_name == 'convenio_por_planilha': pk = 'convenio' 
             
             if pk: df_proc.drop_duplicates(subset=[pk], keep='last', inplace=True)
@@ -162,8 +153,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         cur.copy_expert(f"COPY {staging_table} ({', '.join(cols_order)}) FROM STDIN WITH CSV DELIMITER E'\t' NULL '\\N'", output)
         
         pk_field = 'cpf' if 'cpf' in df_proc.columns else ('matricula' if 'matricula' in df_proc.columns else None)
-        if table_name == 'cpf_convenio': pk_field = 'cpf_ref'
-        # ATUALIZADO: PK para Convenio x Planilha
         if table_name == 'convenio_por_planilha': pk_field = 'convenio'
 
         qtd_novos, qtd_atualizados = 0, 0
@@ -186,14 +175,14 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
         else:
-            if table_name in ['pf_contratos', 'pf_contratos_clt']:
+            if table_name in ['pf_contratos', 'pf_matricula_dados_clt']:
                 query_insert_safe = f"""
                     INSERT INTO {table_full_name} ({', '.join(cols_order)}) 
                     SELECT {', '.join(cols_order)} 
                     FROM {staging_table} s 
                     WHERE EXISTS (
                         SELECT 1 FROM banco_pf.pf_emprego_renda e 
-                        WHERE e.matricula = s.matricula_ref
+                        WHERE e.matricula = s.matricula
                     )
                 """
                 cur.execute(query_insert_safe)
@@ -204,9 +193,9 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'cpf_convenio']:
-                cur.execute(f"""UPDATE banco_pf.pf_dados d SET importacao_id = CASE WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s ELSE d.importacao_id || ', ' || %s END FROM {staging_table} s WHERE d.cpf = s.cpf_ref""", (str_imp, str_imp))
+                cur.execute(f"""UPDATE banco_pf.pf_dados d SET importacao_id = CASE WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s ELSE d.importacao_id || ', ' || %s END FROM {staging_table} s WHERE d.cpf = s.cpf""", (str_imp, str_imp))
                 
-            elif table_name in ['pf_contratos', 'pf_contratos_clt']:
+            elif table_name in ['pf_contratos', 'pf_matricula_dados_clt']:
                 cur.execute(f"""
                     UPDATE banco_pf.pf_dados d 
                     SET importacao_id = CASE 
@@ -214,8 +203,8 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                         ELSE d.importacao_id || ', ' || %s 
                     END 
                     FROM banco_pf.pf_emprego_renda e 
-                    JOIN {staging_table} s ON e.matricula = s.matricula_ref 
-                    WHERE d.cpf = e.cpf_ref
+                    JOIN {staging_table} s ON e.matricula = s.matricula 
+                    WHERE d.cpf = e.cpf
                 """, (str_imp, str_imp))
         
         return qtd_novos, qtd_atualizados, erros
@@ -243,7 +232,6 @@ def interface_importacao():
     
     st.divider()
     
-    # ATUALIZADO: Incluída a nova opção na lista
     mapa = {
         "Dados Cadastrais": "pf_dados",
         "Telefones": "pf_telefones",
@@ -251,21 +239,39 @@ def interface_importacao():
         "Endereços": "pf_enderecos",
         "Emprego e Renda": "pf_emprego_renda",
         "Contratos": "pf_contratos",
-        "Contratos CLT": "pf_contratos_clt",
+        "Contratos CLT": "pf_matricula_dados_clt",
         "CPF x Convênio": "cpf_convenio",
-        "Convênio x Planilha": "convenio_por_planilha" # <--- NOVA OPÇÃO
+        "Convênio x Planilha": "convenio_por_planilha"
     }
     
     if st.session_state.get('import_step', 1) == 1:
         sel = st.selectbox("Tipo de Importação", list(mapa.keys()))
         st.session_state['import_table'] = mapa[sel]
         
-        uploaded = st.file_uploader("Arquivo CSV", type=['csv'])
+        # --- AVISO E CABEÇALHO DO CSV ESPERADO ---
+        st.warning("⚠️ Atenção: O arquivo deve estar no formato **CSV (Separado por vírgulas ou ponto e vírgula)** e codificação **UTF-8**.")
+        
+        # Gera lista de colunas esperadas para ajudar o usuário
+        tbl = mapa[sel]
+        cols_esperadas = [c[0] for c in get_table_columns(tbl) if c[0] not in ['id', 'data_criacao', 'importacao_id', 'data_atualizacao']]
+        # Adiciona chaves estrangeiras comuns se não existirem na tabela física mas forem necessárias para o processo
+        if tbl == 'pf_telefones': cols_esperadas = ['cpf', 'telefone_1', 'telefone_2', '...']
+        elif tbl == 'pf_matricula_dados_clt': cols_esperadas += ['cpf (opcional para gerar matricula)']
+        
+        st.info(f"📋 **Colunas esperadas no cabeçalho:** {', '.join(cols_esperadas)}")
+        
+        uploaded = st.file_uploader("Selecione o arquivo CSV", type=['csv'])
+        
         if uploaded:
             try:
                 df = pd.read_csv(uploaded, sep=';', encoding='utf-8')
+                if len(df.columns) <= 1: # Tenta vírgula se ponto e vírgula falhar
+                     uploaded.seek(0)
+                     df = pd.read_csv(uploaded, sep=',', encoding='utf-8')
             except:
-                try: df = pd.read_csv(uploaded, sep=',', encoding='latin-1')
+                try: 
+                    uploaded.seek(0)
+                    df = pd.read_csv(uploaded, sep=';', encoding='latin-1')
                 except: df = None
             
             if df is not None:
@@ -275,51 +281,75 @@ def interface_importacao():
                 with open(path, "wb") as f: f.write(uploaded.getbuffer())
                 st.session_state['uploaded_file_path'] = path
                 
-                st.success(f"{len(df)} linhas lidas.")
-                if st.button("Avançar"):
+                st.success(f"Arquivo lido com sucesso! {len(df)} linhas encontradas.")
+                if st.button("Avançar para Mapeamento"):
                     st.session_state['csv_map'] = {col: None for col in df.columns}
                     st.session_state['current_csv_idx'] = 0
                     st.session_state['import_step'] = 2
                     st.rerun()
-            else: st.error("Erro leitura CSV.")
+            else: st.error("Erro ao ler o arquivo. Verifique se é um CSV válido.")
 
     elif st.session_state['import_step'] == 2:
-        st.markdown("### Mapeamento")
+        st.markdown("### 🔗 Mapeamento de Colunas")
         df = st.session_state['import_df']
         cols_csv = list(df.columns)
         tbl = st.session_state['import_table']
         cols_db = [c[0] for c in get_table_columns(tbl) if c[0] not in ['id', 'data_criacao', 'importacao_id']]
         
-        if tbl in ['pf_contratos', 'pf_contratos_clt']:
-            cols_db.insert(0, "cpf_gerador_key")
+        # Garante que chaves essenciais apareçam na lista de destino
+        if tbl == 'pf_telefones' and 'cpf' not in cols_db: cols_db.insert(0, 'cpf')
+        if tbl in ['pf_contratos', 'pf_matricula_dados_clt']:
+             if 'matricula' in cols_db: cols_db.remove('matricula')
+             cols_db = ['matricula', 'cpf (Gerar Matrícula)'] + cols_db
 
         c_l, c_r = st.columns([1, 2])
         with c_l:
             for idx, col in enumerate(cols_csv):
                 mapped = st.session_state['csv_map'].get(col)
-                txt = f"{col} -> {mapped if mapped else '❓'}"
-                if idx == st.session_state.get('current_csv_idx', 0): st.info(txt)
-                else: 
-                    if st.button(txt, key=f"btn_{idx}"): st.session_state['current_csv_idx'] = idx; st.rerun()
+                if mapped == "IGNORAR": status_icon = "❌"
+                elif mapped: status_icon = "✅"
+                else: status_icon = "❓"
+                
+                btn_label = f"{status_icon} {col} -> {mapped if mapped else '...'}"
+                
+                # Destaca o botão atual
+                 tipo_btn = "primary" if idx == st.session_state.get('current_csv_idx', 0) else "secondary"
+                if st.button(btn_label, key=f"btn_col_{idx}", type=tipo_btn, use_container_width=True): 
+                    st.session_state['current_csv_idx'] = idx; st.rerun()
         
         with c_r:
-            st.write(f"Mapeando: **{cols_csv[st.session_state['current_csv_idx']]}**")
-            if st.button("IGNORAR"): 
-                st.session_state['csv_map'][cols_csv[st.session_state['current_csv_idx']]] = "IGNORAR"
-                if st.session_state['current_csv_idx'] < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
+            curr_idx = st.session_state['current_csv_idx']
+            col_atual = cols_csv[curr_idx]
+            st.info(f"Mapeando coluna do CSV: **{col_atual}**")
+            
+            # Amostra de dados
+            st.write("Amostra de dados desta coluna:")
+            st.code(df[col_atual].head(3).to_string(index=False))
+
+            st.write("Selecione a coluna de destino no Banco de Dados:")
+            
+            c_ig, c_prox = st.columns([1, 2])
+            if c_ig.button("🚫 IGNORAR COLUNA", use_container_width=True): 
+                st.session_state['csv_map'][col_atual] = "IGNORAR"
+                if curr_idx < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
                 st.rerun()
             
-            for field in cols_db:
-                if st.button(f"📌 {field}", key=f"map_{field}"):
-                    st.session_state['csv_map'][cols_csv[st.session_state['current_csv_idx']]] = field
-                    if st.session_state['current_csv_idx'] < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
-                    st.rerun()
+            # Botões de campos do banco
+            cols_banco_cols = st.columns(3)
+            for i, field in enumerate(cols_db):
+                with cols_banco_cols[i % 3]:
+                    if st.button(f"📥 {field}", key=f"map_to_{field}"):
+                        st.session_state['csv_map'][col_atual] = 'cpf' if 'cpf' in field else ('matricula' if 'matricula' == field else field)
+                        if 'Gerar Matrícula' in field: st.session_state['csv_map'][col_atual] = 'cpf' # Caso especial
+                        
+                        if curr_idx < len(cols_csv)-1: st.session_state['current_csv_idx'] += 1
+                        st.rerun()
 
         st.divider()
-        if st.button("🚀 IMPORTAR"):
+        if st.button("🚀 INICIAR IMPORTAÇÃO", type="primary", use_container_width=True):
             conn = pf_core.get_conn()
             if conn:
-                with st.spinner("Importando..."):
+                with st.spinner("Processando dados... Isso pode levar alguns minutos."):
                     try:
                         cur = conn.cursor()
                         cur.execute("INSERT INTO banco_pf.pf_historico_importacoes (nome_arquivo) VALUES (%s) RETURNING id", (st.session_state['uploaded_file_name'],))
@@ -335,10 +365,19 @@ def interface_importacao():
                         
                         st.session_state['import_stats'] = res
                         st.session_state['import_step'] = 3; st.rerun()
-                    except Exception as e: st.error(f"Erro: {e}")
+                    except Exception as e: st.error(f"Erro durante a importação: {e}")
 
     elif st.session_state['import_step'] == 3:
-        st.success("Importação Concluída!")
+        st.balloons()
+        st.success("✅ Importação Concluída com Sucesso!")
         res = st.session_state.get('import_stats', (0,0,[]))
-        st.write(f"Novos: {res[0]} | Atualizados: {res[1]}")
-        if st.button("Finalizar"): st.session_state['import_step'] = 1; st.rerun()
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Novos Registros", res[0])
+        c2.metric("Atualizados", res[1])
+        
+        if res[2]:
+            st.error("Erros encontrados:")
+            st.write(res[2])
+            
+        if st.button("Voltar ao Início"): st.session_state['import_step'] = 1; st.rerun()
