@@ -225,8 +225,9 @@ def main():
                 sub = option_menu(None, ["Produtos", "Pedidos", "Tarefas", "Renovação"], 
                                   icons=["box", "cart-check", "check2-all", "arrow-repeat"])
             elif mod == "OPERACIONAL":
-                sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "Campanhas", "WhatsApp"], 
-                                  icons=["people", "lock", "person-vcard", "megaphone", "whatsapp"])
+                # MODIFICADO: Removido "Campanhas" das opções e "megaphone" dos ícones
+                sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "WhatsApp"], 
+                                  icons=["people", "lock", "person-vcard", "whatsapp"])
             
             if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
 
