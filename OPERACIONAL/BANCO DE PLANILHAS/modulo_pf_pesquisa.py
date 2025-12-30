@@ -6,7 +6,7 @@ import time
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADO COM TODOS OS CAMPOS DO BANCO) ---
+# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADO COM TABELA pf_telefones COMPLETA) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -32,7 +32,10 @@ CAMPOS_CONFIG = {
         {"label": "CEP", "coluna": "ende.cep", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"}
     ],
     "Contatos": [
-        {"label": "Telefone", "coluna": "tel.numero", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
+        {"label": "Telefone (Número)", "coluna": "tel.numero", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
+        {"label": "Tag WhatsApp", "coluna": "tel.tag_whats", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
+        {"label": "Tag Qualificação", "coluna": "tel.tag_qualificacao", "tipo": "texto", "tabela": "banco_pf.pf_telefones"},
+        {"label": "Data Atualização (Tel)", "coluna": "tel.data_atualizacao", "tipo": "data", "tabela": "banco_pf.pf_telefones"},
         {"label": "E-mail", "coluna": "em.email", "tipo": "texto", "tabela": "banco_pf.pf_emails"}
     ],
     "Profissional (Geral)": [
