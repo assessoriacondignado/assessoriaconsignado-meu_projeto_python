@@ -6,15 +6,23 @@ import time
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS ---
+# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADO COM TODOS OS CAMPOS DO BANCO) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "CPF", "coluna": "d.cpf", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "RG", "coluna": "d.rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "UF RG", "coluna": "d.uf_rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Data Exp. RG", "coluna": "d.data_exp_rg", "tipo": "data", "tabela": "banco_pf.pf_dados"},
         {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
-        {"label": "Idade", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
-        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
+        {"label": "Idade (Cálculo)", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
+        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Nome do Pai", "coluna": "d.nome_pai", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "CNH", "coluna": "d.cnh", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "PIS", "coluna": "d.pis", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "CTPS/Série", "coluna": "d.ctps_serie", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Nome Procurador", "coluna": "d.nome_procurador", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "CPF Procurador", "coluna": "d.cpf_procurador", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
     ],
     "Endereços": [
         {"label": "Logradouro", "coluna": "ende.rua", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"},
@@ -35,14 +43,16 @@ CAMPOS_CONFIG = {
     "Contratos CLT / CAGED": [
         {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
-        {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"}, # <--- CAMPO NOVO ADICIONADO
+        {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CBO (Cargo)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "CNAE (Atividade)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "banco_pf.pf_contratos_clt"},
         {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_contratos_clt"}
     ],
-    "Controle de Importação": [
-        {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
+    "Controle e Sistema": [
+        {"label": "ID da Importação", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "ID da Campanha", "coluna": "d.id_campanha", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Data Criação (Cadastro)", "coluna": "d.data_criacao", "tipo": "data", "tabela": "banco_pf.pf_dados"}
     ]
 }
 
