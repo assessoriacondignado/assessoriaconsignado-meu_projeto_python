@@ -81,7 +81,6 @@ def validar_formatar_cep(cep_raw):
     if len(numeros) != 8: return None, "CEP deve ter 8 dígitos."
     return f"{numeros[:5]}-{numeros[5:]}", None
 
-# --- NOVO: FORMATAÇÃO DE CNPJ ---
 def formatar_cnpj(valor):
     """
     Recebe um CNPJ (com ou sem pontuação, com ou sem zeros à esquerda).
@@ -90,11 +89,7 @@ def formatar_cnpj(valor):
     if not valor: return None
     numeros = re.sub(r'\D', '', str(valor))
     if not numeros: return None
-    
-    # Garante 14 dígitos (preenche com zeros à esquerda se necessário)
     numeros = numeros.zfill(14)
-    
-    # Aplica a máscara
     return f"{numeros[:2]}.{numeros[2:5]}.{numeros[5:8]}/{numeros[8:12]}-{numeros[12:]}"
 
 def converter_data_br_iso(valor):
@@ -133,16 +128,17 @@ def carregar_dados_completos(cpf):
             cpf_full = str(cpf_norm).zfill(11)         
             params_busca = (cpf_norm, cpf_full)
             
-            # Dados Gerais
+            # 1. Dados Pessoais
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf IN %s", conn, params=(params_busca,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
-            dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
-            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
+            # PASSO A: Alterado de cpf_ref para cpf nas buscas das tabelas satélites
+            dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
+            dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
+            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # EMPREGO E RENDA
-            # ATUALIZADO: Busca robusta usando TRIM e CAST para evitar erros de formatação/tipo
+            # PASSO B: Busca Vínculos (Emprego) usando CPF para pegar Matrícula e Convênio
+            # Mantém a busca robusta com TRIM/CAST para garantir match
             query_emp = """
                 SELECT convenio, matricula 
                 FROM banco_pf.pf_emprego_renda 
@@ -162,7 +158,7 @@ def carregar_dados_completos(cpf):
                         'contratos': []
                     }
 
-                    # --- BUSCA DINÂMICA DE TABELAS VINCULADAS ---
+                    # PASSO C: Roteamento de Planilhas (Mantido Intacto)
                     query_map = "SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s"
                     cur = conn.cursor()
                     cur.execute(query_map, (conv_nome,))
@@ -173,7 +169,6 @@ def carregar_dados_completos(cpf):
                             try:
                                 cur.execute("SELECT to_regclass(%s)", (tabela_destino,))
                                 if cur.fetchone()[0]:
-                                    # Verifica nome da coluna de chave (matricula ou matricula_ref)
                                     colunas_tb = get_colunas_tabela(tabela_destino)
                                     nomes_cols = [c[0] for c in colunas_tb]
                                     col_chave = 'matricula' if 'matricula' in nomes_cols else 'matricula_ref'
@@ -564,6 +559,9 @@ def interface_cadastro_pf():
                     st.rerun()
                 else:
                     st.error(msg)
+    
+    # Rodapé de atualização na tela principal
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 20px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
 
 # --- FUNÇÃO DE SALVAMENTO (DINÂMICA) ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
@@ -587,21 +585,23 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             cpf_chave = dados_gerais['cpf']
             
+            # ATUALIZADO: Deletar usando 'cpf' em vez de 'cpf_ref'
             if modo == "editar":
                 tabelas_ref = ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos']
-                for tb in tabelas_ref: cur.execute(f"DELETE FROM {tb} WHERE cpf_ref = %s", (cpf_chave,))
+                for tb in tabelas_ref: cur.execute(f"DELETE FROM {tb} WHERE cpf = %s", (cpf_chave,))
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
             
+            # ATUALIZADO: Inserts usando 'cpf' em vez de 'cpf_ref'
             if not df_tel.empty:
-                for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
+                for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
             if not df_email.empty:
-                for _, r in df_upper(df_email).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, r['email']))
+                for _, r in df_upper(df_email).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emails (cpf, email) VALUES (%s, %s)", (cpf_chave, r['email']))
             if not df_end.empty:
-                for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
+                for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
             
             # EMPREGO E RENDA (UPSERT)
-            # ATUALIZADO: Remove dados_extras (coluna não existe)
+            # Mantém uso de cpf para integridade
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows():
                     matr = r['matricula']
@@ -622,10 +622,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     # --- LIMPEZA E FORMATAÇÃO ESPECÍFICA ---
                     final_dict = {}
                     for k, v in r_dict.items():
-                        # Ignora valores vazios/nulos
                         if pd.isna(v) or v == "": continue
-                        
-                        # Formata CNPJ se o nome da coluna contiver 'cnpj'
                         if 'cnpj' in k.lower():
                             final_dict[k] = formatar_cnpj(v)
                         else:
@@ -691,10 +688,8 @@ def dialog_visualizar_cliente(cpf_cliente):
     t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos"])
     with t1:
         # --- EXIBIÇÃO DINÂMICA DE TODOS OS CAMPOS ---
-        # Define os campos prioritários para o topo (já existentes)
         campos_prioritarios = ['data_nascimento', 'rg', 'nome_mae']
         
-        # Exibe prioritários em colunas (layout original)
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
         idade = calcular_idade_hoje(nasc)
@@ -709,7 +704,6 @@ def dialog_visualizar_cliente(cpf_cliente):
         if demais_campos:
             st.markdown("---")
             st.markdown("##### 📌 Outras Informações")
-            # Cria colunas dinâmicas (3 por linha)
             col_iter = st.columns(3)
             idx = 0
             for k, v in demais_campos.items():
