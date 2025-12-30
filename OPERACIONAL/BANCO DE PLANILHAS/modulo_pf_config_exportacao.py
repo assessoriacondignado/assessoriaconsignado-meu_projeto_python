@@ -13,14 +13,14 @@ def app_config_exportacao():
     # Bloco para Criar Novo (Expander)
     with st.expander("➕ Criar Novo Modelo de Exportação", expanded=False):
         with st.form("form_novo_modelo"):
-            nome = st.text_input("Nome Comercial do Modelo", placeholder="Ex: Lista WhatsApp Comercial")
+            nome = st.text_input("Nome Comercial do Modelo", placeholder="Ex: Dados Cadastrais Simples")
             chave_motor = st.text_input("Chave do Motor (Código de Consulta)", 
                                         help="Esta chave deve ser a mesma definida no dicionário do arquivo modulo_pf_exportacao.py")
             desc = st.text_area("Descrição / Observações")
             
             if st.form_submit_button("💾 Salvar Modelo"):
                 if nome and chave_motor:
-                    # O campo 'chave_motor' é salvo na coluna 'codigo_de_consulta'
+                    # A 'chave_motor' é salva na coluna 'codigo_de_consulta' conforme solicitado
                     if pf_export.salvar_modelo(nome, chave_motor, desc):
                         st.success(f"Modelo '{nome}' vinculado à chave '{chave_motor}' com sucesso!")
                         time.sleep(1)
@@ -31,15 +31,16 @@ def app_config_exportacao():
     st.divider()
     st.subheader("📋 Modelos Cadastrados")
 
-    # Listagem de modelos existentes
+    # Listagem de modelos existentes resgatados do banco
     df_modelos = pf_export.listar_modelos_ativos()
     if not df_modelos.empty:
         for _, row in df_modelos.iterrows():
+            # Exibe cada modelo em um bloco retrátil com o nome e a chave de consulta
             with st.expander(f"📦 {row['nome_modelo']} (Chave: {row['codigo_de_consulta']})"):
                 st.write(f"**Descrição:** {row['descricao']}")
                 st.caption(f"Criado em: {row['data_criacao']} | Status: {row['status']}")
                 
-                # Colunas para os botões de ação
+                # Botões de ação para Edição e Exclusão
                 c1, c2 = st.columns([1, 1])
                 
                 with c1:
@@ -56,7 +57,7 @@ def app_config_exportacao():
 
 @st.dialog("✏️ Editar Modelo")
 def dialog_editar_modelo(modelo):
-    """Pop-up para editar dados do modelo"""
+    """Pop-up para editar dados do modelo e sua chave de consulta"""
     with st.form("form_edit_modelo"):
         novo_nome = st.text_input("Nome do Modelo", value=modelo['nome_modelo'])
         nova_chave = st.text_input("Chave do Motor (Código de Consulta)", value=modelo['codigo_de_consulta'])
@@ -73,9 +74,9 @@ def dialog_editar_modelo(modelo):
 
 @st.dialog("⚠️ Confirmar Exclusão")
 def dialog_excluir_modelo(id_modelo, nome_modelo):
-    """Pop-up de Confirmação para exclusão"""
+    """Pop-up de segurança para confirmar a remoção do modelo"""
     st.warning(f"Excluir definitivamente o modelo: **{nome_modelo}**?")
-    st.error("A conexão entre esta tela e o motor de exportação será removida.")
+    st.error("Isso removerá a conexão entre a interface e o motor de exportação no código.")
     
     if st.button("🚨 CONFIRMAR EXCLUSÃO", use_container_width=True):
         if pf_export.excluir_modelo(id_modelo):
