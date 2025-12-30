@@ -444,16 +444,18 @@ def interface_pesquisa_rapida():
         st.info("Utilize a busca para listar clientes.")
 
 def interface_pesquisa_ampla():
-    c_nav_esq, c_nav_dir = st.columns([1, 6])
-    if c_nav_esq.button("⬅️ Voltar"): st.session_state.update({'pf_view': 'lista'}); st.rerun()
+    # --- ALTERAÇÃO SOLICITADA: ALINHAMENTO À ESQUERDA DOS BOTÕES SUPERIORES ---
+    # Usando uma única chamada de columns com espaçador no final
+    c_voltar, c_tipos, c_limpar, c_spacer = st.columns([1, 1.5, 1.5, 5])
     
-    # ATUALIZAÇÃO NO LAYOUT DO TOPO
-    with c_nav_dir:
-        c_btn_filtros, c_btn_limpar = st.columns([2, 2])
-        if c_btn_filtros.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"):
-            dialog_tipos_filtro()
-        if c_btn_limpar.button("🗑️ Limpar Filtros"): 
-            st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pagina_atual'] = 1; st.rerun()
+    if c_voltar.button("⬅️ Voltar"): 
+        st.session_state.update({'pf_view': 'lista'}); st.rerun()
+    
+    if c_tipos.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"):
+        dialog_tipos_filtro()
+        
+    if c_limpar.button("🗑️ Limpar Filtros"): 
+        st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pagina_atual'] = 1; st.rerun()
     
     st.divider()
 
