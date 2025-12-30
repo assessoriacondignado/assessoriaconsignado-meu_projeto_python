@@ -19,14 +19,14 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
-            # ATUALIZADO: JOINs com banco_pf
+            # ATUALIZADO: JOINs Padronizados (cpf em vez de cpf_ref)
             joins_map = {
-                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
-                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
-                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf_ref",
-                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref",
-                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
-                'banco_pf.pf_contratos_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref LEFT JOIN banco_pf.pf_contratos_clt clt ON emp.matricula = clt.matricula_ref"
+                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
+                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
+                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf",
+                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
+                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula",
+                'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
             
             active_joins = []
@@ -39,6 +39,9 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                 op = regra['operador']
                 val_raw = regra['valor']
                 tipo = regra.get('tipo', 'texto')
+                
+                # Correção de nome de tabela legada se existir na regra salva
+                if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
                 
                 if tabela in joins_map and joins_map[tabela] not in active_joins:
                     active_joins.append(joins_map[tabela])
@@ -194,6 +197,7 @@ def dialog_editar_campanha(dados_atuais):
         st.caption("Adicionar nova regra:")
         opcoes_campos = []
         mapa_campos = {}
+        # ATUALIZADO: Carrega campos completos do módulo de pesquisa
         for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
             for item in lista:
                 chave = f"{grupo} -> {item['label']}"
@@ -275,6 +279,7 @@ def app_campanhas():
 
             opcoes_campos = []
             mapa_campos = {}
+            # ATUALIZADO: Carrega campos completos do módulo de pesquisa
             for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
                 for item in lista:
                     chave = f"{grupo} -> {item['label']}"
