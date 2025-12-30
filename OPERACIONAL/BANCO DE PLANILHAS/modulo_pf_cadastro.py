@@ -674,6 +674,9 @@ def dialog_visualizar_cliente(cpf_cliente):
         <style>
         .compact-header { margin-bottom: -15px; }
         .stMarkdown hr { margin-top: 5px; margin-bottom: 5px; }
+        .data-row { margin-bottom: 5px; display: flex; align-items: baseline; }
+        .data-label { font-weight: bold; margin-right: 8px; min-width: 120px; }
+        .data-value { }
         </style>
     """, unsafe_allow_html=True)
     
@@ -683,6 +686,11 @@ def dialog_visualizar_cliente(cpf_cliente):
     
     t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos"])
     with t1:
+        # --- EXIBIÇÃO DINÂMICA DE TODOS OS CAMPOS ---
+        # Define os campos prioritários para o topo (já existentes)
+        campos_prioritarios = ['data_nascimento', 'rg', 'nome_mae']
+        
+        # Exibe prioritários em colunas (layout original)
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
         idade = calcular_idade_hoje(nasc)
@@ -691,6 +699,25 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1.write(f"**RG:** {safe_view(g.get('rg'))}")
         c2.write(f"**Mãe:** {safe_view(g.get('nome_mae'))}")
         
+        # Exibe os demais campos em grid
+        demais_campos = {k: v for k, v in g.items() if k not in campos_prioritarios and k not in ['id', 'cpf', 'nome', 'importacao_id', 'id_campanha', 'data_criacao']}
+        
+        if demais_campos:
+            st.markdown("---")
+            st.markdown("##### 📌 Outras Informações")
+            # Cria colunas dinâmicas (3 por linha)
+            col_iter = st.columns(3)
+            idx = 0
+            for k, v in demais_campos.items():
+                label_fmt = k.replace('_', ' ').title()
+                val_fmt = safe_view(v)
+                if 'data' in k and v:
+                     try: val_fmt = v.strftime('%d/%m/%Y')
+                     except: pass
+                
+                col_iter[idx % 3].write(f"**{label_fmt}:** {val_fmt}")
+                idx += 1
+
         st.divider() # Substituto compacto para st.markdown("---")
         
         st.markdown("##### 🔗 Vínculos")
