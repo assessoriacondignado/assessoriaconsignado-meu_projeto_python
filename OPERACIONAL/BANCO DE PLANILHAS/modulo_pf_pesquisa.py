@@ -5,7 +5,7 @@ import re
 import time
 import json  # Suporta lista de colunas no filtro fixo
 import modulo_pf_cadastro as pf_core
-import modulo_pf_exportacao as pf_export
+import modulo_pf_config_exportacao as pf_export
 
 # --- CONFIGURAÇÕES DE CAMPOS ---
 CAMPOS_CONFIG = {
