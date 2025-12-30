@@ -1,71 +1,90 @@
 import streamlit as st
 import pandas as pd
+import json
+import time
+from datetime import datetime
 import modulo_pf_cadastro as pf_core
+import modulo_pf_exportacao as pf_export
 
-def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
-    conn = pf_core.get_conn()
-    if not conn or not lista_cpfs: 
-        return pd.DataFrame()
-    
-    try:
-        placeholders = ",".join(["%s"] * len(lista_cpfs))
-        params = tuple(lista_cpfs)
+def app_config_exportacao():
+    st.markdown("## ⚙️ Configuração de Modelos de Exportação")
+    st.caption("Gerencie as chaves que conectam os modelos de tela às regras de código (motor fixo).")
 
-        # 1. BUSCA DADOS PESSOAIS (pf_dados)
-        df_dados = pd.read_sql(f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})", conn, params=params)
-        # Formata CPF com ponto e traço
-        df_dados['cpf'] = df_dados['cpf'].apply(pf_core.formatar_cpf_visual)
+    # Bloco para Criar Novo (Expander)
+    with st.expander("➕ Criar Novo Modelo de Exportação", expanded=False):
+        with st.form("form_novo_modelo"):
+            nome = st.text_input("Nome Comercial do Modelo", placeholder="Ex: Dados Cadastrais Simples")
+            chave_motor = st.text_input("Chave do Motor (Código de Consulta)", 
+                                        help="Esta chave deve ser a mesma definida no roteamento do modulo_pf_exportacao.py")
+            desc = st.text_area("Descrição / Observações")
+            
+            if st.form_submit_button("💾 Salvar Modelo"):
+                if nome and chave_motor:
+                    # A 'chave_motor' é salva na coluna 'codigo_de_consulta' do banco de dados
+                    if pf_export.salvar_modelo(nome, chave_motor, desc):
+                        st.success(f"Modelo '{nome}' vinculado à chave '{chave_motor}' com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.warning("Nome e Chave do Motor são obrigatórios.")
 
-        # 2. BUSCA TELEFONES (pf_telefones) - Limite fixo de 10
-        df_tel = pd.read_sql(f"SELECT cpf, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf IN ({placeholders})", conn, params=params)
-        # Limpa telefone para apenas DDD+Número
-        df_tel['numero'] = df_tel['numero'].apply(lambda x: pf_core.limpar_apenas_numeros(x))
+    st.divider()
+    st.subheader("📋 Modelos Cadastrados")
+
+    # Listagem de modelos existentes resgatados do banco de dados
+    df_modelos = pf_export.listar_modelos_ativos()
+    if not df_modelos.empty:
+        for _, row in df_modelos.iterrows():
+            # Exibe cada modelo em um bloco retrátil (Expander)
+            with st.expander(f"📦 {row['nome_modelo']} (Chave: {row['codigo_de_consulta']})"):
+                st.write(f"**Descrição:** {row['descricao']}")
+                st.caption(f"Criado em: {row['data_criacao']} | Status: {row['status']}")
+                
+                # Botões de ação: Edição e Exclusão
+                c1, c2 = st.columns([1, 1])
+                
+                with c1:
+                    if st.button(f"✏️ Editar", key=f"edit_{row['id']}", use_container_width=True):
+                        dialog_editar_modelo(row)
+                
+                with c2:
+                    if st.button(f"🗑️ Excluir", key=f"del_{row['id']}", use_container_width=True):
+                        dialog_excluir_modelo(row['id'], row['nome_modelo'])
+    else:
+        st.info("Nenhum modelo configurado no momento.")
+
+# --- DIÁLOGOS (POP-UPS) ---
+
+@st.dialog("✏️ Editar Modelo")
+def dialog_editar_modelo(modelo):
+    """Pop-up para editar dados do modelo e sua chave de consulta técnica"""
+    with st.form("form_edit_modelo"):
+        novo_nome = st.text_input("Nome do Modelo", value=modelo['nome_modelo'])
+        nova_chave = st.text_input("Chave do Motor (Código de Consulta)", value=modelo['codigo_de_consulta'])
+        nova_desc = st.text_area("Descrição", value=modelo['descricao'])
         
-        # 3. BUSCA E-MAILS (pf_emails) - Limite fixo de 3
-        df_mail = pd.read_sql(f"SELECT cpf, email FROM banco_pf.pf_emails WHERE cpf IN ({placeholders})", conn, params=params)
+        c1, c2 = st.columns(2)
+        if c1.form_submit_button("💾 Salvar Alterações"):
+            if pf_export.atualizar_modelo(modelo['id'], novo_nome, nova_chave, nova_desc):
+                st.success("Alterações salvas!")
+                time.sleep(1)
+                st.rerun()
+        if c2.form_submit_button("Cancelar"):
+            st.rerun()
 
-        # 4. BUSCA ENDEREÇOS (pf_enderecos) - Limite fixo de 3
-        df_end = pd.read_sql(f"SELECT cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN ({placeholders})", conn, params=params)
-
-        # --- LÓGICA DE PIVOTAGEM COM COLUNAS FIXAS ---
-        def pivotar_fixo(df, col_prefix, qtd_max, col_id='cpf'):
-            if df.empty:
-                df = pd.DataFrame(columns=[col_id])
-            
-            df['seq'] = df.groupby(col_id).cumcount() + 1
-            df = df[df['seq'] <= qtd_max] # Garante que não ultrapasse o limite fixo
-            
-            # Cria colunas vazias para garantir o layout mesmo sem dados
-            df_pivot = df.pivot(index=col_id, columns='seq')
-            df_pivot.columns = [f"{c[0]}_{c[1]}" for c in df_pivot.columns]
-            df_pivot = df_pivot.reset_index()
-
-            # Força a existência de todas as colunas até a qtd_max
-            colunas_originais = [c for c in df.columns if c not in [col_id, 'seq']]
-            for i in range(1, qtd_max + 1):
-                for col in colunas_originais:
-                    nome_col = f"{col}_{i}"
-                    if nome_col not in df_pivot.columns:
-                        df_pivot[nome_col] = ""
-            return df_pivot
-
-        df_tel_p = pivotar_fixo(df_tel, "Tel", 10)
-        df_mail_p = pivotar_fixo(df_mail, "Email", 3)
-        df_end_p = pivotar_fixo(df_end, "End", 3)
-
-        # 5. MERGE FINAL E FORMATAÇÃO
-        df_final = df_dados.merge(df_tel_p, on='cpf', how='left')\
-                           .merge(df_mail_p, on='cpf', how='left')\
-                           .merge(df_end_p, on='cpf', how='left')
-
-        # PADRONIZAÇÃO: Maiúsculo e remover nulos/#N/D
-        df_final = df_final.astype(str).apply(lambda x: x.str.upper())
-        df_final = df_final.replace(['NONE', 'NAN', 'NAT', '#N/D', 'NULL'], '')
-
-        conn.close()
-        return df_final
-
-    except Exception as e:
-        st.error(f"Erro na exportação fixa: {e}")
-        if conn: conn.close()
-        return pd.DataFrame()
+@st.dialog("⚠️ Confirmar Exclusão")
+def dialog_excluir_modelo(id_modelo, nome_modelo):
+    """Pop-up de segurança para confirmar a remoção definitiva do modelo"""
+    st.warning(f"Excluir definitivamente o modelo: **{nome_modelo}**?")
+    st.error("Isso removerá a conexão entre a interface e o motor de exportação no código.")
+    
+    confirmar = st.checkbox("Eu entendo que esta ação não pode ser desfeita.")
+    
+    if st.button("🚨 CONFIRMAR EXCLUSÃO", use_container_width=True, disabled=not confirmar):
+        if pf_export.excluir_modelo(id_modelo):
+            st.success("Modelo removido!")
+            time.sleep(1)
+            st.rerun()
+    
+    if st.button("Cancelar", use_container_width=True):
+        st.rerun()
