@@ -560,6 +560,9 @@ def interface_cadastro_pf():
                     st.rerun()
                 else:
                     st.error(msg)
+    
+    # Rodapé de atualização na tela principal
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 20px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
 
 # --- FUNÇÃO DE SALVAMENTO (DINÂMICA) ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
@@ -747,3 +750,6 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t3:
         for t in dados.get('telefones', []): st.write(f"📱 {safe_view(t.get('numero'))} ({safe_view(t.get('tag_whats'))})")
         for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
+    
+    # Rodapé de atualização no popup
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
