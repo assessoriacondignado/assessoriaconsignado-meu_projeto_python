@@ -277,6 +277,10 @@ def interface_importacao():
         st.info("ℹ️ Aceita arquivos **.CSV** e **.XLSX (Excel)**.")
         st.warning("⚠️ **Regra de Importação:** Formato 'Geral' bloqueado. Use Texto ou Número.")
         
+        # --- ALTERAÇÃO: EXIBIÇÃO DA TABELA SQL ---
+        st.markdown(f"###### 🗃️ Tabela SQL: `{mapa[sel]}` | Tipo: {sel}")
+        # ----------------------------------------
+        
         uploaded = st.file_uploader("Selecione o arquivo", type=['csv', 'xlsx'])
         
         if uploaded:
