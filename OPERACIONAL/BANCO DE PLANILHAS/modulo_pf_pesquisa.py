@@ -3,11 +3,11 @@ import pandas as pd
 from datetime import date
 import re
 import time
-import json
+import json  # Adicionado para suportar lista de colunas no filtro fixo
 import modulo_pf_cadastro as pf_core
 import modulo_pf_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS (MANTIDO INTACTO) ---
+# --- CONFIGURAÇÕES DE CAMPOS ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -62,7 +62,7 @@ CAMPOS_CONFIG = {
     ]
 }
 
-# --- FUNÇÕES SQL EXISTENTES (MANTIDAS) ---
+# --- FUNÇÕES SQL EXISTENTES ---
 
 def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50):
     conn = pf_core.get_conn()
@@ -75,8 +75,10 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
             params = [param_nome]
             if termo_limpo: 
                 sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf" 
-                conds.append("d.cpf ILIKE %s"); conds.append("t.numero ILIKE %s")
-                params.append(f"%{termo_limpo}%"); params.append(f"%{termo_limpo}%")
+                conds.append("d.cpf ILIKE %s")
+                conds.append("t.numero ILIKE %s")
+                params.append(f"%{termo_limpo}%")
+                params.append(f"%{termo_limpo}%")
             
             where = " WHERE " + " OR ".join(conds)
             cur = conn.cursor()
@@ -114,7 +116,8 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 if tabela in joins_map and joins_map[tabela] not in active_joins: active_joins.append(joins_map[tabela])
                 col_sql = f"{coluna}"
                 if coluna == 'virtual_idade': col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
-                if op == "∅" or op == "Vazio": conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')"); continue
+                if op == "∅" or op == "Vazio": 
+                    conditions.append(f"({col_sql} IS NULL OR {col_sql}::TEXT = '')"); continue
                 if val_raw is None or str(val_raw).strip() == "": continue
                 valores = [v.strip() for v in str(val_raw).split(',') if v.strip()]
                 conds_or = []
@@ -148,7 +151,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
             cur = conn.cursor()
             cur.execute(count_sql, tuple(params))
             total = cur.fetchone()[0]
-            
             offset = (pagina - 1) * itens_por_pagina
             limit_clause = f"LIMIT {itens_por_pagina} OFFSET {offset}" if itens_por_pagina < 9999999 else ""
             query = f"{sql_select} {sql_from} {full_joins} {sql_where} ORDER BY d.nome {limit_clause}"
@@ -168,26 +170,40 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         cpfs_tuple = tuple(str(c) for c in cpfs_alvo)
         if not cpfs_tuple: return False, "Nenhum CPF na lista."
         if tipo == "Cadastro Completo":
-            query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"; cur.execute(query, (cpfs_tuple,))
+            query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
+            cur.execute(query, (cpfs_tuple,))
         elif tipo == "Telefones":
-            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf IN %s"; cur.execute(query, (cpfs_tuple,))
+            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf IN %s"
+            cur.execute(query, (cpfs_tuple,))
         elif tipo == "E-mails":
-            query = "DELETE FROM banco_pf.pf_emails WHERE cpf IN %s"; cur.execute(query, (cpfs_tuple,))
+            query = "DELETE FROM banco_pf.pf_emails WHERE cpf IN %s"
+            cur.execute(query, (cpfs_tuple,))
         elif tipo == "Endereços":
-            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf IN %s"; cur.execute(query, (cpfs_tuple,))
+            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf IN %s"
+            cur.execute(query, (cpfs_tuple,))
         elif tipo == "Emprego e Renda":
             if not convenio: return False, "Convênio não selecionado."
             if sub_opcao == "Excluir Vínculo Completo (Matrícula + Contratos)":
-                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"; cur.execute(query, (cpfs_tuple, convenio))
+                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"
+                cur.execute(query, (cpfs_tuple, convenio))
             elif sub_opcao == "Excluir Apenas Contratos":
-                query = "DELETE FROM banco_pf.pf_contratos WHERE matricula IN (SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s)"; cur.execute(query, (cpfs_tuple, convenio))
-        registros = cur.rowcount; conn.commit(); conn.close()
+                query = """
+                    DELETE FROM banco_pf.pf_contratos 
+                    WHERE matricula IN (
+                        SELECT matricula FROM banco_pf.pf_emprego_renda 
+                        WHERE cpf IN %s AND convenio = %s
+                    )
+                """
+                cur.execute(query, (cpfs_tuple, convenio))
+
+        registros = cur.rowcount
+        conn.commit(); conn.close()
         return True, f"Operação realizada com sucesso! {registros} registros afetados."
     except Exception as e:
         if conn: conn.close()
         return False, f"Erro na execução: {e}"
 
-# --- GESTÃO DE MODELOS FIXOS ---
+# --- FUNÇÕES PARA "TIPOS DE FILTRO" (MODELO FIXO) ---
 
 def listar_tabelas_pf(conn):
     try:
@@ -236,9 +252,11 @@ def executar_filtro_fixo(tabela, colunas_alvo):
 def dialog_tipos_filtro():
     t1, t2 = st.tabs(["CRIAR MODELO", "CONSULTAR FILTRO"])
     with t1:
-        st.markdown("#### 🆕 Novo Modelo de Filtro"); conn = pf_core.get_conn()
+        st.markdown("#### 🆕 Novo Modelo de Filtro")
+        conn = pf_core.get_conn()
         if conn:
-            tabelas = listar_tabelas_pf(conn); sel_tabela = st.selectbox("1. Selecione a Lista (Tabela SQL)", options=tabelas)
+            tabelas = listar_tabelas_pf(conn)
+            sel_tabela = st.selectbox("1. Selecione a Lista (Tabela SQL)", options=tabelas)
             cols = []
             if sel_tabela: cols = listar_colunas_tabela(conn, sel_tabela)
             sel_colunas = st.multiselect("2. Selecione os Itens (Cabeçalhos)", options=cols); conn.close(); st.divider()
@@ -249,7 +267,8 @@ def dialog_tipos_filtro():
                 else: st.warning("Preencha todos os campos e selecione ao menos uma coluna.")
         else: st.error("Erro de conexão.")
     with t2:
-        st.markdown("#### 🔎 Consultar Dados por Modelo"); df_modelos = listar_modelos_fixos()
+        st.markdown("#### 🔎 Consultar Dados por Modelo")
+        df_modelos = listar_modelos_fixos()
         if not df_modelos.empty:
             opcoes = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1); sel_modelo = st.selectbox("Selecione o Modelo", options=opcoes)
             if sel_modelo:
@@ -298,7 +317,8 @@ def interface_pesquisa_ampla():
     if c_voltar.button("⬅️ Voltar"): st.session_state.update({'pf_view': 'lista'}); st.rerun()
     if c_tipos.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"): dialog_tipos_filtro()
     if c_limpar.button("🗑️ Limpar Filtros"): st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pagina_atual'] = 1; st.rerun()
-    st.divider(); conn = pf_core.get_conn(); ops_cache = {'texto': [], 'numero': [], 'data': []}; lista_convenios = []
+    st.divider()
+    conn = pf_core.get_conn(); ops_cache = {'texto': [], 'numero': [], 'data': []}; lista_convenios = []
     if conn:
         try:
             df_ops = pd.read_sql("SELECT tipo, simbolo, descricao FROM banco_pf.pf_operadores_de_filtro", conn)
@@ -347,8 +367,8 @@ def interface_pesquisa_ampla():
         
         if not df_res.empty:
             st.divider()
-            
-            # --- ÁREA DE EXPORTAÇÃO MASSIVA (NOVO) ---
+
+            # --- NOVO: ÁREA DE EXPORTAÇÃO MASSIVA POR LOTES ---
             with st.expander("📂 Exportar Dados", expanded=False):
                 df_modelos = pf_export.listar_modelos_ativos()
                 if not df_modelos.empty:
@@ -360,21 +380,19 @@ def interface_pesquisa_ampla():
                     
                     if c_btn.button("⬇️ Gerar Arquivos"):
                         with st.spinner("Processando exportação por lotes..."):
-                            # Recupera a lista completa de CPFs ignorando paginação
+                            # Recupera todos os CPFs filtrados (sem limite de paginação)
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 9999999)
                             lista_cpfs_total = df_total['cpf'].unique().tolist()
-                            total_registros = len(lista_cpfs_total)
+                            total_reg = len(lista_cpfs_total)
                             
+                            # Regra de particionamento: 200 mil linhas
                             limite_lote = 200000
-                            num_partes = (total_registros // limite_lote) + (1 if total_registros % limite_lote > 0 else 0)
+                            num_partes = (total_reg // limite_lote) + (1 if total_reg % limite_lote > 0 else 0)
                             
-                            st.info(f"Total: {total_registros} registros. O sistema irá gerar {num_partes} lote(s) de exportação.")
+                            st.info(f"Total: {total_reg} registros. Gerando {num_partes} lote(s) de 200 mil.")
                             
                             for p in range(num_partes):
-                                inicio = p * limite_lote
-                                fim = (p + 1) * limite_lote
-                                cpfs_lote = lista_cpfs_total[inicio:fim]
-                                
+                                cpfs_lote = lista_cpfs_total[p*limite_lote : (p+1)*limite_lote]
                                 df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], cpfs_lote)
                                 
                                 if not df_final.empty:
@@ -382,28 +400,24 @@ def interface_pesquisa_ampla():
                                     st.download_button(
                                         label=f"💾 Baixar Parte {p+1} ({len(df_final)} linhas)", 
                                         data=csv, 
-                                        file_name=f"export_{modelo_selecionado['tipo_processamento'].lower()}_parte_{p+1}.csv", 
+                                        file_name=f"export_{modelo_selecionado['tipo_processamento'].lower()}_p{p+1}.csv", 
                                         mime="text/csv",
-                                        key=f"dl_btn_ampla_{p}"
+                                        key=f"dl_btn_{p}"
                                     )
-                                else:
-                                    st.warning(f"A exportação da Parte {p+1} retornou vazio.")
-                else:
-                    st.warning("Nenhum modelo de exportação configurado.")
 
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
-                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados na pesquisa atual."); modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]; tipo_exc = st.selectbox("O que deseja excluir?", modulos_exclusao); convenio_sel = None; sub_opcao_sel = None
+                st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados."); modulos_exclusao = ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"]; tipo_exc = st.selectbox("O que excluir?", modulos_exclusao); convenio_sel = None; sub_opcao_sel = None
                 if tipo_exc == "Emprego e Renda":
-                    c_emp1, c_emp2 = st.columns(2); convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios); sub_opcao_sel = c_emp2.radio("Nível de Exclusão", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
+                    c_emp1, c_emp2 = st.columns(2); convenio_sel = c_emp1.selectbox("Qual Convênio?", lista_convenios); sub_opcao_sel = c_emp2.radio("Nível", ["Excluir Vínculo Completo (Matrícula + Contratos)", "Excluir Apenas Contratos"])
                 if tipo_exc != "Selecione...":
                     if st.button("Preparar Exclusão", key="btn_prep_exc"): st.session_state['confirm_delete_lote'] = True; st.rerun()
                     if st.session_state.get('confirm_delete_lote'):
-                        st.warning(f"Você está prestes a excluir **{tipo_exc}** de **{total}** clientes."); c_sim, c_nao = st.columns(2)
-                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary", key="btn_conf_exc"):
+                        st.warning(f"Excluir definitivamente {tipo_exc} de {total} clientes?"); c_sim, c_nao = st.columns(2)
+                        if c_sim.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary"):
                             df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 999999); lista_cpfs = df_total['cpf'].tolist(); ok, msg = executar_exclusao_lote(tipo_exc, lista_cpfs, convenio_sel, sub_opcao_sel)
                             if ok: st.success(msg); st.session_state['confirm_delete_lote'] = False; time.sleep(2); st.rerun()
                             else: st.error(f"Erro: {msg}")
-                        if c_nao.button("Cancelar", key="btn_canc_exc"): st.session_state['confirm_delete_lote'] = False; st.rerun()
+                        if c_nao.button("Cancelar"): st.session_state['confirm_delete_lote'] = False; st.rerun()
             st.divider()
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_res.iterrows():
