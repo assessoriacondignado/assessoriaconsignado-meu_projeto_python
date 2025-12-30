@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import openpyxl  # Necessário para ler formatações do Excel
 from datetime import datetime
 import modulo_pf_cadastro as pf_core
 
@@ -21,6 +22,39 @@ def get_table_columns(table_name):
             conn.close()
         except: pass
     return cols
+
+def validar_planilha_estrita(caminho_arquivo):
+    """
+    Valida se as linhas 1 e 2 possuem formatação 'Geral'.
+    Retorna: (bool, msg_erro)
+    """
+    try:
+        # Carrega o workbook preservando estilos (data_only=False)
+        wb = openpyxl.load_workbook(caminho_arquivo, data_only=False)
+        ws = wb.active
+        
+        # Itera sobre todas as colunas, limitando a busca às linhas 1 e 2
+        for col_index, col_cells in enumerate(ws.iter_cols(min_row=1, max_row=2), start=1):
+            
+            # Tenta pegar o nome do cabeçalho para facilitar o erro
+            cabecalho_val = col_cells[0].value
+            nome_coluna = str(cabecalho_val) if cabecalho_val else openpyxl.utils.get_column_letter(col_index)
+            
+            for cell in col_cells:
+                # Pega o formato. Excel padrão é 'General' (ou 'Geral' dependendo da loc).
+                # O openpyxl geralmente retorna 'General' para o padrão.
+                fmt = str(cell.number_format).lower()
+                
+                if fmt == 'general':
+                    return False, (
+                        f"⛔ **Bloqueio de Importação**: A coluna **'{nome_coluna}'** está com formatação **'Geral'** na linha {cell.row}. "
+                        "Para garantir a integridade (e evitar erros de notação científica), converta todas as colunas "
+                        "para **TEXTO** ou **NÚMERO** no Excel antes de importar."
+                    )
+        return True, None
+
+    except Exception as e:
+        return False, f"Erro ao validar planilha: {str(e)}"
 
 def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_path_original):
     cur = conn.cursor()
@@ -248,8 +282,9 @@ def interface_importacao():
         sel = st.selectbox("Tipo de Importação", list(mapa.keys()))
         st.session_state['import_table'] = mapa[sel]
         
-        # --- AVISO E CABEÇALHO DO CSV ESPERADO ---
-        st.warning("⚠️ Atenção: O arquivo deve estar no formato **CSV (Separado por vírgulas ou ponto e vírgula)** e codificação **UTF-8**.")
+        # --- AVISO E CABEÇALHO ESPERADO ---
+        st.info("ℹ️ Aceita arquivos **.CSV** e **.XLSX (Excel)**.")
+        st.warning("⚠️ **Regra de Importação:** Todas as colunas devem estar formatadas como **Texto** ou **Número**. O formato 'Geral' (General) será bloqueado para evitar erros de notação científica.")
         
         # Gera lista de colunas esperadas
         tbl = mapa[sel]
@@ -257,36 +292,60 @@ def interface_importacao():
         if tbl == 'pf_telefones': cols_esperadas = ['cpf', 'telefone_1', 'telefone_2', '...']
         elif tbl == 'pf_matricula_dados_clt': cols_esperadas += ['cpf (opcional para gerar matricula)']
         
-        st.info(f"📋 **Colunas esperadas no cabeçalho:** {', '.join(cols_esperadas)}")
+        st.caption(f"📋 **Colunas sugeridas:** {', '.join(cols_esperadas)}")
         
-        uploaded = st.file_uploader("Selecione o arquivo CSV", type=['csv'])
+        # Uploader aceitando CSV e XLSX
+        uploaded = st.file_uploader("Selecione o arquivo", type=['csv', 'xlsx'])
         
         if uploaded:
-            try:
-                df = pd.read_csv(uploaded, sep=';', encoding='utf-8')
-                if len(df.columns) <= 1: 
-                     uploaded.seek(0)
-                     df = pd.read_csv(uploaded, sep=',', encoding='utf-8')
-            except:
-                try: 
-                    uploaded.seek(0)
-                    df = pd.read_csv(uploaded, sep=';', encoding='latin-1')
-                except: df = None
+            # Salva o arquivo temporariamente para validação e processamento
+            path = os.path.join(BASE_DIR_IMPORTS, f"{datetime.now().strftime('%Y%m%d%H%M')}_{uploaded.name}")
+            with open(path, "wb") as f: f.write(uploaded.getbuffer())
+            st.session_state['uploaded_file_path'] = path
+            st.session_state['uploaded_file_name'] = uploaded.name
+            
+            df = None
+            
+            # --- PROCESSAMENTO EXCEL ---
+            if uploaded.name.endswith('.xlsx'):
+                # 1. Validação Estrita de Formatação
+                with st.spinner("Validando formatação do Excel..."):
+                    valido, msg_erro = validar_planilha_estrita(path)
+                
+                if not valido:
+                    st.error(msg_erro)
+                    # Remove arquivo inválido
+                    try: os.remove(path)
+                    except: pass
+                    return # Interrompe o fluxo
+                
+                # 2. Carregamento (se válido)
+                try:
+                    # Lê como string para preservar zeros à esquerda se o usuário formatou como Texto
+                    df = pd.read_excel(path, dtype=str)
+                except Exception as e:
+                    st.error(f"Erro ao ler Excel: {e}")
+
+            # --- PROCESSAMENTO CSV ---
+            else:
+                try:
+                    df = pd.read_csv(path, sep=';', encoding='utf-8', dtype=str)
+                    if len(df.columns) <= 1: 
+                         df = pd.read_csv(path, sep=',', encoding='utf-8', dtype=str)
+                except:
+                    try: 
+                        df = pd.read_csv(path, sep=';', encoding='latin-1', dtype=str)
+                    except: df = None
             
             if df is not None:
                 st.session_state['import_df'] = df
-                st.session_state['uploaded_file_name'] = uploaded.name
-                path = os.path.join(BASE_DIR_IMPORTS, f"{datetime.now().strftime('%Y%m%d%H%M')}_{uploaded.name}")
-                with open(path, "wb") as f: f.write(uploaded.getbuffer())
-                st.session_state['uploaded_file_path'] = path
-                
-                st.success(f"Arquivo lido com sucesso! {len(df)} linhas encontradas.")
+                st.success(f"Arquivo aprovado! {len(df)} linhas encontradas.")
                 if st.button("Avançar para Mapeamento"):
                     st.session_state['csv_map'] = {col: None for col in df.columns}
                     st.session_state['current_csv_idx'] = 0
                     st.session_state['import_step'] = 2
                     st.rerun()
-            else: st.error("Erro ao ler o arquivo. Verifique se é um CSV válido.")
+            else: st.error("Falha na leitura do arquivo.")
 
     elif st.session_state['import_step'] == 2:
         st.markdown("### 🔗 Mapeamento de Colunas")
@@ -310,7 +369,6 @@ def interface_importacao():
                 
                 btn_label = f"{status_icon} {col} -> {mapped if mapped else '...'}"
                 
-                # CORREÇÃO DA INDENTAÇÃO AQUI
                 tipo_btn = "primary" if idx == st.session_state.get('current_csv_idx', 0) else "secondary"
                 if st.button(btn_label, key=f"btn_col_{idx}", type=tipo_btn, use_container_width=True): 
                     st.session_state['current_csv_idx'] = idx; st.rerun()
@@ -318,7 +376,7 @@ def interface_importacao():
         with c_r:
             curr_idx = st.session_state['current_csv_idx']
             col_atual = cols_csv[curr_idx]
-            st.info(f"Mapeando coluna do CSV: **{col_atual}**")
+            st.info(f"Mapeando coluna do Arquivo: **{col_atual}**")
             
             st.write("Amostra de dados desta coluna:")
             st.code(df[col_atual].head(3).to_string(index=False))
