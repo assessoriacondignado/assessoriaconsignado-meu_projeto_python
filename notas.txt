@@ -1,0 +1,15 @@
+
+
+FORMATAÇÃO DE botões
+Preciso editar o layout do  modulo_fator_conferi.py
+- reduzir o espaço dentro do contene dentro do botão
+- reduzir o espaço entre os botões (permanecer quase colados
+- justificar a direira os botões
+- reduzir ao máximo o espaçamento
+
+FORMATAÇÃO DE LINHAS
+precido que a tabela seja em formato st.data_editor
+- botões a esqueda, juntos ao máximo
+
+
+preciso que a tabela seja formada no tipo st.dataframe

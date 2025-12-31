@@ -127,7 +127,6 @@ def listar_clientes_carteira():
     conn = get_conn()
     if conn:
         try:
-            # Query ajustada para trazer CPF do cliente admin
             query = """
                 SELECT cc.id, cc.nome_cliente, cc.custo_por_consulta, cc.saldo_atual, cc.status,
                        ac.cpf, ac.telefone
@@ -219,6 +218,7 @@ def buscar_extrato_cliente(id_carteira):
         except: conn.close()
     return pd.DataFrame()
 
+# Novas funções para editar/excluir transações do extrato
 def editar_transacao_db(id_transacao, id_carteira, novo_tipo, novo_valor, novo_motivo):
     conn = get_conn()
     if conn:
@@ -232,6 +232,8 @@ def editar_transacao_db(id_transacao, id_carteira, novo_tipo, novo_valor, novo_m
             
             fator_ant = -1 if tipo_ant == 'DEBITO' else 1
             fator_novo = -1 if novo_tipo == 'DEBITO' else 1
+            
+            # Recalcula a diferença para ajustar o saldo da carteira
             diff = (float(novo_valor) * fator_novo) - (valor_ant * fator_ant)
             
             cur.execute("""
@@ -309,28 +311,7 @@ def dialog_novo_cliente_fator():
         if cadastrar_carteira_cliente(int(cli['id']), cli['nome'], custo):
             st.success("Carteira criada!"); st.rerun()
 
-@st.dialog("✏️ Editar Custo")
-def dialog_editar_custo(id_cart, nome_cli, custo_atual):
-    st.write(f"Editando: **{nome_cli}**")
-    novo_custo = st.number_input("Custo por Consulta (R$)", value=float(custo_atual), step=0.01, min_value=0.0)
-    if st.button("Salvar Alteração"):
-        if atualizar_custo_cliente(id_cart, novo_custo):
-            st.success("Atualizado!"); time.sleep(1); st.rerun()
-        else: st.error("Erro ao salvar.")
-
-@st.dialog("🚨 Excluir Carteira")
-def dialog_excluir_carteira(id_cart, nome_cli):
-    st.warning(f"Tem certeza que deseja excluir a carteira de **{nome_cli}**?")
-    st.caption("O histórico financeiro será perdido permanentemente.")
-    c1, c2 = st.columns(2)
-    if c1.button("✅ Sim, Excluir", type="primary", use_container_width=True):
-        if excluir_carteira_cliente(id_cart):
-            st.success("Excluído."); time.sleep(1); st.rerun()
-    if c2.button("❌ Cancelar", use_container_width=True): st.rerun()
-
-# =============================================================================
-# 4. DIALOG DE EXTRATO COM EDIÇÃO INTERNA (CORREÇÃO DE ERRO DE NESTED)
-# =============================================================================
+# --- DIALOG DE EXTRATO COM EDIÇÃO NA PRÓPRIA TELA ---
 
 @st.dialog("📜 Extrato Financeiro", width="large")
 def dialog_extrato(id_cart, nome_cli):
@@ -340,7 +321,7 @@ def dialog_extrato(id_cart, nome_cli):
     if 'modo_extrato' not in st.session_state: st.session_state['modo_extrato'] = None
     if 'id_trans_sel' not in st.session_state: st.session_state['id_trans_sel'] = None
 
-    # --- TELA DE EDIÇÃO ---
+    # --- TELA DE EDIÇÃO (SUBSTITUI A LISTA) ---
     if st.session_state['modo_extrato'] == 'editar':
         st.info("✏️ Editando Transação")
         
@@ -352,15 +333,17 @@ def dialog_extrato(id_cart, nome_cli):
         if not df_t.empty:
             row_t = df_t.iloc[0]
             with st.form("form_edit_trans"):
-                n_tipo = st.selectbox("Tipo", ["CREDITO", "DEBITO"], index=0 if row_t['tipo']=="CREDITO" else 1)
-                n_valor = st.number_input("Valor", value=float(row_t['valor']), step=0.10)
-                n_motivo = st.text_input("Motivo", value=row_t['motivo'])
+                c1, c2, c3 = st.columns([1, 1, 2])
+                n_tipo = c1.selectbox("Tipo", ["CREDITO", "DEBITO"], index=0 if row_t['tipo']=="CREDITO" else 1)
+                n_valor = c2.number_input("Valor (R$)", value=float(row_t['valor']), step=0.10)
+                n_motivo = c3.text_input("Motivo", value=row_t['motivo'])
                 
                 c_salvar, c_cancel = st.columns(2)
-                if c_salvar.form_submit_button("💾 Salvar"):
+                if c_salvar.form_submit_button("💾 Salvar Alterações"):
                     if editar_transacao_db(row_t['id'], id_cart, n_tipo, n_valor, n_motivo):
                         st.success("Atualizado!")
                         st.session_state['modo_extrato'] = None
+                        time.sleep(0.5)
                         st.rerun()
                 
                 if c_cancel.form_submit_button("Cancelar"):
@@ -372,19 +355,20 @@ def dialog_extrato(id_cart, nome_cli):
                 st.session_state['modo_extrato'] = None
                 st.rerun()
 
-    # --- TELA DE EXCLUSÃO ---
+    # --- TELA DE EXCLUSÃO (SUBSTITUI A LISTA) ---
     elif st.session_state['modo_extrato'] == 'excluir':
         st.warning("🗑️ Tem certeza que deseja excluir esta transação?")
-        st.caption("O saldo do cliente será recalculado automaticamente.")
+        st.caption("O saldo do cliente será recalculado automaticamente para compensar essa exclusão.")
         
         c_sim, c_nao = st.columns(2)
-        if c_sim.button("✅ Sim, Excluir", key="btn_conf_exc_tr"):
+        if c_sim.button("✅ Sim, Confirmar Exclusão", key="btn_conf_exc_tr", type="primary"):
             if excluir_transacao_db(st.session_state['id_trans_sel'], id_cart):
                 st.success("Excluído!")
                 st.session_state['modo_extrato'] = None
+                time.sleep(0.5)
                 st.rerun()
         
-        if c_nao.button("❌ Não", key="btn_canc_exc_tr"):
+        if c_nao.button("❌ Não, Cancelar", key="btn_canc_exc_tr"):
             st.session_state['modo_extrato'] = None
             st.rerun()
 
@@ -435,8 +419,27 @@ def dialog_extrato(id_cart, nome_cli):
         else:
             st.info("Sem movimentações recentes.")
 
+@st.dialog("✏️ Editar Custo")
+def dialog_editar_custo(id_cart, nome_cli, custo_atual):
+    st.write(f"Editando: **{nome_cli}**")
+    novo_custo = st.number_input("Custo por Consulta (R$)", value=float(custo_atual), step=0.01, min_value=0.0)
+    if st.button("Salvar Alteração"):
+        if atualizar_custo_cliente(id_cart, novo_custo):
+            st.success("Atualizado!"); time.sleep(1); st.rerun()
+        else: st.error("Erro ao salvar.")
+
+@st.dialog("🚨 Excluir Carteira")
+def dialog_excluir_carteira(id_cart, nome_cli):
+    st.warning(f"Tem certeza que deseja excluir a carteira de **{nome_cli}**?")
+    st.caption("O histórico financeiro será perdido permanentemente.")
+    c1, c2 = st.columns(2)
+    if c1.button("✅ Sim, Excluir", type="primary", use_container_width=True):
+        if excluir_carteira_cliente(id_cart):
+            st.success("Excluído."); time.sleep(1); st.rerun()
+    if c2.button("❌ Cancelar", use_container_width=True): st.rerun()
+
 # =============================================================================
-# 5. INTERFACE PRINCIPAL
+# 4. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_fator_conferi():
@@ -472,6 +475,7 @@ def app_fator_conferi():
             
             for _, row in df_cli.iterrows():
                 with st.container():
+                    # Layout Colunas
                     cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 2])
                     
                     # Nome + CPF
