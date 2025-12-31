@@ -9,7 +9,7 @@ import modulo_pf_cadastro as pf_core
 import modulo_pf_pesquisa as pf_pesquisa
 
 # =============================================================================
-# 1. MOTOR DE BUSCA INTERNO (Desvinculado da Pesquisa Ampla)
+# 1. MOTOR DE BUSCA INTERNO (CORRIGIDO E OTIMIZADO)
 # =============================================================================
 
 def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina=50):
@@ -19,32 +19,57 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
-            # ATUALIZADO: JOINs Padronizados (cpf em vez de cpf_ref)
+            # --- MAPA DE JOINS (LIMPO) ---
+            # Removemos a dependência hardcoded de 'emp' dentro das outras tabelas
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
                 'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf",
                 'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
-                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula",
-                'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
+                # Tabelas filhas (dependem de 'emp')
+                'banco_pf.pf_contratos': "JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula",
+                'banco_pf.pf_matricula_dados_clt': "LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
             
+            # --- RESOLUÇÃO DE DEPENDÊNCIAS DE TABELA ---
+            tabelas_necessarias = set()
+            
+            for regra in regras_ativas:
+                tabela = regra['tabela']
+                # Compatibilidade com nomes antigos
+                if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
+                tabelas_necessarias.add(tabela)
+
+            # Regra de Dependência: Se usar CLT ou Contratos, PRECISA da tabela de Emprego (emp)
+            if 'banco_pf.pf_matricula_dados_clt' in tabelas_necessarias or 'banco_pf.pf_contratos' in tabelas_necessarias:
+                tabelas_necessarias.add('banco_pf.pf_emprego_renda')
+
+            # Montagem dos JOINs na ordem correta
             active_joins = []
+            
+            # 1. Prioridade: Emprego Renda (Pai)
+            if 'banco_pf.pf_emprego_renda' in tabelas_necessarias:
+                active_joins.append(joins_map['banco_pf.pf_emprego_renda'])
+            
+            # 2. Demais tabelas
+            for tbl in tabelas_necessarias:
+                if tbl == 'banco_pf.pf_emprego_renda': continue # Já adicionado
+                if tbl in joins_map:
+                    active_joins.append(joins_map[tbl])
+
+            # --- CONSTRUÇÃO DO WHERE ---
             conditions = []
             params = []
 
             for regra in regras_ativas:
                 tabela = regra['tabela']
+                # Normalização do nome da tabela
+                if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
+                
                 coluna = regra['coluna']
                 op = regra['operador']
                 val_raw = regra['valor']
                 tipo = regra.get('tipo', 'texto')
-                
-                # Correção de nome de tabela legada se existir na regra salva
-                if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
-                
-                if tabela in joins_map and joins_map[tabela] not in active_joins:
-                    active_joins.append(joins_map[tabela])
                 
                 col_sql = f"{coluna}"
                 if coluna == 'virtual_idade':
@@ -95,7 +120,7 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             return df.fillna(""), total
         except Exception as e: 
             st.error(f"Erro SQL Interno: {e}")
-            conn.close()
+            if conn: conn.close()
             return pd.DataFrame(), 0
             
     return pd.DataFrame(), 0
@@ -111,7 +136,6 @@ def salvar_campanha(nome, objetivo, status, filtros_lista):
             filtros_json = json.dumps(filtros_lista, default=str)
             txt_visual = "; ".join([f.get('descricao_visual', '') for f in filtros_lista])
             cur = conn.cursor()
-            # ATUALIZADO: banco_pf.pf_campanhas
             cur.execute("""
                 INSERT INTO banco_pf.pf_campanhas (nome_campanha, objetivo, status, filtros_config, filtros_aplicaveis, data_criacao)
                 VALUES (%s, %s, %s, %s, %s, %s)
@@ -164,7 +188,6 @@ def vincular_campanha_aos_clientes(id_campanha, nome_campanha, lista_ids_cliente
             cur = conn.cursor()
             if not lista_ids_clientes: return 0
             ids_tuple = tuple(int(x) for x in lista_ids_clientes)
-            # ATUALIZADO: banco_pf.pf_dados
             query = f"UPDATE banco_pf.pf_dados SET id_campanha = %s WHERE id IN %s"
             cur.execute(query, (str(id_campanha), ids_tuple))
             afetados = cur.rowcount
@@ -197,12 +220,16 @@ def dialog_editar_campanha(dados_atuais):
         st.caption("Adicionar nova regra:")
         opcoes_campos = []
         mapa_campos = {}
-        # ATUALIZADO: Carrega campos completos do módulo de pesquisa
-        for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
-            for item in lista:
-                chave = f"{grupo} -> {item['label']}"
-                opcoes_campos.append(chave)
-                mapa_campos[chave] = item
+        
+        # --- CARGA DINÂMICA DE CAMPOS (CORREÇÃO APLICADA) ---
+        # Lê sempre do módulo de pesquisa para garantir que novos campos apareçam
+        if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
+            for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
+                for item in lista:
+                    chave = f"{grupo} -> {item['label']}"
+                    opcoes_campos.append(chave)
+                    mapa_campos[chave] = item
+        # ----------------------------------------------------
 
         ec1, ec2, ec3, ec4 = st.columns([2, 1.5, 2, 1])
         cp_sel = ec1.selectbox("Campo", opcoes_campos, key="ed_cp")
@@ -210,13 +237,14 @@ def dialog_editar_campanha(dados_atuais):
         val_sel = ec3.text_input("Valor", key="ed_val")
         
         if ec4.button("➕ Add", key="btn_add_edit"):
-            dado = mapa_campos[cp_sel]
-            st.session_state['edit_filtros'].append({
-                'label': dado['label'], 'coluna': dado['coluna'], 'tabela': dado['tabela'],
-                'tipo': dado['tipo'], 'operador': op_sel, 'valor': val_sel,
-                'descricao_visual': f"({dado['tabela']}, {dado['label']}, {op_sel}, {val_sel})"
-            })
-            st.rerun()
+            if cp_sel in mapa_campos:
+                dado = mapa_campos[cp_sel]
+                st.session_state['edit_filtros'].append({
+                    'label': dado['label'], 'coluna': dado['coluna'], 'tabela': dado['tabela'],
+                    'tipo': dado.get('tipo', 'texto'), 'operador': op_sel, 'valor': val_sel,
+                    'descricao_visual': f"({dado['tabela']}, {dado['label']}, {op_sel}, {val_sel})"
+                })
+                st.rerun()
 
     if st.session_state['edit_filtros']:
         st.write("📋 **Filtros Ativos:**")
@@ -279,12 +307,15 @@ def app_campanhas():
 
             opcoes_campos = []
             mapa_campos = {}
-            # ATUALIZADO: Carrega campos completos do módulo de pesquisa
-            for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
-                for item in lista:
-                    chave = f"{grupo} -> {item['label']}"
-                    opcoes_campos.append(chave)
-                    mapa_campos[chave] = item
+            
+            # --- CARGA DINÂMICA DE CAMPOS ---
+            if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
+                for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
+                    for item in lista:
+                        chave = f"{grupo} -> {item['label']}"
+                        opcoes_campos.append(chave)
+                        mapa_campos[chave] = item
+            # -------------------------------
 
             rc1, rc2, rc3, rc4 = st.columns([2, 1.5, 2, 1])
             campo_sel = rc1.selectbox("Campo", opcoes_campos, key="cp_new_camp")
@@ -292,11 +323,11 @@ def app_campanhas():
             valor_sel = rc3.text_input("Valor", key="val_new_camp")
             
             if rc4.form_submit_button("➕ Incluir"):
-                if valor_sel:
+                if valor_sel and campo_sel in mapa_campos:
                     dado = mapa_campos[campo_sel]
                     st.session_state['campanha_filtros_temp'].append({
                         'label': dado['label'], 'coluna': dado['coluna'], 'tabela': dado['tabela'],
-                        'tipo': dado['tipo'], 'operador': op_sel, 'valor': valor_sel,
+                        'tipo': dado.get('tipo', 'texto'), 'operador': op_sel, 'valor': valor_sel,
                         'descricao_visual': f"({dado['tabela']}, {dado['label']}, {op_sel}, {valor_sel})"
                     })
                     st.rerun()
@@ -357,11 +388,12 @@ def app_campanhas():
             
             opcoes_campos = []
             mapa_campos = {}
-            for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
-                for item in lista:
-                    chave = f"{grupo} -> {item['label']}"
-                    opcoes_campos.append(chave)
-                    mapa_campos[chave] = item
+            if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
+                for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
+                    for item in lista:
+                        chave = f"{grupo} -> {item['label']}"
+                        opcoes_campos.append(chave)
+                        mapa_campos[chave] = item
 
             fe1, fe2, fe3, fe4 = st.columns([2, 1.5, 2, 1])
             ex_campo = fe1.selectbox("Campo Extra", opcoes_campos, key="cp_ex")
@@ -369,11 +401,12 @@ def app_campanhas():
             ex_val = fe3.text_input("Valor", key="val_ex")
             
             if fe4.button("➕ Add", key="add_ex"):
-                dado_ex = mapa_campos[ex_campo]
-                st.session_state['filtros_extras'].append({
-                    'label': dado_ex['label'], 'coluna': dado_ex['coluna'], 'tabela': dado_ex['tabela'],
-                    'tipo': dado_ex['tipo'], 'operador': ex_op, 'valor': ex_val
-                })
+                if ex_campo in mapa_campos:
+                    dado_ex = mapa_campos[ex_campo]
+                    st.session_state['filtros_extras'].append({
+                        'label': dado_ex['label'], 'coluna': dado_ex['coluna'], 'tabela': dado_ex['tabela'],
+                        'tipo': dado_ex.get('tipo', 'texto'), 'operador': ex_op, 'valor': ex_val
+                    })
             
             if st.session_state['filtros_extras']:
                 st.write("Extras:")
