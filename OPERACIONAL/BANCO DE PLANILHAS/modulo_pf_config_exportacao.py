@@ -81,7 +81,6 @@ def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
     if not conn or not lista_cpfs: return pd.DataFrame()
     
     try:
-        # Busca a chave técnica para decidir o motor (padrão é o fixo)
         cur = conn.cursor()
         cur.execute("SELECT codigo_de_consulta FROM banco_pf.pf_modelos_exportacao WHERE id=%s", (int(id_modelo),))
         res = cur.fetchone()
@@ -100,6 +99,11 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
 
         # 1. Dados Pessoais
         df_dados = pd.read_sql(f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})", conn, params=params)
+        
+        # REMOVE COLUNAS INDESEJADAS
+        cols_rem = ['data_criacao', 'importacao_id', 'id_campanha']
+        df_dados.drop(columns=cols_rem, inplace=True, errors='ignore')
+        
         df_dados['cpf'] = df_dados['cpf'].apply(pf_core.formatar_cpf_visual)
 
         # 2. Dados Satélites
@@ -109,7 +113,7 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
         df_mail = pd.read_sql(f"SELECT cpf, email FROM banco_pf.pf_emails WHERE cpf IN ({placeholders})", conn, params=params)
         df_end = pd.read_sql(f"SELECT cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN ({placeholders})", conn, params=params)
 
-        # Função de Pivotagem Fixa (Garante colunas mesmo sem dados)
+        # Função de Pivotagem Fixa
         def pivotar_para_layout_fixo(df, col_id, qtd_max):
             if df.empty:
                 return pd.DataFrame(columns=[col_id])
@@ -155,6 +159,7 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
 # PARTE 2: INTERFACE DO USUÁRIO (TELA)
 # =============================================================================
 
+# A FUNÇÃO ABAIXO RESOLVE O SEU ERRO DE ATTRIBUTE ERROR
 def app_config_exportacao():
     st.markdown("## ⚙️ Configuração de Modelos de Exportação")
     st.caption("Gerencie as chaves que conectam os modelos de tela às regras de código (motor fixo).")
@@ -169,7 +174,6 @@ def app_config_exportacao():
             
             if st.form_submit_button("💾 Salvar Modelo"):
                 if nome and chave_motor:
-                    # Chama a função local
                     if salvar_modelo(nome, chave_motor, desc):
                         st.success(f"Modelo '{nome}' salvo com sucesso!")
                         time.sleep(1)
