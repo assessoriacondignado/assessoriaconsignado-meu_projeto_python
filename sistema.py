@@ -19,11 +19,12 @@ pastas_modulos = [
     "OPERACIONAL/CLIENTES E USUARIOS",
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
-    "OPERACIONAL/MODULO_CHAT",  # <--- NOVA PASTA DO CHAT
+    "OPERACIONAL/MODULO_CHAT",
     "COMERCIAL/PRODUTOS E SERVICOS",
     "COMERCIAL/PEDIDOS",
     "COMERCIAL/TAREFAS",
-    "COMERCIAL/RENOVACAO E FEEDBACK"
+    "COMERCIAL/RENOVACAO E FEEDBACK",
+    "CONEXÕES"  # <--- NOVA PASTA ADICIONADA
 ]
 
 for pasta in pastas_modulos:
@@ -39,10 +40,10 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # Importação do novo módulo de Chat
+    # Importação do módulo de Chat
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     
-    # Importação do novo módulo Pessoa Física
+    # Importação do módulo Pessoa Física
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     
     # Módulos Comerciais
@@ -53,6 +54,9 @@ try:
     
     # Módulo de Campanhas (se existir)
     modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
+
+    # NOVO: Módulo Conexões
+    modulo_conexoes = __import__('modulo_conexoes') if os.path.exists(os.path.join(BASE_DIR, "CONEXÕES/modulo_conexoes.py")) else None
 
 except Exception as e:
     st.error(f"Erro ao carregar módulos: {e}")
@@ -209,15 +213,16 @@ def main():
             
             cargo = st.session_state.get('usuario_cargo', 'Cliente')
             
-            # ATUALIZAÇÃO: "Início" como primeira opção para abrir o Chat
+            # ATUALIZAÇÃO: Menu atualizado com a opção CONEXÕES
             opcoes = ["Início"]
             if cargo in ["Admin", "Gerente"]:
-                opcoes += ["COMERCIAL", "FINANCEIRO", "OPERACIONAL"]
+                opcoes += ["COMERCIAL", "FINANCEIRO", "OPERACIONAL", "CONEXÕES"]
             else:
                 opcoes += ["OPERACIONAL"]
                 
+            # Ícone "plug" adicionado para Conexões
             mod = option_menu("MENU PRINCIPAL", opcoes, 
-                              icons=["chat-dots", "cart", "cash", "gear"], 
+                              icons=["chat-dots", "cart", "cash", "gear", "plug"], 
                               default_index=0)
             
             sub = None
@@ -225,7 +230,6 @@ def main():
                 sub = option_menu(None, ["Produtos", "Pedidos", "Tarefas", "Renovação"], 
                                   icons=["box", "cart-check", "check2-all", "arrow-repeat"])
             elif mod == "OPERACIONAL":
-                # MODIFICADO: Removido "Campanhas" das opções e "megaphone" dos ícones
                 sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "WhatsApp"], 
                                   icons=["people", "lock", "person-vcard", "whatsapp"])
             
@@ -255,5 +259,12 @@ def main():
             elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica()
             elif sub == "Campanhas" and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
             elif sub == "WhatsApp": modulo_whats_controlador.app_wapi()
+
+        # 4. MÓDULO CONEXÕES (NOVO)
+        elif mod == "CONEXÕES":
+            if modulo_conexoes:
+                modulo_conexoes.app_conexoes()
+            else:
+                st.warning("Módulo 'modulo_conexoes.py' não encontrado na pasta CONEXÕES.")
 
 if __name__ == "__main__": main()
