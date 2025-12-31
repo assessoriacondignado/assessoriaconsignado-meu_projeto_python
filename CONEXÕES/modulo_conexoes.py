@@ -104,13 +104,10 @@ def app_conexoes():
     df = listar_conexoes(filtro_tipo, busca)
     
     if not df.empty:
-        # Cabeçalho Visual
+        # Cabeçalho Visual Simplificado
         st.markdown("""
         <div style="display: flex; font-weight: bold; color: #555; margin-bottom: 5px; padding-left: 10px;">
-            <div style="flex: 2;">Nome</div>
-            <div style="flex: 1;">Tipo</div>
-            <div style="flex: 1;">Status</div>
-            <div style="flex: 2;">Usuário/Key</div>
+            <div style="flex: 4;">Nome da Conexão</div>
             <div style="flex: 0.5; text-align: right;">Ações</div>
         </div>
         """, unsafe_allow_html=True)
@@ -118,55 +115,53 @@ def app_conexoes():
         for _, row in df.iterrows():
             # CARD DA CONEXÃO
             with st.container(border=True):
-                # Linha Principal (Resumo)
-                c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 2, 0.5])
+                # Linha Principal (Apenas Nome e Excluir)
+                c_head1, c_head2 = st.columns([5, 0.5])
                 
-                # Nome e Descrição
-                c1.markdown(f"**{row['nome_conexao']}**")
-                if row['descricao']:
-                    c1.caption(row['descricao'])
+                with c_head1:
+                    st.markdown(f"**{row['nome_conexao']}**")
+                    if row['descricao']:
+                        st.caption(row['descricao'])
                 
-                # Tipo (Badge Visual)
-                cor_badge = "#e3f2fd" if row['tipo_conexao'] == 'SAIDA' else "#f3e5f5"
-                cor_texto = "#0d47a1" if row['tipo_conexao'] == 'SAIDA' else "#4a148c"
-                c2.markdown(f"<span style='background-color:{cor_badge}; color:{cor_texto}; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;'>{row['tipo_conexao']}</span>", unsafe_allow_html=True)
-                
-                # Status
-                icon_status = "🟢 ATIVO" if row['status'] == 'ATIVO' else "🔴 INATIVO"
-                c3.write(icon_status)
-                
-                # Credencial (Mascarada)
-                credencial = row['usuario_conexao'] if row['usuario_conexao'] else (row['key_conexao'][:5] + "••••" if row['key_conexao'] else "-")
-                c4.code(credencial, language="text")
-                
-                # Botão Excluir
-                if c5.button("🗑️", key=f"del_{row['id']}", help="Excluir Conexão"):
-                    excluir_conexao(row['id'])
-                    st.rerun()
+                with c_head2:
+                    # Botão Excluir
+                    if st.button("🗑️", key=f"del_{row['id']}", help="Excluir Conexão"):
+                        excluir_conexao(row['id'])
+                        st.rerun()
 
-                # --- ÁREA RETRÁTIL (MENU DE FUNÇÕES) ---
-                with st.expander(f"⚙️ Menu de Funções: {row['nome_conexao']}"):
+                # --- ÁREA RETRÁTIL ---
+                # Detalhes técnicos e Botões específicos
+                with st.expander(f"🔻 Detalhes e Funções"):
                     
-                    # [ATUALIZAÇÃO] Botão Especial para FATOR CONFERI
+                    st.caption("Informações Técnicas:")
+                    # Colunas com os detalhes técnicos movidos para cá
+                    c_det1, c_det2, c_det3 = st.columns(3)
+                    
+                    with c_det1:
+                        st.markdown("**Tipo:**")
+                        # Badge visual
+                        cor_badge = "#e3f2fd" if row['tipo_conexao'] == 'SAIDA' else "#f3e5f5"
+                        cor_texto = "#0d47a1" if row['tipo_conexao'] == 'SAIDA' else "#4a148c"
+                        st.markdown(f"<span style='background-color:{cor_badge}; color:{cor_texto}; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;'>{row['tipo_conexao']}</span>", unsafe_allow_html=True)
+
+                    with c_det2:
+                        st.markdown("**Status:**")
+                        icon_status = "🟢 ATIVO" if row['status'] == 'ATIVO' else "🔴 INATIVO"
+                        st.write(icon_status)
+
+                    with c_det3:
+                        st.markdown("**Usuário/Token:**")
+                        # Credencial (Mascarada)
+                        credencial = row['usuario_conexao'] if row['usuario_conexao'] else (row['key_conexao'][:5] + "••••" if row['key_conexao'] else "-")
+                        st.code(credencial, language="text")
+
+                    # [AÇÃO ESPECÍFICA] Botão Especial para FATOR CONFERI
+                    # Se for Fator Conferi, mostra o botão grande abaixo dos detalhes
                     if "FATOR" in row['nome_conexao'].upper():
-                        st.info("Painel Especializado Disponível")
+                        st.markdown("---")
                         if st.button(f"🚀 Acessar Painel Fator", key=f"btn_fator_{row['id']}", type="primary", use_container_width=True):
                             st.session_state['navegacao_conexoes'] = 'FATOR_CONFERI'
                             st.rerun()
-                        st.divider()
-
-                    # Funções Genéricas
-                    st.markdown("Operações Rápidas:")
-                    col_func1, col_func2, col_func3 = st.columns(3)
-                    
-                    if col_func1.button("🔍 Teste Conexão", key=f"btn_test_{row['id']}", use_container_width=True):
-                        st.toast(f"Testando ping para {row['nome_conexao']}...")
-                        
-                    if col_func2.button("💰 Consulta Saldo", key=f"btn_saldo_{row['id']}", use_container_width=True):
-                        st.toast(f"Consultando saldo genérico...")
-                        
-                    if col_func3.button("📜 Ver Logs", key=f"btn_hist_{row['id']}", use_container_width=True):
-                        st.info("Sem logs recentes.")
 
     else:
         st.info(f"Nenhuma conexão encontrada para os filtros.")
