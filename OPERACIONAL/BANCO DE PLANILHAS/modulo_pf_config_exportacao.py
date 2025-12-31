@@ -1,8 +1,31 @@
 import streamlit as st
 import pandas as pd
 import time
+import psycopg2
 from datetime import date
 import modulo_pf_cadastro as pf_core
+
+# =============================================================================
+# MAPEAMENTO DE TABELAS BRUTAS (Chave -> Tabela SQL)
+# =============================================================================
+MAPA_TABELAS_BRUTAS = {
+    "pf_telefones": "banco_pf.pf_telefones",
+    "pf_e-mails": "banco_pf.pf_emails",
+    "pf_endereços": "banco_pf.pf_enderecos",
+    "pf_convenio": "banco_pf.cpf_convenio", # Baseado no padrão de importação
+    "pf_campanhas": "banco_pf.pf_campanhas",
+    "pf_campanhas_exportação": "banco_pf.pf_campanhas",
+    "pf_dados": "banco_pf.pf_dados",
+    "pf_contratos": "banco_pf.pf_contratos",
+    "pf_emprego_renda": "banco_pf.pf_emprego_renda",
+    "pf_historico_importações": "banco_pf.pf_historico_importacoes",
+    "pf_maricula_dados_clt": "banco_pf.pf_matricula_dados_clt",
+    "pf_modelos_exportacao": "banco_pf.pf_modelos_exportacao",
+    "pf_modelos_filtro_fixo": "banco_pf.pf_modelos_filtro_fixo",
+    "pf_péradpres_de_filtro": "banco_pf.pf_operadores_de_filtro",
+    "pf_referecias": "banco_pf.pf_referencias",
+    "pf_tipo_exportacao": "banco_pf.pf_modelos_exportacao" 
+}
 
 # =============================================================================
 # PARTE 1: FUNÇÕES DE BANCO (CRUD) E MOTOR DE EXPORTAÇÃO
@@ -78,18 +101,100 @@ def excluir_modelo(id_mod):
 
 def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
     conn = pf_core.get_conn()
-    if not conn or not lista_cpfs: return pd.DataFrame()
+    if not conn: return pd.DataFrame()
     
     try:
         cur = conn.cursor()
         cur.execute("SELECT codigo_de_consulta FROM banco_pf.pf_modelos_exportacao WHERE id=%s", (int(id_modelo),))
         res = cur.fetchone()
+        codigo_consulta = res[0] if res else ""
         
-        # Executa sempre o motor de layout fixo completo
-        return _motor_layout_fixo_completo(conn, lista_cpfs)
+        # 1. Verifica se é um modelo de Tabela Bruta (Mapeado)
+        if codigo_consulta in MAPA_TABELAS_BRUTAS:
+            tabela_sql = MAPA_TABELAS_BRUTAS[codigo_consulta]
+            return _motor_tabela_bruta(conn, tabela_sql, lista_cpfs)
+        
+        # 2. Caso contrário, usa o motor de layout fixo completo (Padrão)
+        else:
+            if not lista_cpfs: return pd.DataFrame() # Layout fixo precisa de CPFs
+            return _motor_layout_fixo_completo(conn, lista_cpfs)
             
     except Exception as e:
         st.error(f"Erro no roteamento: {e}")
+        return pd.DataFrame()
+
+def _motor_tabela_bruta(conn, tabela_sql, lista_cpfs):
+    """
+    Exporta TODAS as colunas de uma tabela específica.
+    Se a tabela tiver coluna CPF/Matrícula, filtra pelos CPFs da pesquisa.
+    Caso contrário, exporta tudo (Cuidado com tabelas grandes).
+    """
+    try:
+        # Descobre as colunas da tabela
+        cur = conn.cursor()
+        # Tratamento para schema.tabela
+        if '.' in tabela_sql:
+            schema, table = tabela_sql.split('.')
+        else:
+            schema, table = 'public', tabela_sql
+            
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position
+        """, (schema, table))
+        colunas = [r[0] for r in cur.fetchall()]
+        
+        if not colunas:
+            st.warning(f"Tabela {tabela_sql} não encontrada ou sem colunas.")
+            return pd.DataFrame()
+
+        cols_str = ", ".join(colunas)
+        query = f"SELECT {cols_str} FROM {tabela_sql}"
+        params = []
+        
+        # Lógica de Filtro Inteligente
+        # Se tivermos lista de CPFs, tentamos filtrar para não trazer o banco todo
+        if lista_cpfs:
+            if 'cpf' in colunas:
+                placeholders = ",".join(["%s"] * len(lista_cpfs))
+                query += f" WHERE cpf IN ({placeholders})"
+                params = tuple(lista_cpfs)
+            
+            elif 'cpf_ref' in colunas:
+                placeholders = ",".join(["%s"] * len(lista_cpfs))
+                query += f" WHERE cpf_ref IN ({placeholders})"
+                params = tuple(lista_cpfs)
+            
+            elif 'matricula' in colunas or 'matricula_ref' in colunas:
+                # Tenta buscar as matrículas desses CPFs primeiro
+                ph_cpf = ",".join(["%s"] * len(lista_cpfs))
+                sql_mat = f"SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN ({ph_cpf})"
+                # Precisamos de um cursor novo ou executar direto no pandas
+                df_mats = pd.read_sql(sql_mat, conn, params=tuple(lista_cpfs))
+                
+                if not df_mats.empty:
+                    mats = df_mats['matricula'].dropna().unique().tolist()
+                    if mats:
+                        ph_mat = ",".join(["%s"] * len(mats))
+                        col_mat = 'matricula' if 'matricula' in colunas else 'matricula_ref'
+                        query += f" WHERE {col_mat} IN ({ph_mat})"
+                        params = tuple(mats)
+                    else:
+                        # CPFs não tem matrícula, então resultado da tabela de contratos deve ser vazio
+                        return pd.DataFrame(columns=colunas)
+                else:
+                    return pd.DataFrame(columns=colunas)
+
+        # Se não tiver filtro (tabela de config) ou não tiver lista_cpfs, faz SELECT ALL
+        df = pd.read_sql(query, conn, params=params)
+        conn.close()
+        return df
+        
+    except Exception as e:
+        st.error(f"Erro ao exportar tabela bruta {tabela_sql}: {e}")
+        conn.close()
         return pd.DataFrame()
 
 def _motor_layout_fixo_completo(conn, lista_cpfs):
@@ -156,20 +261,64 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
         return pd.DataFrame()
 
 # =============================================================================
-# PARTE 2: INTERFACE DO USUÁRIO (TELA)
+# PARTE 2: INTERFACE DO USUÁRIO (TELA) E AUTO-CONFIGURAÇÃO
 # =============================================================================
 
-# A FUNÇÃO ABAIXO RESOLVE O SEU ERRO DE ATTRIBUTE ERROR
+def verificar_criar_modelos_padrao():
+    """Cria automaticamente os modelos de planilha se não existirem."""
+    conn = pf_core.get_conn()
+    if not conn: return
+    try:
+        cur = conn.cursor()
+        
+        # Lista dos modelos exigidos
+        modelos_padrao = [
+            ("Planilha: pf_telefones", "pf_telefones", "Exportação bruta da tabela de telefones"),
+            ("Planilha: pf_e-mails", "pf_e-mails", "Exportação bruta da tabela de e-mails"),
+            ("Planilha: pf_endereços", "pf_endereços", "Exportação bruta da tabela de endereços"),
+            ("Planilha: pf_convenio", "pf_convenio", "Exportação bruta da tabela de convênios"),
+            ("Planilha: pf_campanhas", "pf_campanhas", "Exportação bruta da tabela de campanhas"),
+            ("Planilha: pf_campanhas_exportação", "pf_campanhas_exportação", "Exportação bruta de campanhas (Backup)"),
+            ("Planilha: pf_dados", "pf_dados", "Exportação bruta da tabela de dados pessoais"),
+            ("Planilha: pf_contratos", "pf_contratos", "Exportação bruta da tabela de contratos"),
+            ("Planilha: pf_emprego_renda", "pf_emprego_renda", "Exportação bruta da tabela de emprego e renda"),
+            ("Planilha: pf_historico_importações", "pf_historico_importações", "Histórico de Importações"),
+            ("Planilha: pf_maricula_dados_clt", "pf_maricula_dados_clt", "Dados detalhados CLT"),
+            ("Planilha: pf_modelos_exportacao", "pf_modelos_exportacao", "Configuração de Modelos de Exportação"),
+            ("Planilha: pf_modelos_filtro_fixo", "pf_modelos_filtro_fixo", "Configuração de Filtros Fixos"),
+            ("Planilha: pf_péradpres_de_filtro", "pf_péradpres_de_filtro", "Configuração de Operadores"),
+            ("Planilha: pf_referecias", "pf_referecias", "Tabela de Referências"),
+            ("Planilha: pf_tipo_exportacao", "pf_tipo_exportacao", "Tipos de Exportação")
+        ]
+
+        for nome, chave, desc in modelos_padrao:
+            # Verifica se já existe pela chave
+            cur.execute("SELECT id FROM banco_pf.pf_modelos_exportacao WHERE codigo_de_consulta = %s", (chave,))
+            if not cur.fetchone():
+                cur.execute("""
+                    INSERT INTO banco_pf.pf_modelos_exportacao 
+                    (nome_modelo, codigo_de_consulta, descricao, status, data_criacao) 
+                    VALUES (%s, %s, %s, 'ATIVO', CURRENT_DATE)
+                """, (nome, chave, desc))
+        
+        conn.commit()
+        conn.close()
+    except:
+        conn.close()
+
 def app_config_exportacao():
+    # Garante que os modelos existam ao abrir a tela
+    verificar_criar_modelos_padrao()
+    
     st.markdown("## ⚙️ Configuração de Modelos de Exportação")
-    st.caption("Gerencie as chaves que conectam os modelos de tela às regras de código (motor fixo).")
+    st.caption("Gerencie as chaves que conectam os modelos de tela às regras de código (motor fixo e tabelas brutas).")
 
     # --- Bloco para Criar Novo ---
     with st.expander("➕ Criar Novo Modelo de Exportação", expanded=False):
         with st.form("form_novo_modelo"):
             nome = st.text_input("Nome Comercial do Modelo", placeholder="Ex: Dados Cadastrais Simples")
             chave_motor = st.text_input("Chave do Motor (Código de Consulta)", 
-                                        help="Digite: Dados_Cadastrais_Simples")
+                                        help="Digite: Dados_Cadastrais_Simples ou nome da tabela (ex: pf_dados)")
             desc = st.text_area("Descrição / Observações")
             
             if st.form_submit_button("💾 Salvar Modelo"):
@@ -189,7 +338,10 @@ def app_config_exportacao():
     if not df_modelos.empty:
         for _, row in df_modelos.iterrows():
             chave_exibicao = row.get('codigo_de_consulta') or "SEM_CHAVE"
-            with st.expander(f"📦 {row['nome_modelo']} (Chave: {chave_exibicao})"):
+            # Destaque visual se for tabela bruta
+            icon = "🗃️" if chave_exibicao in MAPA_TABELAS_BRUTAS else "📦"
+            
+            with st.expander(f"{icon} {row['nome_modelo']} (Chave: {chave_exibicao})"):
                 st.write(f"**Descrição:** {row['descricao']}")
                 st.caption(f"Criado em: {row['data_criacao']} | Status: {row['status']}")
                 
