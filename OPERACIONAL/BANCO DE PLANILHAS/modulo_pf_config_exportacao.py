@@ -210,7 +210,7 @@ def _motor_clt_matricula(conn, lista_cpfs):
         if mats:
             ph_mat = ",".join(["%s"] * len(mats))
             q_clt = f"""
-                SELECT matricula_ref as matricula, convenio as convenio_clt, 
+                SELECT matricula as matricula, convenio as convenio_clt, 
                        cnpj_nome, cnpj_numero, qtd_funcionarios, 
                        data_abertura_empresa, 
                        cnae_nome, cnae_codigo, 
@@ -218,7 +218,7 @@ def _motor_clt_matricula(conn, lista_cpfs):
                        cbo_codigo, cbo_nome, 
                        data_inicio_emprego
                 FROM banco_pf.pf_matricula_dados_clt 
-                WHERE matricula_ref IN ({ph_mat})
+                WHERE matricula IN ({ph_mat})
             """
             df_clt = pd.read_sql(q_clt, conn, params=tuple(mats))
             
