@@ -207,7 +207,6 @@ def buscar_extrato_cliente(id_carteira):
     conn = get_conn()
     if conn:
         try:
-            # Inclui o ID da transação para poder editar/excluir
             query = """
                 SELECT id, data_transacao, tipo, valor, saldo_novo, motivo, usuario_responsavel 
                 FROM conexoes.fator_cliente_transacoes 
@@ -220,38 +219,27 @@ def buscar_extrato_cliente(id_carteira):
         except: conn.close()
     return pd.DataFrame()
 
-# Novas funções para editar/excluir transações do extrato
 def editar_transacao_db(id_transacao, id_carteira, novo_tipo, novo_valor, novo_motivo):
-    # ATENÇÃO: Editar transação antiga altera o saldo atual? 
-    # Simplificação: Apenas atualiza o registro visual. Recalcular saldo retroativo é complexo.
-    # Vamos assumir que ajusta o registro e faz um ajuste de saldo compensatório se necessário, 
-    # ou apenas edita o texto/valor visualmente.
-    # Para ser seguro e simples: Editamos o registro e atualizamos o saldo da carteira com a DIFERENÇA.
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            # Pega valor antigo para calcular diferença
             cur.execute("SELECT tipo, valor FROM conexoes.fator_cliente_transacoes WHERE id=%s", (id_transacao,))
             res = cur.fetchone()
             if not res: return False
             tipo_ant, valor_ant = res
             valor_ant = float(valor_ant)
             
-            # Calcula impacto no saldo
             fator_ant = -1 if tipo_ant == 'DEBITO' else 1
             fator_novo = -1 if novo_tipo == 'DEBITO' else 1
-            
             diff = (float(novo_valor) * fator_novo) - (valor_ant * fator_ant)
             
-            # Atualiza transação
             cur.execute("""
                 UPDATE conexoes.fator_cliente_transacoes 
                 SET tipo=%s, valor=%s, motivo=%s 
                 WHERE id=%s
             """, (novo_tipo, novo_valor, novo_motivo, id_transacao))
             
-            # Atualiza saldo da carteira com a diferença
             cur.execute("""
                 UPDATE conexoes.fator_cliente_carteira 
                 SET saldo_atual = saldo_atual + %s 
@@ -273,7 +261,6 @@ def excluir_transacao_db(id_transacao, id_carteira):
             if not res: return False
             tipo, valor = res
             
-            # Reverte o saldo (se era debito, devolve; se era credito, tira)
             fator = 1 if tipo == 'DEBITO' else -1
             ajuste = float(valor) * fator
             
@@ -286,7 +273,7 @@ def excluir_transacao_db(id_transacao, id_carteira):
     return False
 
 # =============================================================================
-# 3. DIALOGS (POP-UPS)
+# 3. DIALOGS PRINCIPAIS
 # =============================================================================
 
 @st.dialog("💰 Movimentar Saldo")
@@ -322,72 +309,6 @@ def dialog_novo_cliente_fator():
         if cadastrar_carteira_cliente(int(cli['id']), cli['nome'], custo):
             st.success("Carteira criada!"); st.rerun()
 
-# --- NOVOS DIALOGS DE EDIÇÃO/EXCLUSÃO DO EXTRATO ---
-
-@st.dialog("✏️ Editar Transação")
-def dialog_editar_transacao(transacao, id_carteira):
-    st.write(f"Editando ID: {transacao['id']}")
-    n_tipo = st.selectbox("Tipo", ["CREDITO", "DEBITO"], index=0 if transacao['tipo']=="CREDITO" else 1)
-    n_valor = st.number_input("Valor", value=float(transacao['valor']), step=0.10)
-    n_motivo = st.text_input("Motivo", value=transacao['motivo'])
-    
-    if st.button("Salvar Alterações"):
-        if editar_transacao_db(transacao['id'], id_carteira, n_tipo, n_valor, n_motivo):
-            st.success("Atualizado!"); time.sleep(1); st.rerun()
-        else:
-            st.error("Erro ao atualizar.")
-
-@st.dialog("🗑️ Excluir Transação")
-def dialog_excluir_transacao(id_transacao, id_carteira):
-    st.warning("Tem certeza? O saldo será ajustado automaticamente.")
-    if st.button("Sim, Excluir"):
-        if excluir_transacao_db(id_transacao, id_carteira):
-            st.success("Excluído!"); time.sleep(1); st.rerun()
-
-@st.dialog("📜 Extrato Financeiro", width="large")
-def dialog_extrato(id_cart, nome_cli):
-    st.markdown(f"### Extrato: {nome_cli}")
-    df = buscar_extrato_cliente(id_cart)
-    
-    if not df.empty:
-        # Cabeçalho Fixo Visual
-        st.markdown("""
-        <div style="display: flex; font-weight: bold; background-color: #f0f0f0; padding: 8px; border-radius: 5px;">
-            <div style="flex: 2;">Data</div>
-            <div style="flex: 2;">Motivo</div>
-            <div style="flex: 1;">Tipo</div>
-            <div style="flex: 1;">Valor</div>
-            <div style="flex: 1;">Saldo</div>
-            <div style="flex: 1; text-align: center;">Ações</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        for _, row in df.iterrows():
-            with st.container():
-                c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 1, 1, 1, 1])
-                
-                dt = pd.to_datetime(row['data_transacao']).strftime('%d/%m/%y %H:%M')
-                c1.write(dt)
-                c2.write(row['motivo'])
-                
-                cor_tipo = "green" if row['tipo'] == 'CREDITO' else "red"
-                c3.markdown(f":{cor_tipo}[{row['tipo']}]")
-                
-                c4.write(f"R$ {float(row['valor']):.2f}")
-                c5.write(f"R$ {float(row['saldo_novo']):.2f}")
-                
-                # Botões de Ação na Linha
-                with c6:
-                    bc1, bc2 = st.columns(2)
-                    if bc1.button("✏️", key=f"edt_tr_{row['id']}", help="Editar"):
-                        dialog_editar_transacao(row, id_cart)
-                    if bc2.button("❌", key=f"del_tr_{row['id']}", help="Excluir"):
-                        dialog_excluir_transacao(row['id'], id_cart)
-                
-                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
-    else:
-        st.info("Sem movimentações recentes.")
-
 @st.dialog("✏️ Editar Custo")
 def dialog_editar_custo(id_cart, nome_cli, custo_atual):
     st.write(f"Editando: **{nome_cli}**")
@@ -408,7 +329,114 @@ def dialog_excluir_carteira(id_cart, nome_cli):
     if c2.button("❌ Cancelar", use_container_width=True): st.rerun()
 
 # =============================================================================
-# 4. INTERFACE PRINCIPAL
+# 4. DIALOG DE EXTRATO COM EDIÇÃO INTERNA (CORREÇÃO DE ERRO DE NESTED)
+# =============================================================================
+
+@st.dialog("📜 Extrato Financeiro", width="large")
+def dialog_extrato(id_cart, nome_cli):
+    st.markdown(f"### Extrato: {nome_cli}")
+    
+    # Gerenciamento de Estado para Edição/Exclusão dentro do Dialog
+    if 'modo_extrato' not in st.session_state: st.session_state['modo_extrato'] = None
+    if 'id_trans_sel' not in st.session_state: st.session_state['id_trans_sel'] = None
+
+    # --- TELA DE EDIÇÃO ---
+    if st.session_state['modo_extrato'] == 'editar':
+        st.info("✏️ Editando Transação")
+        
+        # Busca dados da transação selecionada
+        conn = get_conn()
+        df_t = pd.read_sql(f"SELECT * FROM conexoes.fator_cliente_transacoes WHERE id = {st.session_state['id_trans_sel']}", conn)
+        conn.close()
+        
+        if not df_t.empty:
+            row_t = df_t.iloc[0]
+            with st.form("form_edit_trans"):
+                n_tipo = st.selectbox("Tipo", ["CREDITO", "DEBITO"], index=0 if row_t['tipo']=="CREDITO" else 1)
+                n_valor = st.number_input("Valor", value=float(row_t['valor']), step=0.10)
+                n_motivo = st.text_input("Motivo", value=row_t['motivo'])
+                
+                c_salvar, c_cancel = st.columns(2)
+                if c_salvar.form_submit_button("💾 Salvar"):
+                    if editar_transacao_db(row_t['id'], id_cart, n_tipo, n_valor, n_motivo):
+                        st.success("Atualizado!")
+                        st.session_state['modo_extrato'] = None
+                        st.rerun()
+                
+                if c_cancel.form_submit_button("Cancelar"):
+                    st.session_state['modo_extrato'] = None
+                    st.rerun()
+        else:
+            st.error("Erro ao carregar transação.")
+            if st.button("Voltar"):
+                st.session_state['modo_extrato'] = None
+                st.rerun()
+
+    # --- TELA DE EXCLUSÃO ---
+    elif st.session_state['modo_extrato'] == 'excluir':
+        st.warning("🗑️ Tem certeza que deseja excluir esta transação?")
+        st.caption("O saldo do cliente será recalculado automaticamente.")
+        
+        c_sim, c_nao = st.columns(2)
+        if c_sim.button("✅ Sim, Excluir", key="btn_conf_exc_tr"):
+            if excluir_transacao_db(st.session_state['id_trans_sel'], id_cart):
+                st.success("Excluído!")
+                st.session_state['modo_extrato'] = None
+                st.rerun()
+        
+        if c_nao.button("❌ Não", key="btn_canc_exc_tr"):
+            st.session_state['modo_extrato'] = None
+            st.rerun()
+
+    # --- TELA DE LISTAGEM (PADRÃO) ---
+    else:
+        df = buscar_extrato_cliente(id_cart)
+        if not df.empty:
+            # Cabeçalho Visual
+            st.markdown("""
+            <div style="display: flex; font-weight: bold; background-color: #f0f0f0; padding: 8px; border-radius: 5px; margin-bottom: 10px;">
+                <div style="flex: 2;">Data</div>
+                <div style="flex: 3;">Motivo</div>
+                <div style="flex: 1;">Tipo</div>
+                <div style="flex: 1.5;">Valor</div>
+                <div style="flex: 1.5;">Saldo</div>
+                <div style="flex: 1.5; text-align: center;">Ações</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            for _, row in df.iterrows():
+                with st.container():
+                    c1, c2, c3, c4, c5, c6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
+                    
+                    dt = pd.to_datetime(row['data_transacao']).strftime('%d/%m/%y %H:%M')
+                    c1.write(dt)
+                    c2.write(row['motivo'])
+                    
+                    cor_tipo = "green" if row['tipo'] == 'CREDITO' else "red"
+                    c3.markdown(f":{cor_tipo}[{row['tipo']}]")
+                    
+                    c4.write(f"R$ {float(row['valor']):.2f}")
+                    c5.write(f"R$ {float(row['saldo_novo']):.2f}")
+                    
+                    # Botões de Ação na Linha (Usando Session State para evitar erro de Dialog aninhado)
+                    with c6:
+                        bc1, bc2 = st.columns(2)
+                        if bc1.button("✏️", key=f"edt_tr_{row['id']}"):
+                            st.session_state['modo_extrato'] = 'editar'
+                            st.session_state['id_trans_sel'] = row['id']
+                            st.rerun()
+                            
+                        if bc2.button("❌", key=f"del_tr_{row['id']}"):
+                            st.session_state['modo_extrato'] = 'excluir'
+                            st.session_state['id_trans_sel'] = row['id']
+                            st.rerun()
+                    
+                    st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+        else:
+            st.info("Sem movimentações recentes.")
+
+# =============================================================================
+# 5. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_fator_conferi():
@@ -444,11 +472,10 @@ def app_fator_conferi():
             
             for _, row in df_cli.iterrows():
                 with st.container():
-                    # Layout Colunas
                     cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 2])
                     
-                    # Nome + CPF (ajustado)
-                    cpf_txt = f" / {row['cpf']}" if row['cpf'] else ""
+                    # Nome + CPF
+                    cpf_txt = f" / {row['cpf']}" if row.get('cpf') else ""
                     cc1.write(f"**{row['nome_cliente']}**{cpf_txt}")
                     
                     val = float(row['saldo_atual'])
@@ -472,7 +499,6 @@ def app_fator_conferi():
                     st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
         else: st.info("Nenhum cliente configurado.")
 
-    # ... (MANTÉM AS OUTRAS ABAS IGUAIS AO CÓDIGO ANTERIOR) ...
     # --- ABA 2: TESTE DE CONSULTA ---
     with tabs[1]:
         st.markdown("#### 1.1 Ambiente de Teste Manual")
