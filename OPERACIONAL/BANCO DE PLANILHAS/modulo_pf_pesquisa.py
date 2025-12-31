@@ -7,23 +7,28 @@ import json  # Suporta lista de colunas no filtro fixo
 import modulo_pf_cadastro as pf_core
 import modulo_pf_config_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS ---
+# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADA COMPLETA) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
+        # Colunas da tabela pf_dados (Alias 'd')
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "CPF", "coluna": "d.cpf", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
+        {"label": "Idade (Cálculo)", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
         {"label": "RG", "coluna": "d.rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "UF RG", "coluna": "d.uf_rg", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "Data Exp. RG", "coluna": "d.data_exp_rg", "tipo": "data", "tabela": "banco_pf.pf_dados"},
-        {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tipo": "data", "tabela": "banco_pf.pf_dados"},
-        {"label": "Idade (Cálculo)", "coluna": "virtual_idade", "tipo": "numero", "tabela": "banco_pf.pf_dados"},
-        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
-        {"label": "Nome do Pai", "coluna": "d.nome_pai", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "CNH", "coluna": "d.cnh", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "PIS", "coluna": "d.pis", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "CTPS/Série", "coluna": "d.ctps_serie", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Nome do Pai", "coluna": "d.nome_pai", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
         {"label": "Nome Procurador", "coluna": "d.nome_procurador", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
-        {"label": "CPF Procurador", "coluna": "d.cpf_procurador", "tipo": "texto", "tabela": "banco_pf.pf_dados"}
+        {"label": "CPF Procurador", "coluna": "d.cpf_procurador", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        # Campos de controle e sistema (Movidos para Dados Pessoais)
+        {"label": "ID Importação", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "ID Campanha", "coluna": "d.id_campanha", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
+        {"label": "Data Criação (Reg)", "coluna": "d.data_criacao", "tipo": "data", "tabela": "banco_pf.pf_dados"}
     ],
     "Endereços": [
         {"label": "Logradouro", "coluna": "ende.rua", "tipo": "texto", "tabela": "banco_pf.pf_enderecos"},
@@ -41,39 +46,37 @@ CAMPOS_CONFIG = {
         {"label": "E-mail", "coluna": "em.email", "tipo": "texto", "tabela": "banco_pf.pf_emails"}
     ],
     "Profissional (Geral)": [
-        {"label": "Matrícula", "coluna": "emp.matricula", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
-        {"label": "Convênio", "coluna": "emp.convenio", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
-        {"label": "Data Atualização (Emp)", "coluna": "emp.data_atualizacao", "tipo": "data", "tabela": "banco_pf.pf_emprego_renda"},
-        {"label": "ID Importação (Emp)", "coluna": "emp.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
+        {"label": "Matrícula (Geral)", "coluna": "emp.matricula", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
+        {"label": "Convênio (Geral)", "coluna": "emp.convenio", "tipo": "texto", "tabela": "banco_pf.pf_emprego_renda"},
         {"label": "Contrato Empréstimo", "coluna": "ctr.contrato", "tipo": "texto", "tabela": "banco_pf.pf_contratos"}
     ],
     "Contratos CLT / CAGED": [
+        # Colunas da tabela pf_matricula_dados_clt (Alias 'clt')
+        {"label": "Matrícula", "coluna": "clt.matricula", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Convênio", "coluna": "clt.convenio", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Nome Empresa", "coluna": "clt.cnpj_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "CNPJ", "coluna": "clt.cnpj_numero", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "TAG (Destaque)", "coluna": "clt.tag", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Qtd Funcionários", "coluna": "clt.qtd_funcionarios", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
         
-        # --- Campos de Datas e Tempos ---
+        # Datas e Tempos
         {"label": "Data Abertura Empresa", "coluna": "clt.data_abertura_empresa", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Tempo Abertura (Anos)", "coluna": "clt.tempo_abertura_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        
         {"label": "Data Admissão", "coluna": "clt.data_admissao", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Tempo Admissão (Anos)", "coluna": "clt.tempo_admissao_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        
         {"label": "Data Início Emprego", "coluna": "clt.data_inicio_emprego", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
         {"label": "Tempo Início (Anos)", "coluna": "clt.tempo_inicio_emprego_anos", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
 
-        # --- Classificações (CBO / CNAE) ---
-        {"label": "CBO (Cargo - Nome)", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "CBO (Código)", "coluna": "clt.cbo_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        # Classificações
+        {"label": "CNAE Nome", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CNAE Código", "coluna": "clt.cnae_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CBO Nome", "coluna": "clt.cbo_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "CBO Código", "coluna": "clt.cbo_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
         
-        {"label": "CNAE (Atividade - Nome)", "coluna": "clt.cnae_nome", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"},
-        {"label": "CNAE (Código)", "coluna": "clt.cnae_codigo", "tipo": "texto", "tabela": "banco_pf.pf_matricula_dados_clt"}
-    ],
-    "Controle e Sistema": [
-        {"label": "ID da Importação (Geral)", "coluna": "d.importacao_id", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
-        {"label": "ID da Campanha", "coluna": "d.id_campanha", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
-        {"label": "Data Criação (Cadastro)", "coluna": "d.data_criacao", "tipo": "data", "tabela": "banco_pf.pf_dados"}
+        # Controles
+        {"label": "ID Importação (CLT)", "coluna": "clt.importacao_id", "tipo": "numero", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Data Criação (CLT)", "coluna": "clt.data_criacao", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"},
+        {"label": "Data Atualização (CLT)", "coluna": "clt.data_atualizacao", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"}
     ]
 }
 
