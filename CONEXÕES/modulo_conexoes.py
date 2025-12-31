@@ -5,6 +5,12 @@ import time
 from datetime import datetime
 import conexao
 
+# Tenta importar o módulo específico do Fator Conferi
+try:
+    import modulo_fator_conferi
+except ImportError:
+    modulo_fator_conferi = None
+
 # --- CONEXÃO COM O BANCO ---
 def get_conn():
     try:
@@ -64,9 +70,22 @@ def excluir_conexao(id_con):
 
 # --- INTERFACE PRINCIPAL ---
 def app_conexoes():
+    # [LÓGICA DE NAVEGAÇÃO] Verifica se deve mostrar o Painel Fator
+    if st.session_state.get('navegacao_conexoes') == 'FATOR_CONFERI':
+        if st.button("⬅️ Voltar para Lista de Conexões"):
+            st.session_state['navegacao_conexoes'] = None
+            st.rerun()
+        
+        if modulo_fator_conferi:
+            modulo_fator_conferi.app_fator_conferi()
+        else:
+            st.error("Módulo 'modulo_fator_conferi.py' não encontrado na pasta CONEXÕES.")
+        return # Interrompe a função aqui para não mostrar a lista
+
+    # --- TELA PADRÃO: LISTA DE CONEXÕES ---
     st.markdown("## 🔌 Módulo de Conexões")
     
-    # --- FILTROS E BOTÃO SUPERIOR ---
+    # Filtros e Botão Superior
     c_filtros, c_btn = st.columns([5, 1])
     with c_filtros:
         col_tipo, col_busca = st.columns([1, 2])
@@ -75,17 +94,17 @@ def app_conexoes():
         busca = col_busca.text_input("Buscar Conexão", placeholder="Nome ou descrição...")
     
     with c_btn:
-        st.write("") # Espaçamento para alinhar o botão
+        st.write("") # Espaçamento
         if st.button("➕ Nova", type="primary", use_container_width=True):
             dialog_nova_conexao()
 
     st.divider()
 
-    # --- LISTAGEM ---
+    # Listagem
     df = listar_conexoes(filtro_tipo, busca)
     
     if not df.empty:
-        # Cabeçalho Visual (Apenas texto estático para referência)
+        # Cabeçalho Visual
         st.markdown("""
         <div style="display: flex; font-weight: bold; color: #555; margin-bottom: 5px; padding-left: 10px;">
             <div style="flex: 2;">Nome</div>
@@ -97,7 +116,7 @@ def app_conexoes():
         """, unsafe_allow_html=True)
         
         for _, row in df.iterrows():
-            # --- CARD DA CONEXÃO ---
+            # CARD DA CONEXÃO
             with st.container(border=True):
                 # Linha Principal (Resumo)
                 c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 2, 0.5])
@@ -107,8 +126,7 @@ def app_conexoes():
                 if row['descricao']:
                     c1.caption(row['descricao'])
                 
-                # Tipo
-                # Badge visual simples usando HTML/CSS inline
+                # Tipo (Badge Visual)
                 cor_badge = "#e3f2fd" if row['tipo_conexao'] == 'SAIDA' else "#f3e5f5"
                 cor_texto = "#0d47a1" if row['tipo_conexao'] == 'SAIDA' else "#4a148c"
                 c2.markdown(f"<span style='background-color:{cor_badge}; color:{cor_texto}; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;'>{row['tipo_conexao']}</span>", unsafe_allow_html=True)
@@ -127,29 +145,28 @@ def app_conexoes():
                     st.rerun()
 
                 # --- ÁREA RETRÁTIL (MENU DE FUNÇÕES) ---
-                # Aqui é a área vermelha da sua imagem solicitada
                 with st.expander(f"⚙️ Menu de Funções: {row['nome_conexao']}"):
-                    st.markdown("Selecione uma operação para esta conexão:")
                     
-                    # Exemplo de layout de botões internos (Baseado na sua imagem)
+                    # [ATUALIZAÇÃO] Botão Especial para FATOR CONFERI
+                    if "FATOR" in row['nome_conexao'].upper():
+                        st.info("Painel Especializado Disponível")
+                        if st.button(f"🚀 Acessar Painel Fator", key=f"btn_fator_{row['id']}", type="primary", use_container_width=True):
+                            st.session_state['navegacao_conexoes'] = 'FATOR_CONFERI'
+                            st.rerun()
+                        st.divider()
+
+                    # Funções Genéricas
+                    st.markdown("Operações Rápidas:")
                     col_func1, col_func2, col_func3 = st.columns(3)
                     
-                    if col_func1.button("🔍 Pesquisa PF", key=f"btn_pf_{row['id']}", use_container_width=True):
-                        st.toast(f"Iniciando pesquisa na conexão {row['nome_conexao']}...")
-                        # Aqui você chamaria a lógica real
+                    if col_func1.button("🔍 Teste Conexão", key=f"btn_test_{row['id']}", use_container_width=True):
+                        st.toast(f"Testando ping para {row['nome_conexao']}...")
                         
                     if col_func2.button("💰 Consulta Saldo", key=f"btn_saldo_{row['id']}", use_container_width=True):
-                        st.toast(f"Consultando saldo em {row['nome_conexao']}...")
+                        st.toast(f"Consultando saldo genérico...")
                         
-                    if col_func3.button("📜 Histórico", key=f"btn_hist_{row['id']}", use_container_width=True):
-                        st.info("Visualizando histórico...")
-                    
-                    # Se for tipo BANCO DE DADOS, mostra opção de teste
-                    if row['tipo_conexao'] == 'BANCO DE DADOS':
-                        st.divider()
-                        if st.button("🔌 Testar Conexão SQL", key=f"test_sql_{row['id']}"):
-                            st.write("Tentando conectar ao banco remoto...")
-                            # Lógica de teste de conexão aqui
+                    if col_func3.button("📜 Ver Logs", key=f"btn_hist_{row['id']}", use_container_width=True):
+                        st.info("Sem logs recentes.")
 
     else:
         st.info(f"Nenhuma conexão encontrada para os filtros.")
