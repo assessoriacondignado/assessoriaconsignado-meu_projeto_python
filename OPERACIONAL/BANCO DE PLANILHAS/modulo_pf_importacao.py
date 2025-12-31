@@ -65,7 +65,9 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         cols_banco_raw = get_table_columns(table_name)
         cols_banco = [c[0] for c in cols_banco_raw]
 
-        # --- LÓGICA ESPECÍFICA PARA TELEFONES ---
+        # =========================================================================
+        # LÓGICA ESPECÍFICA 1: TELEFONES (Validação 9 Dígitos + Deduplicação)
+        # =========================================================================
         if table_name == 'pf_telefones':
             col_cpf = next((k for k, v in mapping.items() if v == 'cpf'), None)
             col_whats = next((k for k, v in mapping.items() if v == 'tag_whats'), None)
@@ -88,9 +90,24 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                     if pd.notna(tel_raw):
                         tel_limpo = pf_core.limpar_apenas_numeros(tel_raw)
                         numero_final = None
-                        if len(tel_limpo) == 11: numero_final = tel_limpo
-                        elif len(tel_limpo) == 13 and tel_limpo.startswith("55"): numero_final = tel_limpo[2:]
-                        elif len(tel_limpo) == 9: numero_final = "82" + tel_limpo 
+                        
+                        # --- NOVA REGRA: Apenas números com 9 dígitos (celulares) ---
+                        # Aceita apenas formato DDD + 9 dígitos (Total 11)
+                        # Rejeita fixos (10 dígitos) ou incompletos
+                        
+                        if len(tel_limpo) == 13 and tel_limpo.startswith("55"): 
+                            tel_limpo = tel_limpo[2:] # Remove DDI
+                        
+                        if len(tel_limpo) == 11:
+                            # Verifica se o primeiro dígito pós-DDD é 9 (Celular)
+                            if tel_limpo[2] == '9':
+                                numero_final = tel_limpo
+                            else:
+                                # Regra: Não inserir se não for 9 dígitos (ignora fixo)
+                                continue 
+                        else:
+                            # Regra: Se não tiver 11 dígitos (DDD+9), considera erro/incompleto e não insere
+                            continue
                         
                         if numero_final: 
                             row_dict = {
@@ -104,30 +121,27 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                                 row_dict['importacao_id'] = str(import_id)
                             new_rows.append(row_dict)
                             
-            if not new_rows: return 0, 0, ["Nenhum telefone válido encontrado após limpeza."]
+            if not new_rows: return 0, 0, ["Nenhum telefone celular válido encontrado."]
             df_proc = pd.DataFrame(new_rows)
+            # Deduplicação interna do arquivo (CPF + Numero)
             df_proc.drop_duplicates(subset=['cpf', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
 
-        # --- LÓGICA GENÉRICA (COM REGRAS DINÂMICAS) ---
+        # =========================================================================
+        # LÓGICA GENÉRICA PARA DEMAIS TABELAS
+        # =========================================================================
         else:
             df_proc = df.rename(columns=mapping)
-            
-            # Colunas permitidas (Banco + Chaves Essenciais)
             cols_permitidas = cols_banco + ['cpf', 'matricula', 'convenio']
             df_proc = df_proc[[c for c in df_proc.columns if c in cols_permitidas]]
-
-            # Padronização
             df_proc = df_proc.applymap(lambda x: str(x).upper().strip() if isinstance(x, str) else x)
 
             if 'importacao_id' in cols_banco:
                 df_proc['importacao_id'] = str(import_id)
             
-            # Atualização de Data (Regra 2 e 4: Atualizar sempre)
             if 'data_atualizacao' in cols_banco:
                 df_proc['data_atualizacao'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            # --- Validação CPF ---
             for c in ['cpf']:
                 if c in df_proc.columns:
                     def validar_cpf(val): return 10 <= len(pf_core.limpar_apenas_numeros(val)) <= 11
@@ -138,59 +152,18 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                     else:
                         df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
 
-            # --- DEFINIÇÃO DA CHAVE PRIMÁRIA (PK) PARA UPSERT ---
-            pk_field = None
+            # Deduplicação interna do arquivo para E-mail e Endereço
+            if table_name == 'pf_emails' and 'cpf' in df_proc.columns and 'email' in df_proc.columns:
+                 df_proc.drop_duplicates(subset=['cpf', 'email'], inplace=True)
             
-            # 1. Regras Estáticas (Tabelas Padrão)
-            if table_name in ['pf_dados', 'pf_telefones', 'pf_emails', 'pf_enderecos', 'cpf_convenio']:
-                pk_field = 'cpf'
-            elif table_name == 'pf_emprego_renda':
-                pk_field = 'matricula' # Regra 2: Substituir linha da matrícula
-            elif table_name == 'convenio_por_planilha':
-                pk_field = 'convenio' # Regra 3
-            
-            # 2. Regras Dinâmicas (Tabelas Variáveis - Regra 4)
-            else:
-                try:
-                    # Regra 4.2: Verifica 'tipo_planilha' na tabela de convênios
-                    cur.execute("""
-                        SELECT tipo_planilha FROM banco_pf.convenio_por_planilha 
-                        WHERE nome_planilha_sql = %s OR nome_planilha_sql = %s
-                    """, (f"banco_pf.{table_name}", table_name))
-                    res_tipo = cur.fetchone()
-                    
-                    if res_tipo:
-                        tipo = str(res_tipo[0]).lower()
-                        
-                        # Regra 4.3: Dados Matrícula -> Validador: Matricula
-                        if 'matricula' in tipo or 'dados matricula' in tipo:
-                            pk_field = 'matricula'
-                        
-                        # Regra 4.4: Dados Contratos -> Validador: Numero Contrato
-                        elif 'contrato' in tipo or 'dados contratos' in tipo:
-                            # Tenta identificar a coluna do contrato
-                            if 'contrato' in df_proc.columns: pk_field = 'contrato'
-                            elif 'numero_contrato' in df_proc.columns: pk_field = 'numero_contrato'
-                except:
-                    pass
-            
-            # Fallback se não encontrou (para segurança)
-            if not pk_field:
-                if 'matricula' in df_proc.columns: pk_field = 'matricula'
-                elif 'cpf' in df_proc.columns: pk_field = 'cpf'
+            if table_name == 'pf_enderecos' and 'cpf' in df_proc.columns and 'cep' in df_proc.columns:
+                 df_proc.drop_duplicates(subset=['cpf', 'cep'], inplace=True)
 
-            # Conversão de Datas
-            cols_data = ['data_nascimento', 'data_exp_rg', 'data_criacao', 'data_admissao', 'data_inicio_emprego', 'data_abertura_empresa']
-            for col in cols_data:
-                if col in df_proc.columns: df_proc[col] = df_proc[col].apply(pf_core.converter_data_br_iso)
-            
             cols_order = list(df_proc.columns)
-            
-            # Deduplicação (Regras 4.3.4 e 4.4.4: Não pode ter repetido na coluna validadora)
-            if pk_field and pk_field in df_proc.columns:
-                df_proc.drop_duplicates(subset=[pk_field], keep='last', inplace=True)
 
-        # 3. Carga no Banco (Bulk via Staging)
+        # ---------------------------------------------------------------------
+        # CARGA NO BANCO (BULK VIA STAGING)
+        # ---------------------------------------------------------------------
         staging_table = f"staging_import_{import_id}"
         cur.execute(f"CREATE TEMP TABLE {staging_table} (LIKE {table_full_name} INCLUDING DEFAULTS) ON COMMIT DROP")
         
@@ -201,18 +174,38 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         qtd_novos, qtd_atualizados = 0, 0
         
-        # 4. Execução do UPSERT (Atualizar se existir, Inserir se novo)
+        # ---------------------------------------------------------------------
+        # ESTRATÉGIA DE UPSERT / INSERT (NOVAS REGRAS DE UNICIDADE)
+        # ---------------------------------------------------------------------
+        
+        # Configuração das chaves de unicidade para evitar duplicatas
+        pk_field = None
+        unique_checks = [] # Lista de colunas para checar existência (AND)
+
+        if table_name == 'pf_dados':
+            pk_field = 'cpf'
+        elif table_name == 'pf_telefones':
+            # Regra: Não inserir se (CPF + NUMERO) já existir
+            unique_checks = ['cpf', 'numero']
+        elif table_name == 'pf_emails':
+            # Regra: Não inserir se (CPF + EMAIL) já existir
+            unique_checks = ['cpf', 'email']
+        elif table_name == 'pf_enderecos':
+            # Regra: Não inserir se (CPF + CEP) já existir
+            unique_checks = ['cpf', 'cep']
+        elif table_name == 'pf_emprego_renda':
+            pk_field = 'matricula'
+        
+        # --- CENÁRIO 1: TABELAS DE DADOS ÚNICOS (Atualiza se existir) ---
         if pk_field:
-            # Monta a query de UPDATE dinamicamente
+            # Update
             set_parts = []
             for c in cols_order:
-                if c == pk_field: continue # Não atualiza a própria chave
+                if c == pk_field: continue
                 if c == 'importacao_id' and table_name == 'pf_dados':
-                    # Concatena IDs de importação apenas para pf_dados
                     expr = f"CASE WHEN t.importacao_id IS NULL OR t.importacao_id = '' THEN s.importacao_id::text ELSE t.importacao_id || ', ' || s.importacao_id::text END"
                     set_parts.append(f"{c} = {expr}")
                 else:
-                    # Substituição padrão (Regra 2, 4.3.2, 4.4.2)
                     set_parts.append(f"{c} = s.{c}")
             
             if set_parts:
@@ -220,11 +213,29 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                 cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
                 qtd_atualizados = cur.rowcount
             
-            # Inserção de Novos (Regra 2, 4.3.3, 4.4.3)
+            # Insert Novos
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
+
+        # --- CENÁRIO 2: TABELAS DE LISTA (Telefone, Email, Endereço) ---
+        # Regra: Adicionar apenas se a combinação não existir (Não sobrescreve, apenas ignora duplicado)
+        elif unique_checks:
+            where_conditions = " AND ".join([f"t.{col} = s.{col}" for col in unique_checks])
+            
+            insert_query = f"""
+                INSERT INTO {table_full_name} ({', '.join(cols_order)}) 
+                SELECT {', '.join(cols_order)} 
+                FROM {staging_table} s 
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {table_full_name} t WHERE {where_conditions}
+                )
+            """
+            cur.execute(insert_query)
+            qtd_novos = cur.rowcount
+            # Obs: Nestas tabelas não estamos atualizando registros existentes para preservar histórico ou dados manuais, apenas evitando duplicatas exatas.
+
+        # --- CENÁRIO 3: GENÉRICO (Insert Simples) ---
         else:
-            # Fallback para tabelas sem chave definida (Apenas Insere)
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
             
