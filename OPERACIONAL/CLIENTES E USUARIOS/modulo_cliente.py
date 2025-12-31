@@ -130,7 +130,7 @@ def app_clientes():
                 for _, row in df_cli.iterrows():
                     with st.container():
                         c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
-                        c1.write(f"**{row['nome']}**")
+                        c1.write(f"{row['nome']}")
                         c2.write(row['cpf'] or "-")
                         c3.write(row['nome_empresa'] or "-")
                         
