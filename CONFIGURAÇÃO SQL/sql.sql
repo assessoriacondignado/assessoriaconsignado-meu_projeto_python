@@ -1,50 +1,26 @@
--- Criação do Schema (caso não exista)
-CREATE SCHEMA IF NOT EXISTS conexoes;
+-- TABELAS PARA GESTÃO FINANCEIRA DE CLIENTES (FATOR CONFERI)
 
--- 1. Tabela de Registro de Consultas (Log detalhado)
-CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_registo_consulta (
+-- 1. Carteira do Cliente (Saldo e Configurações)
+CREATE TABLE IF NOT EXISTS conexoes.fator_cliente_carteira (
     id SERIAL PRIMARY KEY,
-    data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    tipo_consulta VARCHAR(50), -- Ex: SIMPLES, COMPLETA
-    cpf_consultado VARCHAR(20),
-    id_usuario INTEGER, -- ID do usuário do sistema
-    nome_usuario VARCHAR(255),
-    valor_pago NUMERIC(10, 2), -- Custo da consulta
-    caminho_json TEXT, -- Caminho do arquivo salvo na pasta CONEXÕES/JSON
-    status_api VARCHAR(50) -- SUCESSO, ERRO, NAO_ENCONTRADO
-);
-
--- 2. Tabela de Histórico de Saldo
-CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_registro_de_saldo (
-    id SERIAL PRIMARY KEY,
-    data_consulta TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    valor_saldo NUMERIC(10, 2),
-    observacao TEXT
-);
-
--- 3. Tabela de Parâmetros e Regras
-CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_parametros (
-    id SERIAL PRIMARY KEY,
-    nome_parametro VARCHAR(100) NOT NULL, -- Ex: SALDO_MINIMO_ALERTA
-    valor_parametro TEXT,
-    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    observacao TEXT, -- Tooltip/Descrição
-    status VARCHAR(20) DEFAULT 'ATIVO' -- ATIVO, INATIVO
-);
-
--- 4. Tabela de Clientes (Controle de Custo Personalizado)
--- Baseado na lógica do App Script de cobrar valores diferentes por cliente
-CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_clientes_custo (
-    id SERIAL PRIMARY KEY,
-    id_cliente INTEGER, -- Vinculo com admin.clientes
+    id_cliente_admin INTEGER REFERENCES admin.clientes(id), -- Vínculo com cadastro principal
     nome_cliente VARCHAR(255),
-    custo_consulta NUMERIC(10, 2) DEFAULT 0.00,
-    status VARCHAR(20) DEFAULT 'ATIVO'
+    custo_por_consulta NUMERIC(10, 2) DEFAULT 0.50,
+    saldo_atual NUMERIC(10, 2) DEFAULT 0.00,
+    status VARCHAR(20) DEFAULT 'ATIVO',
+    data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_cliente_fator UNIQUE (id_cliente_admin)
 );
 
--- Inserção de Parâmetros Padrão (Exemplo)
-INSERT INTO conexoes.fatorconferi_parametros (nome_parametro, valor_parametro, observacao, status)
-VALUES 
-('ALERTA_SALDO_BAIXO', '5.00', 'Envia aviso quando o saldo da API for menor que o valor', 'ATIVO'),
-('BLOQUEAR_CONSULTA_SEM_SALDO', 'TRUE', 'Impede consultas se o saldo estimado for insuficiente', 'ATIVO')
-ON CONFLICT DO NOTHING;
+-- 2. Histórico de Transações (Extrato)
+CREATE TABLE IF NOT EXISTS conexoes.fator_cliente_transacoes (
+    id SERIAL PRIMARY KEY,
+    id_carteira INTEGER REFERENCES conexoes.fator_cliente_carteira(id) ON DELETE CASCADE,
+    tipo VARCHAR(20), -- 'CREDITO' (Recarga) ou 'DEBITO' (Consulta)
+    valor NUMERIC(10, 2),
+    saldo_anterior NUMERIC(10, 2),
+    saldo_novo NUMERIC(10, 2),
+    motivo VARCHAR(255), -- Ex: "Recarga via PIX", "Consulta CPF 123..."
+    data_transacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    usuario_responsavel VARCHAR(100) -- Quem fez a operação (Sistema ou Admin)
+);
