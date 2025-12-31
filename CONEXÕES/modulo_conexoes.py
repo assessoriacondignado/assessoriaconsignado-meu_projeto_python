@@ -62,10 +62,12 @@ def excluir_conexao(id_con):
 def app_conexoes():
     st.markdown("## 🔌 Módulo de Conexões")
     
-    # Menu Superior de Filtros (Conforme solicitado no item TELA USUÁRIO 1.1)
+    # Menu Superior de Filtros
     col_f1, col_f2 = st.columns([4, 1])
+    
+    # CORREÇÃO AQUI: Nome da variável unificado para 'tipos_disponiveis'
     tipos_disponiveis = ["Todos", "SAIDA", "ENTRADA", "API", "BANCO DE DADOS"]
-    filtro_tipo = col_f1.selectbox("📂 Filtrar Tipo de Conexão", types_disponiveis)
+    filtro_tipo = col_f1.selectbox("📂 Filtrar Tipo de Conexão", tipos_disponiveis)
     
     if col_f2.button("➕ Nova Conexão", type="primary"):
         dialog_nova_conexao()
