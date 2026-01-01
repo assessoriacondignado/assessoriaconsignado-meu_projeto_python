@@ -1,5 +1,19 @@
--- Adiciona coluna para vincular o ID do usuário de login ao cadastro do cliente
-ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS id_usuario_vinculo INTEGER REFERENCES clientes_usuarios(id) ON DELETE SET NULL;
+/* =============================================================================
+CRIAÇÃO DE TABELA: CLIENTE_CNPJ
+SCHEMA: ADMIN
+============================================================================= */
 
--- Adiciona coluna de status no cliente
-ALTER TABLE admin.clientes ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ATIVO';
+CREATE TABLE IF NOT EXISTS admin.cliente_cnpj (
+    -- Identificador único padrão
+    id SERIAL PRIMARY KEY,
+
+    -- 3.1 CNPJ (Formatado com pontuação)
+    -- VARCHAR(20) é suficiente para "XX.XXX.XXX/XXXX-XX" (18 caracteres)
+    cnpj VARCHAR(20) UNIQUE, 
+
+    -- 3.2 NOME EMPRESA (Texto Curto)
+    nome_empresa VARCHAR(255),
+
+    -- Colunas de controle padrão do sistema (Recomendado manter)
+    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
