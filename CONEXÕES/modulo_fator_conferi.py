@@ -11,7 +11,7 @@ from datetime import datetime, date, timedelta
 import conexao
 
 # --- CONFIGURAÇÕES ---
-# D.1 alterar o local para salvar o ficheiro
+# Caminho fixo solicitado
 PASTA_JSON = "/root/meu_sistema/CONEXÕES/FATOR CONFERI/JSON"
 
 # Garante que a pasta exista (Segurança de I/O)
@@ -19,7 +19,7 @@ try:
     if not os.path.exists(PASTA_JSON):
         os.makedirs(PASTA_JSON, exist_ok=True)
 except Exception as e:
-    # Fallback para pasta local caso não tenha permissão no /root
+    # Fallback para pasta local caso não tenha permissão no /root (apenas para evitar crash)
     PASTA_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "JSON")
     if not os.path.exists(PASTA_JSON):
         os.makedirs(PASTA_JSON)
@@ -64,7 +64,7 @@ def buscar_valor_consulta_atual():
     return valor
 
 def formatar_cpf_cnpj_visual(valor):
-    """Aplica máscara de CPF ou CNPJ para visualização"""
+    """Aplica máscara de CPF ou CNPJ para visualização na tabela"""
     dado = re.sub(r'\D', '', str(valor))
     if len(dado) == 11:
         return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
@@ -120,20 +120,19 @@ def consultar_saldo_api():
         return False, str(e)
 
 # =============================================================================
-# FLUXO PRINCIPAL DE CONSULTA (AJUSTADO: PADRONIZAÇÃO DE CPF/CNPJ)
+# FLUXO PRINCIPAL DE CONSULTA (PADRONIZAÇÃO DE CPF PARA BLOQUEIO)
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
     # 1. Limpeza de caracteres não numéricos
-    cpf_limpo = ''.join(filter(str.isdigit, str(cpf)))
+    cpf_limpo_raw = ''.join(filter(str.isdigit, str(cpf)))
     
-    # 2. Padronização (Zeros à esquerda)
-    # Se for CPF (até 11 dígitos), completa com zeros à esquerda até 11
-    # Se for maior que 11 (CNPJ), completa até 14
-    if len(cpf_limpo) <= 11:
-        cpf_limpo = cpf_limpo.zfill(11)
+    # 2. Padronização (Zeros à esquerda) para corresponder ao banco
+    # Regra: Se <= 11 dígitos, trata como CPF (11 posições). Se > 11, CNPJ (14 posições).
+    if len(cpf_limpo_raw) <= 11:
+        cpf_padrao = cpf_limpo_raw.zfill(11)
     else:
-        cpf_limpo = cpf_limpo.zfill(14)
+        cpf_padrao = cpf_limpo_raw.zfill(14)
     
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro de conexão com banco de dados."}
@@ -141,14 +140,13 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
     try:
         cur = conn.cursor()
         
-        # A.1 Bloqueio tempo consulta (Verificação de Cache no BANCO)
-        # O CPF pesquisado aqui já está padronizado (ex: 065...)
+        # A.1 Bloqueio tempo consulta (Verificação de Cache no BANCO com CPF PADRONIZADO)
         cur.execute("""
             SELECT caminho_json, link_arquivo_consulta 
             FROM conexoes.fatorconferi_registo_consulta 
             WHERE cpf_consultado = %s AND status_api = 'SUCESSO'
             ORDER BY id DESC LIMIT 1
-        """, (cpf_limpo,))
+        """, (cpf_padrao,))
         
         registro_anterior = cur.fetchone()
         
@@ -170,17 +168,16 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
             else:
                 msg_retorno += " (Arquivo físico original não localizado)"
 
-            # 1.2.2 Replicar histórico (Novo Log) - SEMPRE EXECUTA SE ACHOU NO BANCO
+            # 1.2.2 Replicar histórico (Novo Log) - Valor 0,00
             usuario = st.session_state.get('usuario_nome', 'Sistema')
             id_user = st.session_state.get('usuario_id', 0)
             
-            # 1.2.2.1 Valor 0,00 e Data Atual (NOW())
             sql_cache = """
                 INSERT INTO conexoes.fatorconferi_registo_consulta 
                 (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
                 VALUES (%s, %s, %s, %s, 0.00, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
             """
-            cur.execute(sql_cache, (tipo, cpf_limpo, id_user, usuario, caminho_existente, link_existente, origem))
+            cur.execute(sql_cache, (tipo, cpf_padrao, id_user, usuario, caminho_existente, link_existente, origem))
             conn.commit()
             conn.close()
             
@@ -194,8 +191,10 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
             conn.close()
             return {"sucesso": False, "msg": "sem token registrado"}
             
-        # Execução API
-        url = f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_limpo}"
+        # Execução API (Usa o CPF padronizado ou o limpo? Geralmente APIs aceitam apenas números. 
+        # Vou usar cpf_padrao pois garante os zeros à esquerda que são importantes para CPF)
+        url = f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}"
+        
         response = requests.get(url, timeout=15)
         response.encoding = 'ISO-8859-1'
         xml_content = response.text
@@ -206,8 +205,8 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         
         dados_parsed = parse_xml_to_dict(xml_content)
         
-        # D.1 Armazenamento (Novo Local)
-        nome_arquivo = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_limpo}.json"
+        # D.1 Armazenamento (Novo Local com CPF Padronizado no nome)
+        nome_arquivo = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         caminho_completo = os.path.join(PASTA_JSON, nome_arquivo)
         
         with open(caminho_completo, 'w', encoding='utf-8') as f:
@@ -217,20 +216,19 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         usuario = st.session_state.get('usuario_nome', 'Sistema')
         id_user = st.session_state.get('usuario_id', 0)
         
-        # Valor cobrado (consulta tabela de preços)
+        # Valor cobrado
         custo = buscar_valor_consulta_atual()
         
-        # 3.2 Link Arquivo (Caminho completo para download/abertura)
+        # 3.2 Link Arquivo
         link_arquivo = caminho_completo 
         
-        # 3. Gravação com colunas novas
+        # 3. Gravação
         sql = """
             INSERT INTO conexoes.fatorconferi_registo_consulta 
             (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
             VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())
         """
-        # E.3.3 Origem e E.3.4 Tipo Consulta preenchidos
-        cur.execute(sql, (tipo, cpf_limpo, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
+        cur.execute(sql, (tipo, cpf_padrao, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
         conn.commit()
         conn.close()
         
