@@ -33,13 +33,12 @@ def limpar_formatacao_texto(texto):
 
 # --- FUNÇÃO AUXILIAR: SANITIZAR NOME DE TABELA ---
 def sanitizar_nome_tabela(nome):
-    """Remove caracteres especiais e espaços para criar nomes de tabelas SQL seguros."""
     s = str(nome).lower().strip()
     s = re.sub(r'[^a-z0-9]', '_', s)
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-# --- AGRUPAMENTOS (CLIENTE/EMPRESA) ---
+# --- AGRUPAMENTOS ---
 
 def listar_agrupamentos(tipo):
     conn = get_conn()
@@ -48,9 +47,7 @@ def listar_agrupamentos(tipo):
         df = pd.read_sql(f"SELECT id, nome_agrupamento FROM {tabela} ORDER BY id", conn)
         conn.close()
         return df
-    except: 
-        conn.close()
-        return pd.DataFrame()
+    except: conn.close(); return pd.DataFrame()
 
 def salvar_agrupamento(tipo, nome):
     conn = get_conn()
@@ -60,8 +57,7 @@ def salvar_agrupamento(tipo, nome):
         cur.execute(f"INSERT INTO {tabela} (nome_agrupamento) VALUES (%s)", (nome,))
         conn.commit(); conn.close()
         return True
-    except: 
-        conn.close(); return False
+    except: conn.close(); return False
 
 def excluir_agrupamento(tipo, id_agrup):
     conn = get_conn()
@@ -71,8 +67,7 @@ def excluir_agrupamento(tipo, id_agrup):
         cur.execute(f"DELETE FROM {tabela} WHERE id = %s", (id_agrup,))
         conn.commit(); conn.close()
         return True
-    except: 
-        conn.close(); return False
+    except: conn.close(); return False
 
 def atualizar_agrupamento(tipo, id_agrup, novo_nome):
     conn = get_conn()
@@ -82,8 +77,7 @@ def atualizar_agrupamento(tipo, id_agrup, novo_nome):
         cur.execute(f"UPDATE {tabela} SET nome_agrupamento = %s WHERE id = %s", (novo_nome, id_agrup))
         conn.commit(); conn.close()
         return True
-    except: 
-        conn.close(); return False
+    except: conn.close(); return False
 
 # --- CLIENTE CNPJ ---
 
@@ -93,8 +87,7 @@ def listar_cliente_cnpj():
         df = pd.read_sql("SELECT id, cnpj, nome_empresa FROM admin.cliente_cnpj ORDER BY nome_empresa", conn)
         conn.close()
         return df
-    except: 
-        conn.close(); return pd.DataFrame()
+    except: conn.close(); return pd.DataFrame()
 
 def salvar_cliente_cnpj(cnpj, nome):
     conn = get_conn()
@@ -103,8 +96,7 @@ def salvar_cliente_cnpj(cnpj, nome):
         cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj, nome))
         conn.commit(); conn.close()
         return True
-    except: 
-        conn.close(); return False
+    except: conn.close(); return False
 
 def excluir_cliente_cnpj(id_reg):
     conn = get_conn()
@@ -113,8 +105,7 @@ def excluir_cliente_cnpj(id_reg):
         cur.execute("DELETE FROM admin.cliente_cnpj WHERE id = %s", (id_reg,))
         conn.commit(); conn.close()
         return True
-    except: 
-        conn.close(); return False
+    except: conn.close(); return False
 
 def atualizar_cliente_cnpj(id_reg, cnpj, nome):
     conn = get_conn()
@@ -123,8 +114,7 @@ def atualizar_cliente_cnpj(id_reg, cnpj, nome):
         cur.execute("UPDATE admin.cliente_cnpj SET cnpj=%s, nome_empresa=%s WHERE id=%s", (cnpj, nome, id_reg))
         conn.commit(); conn.close()
         return True
-    except: 
-        conn.close(); return False
+    except: conn.close(); return False
 
 # --- RELAÇÃO PEDIDO CARTEIRA ---
 
@@ -254,7 +244,6 @@ def salvar_nova_carteira_sistema(id_prod, nome_prod, nome_carteira, status):
         sufixo = sanitizar_nome_tabela(nome_carteira)
         nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
         
-        # Cria a Tabela Dinâmica de Transações
         sql_create = f"""
             CREATE TABLE IF NOT EXISTS {nome_tabela_dinamica} (
                 id SERIAL PRIMARY KEY,
@@ -305,11 +294,9 @@ def atualizar_carteira_config(id_conf, status):
     return False
 
 def buscar_transacoes_carteira(nome_tabela_sql, cpf_cliente):
-    """Busca o extrato na tabela dinâmica específica da carteira"""
     conn = get_conn()
     if not conn: return pd.DataFrame()
     try:
-        # Busca segura apenas pelos dados do cliente
         query = f"""
             SELECT data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento 
             FROM {nome_tabela_sql} 
@@ -382,54 +369,8 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
     except Exception as e: conn.close(); return None
 
 # =============================================================================
-# 3. DIALOGS (POP-UPS PADRONIZADOS)
+# 3. DIALOGS (POP-UPS)
 # =============================================================================
-
-@st.dialog("📜 Extrato Financeiro")
-def dialog_extrato_cliente(dados_cliente):
-    st.write(f"Cliente: **{dados_cliente['nome']}**")
-    st.caption(f"CPF: {dados_cliente.get('cpf', 'Não informado')}")
-    
-    # Busca carteiras ativas
-    df_carteiras = listar_todas_carteiras_ativas()
-    
-    if df_carteiras.empty:
-        st.warning("Nenhuma carteira ativa configurada no sistema.")
-        return
-
-    # Seletor de Carteira
-    opcoes = df_carteiras.apply(lambda x: f"{x['nome_carteira']}", axis=1)
-    idx_cart = st.selectbox("Selecione a Carteira", range(len(df_carteiras)), format_func=lambda x: opcoes[x])
-    
-    if idx_cart is not None:
-        carteira_sel = df_carteiras.iloc[idx_cart]
-        tabela_sql = carteira_sel['nome_tabela_transacoes']
-        cpf_limpo = str(dados_cliente.get('cpf', '')).strip()
-        
-        # Busca transações na tabela dinâmica selecionada
-        df_extrato = buscar_transacoes_carteira(tabela_sql, cpf_limpo)
-        
-        st.divider()
-        
-        if not df_extrato.empty:
-            # Formatação para exibição
-            df_extrato['data_transacao'] = pd.to_datetime(df_extrato['data_transacao']).dt.strftime('%d/%m/%Y %H:%M')
-            df_extrato['valor'] = df_extrato['valor'].apply(lambda x: f"R$ {float(x):,.2f}")
-            df_extrato['saldo_novo'] = df_extrato['saldo_novo'].apply(lambda x: f"R$ {float(x):,.2f}")
-            
-            # Renomear colunas
-            df_view = df_extrato.rename(columns={
-                'data_transacao': 'Data',
-                'motivo': 'Motivo',
-                'tipo_lancamento': 'Tipo',
-                'valor': 'Valor',
-                'saldo_novo': 'Saldo',
-                'origem_lancamento': 'Origem'
-            })
-            
-            st.dataframe(df_view, use_container_width=True, hide_index=True)
-        else:
-            st.info("Nenhuma movimentação encontrada nesta carteira para este CPF.")
 
 @st.dialog("✏️ Editar")
 def dialog_editar_agrupamento(tipo, id_agrup, nome_atual):
@@ -554,7 +495,6 @@ def dialog_historico_consultas(cpf_cliente):
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # Atualizado: Aba 3 renomeada para "Parâmetros"
     tab_cli, tab_user, tab_param, tab_carteira, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
@@ -579,14 +519,57 @@ def app_clientes():
                         c4.markdown(f":{'green' if row.get('status','ATIVO')=='ATIVO' else 'red'}[{row.get('status','ATIVO')}]")
                         with c5:
                             b1, b2, b3 = st.columns(3)
+                            
+                            # Ações
                             if b1.button("👁️", key=f"v_{row['id']}"): st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
                             
-                            # NOVO: Botão Extrato
+                            # BOTÃO EXTRATO: Expande na própria tela
                             if b2.button("📜", key=f"ext_{row['id']}", help="Extrato Financeiro"):
-                                dialog_extrato_cliente(row)
+                                if st.session_state.get('extrato_expandido') == row['id']:
+                                    st.session_state['extrato_expandido'] = None
+                                else:
+                                    st.session_state['extrato_expandido'] = row['id']
+                                st.rerun()
                                 
                             if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}"): dialog_gestao_usuario_vinculo(row)
+                        
                         st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+
+                        # --- ÁREA EXPANSÍVEL DO EXTRATO ---
+                        if st.session_state.get('extrato_expandido') == row['id']:
+                            with st.container(border=True):
+                                st.markdown(f"#### 📜 Extrato Financeiro: {row['nome']}")
+                                st.caption(f"CPF: {row.get('cpf', '-')}")
+                                
+                                # Busca Carteiras Ativas
+                                df_carteiras = listar_todas_carteiras_ativas()
+                                
+                                if not df_carteiras.empty:
+                                    opcoes_cart = df_carteiras.apply(lambda x: f"{x['nome_carteira']}", axis=1)
+                                    idx_sel = st.selectbox("Selecione a Carteira", range(len(df_carteiras)), format_func=lambda x: opcoes_cart[x], key=f"sel_cart_{row['id']}")
+                                    
+                                    # Carrega dados da carteira selecionada
+                                    carteira_sel = df_carteiras.iloc[idx_sel]
+                                    tabela_sql = carteira_sel['nome_tabela_transacoes']
+                                    cpf_limpo = str(row.get('cpf', '')).strip()
+                                    
+                                    df_extrato = buscar_transacoes_carteira(tabela_sql, cpf_limpo)
+                                    
+                                    if not df_extrato.empty:
+                                        # Formatação
+                                        df_extrato['data_transacao'] = pd.to_datetime(df_extrato['data_transacao']).dt.strftime('%d/%m/%Y %H:%M')
+                                        df_extrato['valor'] = df_extrato['valor'].apply(lambda x: f"R$ {float(x):,.2f}")
+                                        df_extrato['saldo_novo'] = df_extrato['saldo_novo'].apply(lambda x: f"R$ {float(x):,.2f}")
+                                        
+                                        st.dataframe(df_extrato.rename(columns={'data_transacao':'Data', 'tipo_lancamento':'Tipo', 'saldo_novo':'Saldo'}), use_container_width=True, hide_index=True)
+                                    else:
+                                        st.warning("Nenhuma movimentação encontrada.")
+                                else:
+                                    st.info("Nenhuma carteira configurada no sistema.")
+                                
+                                if st.button("Fechar Extrato", key=f"close_{row['id']}"):
+                                    st.session_state['extrato_expandido'] = None; st.rerun()
+
             else: st.info("Nenhum cliente encontrado.")
 
         elif st.session_state['view_cliente'] in ['novo', 'editar']:
