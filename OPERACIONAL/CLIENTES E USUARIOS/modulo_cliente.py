@@ -24,42 +24,12 @@ def get_conn():
 # =============================================================================
 
 def formatar_cnpj(v):
-    # Remove tudo que não é dígito
     v = re.sub(r'\D', '', str(v))
-    # Aplica a máscara se tiver 14 dígitos
     return f"{v[:2]}.{v[2:5]}.{v[5:8]}/{v[8:12]}-{v[12:]}" if len(v) == 14 else v
 
 def limpar_formatacao_texto(texto):
-    """Remove caracteres markdown como ** e espaços extras"""
     if not texto: return ""
     return str(texto).replace('*', '').strip()
-
-# --- NOVA FUNÇÃO: REGRA DE NEGÓCIO DO CNPJ ---
-def verificar_e_salvar_cnpj_automatico(cnpj_fmt, nome_empresa):
-    """
-    1. Verifica se o CNPJ já existe na tabela admin.cliente_cnpj.
-    2. Se existir: Não faz nada.
-    3. Se NÃO existir: Insere novo registro (CNPJ + Nome Empresa).
-    """
-    if not cnpj_fmt or len(cnpj_fmt) < 18: return # Ignora se CNPJ inválido/vazio
-    
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            # 1.1.1 Verifica se existe
-            cur.execute("SELECT 1 FROM admin.cliente_cnpj WHERE cnpj = %s", (cnpj_fmt,))
-            if not cur.fetchone():
-                # 1.1.2 Se não existir, cadastra
-                cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj_fmt, nome_empresa))
-                conn.commit()
-            # Se sim (else), não faz nada conforme regra 1.1.1
-            conn.close()
-            return True
-        except: 
-            conn.close()
-            return False
-    return False
 
 # --- AGRUPAMENTOS (CLIENTE/EMPRESA) ---
 
@@ -121,10 +91,8 @@ def listar_cliente_cnpj():
 def salvar_cliente_cnpj(cnpj, nome):
     conn = get_conn()
     try:
-        # Formata antes de salvar direto na tabela auxiliar também
-        cnpj_fmt = formatar_cnpj(cnpj)
         cur = conn.cursor()
-        cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj_fmt, nome))
+        cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj, nome))
         conn.commit(); conn.close()
         return True
     except: 
@@ -143,13 +111,29 @@ def excluir_cliente_cnpj(id_reg):
 def atualizar_cliente_cnpj(id_reg, cnpj, nome):
     conn = get_conn()
     try:
-        cnpj_fmt = formatar_cnpj(cnpj)
         cur = conn.cursor()
-        cur.execute("UPDATE admin.cliente_cnpj SET cnpj=%s, nome_empresa=%s WHERE id=%s", (cnpj_fmt, nome, id_reg))
+        cur.execute("UPDATE admin.cliente_cnpj SET cnpj=%s, nome_empresa=%s WHERE id=%s", (cnpj, nome, id_reg))
         conn.commit(); conn.close()
         return True
     except: 
         conn.close(); return False
+
+def verificar_e_salvar_cnpj_automatico(cnpj_fmt, nome_empresa):
+    if not cnpj_fmt or len(cnpj_fmt) < 18: return
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM admin.cliente_cnpj WHERE cnpj = %s", (cnpj_fmt,))
+            if not cur.fetchone():
+                cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj_fmt, nome_empresa))
+                conn.commit()
+            conn.close()
+            return True
+        except: 
+            conn.close()
+            return False
+    return False
 
 # --- USUÁRIOS E CLIENTES (VINCULOS) ---
 
@@ -334,25 +318,64 @@ def app_clientes():
 
         elif st.session_state['view_cliente'] in ['novo', 'editar']:
             st.markdown(f"### {'📝 Novo' if st.session_state['view_cliente']=='novo' else '✏️ Editar'}")
+            
+            # --- CARREGA DADOS PRÉVIOS (EDITAR) ---
             dados = {}
             if st.session_state['view_cliente'] == 'editar':
                 conn = get_conn(); df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}", conn); conn.close()
                 if not df.empty: dados = df.iloc[0]
 
+            # --- CARREGA LISTAS PARA OS SELETORES ---
+            df_empresas = listar_cliente_cnpj() # Tabela: admin.cliente_cnpj
+            df_ag_cli = listar_agrupamentos("cliente")
+            df_ag_emp = listar_agrupamentos("empresa")
+
             with st.form("form_cliente"):
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome Completo *", value=limpar_formatacao_texto(dados.get('nome', '')))
-                nome_emp = c2.text_input("Nome Empresa", value=dados.get('nome_empresa', ''))
-                cnpj_emp = c3.text_input("CNPJ Empresa", value=dados.get('cnpj_empresa', ''))
+                
+                # --- SELETOR DE EMPRESA (Preenchimento Automático do CNPJ no backend) ---
+                lista_empresas = df_empresas['nome_empresa'].unique().tolist()
+                
+                # Determina o índice padrão se estiver editando
+                idx_emp = 0
+                val_emp_atual = dados.get('nome_empresa', '')
+                if val_emp_atual in lista_empresas:
+                    idx_emp = lista_empresas.index(val_emp_atual)
+                
+                nome_emp = c2.selectbox("Empresa (Selecionar)", options=[""] + lista_empresas, index=idx_emp + 1 if val_emp_atual else 0, help="Ao selecionar, o CNPJ será preenchido automaticamente ao salvar.")
+                
+                # Exibe o CNPJ atual apenas como leitura (para conferência)
+                cnpj_display = dados.get('cnpj_empresa', '')
+                c3.text_input("CNPJ (Vinculado)", value=cnpj_display, disabled=True, help="Este campo é atualizado automaticamente com base na Empresa selecionada.")
+
                 c4, c5, c6, c7 = st.columns(4)
                 email = c4.text_input("E-mail *", value=dados.get('email', ''))
                 cpf = c5.text_input("CPF *", value=dados.get('cpf', ''))
                 tel1 = c6.text_input("Telefone 1", value=dados.get('telefone', ''))
                 tel2 = c7.text_input("Telefone 2", value=dados.get('telefone2', ''))
+                
                 c8, c9, c10 = st.columns([1, 1, 1])
                 id_gp = c8.text_input("ID Grupo WhatsApp", value=dados.get('id_grupo_whats', ''))
-                agr_cli = c9.text_input("Agrupamento Cliente (IDs)", value=dados.get('ids_agrupamento_cliente', ''))
-                agr_emp = c10.text_input("Agrupamento Empresa (IDs)", value=dados.get('ids_agrupamento_empresa', ''))
+                
+                # --- SELETORES DE AGRUPAMENTO (Multiselect) ---
+                # Converte string "1,2" do banco para lista [1, 2] para o componente
+                
+                # Agrupamento Cliente
+                padrao_cli = []
+                if dados.get('ids_agrupamento_cliente'):
+                    try: padrao_cli = [int(x.strip()) for x in str(dados.get('ids_agrupamento_cliente')).split(',') if x.strip().isdigit()]
+                    except: pass
+                
+                sel_ag_cli = c9.multiselect("Agrupamento Cliente", options=df_ag_cli['id'], format_func=lambda x: df_ag_cli[df_ag_cli['id']==x]['nome_agrupamento'].values[0] if not df_ag_cli[df_ag_cli['id']==x].empty else x, default=[x for x in padrao_cli if x in df_ag_cli['id'].values])
+
+                # Agrupamento Empresa
+                padrao_emp = []
+                if dados.get('ids_agrupamento_empresa'):
+                    try: padrao_emp = [int(x.strip()) for x in str(dados.get('ids_agrupamento_empresa')).split(',') if x.strip().isdigit()]
+                    except: pass
+
+                sel_ag_emp = c10.multiselect("Agrupamento Empresa", options=df_ag_emp['id'], format_func=lambda x: df_ag_emp[df_ag_emp['id']==x]['nome_agrupamento'].values[0] if not df_ag_emp[df_ag_emp['id']==x].empty else x, default=[x for x in padrao_emp if x in df_ag_emp['id'].values])
                 
                 status_final = "ATIVO"
                 if st.session_state['view_cliente'] == 'editar':
@@ -361,17 +384,23 @@ def app_clientes():
 
                 st.markdown("<br>", unsafe_allow_html=True); ca = st.columns([1, 1, 4])
                 
-                # --- AQUI ESTA A REGRA DE NEGOCIO ---
                 if ca[0].form_submit_button("💾 Salvar"):
-                    # 1. Formata CNPJ e aplica a regra de inserir na tabela admin.cliente_cnpj (se não existir)
-                    cnpj_limpo_fmt = formatar_cnpj(cnpj_emp)
-                    verificar_e_salvar_cnpj_automatico(cnpj_limpo_fmt, nome_emp)
+                    # 1. Busca o CNPJ correto baseado no nome da empresa selecionado
+                    cnpj_final = ""
+                    if nome_emp:
+                        filtro_cnpj = df_empresas[df_empresas['nome_empresa'] == nome_emp]
+                        if not filtro_cnpj.empty:
+                            cnpj_final = filtro_cnpj.iloc[0]['cnpj']
                     
+                    # 2. Converte listas de IDs dos agrupamentos para string "1,2,3"
+                    str_ag_cli = ",".join(map(str, sel_ag_cli))
+                    str_ag_emp = ",".join(map(str, sel_ag_emp))
+
                     conn = get_conn(); cur = conn.cursor()
                     if st.session_state['view_cliente'] == 'novo':
-                        cur.execute("INSERT INTO admin.clientes (nome, nome_empresa, cnpj_empresa, email, cpf, telefone, telefone2, id_grupo_whats, ids_agrupamento_cliente, ids_agrupamento_empresa, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ATIVO')", (nome, nome_emp, cnpj_limpo_fmt, email, cpf, tel1, tel2, id_gp, agr_cli, agr_emp))
+                        cur.execute("INSERT INTO admin.clientes (nome, nome_empresa, cnpj_empresa, email, cpf, telefone, telefone2, id_grupo_whats, ids_agrupamento_cliente, ids_agrupamento_empresa, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ATIVO')", (nome, nome_emp, cnpj_final, email, cpf, tel1, tel2, id_gp, str_ag_cli, str_ag_emp))
                     else:
-                        cur.execute("UPDATE admin.clientes SET nome=%s, nome_empresa=%s, cnpj_empresa=%s, email=%s, cpf=%s, telefone=%s, telefone2=%s, id_grupo_whats=%s, ids_agrupamento_cliente=%s, ids_agrupamento_empresa=%s, status=%s WHERE id=%s", (nome, nome_emp, cnpj_limpo_fmt, email, cpf, tel1, tel2, id_gp, agr_cli, agr_emp, status_final, st.session_state['cli_id']))
+                        cur.execute("UPDATE admin.clientes SET nome=%s, nome_empresa=%s, cnpj_empresa=%s, email=%s, cpf=%s, telefone=%s, telefone2=%s, id_grupo_whats=%s, ids_agrupamento_cliente=%s, ids_agrupamento_empresa=%s, status=%s WHERE id=%s", (nome, nome_emp, cnpj_final, email, cpf, tel1, tel2, id_gp, str_ag_cli, str_ag_emp, status_final, st.session_state['cli_id']))
                     conn.commit(); conn.close(); st.success("Salvo!"); time.sleep(1); st.session_state['view_cliente'] = 'lista'; st.rerun()
                 
                 if ca[1].form_submit_button("Cancelar"): st.session_state['view_cliente'] = 'lista'; st.rerun()
@@ -462,7 +491,6 @@ def app_clientes():
             if not df_cnpj.empty:
                 for _, r in df_cnpj.iterrows():
                     cc1, cc2, cc3 = st.columns([8, 1, 1])
-                    # Exibição melhorada para linha única
                     cc1.markdown(f"**{r['cnpj']}** | {r['nome_empresa']}")
                     if cc2.button("✏️", key=f"ed_cn_{r['id']}"): dialog_editar_cliente_cnpj(r['id'], r['cnpj'], r['nome_empresa'])
                     if cc3.button("🗑️", key=f"del_cn_{r['id']}"): excluir_cliente_cnpj(r['id']); st.rerun()
