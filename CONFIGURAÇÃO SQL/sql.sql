@@ -1,19 +1,5 @@
-/* =============================================================================
-CRIAÇÃO DE TABELA: CLIENTE_CNPJ
-SCHEMA: ADMIN
-============================================================================= */
+-- Renomeando tabela 'origem_consulta' para 'fatorconferi_origem_consulta'
+ALTER TABLE conexoes.origem_consulta RENAME TO fatorconferi_origem_consulta;
 
-CREATE TABLE IF NOT EXISTS admin.cliente_cnpj (
-    -- Identificador único padrão
-    id SERIAL PRIMARY KEY,
-
-    -- 3.1 CNPJ (Formatado com pontuação)
-    -- VARCHAR(20) é suficiente para "XX.XXX.XXX/XXXX-XX" (18 caracteres)
-    cnpj VARCHAR(20) UNIQUE, 
-
-    -- 3.2 NOME EMPRESA (Texto Curto)
-    nome_empresa VARCHAR(255),
-
-    -- Colunas de controle padrão do sistema (Recomendado manter)
-    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+-- Renomeando tabela 'tipo_consulta_fator' para 'fatorconferi_tipo_consulta_fator'
+ALTER TABLE conexoes.tipo_consulta_fator RENAME TO fatorconferi_tipo_consulta_fator;

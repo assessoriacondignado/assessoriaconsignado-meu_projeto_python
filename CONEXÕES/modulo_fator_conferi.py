@@ -180,7 +180,7 @@ def movimentar_saldo(id_carteira, tipo, valor, motivo, usuario_resp):
             return True, "Sucesso"
         except Exception as e:
             conn.close(); return False, str(e)
-    return False, "Erro Conexão"
+    return False
 
 def atualizar_custo_cliente(id_carteira, novo_custo):
     conn = get_conn()
@@ -280,7 +280,83 @@ def excluir_transacao_db(id_transacao, id_carteira):
     return False
 
 # =============================================================================
-# 3. DIALOGS (POP-UPS PEQUENOS PARA AÇÕES)
+# 3. FUNÇÕES CRUD PARÂMETROS (ATUALIZADAS PARA NOVOS NOMES)
+# =============================================================================
+
+# --- ORIGEM CONSULTA ---
+def listar_origem_consulta():
+    conn = get_conn()
+    try:
+        # ATUALIZADO: tabela fatorconferi_origem_consulta
+        df = pd.read_sql("SELECT id, origem FROM conexoes.fatorconferi_origem_consulta ORDER BY origem", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_origem_consulta(origem):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # ATUALIZADO: tabela fatorconferi_origem_consulta
+        cur.execute("INSERT INTO conexoes.fatorconferi_origem_consulta (origem) VALUES (%s)", (origem,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def atualizar_origem_consulta(id_reg, nova_origem):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # ATUALIZADO: tabela fatorconferi_origem_consulta
+        cur.execute("UPDATE conexoes.fatorconferi_origem_consulta SET origem=%s WHERE id=%s", (nova_origem, id_reg))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def excluir_origem_consulta(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # ATUALIZADO: tabela fatorconferi_origem_consulta
+        cur.execute("DELETE FROM conexoes.fatorconferi_origem_consulta WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+# --- TIPO CONSULTA FATOR ---
+def listar_tipo_consulta_fator():
+    conn = get_conn()
+    try:
+        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
+        df = pd.read_sql("SELECT id, tipo FROM conexoes.fatorconferi_tipo_consulta_fator ORDER BY tipo", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_tipo_consulta_fator(tipo):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
+        cur.execute("INSERT INTO conexoes.fatorconferi_tipo_consulta_fator (tipo) VALUES (%s)", (tipo,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def atualizar_tipo_consulta_fator(id_reg, novo_tipo):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
+        cur.execute("UPDATE conexoes.fatorconferi_tipo_consulta_fator SET tipo=%s WHERE id=%s", (novo_tipo, id_reg))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def excluir_tipo_consulta_fator(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
+        cur.execute("DELETE FROM conexoes.fatorconferi_tipo_consulta_fator WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+# =============================================================================
+# 4. DIALOGS (POP-UPS)
 # =============================================================================
 
 @st.dialog("💰 Movimentar Saldo")
@@ -335,8 +411,6 @@ def dialog_excluir_carteira(id_cart, nome_cli):
             st.success("Excluído."); time.sleep(1); st.rerun()
     if c2.button("❌ Cancelar", use_container_width=True): st.rerun()
 
-# --- DIALOGS DE EDIÇÃO/EXCLUSÃO DE TRANSAÇÃO (AGORA SÃO PEQUENOS E INDEPENDENTES) ---
-
 @st.dialog("✏️ Editar Transação")
 def dialog_editar_transacao(transacao, id_carteira):
     st.write(f"Editando Transação")
@@ -362,8 +436,28 @@ def dialog_excluir_transacao(id_transacao, id_carteira):
     if c2.button("Cancelar"):
         st.rerun()
 
+@st.dialog("✏️ Editar Origem")
+def dialog_editar_origem(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_origem"):
+        novo_nome = st.text_input("Origem", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_origem_consulta(id_reg, novo_nome):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro.")
+
+@st.dialog("✏️ Editar Tipo Consulta")
+def dialog_editar_tipo_consulta(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_tipo"):
+        novo_nome = st.text_input("Tipo", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_tipo_consulta_fator(id_reg, novo_nome):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro.")
+
 # =============================================================================
-# 4. INTERFACE PRINCIPAL
+# 5. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_fator_conferi():
@@ -399,10 +493,8 @@ def app_fator_conferi():
             
             for _, row in df_cli.iterrows():
                 with st.container():
-                    # Layout Colunas
                     cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 2])
                     
-                    # Nome + CPF
                     cpf_txt = f" / {row['cpf']}" if row.get('cpf') else ""
                     cc1.write(f"**{row['nome_cliente']}**{cpf_txt}")
                     
@@ -412,19 +504,17 @@ def app_fator_conferi():
                     
                     cc3.write(f"R$ {float(row['custo_por_consulta']):.2f}")
                     
-                    # Botões
                     with cc4:
                         b1, b2, b3, b4 = st.columns(4)
                         if b1.button("💲", key=f"mov_{row['id']}", help="Movimentar Saldo"):
                             dialog_movimentar(row['id'], row['nome_cliente'])
                         
-                        # --- BOTÃO HISTÓRICO (TOGGLE) ---
                         if b2.button("📜", key=f"ext_{row['id']}", help="Ver/Ocultar Extrato"):
                             if st.session_state.get('cli_expandido') == row['id']:
                                 st.session_state['cli_expandido'] = None
                             else:
                                 st.session_state['cli_expandido'] = row['id']
-                                st.session_state['pag_hist'] = 1 # Reseta paginação ao abrir
+                                st.session_state['pag_hist'] = 1 
                         
                         if b3.button("✏️", key=f"edt_{row['id']}", help="Editar Custo"):
                             dialog_editar_custo(row['id'], row['nome_cliente'], row['custo_por_consulta'])
@@ -433,21 +523,17 @@ def app_fator_conferi():
                     
                     st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
 
-                # --- ÁREA EXPANSÍVEL DO HISTÓRICO ---
                 if st.session_state.get('cli_expandido') == row['id']:
                     with st.container(border=True):
                         st.caption(f"📜 Histórico: {row['nome_cliente']}")
                         
-                        # 1. Filtros de Data
                         fd1, fd2, fd3 = st.columns([2, 2, 4])
                         data_ini = fd1.date_input("Data Inicial", value=date.today() - timedelta(days=30), key=f"ini_{row['id']}")
                         data_fim = fd2.date_input("Data Final", value=date.today(), key=f"fim_{row['id']}")
                         
-                        # 2. Busca Dados Filtrados
                         df_ext = buscar_extrato_cliente_filtrado(row['id'], data_ini, data_fim)
                         
                         if not df_ext.empty:
-                            # 3. Paginação
                             items_por_pag = 15
                             total_items = len(df_ext)
                             pag_atual = st.session_state.get('pag_hist', 1)
@@ -457,7 +543,6 @@ def app_fator_conferi():
                             fim = inicio + items_por_pag
                             df_view = df_ext.iloc[inicio:fim]
                             
-                            # 4. Renderiza Tabela
                             st.markdown("""
                             <div style="display: flex; font-weight: bold; background-color: #e9ecef; padding: 5px; border-radius: 4px; font-size:0.9em;">
                                 <div style="flex: 2;">Data</div>
@@ -487,25 +572,20 @@ def app_fator_conferi():
                                         dialog_excluir_transacao(tr['id'], row['id'])
                                 st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                             
-                            # Controles de Paginação
                             pc1, pc2, pc3 = st.columns([1, 3, 1])
                             if pc1.button("⬅️ Anterior", key=f"prev_{row['id']}"):
                                 if st.session_state['pag_hist'] > 1:
                                     st.session_state['pag_hist'] -= 1
                                     st.rerun()
-                            
                             pc2.markdown(f"<div style='text-align:center;'>Página {pag_atual} de {total_pags}</div>", unsafe_allow_html=True)
-                            
                             if pc3.button("Próxima ➡️", key=f"next_{row['id']}"):
                                 if st.session_state['pag_hist'] < total_pags:
                                     st.session_state['pag_hist'] += 1
                                     st.rerun()
-                        else:
-                            st.warning("Nenhum registro encontrado no período selecionado.")
-
+                        else: st.warning("Nenhum registro encontrado no período selecionado.")
         else: st.info("Nenhum cliente configurado.")
 
-    # ... (OUTRAS ABAS MANTIDAS IGUAIS) ...
+    # --- ABA 2: TESTE MANUAL ---
     with tabs[1]:
         st.markdown("#### 1.1 Ambiente de Teste Manual")
         c1, c2 = st.columns([3, 1])
@@ -519,6 +599,7 @@ def app_fator_conferi():
                         st.json(res['dados'])
                     else: st.error(f"Erro: {res['msg']}")
 
+    # --- ABA 3: SALDO API ---
     with tabs[2]: 
         st.markdown("#### 2.1 Controle de Saldo API (Fator)")
         if st.button("🔄 Atualizar Saldo API"):
@@ -531,14 +612,58 @@ def app_fator_conferi():
             st.dataframe(df_saldo, use_container_width=True)
             conn.close()
 
+    # --- ABA 4: HISTÓRICO ---
     with tabs[3]: 
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
-            df_logs = pd.read_sql("SELECT id, data_hora, cpf_consultado, nome_usuario, status_api FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 50", conn)
+            # Query ajustada para mostrar também a origem e tipo (se já populados)
+            df_logs = pd.read_sql("SELECT id, data_hora, cpf_consultado, nome_usuario, origem_consulta, tipo_consulta, status_api FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 50", conn)
             st.dataframe(df_logs, use_container_width=True)
             conn.close()
 
-    with tabs[4]: st.info("Parâmetros em desenvolvimento.")
+    # --- ABA 5: PARÂMETROS (NOVO LAYOUT) ---
+    with tabs[4]: 
+        
+        # 1. ORIGEM CONSULTA
+        with st.expander("📍 Origem da Consulta", expanded=True):
+            with st.container(border=True):
+                st.caption("Novo Item")
+                c_in, c_bt = st.columns([5, 1])
+                n_orig = c_in.text_input("Origem", key="in_orig", label_visibility="collapsed", placeholder="Ex: API, Web...")
+                if c_bt.button("➕", key="add_orig", use_container_width=True):
+                    if n_orig: salvar_origem_consulta(n_orig); st.rerun()
+            
+            st.divider()
+            df_orig = listar_origem_consulta()
+            if not df_orig.empty:
+                for _, r in df_orig.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1]) 
+                    ca1.markdown(f"**{r['id']}** | {r['origem']}")
+                    if ca2.button("✏️", key=f"ed_orig_{r['id']}"): dialog_editar_origem(r['id'], r['origem'])
+                    if ca3.button("🗑️", key=f"del_orig_{r['id']}"): excluir_origem_consulta(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
+
+        # 2. TIPO CONSULTA FATOR
+        with st.expander("🔍 Tipo Consulta Fator", expanded=True):
+            with st.container(border=True):
+                st.caption("Novo Item")
+                c_in, c_bt = st.columns([5, 1])
+                n_tipo = c_in.text_input("Tipo", key="in_tipo", label_visibility="collapsed", placeholder="Ex: Simples, Completa...")
+                if c_bt.button("➕", key="add_tipo", use_container_width=True):
+                    if n_tipo: salvar_tipo_consulta_fator(n_tipo); st.rerun()
+            
+            st.divider()
+            df_tipo = listar_tipo_consulta_fator()
+            if not df_tipo.empty:
+                for _, r in df_tipo.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1])
+                    ca1.markdown(f"**{r['id']}** | {r['tipo']}")
+                    if ca2.button("✏️", key=f"ed_tipo_{r['id']}"): dialog_editar_tipo_consulta(r['id'], r['tipo'])
+                    if ca3.button("🗑️", key=f"del_tipo_{r['id']}"): excluir_tipo_consulta_fator(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
+
     with tabs[5]: st.info("Chatbot em desenvolvimento.")
     with tabs[6]: st.info("Lote em desenvolvimento.")
