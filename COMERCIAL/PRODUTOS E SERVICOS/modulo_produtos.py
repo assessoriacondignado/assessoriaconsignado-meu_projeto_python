@@ -4,6 +4,7 @@ import psycopg2
 import os
 import shutil
 import uuid
+import re
 from datetime import datetime
 import conexao
 
@@ -35,6 +36,13 @@ def gerar_codigo_automatico():
     sufixo = str(uuid.uuid4())[:4].upper()
     return f"ITEM-{data}-{sufixo}"
 
+def sanitizar_nome_tabela(nome):
+    """Remove caracteres especiais e espaços para criar nomes de tabelas SQL seguros."""
+    s = str(nome).lower().strip()
+    s = re.sub(r'[^a-z0-9]', '_', s)
+    s = re.sub(r'_+', '_', s)
+    return s.strip('_')
+
 # --- FUNÇÕES DE ARQUIVO E PASTA ---
 def criar_pasta_produto(codigo, nome):
     data_str = datetime.now().strftime("%Y-%m-%d")
@@ -63,18 +71,83 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
     if conn:
         try:
             cur = conn.cursor()
+            # ATUALIZADO: Retorna o ID do produto criado
             query = """
                 INSERT INTO produtos_servicos (codigo, nome, tipo, resumo, preco, caminho_pasta, data_criacao, ativo)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW(), TRUE)
+                RETURNING id
             """
             cur.execute(query, (codigo, nome, tipo, resumo, preco, caminho_pasta))
+            novo_id = cur.fetchone()[0]
             conn.commit()
             conn.close()
-            return True
+            return novo_id
         except Exception as e:
             st.error(f"Erro ao salvar no banco: {e}")
-            return False
-    return False
+            return None
+    return None
+
+def criar_carteira_automatica(id_prod, nome_prod):
+    """
+    Cria automaticamente a estrutura de carteira para o novo produto.
+    Réplica da lógica do modulo_cliente.py
+    """
+    conn = get_conn()
+    if not conn: return False, "Erro de conexão"
+    
+    try:
+        cur = conn.cursor()
+        
+        # 1. Garante que a tabela de configuração existe (caso seja o primeiro uso)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
+                id SERIAL PRIMARY KEY,
+                id_produto INTEGER,
+                nome_produto VARCHAR(255),
+                nome_carteira VARCHAR(255),
+                nome_tabela_transacoes VARCHAR(255),
+                status VARCHAR(50) DEFAULT 'ATIVO',
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 2. Gera nome da tabela dinâmica
+        # Usa o nome do produto como base para o nome da carteira e tabela
+        nome_carteira = nome_prod
+        sufixo = sanitizar_nome_tabela(nome_carteira)
+        nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
+        
+        # 3. Cria a Tabela Dinâmica de Transações
+        sql_create = f"""
+            CREATE TABLE IF NOT EXISTS {nome_tabela_dinamica} (
+                id SERIAL PRIMARY KEY,
+                cpf_cliente VARCHAR(20),
+                nome_cliente VARCHAR(255),
+                motivo VARCHAR(255),
+                origem_lancamento VARCHAR(100),
+                data_transacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tipo_lancamento VARCHAR(50),
+                valor NUMERIC(10, 2),
+                saldo_anterior NUMERIC(10, 2),
+                saldo_novo NUMERIC(10, 2)
+            );
+        """
+        cur.execute(sql_create)
+        
+        # 4. Registra na tabela de configuração
+        sql_insert = """
+            INSERT INTO cliente.carteiras_config 
+            (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        cur.execute(sql_insert, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, 'ATIVO'))
+        
+        conn.commit()
+        conn.close()
+        return True, nome_tabela_dinamica
+    except Exception as e:
+        if conn: conn.close()
+        return False, str(e)
 
 def atualizar_produto_db(id_prod, nome, tipo, resumo, preco):
     conn = get_conn()
@@ -189,6 +262,14 @@ def dialog_novo_cadastro():
         arquivos = st.file_uploader("Arquivos", accept_multiple_files=True)
         resumo = st.text_area("Resumo", height=100)
         
+        st.divider()
+        st.markdown("##### ⚙️ Configurações Automáticas")
+        # Regra 2.5: Aviso em tela para confirmar criação
+        criar_cart = st.checkbox("✅ Criar Carteira Financeira Automaticamente?", value=True, 
+                                 help="Se marcado, cria automaticamente a tabela de saldo para este produto.")
+        if criar_cart:
+            st.caption("ℹ️ Uma nova carteira será criada com o mesmo nome do produto.")
+        
         if st.form_submit_button("💾 Salvar"):
             if nome:
                 codigo_auto = gerar_codigo_automatico()
@@ -197,8 +278,22 @@ def dialog_novo_cadastro():
                 # Salva arquivos antes de registrar no banco
                 if arquivos: salvar_arquivos(arquivos, caminho)
                 
-                if cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho):
-                    st.success(f"Criado: {codigo_auto}")
+                # Cadastra e recupera ID
+                novo_id = cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho)
+                
+                if novo_id:
+                    msg_sucesso = f"Produto criado: {codigo_auto}"
+                    
+                    # Criação automática de carteira (Regra 2.1)
+                    if criar_cart:
+                        ok_cart, msg_cart = criar_carteira_automatica(novo_id, nome)
+                        if ok_cart:
+                            msg_sucesso += f"\n\n + Carteira Financeira criada com sucesso!"
+                        else:
+                            st.error(f"Erro ao criar carteira: {msg_cart}")
+                    
+                    st.success(msg_sucesso)
+                    time.sleep(2)
                     st.rerun()
                 else: st.error("Erro ao salvar no banco.")
             else: st.warning("Nome obrigatório.")
