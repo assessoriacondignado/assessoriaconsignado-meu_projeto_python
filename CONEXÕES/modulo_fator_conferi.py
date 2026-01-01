@@ -10,19 +10,14 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 import conexao
 
-# --- CONFIGURAÇÕES ---
-# Caminho fixo solicitado
-PASTA_JSON = "/root/meu_sistema/CONEXÕES/FATOR CONFERI/JSON"
+# --- CONFIGURAÇÕES DE DIRETÓRIO (CORREÇÃO) ---
+# Usa o diretório atual do projeto como base para evitar erros de permissão no /root
+BASE_DIR = os.getcwd()
+PASTA_JSON = os.path.join(BASE_DIR, "CONEXÕES", "FATOR CONFERI", "JSON")
 
-# Garante que a pasta exista (Segurança de I/O)
-try:
-    if not os.path.exists(PASTA_JSON):
-        os.makedirs(PASTA_JSON, exist_ok=True)
-except Exception as e:
-    # Fallback para pasta local caso não tenha permissão no /root (apenas para evitar crash)
-    PASTA_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "JSON")
-    if not os.path.exists(PASTA_JSON):
-        os.makedirs(PASTA_JSON)
+# Garante que a pasta exista
+if not os.path.exists(PASTA_JSON):
+    os.makedirs(PASTA_JSON, exist_ok=True)
 
 def get_conn():
     try:
@@ -33,7 +28,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES (API, XML, CREDENCIAIS, FORMATAÇÃO)
+# 1. FUNÇÕES AUXILIARES
 # =============================================================================
 
 def buscar_credenciais():
@@ -50,9 +45,8 @@ def buscar_credenciais():
     return cred
 
 def buscar_valor_consulta_atual():
-    """Busca o valor atual da consulta na tabela de parâmetros"""
     conn = get_conn()
-    valor = 0.50 # Fallback padrão
+    valor = 0.50 
     if conn:
         try:
             cur = conn.cursor()
@@ -64,7 +58,6 @@ def buscar_valor_consulta_atual():
     return valor
 
 def formatar_cpf_cnpj_visual(valor):
-    """Aplica máscara de CPF ou CNPJ para visualização na tabela"""
     dado = re.sub(r'\D', '', str(valor))
     if len(dado) == 11:
         return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
@@ -120,19 +113,13 @@ def consultar_saldo_api():
         return False, str(e)
 
 # =============================================================================
-# FLUXO PRINCIPAL DE CONSULTA (PADRONIZAÇÃO DE CPF PARA BLOQUEIO)
+# FLUXO PRINCIPAL DE CONSULTA
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
-    # 1. Limpeza de caracteres não numéricos
     cpf_limpo_raw = ''.join(filter(str.isdigit, str(cpf)))
-    
-    # 2. Padronização (Zeros à esquerda) para corresponder ao banco
-    # Regra: Se <= 11 dígitos, trata como CPF (11 posições). Se > 11, CNPJ (14 posições).
-    if len(cpf_limpo_raw) <= 11:
-        cpf_padrao = cpf_limpo_raw.zfill(11)
-    else:
-        cpf_padrao = cpf_limpo_raw.zfill(14)
+    if len(cpf_limpo_raw) <= 11: cpf_padrao = cpf_limpo_raw.zfill(11)
+    else: cpf_padrao = cpf_limpo_raw.zfill(14)
     
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro de conexão com banco de dados."}
@@ -140,7 +127,7 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
     try:
         cur = conn.cursor()
         
-        # A.1 Bloqueio tempo consulta (Verificação de Cache no BANCO com CPF PADRONIZADO)
+        # A.1 Cache no Banco
         cur.execute("""
             SELECT caminho_json, link_arquivo_consulta 
             FROM conexoes.fatorconferi_registo_consulta 
@@ -150,25 +137,23 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         
         registro_anterior = cur.fetchone()
         
-        # 1.2 Caso localize o registro (CACHE)
         if registro_anterior:
             caminho_existente = registro_anterior[0]
-            link_existente = registro_anterior[1]
+            # Usa o link existente ou recria se estiver vazio
+            link_existente = registro_anterior[1] if registro_anterior[1] else caminho_existente
             
             dados_parsed = {}
             msg_retorno = "Dados recuperados do histórico (R$ 0,00)."
 
-            # Tenta ler o arquivo apenas para exibir, mas o bloqueio já está valendo
             if caminho_existente and os.path.exists(caminho_existente):
                 try:
                     with open(caminho_existente, 'r', encoding='utf-8') as f:
                         dados_parsed = json.load(f)
                 except: 
-                    msg_retorno += " (Erro ao ler arquivo físico)"
+                    msg_retorno += " (Erro leitura arquivo)"
             else:
-                msg_retorno += " (Arquivo físico original não localizado)"
+                msg_retorno += " (Arquivo físico não localizado)"
 
-            # 1.2.2 Replicar histórico (Novo Log) - Valor 0,00
             usuario = st.session_state.get('usuario_nome', 'Sistema')
             id_user = st.session_state.get('usuario_id', 0)
             
@@ -178,23 +163,15 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
                 VALUES (%s, %s, %s, %s, 0.00, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
             """
             cur.execute(sql_cache, (tipo, cpf_padrao, id_user, usuario, caminho_existente, link_existente, origem))
-            conn.commit()
-            conn.close()
-            
+            conn.commit(); conn.close()
             return {"sucesso": True, "dados": dados_parsed, "msg": msg_retorno}
         
-        # 1.1 Caso não (Nova Consulta)
-        
-        # A.2 Credenciais
+        # Nova Consulta API
         cred = buscar_credenciais()
-        if not cred['token']: # 2.1 Sem token
-            conn.close()
-            return {"sucesso": False, "msg": "sem token registrado"}
+        if not cred['token']:
+            conn.close(); return {"sucesso": False, "msg": "sem token registrado"}
             
-        # Execução API (Usa o CPF padronizado ou o limpo? Geralmente APIs aceitam apenas números. 
-        # Vou usar cpf_padrao pois garante os zeros à esquerda que são importantes para CPF)
         url = f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}"
-        
         response = requests.get(url, timeout=15)
         response.encoding = 'ISO-8859-1'
         xml_content = response.text
@@ -205,32 +182,26 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         
         dados_parsed = parse_xml_to_dict(xml_content)
         
-        # D.1 Armazenamento (Novo Local com CPF Padronizado no nome)
+        # D.1 Salvar Arquivo
         nome_arquivo = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         caminho_completo = os.path.join(PASTA_JSON, nome_arquivo)
         
         with open(caminho_completo, 'w', encoding='utf-8') as f:
             json.dump(dados_parsed, f, ensure_ascii=False, indent=4)
         
-        # E. Registro Financeiro e Log
+        # E. Registro
         usuario = st.session_state.get('usuario_nome', 'Sistema')
         id_user = st.session_state.get('usuario_id', 0)
-        
-        # Valor cobrado
         custo = buscar_valor_consulta_atual()
         
-        # 3.2 Link Arquivo
-        link_arquivo = caminho_completo 
-        
-        # 3. Gravação
+        # O link e o caminho agora são salvos corretamente como o caminho absoluto do arquivo
         sql = """
             INSERT INTO conexoes.fatorconferi_registo_consulta 
             (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
             VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())
         """
-        cur.execute(sql, (tipo, cpf_padrao, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
-        conn.commit()
-        conn.close()
+        cur.execute(sql, (tipo, cpf_padrao, id_user, usuario, custo, caminho_completo, caminho_completo, origem))
+        conn.commit(); conn.close()
         
         return {"sucesso": True, "dados": dados_parsed}
         
