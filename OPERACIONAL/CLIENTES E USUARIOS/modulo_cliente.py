@@ -498,8 +498,8 @@ def dialog_historico_consultas(cpf_cliente):
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # Atualizado: Aba 3 renomeada para "Parâmetros"
-    tab_cli, tab_user, tab_param, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "📊 Relatórios"])
+    # ATUALIZADO: Adicionada a aba "Carteira"
+    tab_cli, tab_user, tab_param, tab_carteira, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
     with tab_cli:
@@ -794,6 +794,12 @@ def app_clientes():
                     st.markdown("<hr style='margin: 2px 0'>", unsafe_allow_html=True)
             else:
                 st.info("Nenhuma carteira configurada.")
+
+    # --- ABA CARTEIRA (NOVO: EM DESENVOLVIMENTO) ---
+    with tab_carteira:
+        st.markdown("### 💼 Gestão de Carteira")
+        st.info("🚧 Módulo de Gestão de Saldo e Transações em desenvolvimento.")
+        # Aqui entra a lógica de visualizar o saldo do cliente e lançar transações nas tabelas dinâmicas
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
