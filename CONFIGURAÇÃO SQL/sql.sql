@@ -1,5 +1,11 @@
--- Renomeando tabela 'origem_consulta' para 'fatorconferi_origem_consulta'
-ALTER TABLE conexoes.origem_consulta RENAME TO fatorconferi_origem_consulta;
+-- 1. Criação da Tabela de Valores
+CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_valor_da_consulta (
+    id SERIAL PRIMARY KEY,
+    valor_da_consulta NUMERIC(10, 2),
+    data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
--- Renomeando tabela 'tipo_consulta_fator' para 'fatorconferi_tipo_consulta_fator'
-ALTER TABLE conexoes.tipo_consulta_fator RENAME TO fatorconferi_tipo_consulta_fator;
+-- 2. Inserção de valor inicial (R$ 0,50) caso a tabela esteja vazia
+INSERT INTO conexoes.fatorconferi_valor_da_consulta (valor_da_consulta)
+SELECT 0.50
+WHERE NOT EXISTS (SELECT 1 FROM conexoes.fatorconferi_valor_da_consulta);

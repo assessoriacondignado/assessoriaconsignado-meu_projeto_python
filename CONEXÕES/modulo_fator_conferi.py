@@ -5,6 +5,7 @@ import requests
 import json
 import os
 import time
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 import conexao
@@ -23,7 +24,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES (API, XML, CREDENCIAIS)
+# 1. FUNÇÕES AUXILIARES (API, XML, CREDENCIAIS, FORMATAÇÃO)
 # =============================================================================
 
 def buscar_credenciais():
@@ -38,6 +39,29 @@ def buscar_credenciais():
         except: pass
         finally: conn.close()
     return cred
+
+def buscar_valor_consulta_atual():
+    """Busca o valor atual da consulta na tabela de parâmetros"""
+    conn = get_conn()
+    valor = 0.50 # Fallback padrão
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT valor_da_consulta FROM conexoes.fatorconferi_valor_da_consulta ORDER BY id DESC LIMIT 1")
+            res = cur.fetchone()
+            if res: valor = float(res[0])
+        except: pass
+        finally: conn.close()
+    return valor
+
+def formatar_cpf_cnpj_visual(valor):
+    """Aplica máscara de CPF ou CNPJ para visualização"""
+    dado = re.sub(r'\D', '', str(valor))
+    if len(dado) == 11:
+        return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
+    elif len(dado) == 14:
+        return f"{dado[:2]}.{dado[2:5]}.{dado[5:8]}/{dado[8:12]}-{dado[12:]}"
+    return valor
 
 def parse_xml_to_dict(xml_string):
     try:
@@ -102,17 +126,21 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA"):
         caminho_completo = os.path.join(PASTA_JSON, nome_arquivo)
         with open(caminho_completo, 'w', encoding='utf-8') as f:
             json.dump(dados_parsed, f, ensure_ascii=False, indent=4)
+        
         conn = get_conn()
         if conn:
             cur = conn.cursor()
             usuario = st.session_state.get('usuario_nome', 'Sistema')
             id_user = st.session_state.get('usuario_id', 0)
+            
+            # Busca o valor dinâmico
+            custo = buscar_valor_consulta_atual()
+            
             sql = """
                 INSERT INTO conexoes.fatorconferi_registo_consulta 
                 (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api)
                 VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO')
             """
-            custo = 0.50 
             cur.execute(sql, (tipo, cpf_limpo, id_user, usuario, custo, caminho_completo))
             conn.commit(); conn.close()
         return {"sucesso": True, "dados": dados_parsed}
@@ -127,7 +155,6 @@ def listar_clientes_carteira():
     conn = get_conn()
     if conn:
         try:
-            # Query ajustada para trazer CPF do cliente admin
             query = """
                 SELECT cc.id, cc.nome_cliente, cc.custo_por_consulta, cc.saldo_atual, cc.status,
                        ac.cpf, ac.telefone
@@ -208,7 +235,6 @@ def buscar_extrato_cliente_filtrado(id_carteira, data_ini, data_fim):
     conn = get_conn()
     if conn:
         try:
-            # Ajuste das datas para incluir o dia inteiro
             dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
             dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
             
@@ -225,7 +251,6 @@ def buscar_extrato_cliente_filtrado(id_carteira, data_ini, data_fim):
         except: conn.close()
     return pd.DataFrame()
 
-# Novas funções para editar/excluir transações do extrato
 def editar_transacao_db(id_transacao, id_carteira, novo_tipo, novo_valor, novo_motivo):
     conn = get_conn()
     if conn:
@@ -287,7 +312,6 @@ def excluir_transacao_db(id_transacao, id_carteira):
 def listar_origem_consulta():
     conn = get_conn()
     try:
-        # ATUALIZADO: tabela fatorconferi_origem_consulta
         df = pd.read_sql("SELECT id, origem FROM conexoes.fatorconferi_origem_consulta ORDER BY origem", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
@@ -296,7 +320,6 @@ def salvar_origem_consulta(origem):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: tabela fatorconferi_origem_consulta
         cur.execute("INSERT INTO conexoes.fatorconferi_origem_consulta (origem) VALUES (%s)", (origem,))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
@@ -305,7 +328,6 @@ def atualizar_origem_consulta(id_reg, nova_origem):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: tabela fatorconferi_origem_consulta
         cur.execute("UPDATE conexoes.fatorconferi_origem_consulta SET origem=%s WHERE id=%s", (nova_origem, id_reg))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
@@ -314,7 +336,6 @@ def excluir_origem_consulta(id_reg):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: tabela fatorconferi_origem_consulta
         cur.execute("DELETE FROM conexoes.fatorconferi_origem_consulta WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
@@ -323,7 +344,6 @@ def excluir_origem_consulta(id_reg):
 def listar_tipo_consulta_fator():
     conn = get_conn()
     try:
-        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
         df = pd.read_sql("SELECT id, tipo FROM conexoes.fatorconferi_tipo_consulta_fator ORDER BY tipo", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
@@ -332,7 +352,6 @@ def salvar_tipo_consulta_fator(tipo):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
         cur.execute("INSERT INTO conexoes.fatorconferi_tipo_consulta_fator (tipo) VALUES (%s)", (tipo,))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
@@ -341,7 +360,6 @@ def atualizar_tipo_consulta_fator(id_reg, novo_tipo):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
         cur.execute("UPDATE conexoes.fatorconferi_tipo_consulta_fator SET tipo=%s WHERE id=%s", (novo_tipo, id_reg))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
@@ -350,7 +368,6 @@ def excluir_tipo_consulta_fator(id_reg):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: tabela fatorconferi_tipo_consulta_fator
         cur.execute("DELETE FROM conexoes.fatorconferi_tipo_consulta_fator WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
@@ -618,7 +635,6 @@ def app_fator_conferi():
         conn = get_conn()
         if conn:
             # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
-            # A query abaixo seleciona todas as colunas existentes
             query_hist = """
                 SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
                        valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
@@ -628,7 +644,49 @@ def app_fator_conferi():
             """
             try:
                 df_logs = pd.read_sql(query_hist, conn)
-                st.dataframe(df_logs, use_container_width=True)
+                
+                if not df_logs.empty:
+                    # 1.1 Formatação da Data
+                    df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
+                    
+                    # 2.1 Formatação CPF/CNPJ
+                    df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
+                    
+                    # 4.2 Formatação Valor Pago
+                    # Se vier nulo, considera 0.0
+                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+                    # Renomeação das Colunas (Regras 1.2, 2.2, etc.)
+                    df_logs.rename(columns={
+                        'data_hora': 'Data Consulta',
+                        'cpf_consultado': 'CPF/CNPJ',
+                        'id_usuario': 'ID Usuário',
+                        'nome_usuario': 'Nome Usuário',
+                        'valor_pago': 'Valor Pago',
+                        'caminho_json': 'Caminho JSON',
+                        'status_api': 'Status API',
+                        'link_arquivo_consulta': 'Link Arquivo Consulta',
+                        'tipo_consulta': 'Tipo Consulta',
+                        'origem_consulta': 'Origem',
+                        'tipo_cobranca': 'Cobrança'
+                    }, inplace=True)
+
+                    # Configuração para Link Clicável
+                    st.dataframe(
+                        df_logs, 
+                        use_container_width=True,
+                        column_config={
+                            "Link Arquivo Consulta": st.column_config.LinkColumn(
+                                "Link Arquivo",
+                                help="Clique para acessar o arquivo",
+                                validate="^https?://", # Validação opcional para URLs web
+                                display_text="📥 Abrir Arquivo"
+                            )
+                        }
+                    )
+                else:
+                    st.info("Nenhum histórico encontrado.")
+
             except Exception as e:
                 st.error(f"Erro ao carregar histórico: {e}")
             finally:
