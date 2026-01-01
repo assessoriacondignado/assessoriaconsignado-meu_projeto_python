@@ -314,6 +314,38 @@ def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, 
     except Exception as e:
         conn.close(); return pd.DataFrame()
 
+# --- FUNÇÃO PARA LANÇAMENTO MANUAL (CRÉDITO/DÉBITO) ---
+def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc, valor, motivo):
+    conn = get_conn()
+    if not conn: return False, "Erro conexão"
+    try:
+        cur = conn.cursor()
+        
+        # 1. Busca saldo atual
+        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
+        res = cur.fetchone()
+        saldo_anterior = float(res[0]) if res else 0.0
+        
+        # 2. Calcula novo saldo
+        valor = float(valor)
+        if tipo_lanc == "DEBITO":
+            saldo_novo = saldo_anterior - valor
+        else:
+            saldo_novo = saldo_anterior + valor
+            
+        # 3. Insere registro
+        query = f"""
+            INSERT INTO {tabela_sql} 
+            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
+            VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())
+        """
+        cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
+        
+        conn.commit(); conn.close()
+        return True, "Lançamento realizado com sucesso!"
+    except Exception as e:
+        conn.close(); return False, str(e)
+
 # --- USUÁRIOS E CLIENTES (VINCULOS) ---
 
 def buscar_usuarios_disponiveis():
@@ -493,6 +525,26 @@ def dialog_historico_consultas(cpf_cliente):
     except: pass
     finally: conn.close()
 
+# --- NOVO DIALOG: LANÇAMENTO MANUAL ---
+@st.dialog("💰 Lançamento Manual")
+def dialog_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc):
+    titulo = "Crédito (Aporte)" if tipo_lanc == "CREDITO" else "Débito (Cobrança)"
+    st.markdown(f"### {titulo}")
+    st.write(f"Cliente: **{nome_cliente}**")
+    
+    with st.form("form_lanc_manual"):
+        valor = st.number_input("Valor (R$)", min_value=0.01, step=1.00)
+        motivo = st.text_input("Motivo", value="Lançamento Manual")
+        
+        if st.form_submit_button("✅ Confirmar"):
+            ok, msg = realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc, valor, motivo)
+            if ok:
+                st.success(msg)
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                st.error(f"Erro: {msg}")
+
 # =============================================================================
 # 4. INTERFACE PRINCIPAL
 # =============================================================================
@@ -500,6 +552,7 @@ def dialog_historico_consultas(cpf_cliente):
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
+    # Atualizado: Aba 3 renomeada para "Parâmetros"
     tab_cli, tab_user, tab_param, tab_carteira, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
@@ -564,24 +617,35 @@ def app_clientes():
                         # --- ÁREA EXPANSÍVEL DO EXTRATO ---
                         if st.session_state.get('extrato_expandido') == row['id']:
                             with st.container(border=True):
-                                st.caption(f"📜 Histórico: {row['nome']}")
+                                st.markdown(f"#### 📜 Extrato Financeiro: {row['nome']}")
+                                st.caption(f"CPF: {row.get('cpf', '-')}")
                                 
                                 # Busca Carteiras Ativas
                                 df_carteiras = listar_todas_carteiras_ativas()
                                 
                                 if not df_carteiras.empty:
+                                    col_sel, col_btn_c, col_btn_d, col_vazio = st.columns([4, 1.5, 1.5, 3])
+                                    
                                     opcoes_cart = df_carteiras.apply(lambda x: f"{x['nome_carteira']}", axis=1)
-                                    idx_sel = st.selectbox("Selecione a Carteira", range(len(df_carteiras)), format_func=lambda x: opcoes_cart[x], key=f"sel_cart_{row['id']}")
+                                    idx_sel = col_sel.selectbox("Selecione a Carteira", range(len(df_carteiras)), format_func=lambda x: opcoes_cart[x], key=f"sel_cart_{row['id']}", label_visibility="visible")
                                     
-                                    # Filtros de Data
-                                    fd1, fd2 = st.columns(2)
-                                    data_ini = fd1.date_input("Data Inicial", value=date.today() - timedelta(days=30), key=f"ini_{row['id']}")
-                                    data_fim = fd2.date_input("Data Final", value=date.today(), key=f"fim_{row['id']}")
-                                    
-                                    # Carrega dados
+                                    # Carrega dados da carteira selecionada
                                     carteira_sel = df_carteiras.iloc[idx_sel]
                                     tabela_sql = carteira_sel['nome_tabela_transacoes']
                                     cpf_limpo = str(row.get('cpf', '')).strip()
+                                    
+                                    # --- BOTÕES DE LANÇAMENTO ---
+                                    if col_btn_c.button("➕ Crédito", key=f"cred_{row['id']}"):
+                                        dialog_lancamento_manual(tabela_sql, cpf_limpo, row['nome'], "CREDITO")
+                                    
+                                    if col_btn_d.button("➖ Débito", key=f"deb_{row['id']}"):
+                                        dialog_lancamento_manual(tabela_sql, cpf_limpo, row['nome'], "DEBITO")
+                                    
+                                    # --- FILTROS E EXTRATO ---
+                                    st.write("") # Espaço
+                                    fd1, fd2 = st.columns(2)
+                                    data_ini = fd1.date_input("Data Inicial", value=date.today() - timedelta(days=30), key=f"ini_{row['id']}")
+                                    data_fim = fd2.date_input("Data Final", value=date.today(), key=f"fim_{row['id']}")
                                     
                                     df_extrato = buscar_transacoes_carteira_filtrada(tabela_sql, cpf_limpo, data_ini, data_fim)
                                     
