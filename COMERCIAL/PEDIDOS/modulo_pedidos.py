@@ -46,7 +46,7 @@ def buscar_clientes():
     conn = get_conn()
     if conn:
         try:
-            # CORREÇÃO APLICADA: Busca na tabela 'admin.clientes'
+            # Busca na tabela 'admin.clientes'
             query = "SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome"
             df = pd.read_sql(query, conn)
             conn.close()
@@ -124,7 +124,7 @@ def editar_dados_pedido(id_pedido, nova_qtd, novo_valor_unit, novo_cliente, novo
     return False
 
 # =============================================================================
-# --- NOVA FUNÇÃO: PROCESSAR CRÉDITO NA CARTEIRA (REGRA AUTOMÁTICA) ---
+# --- FUNÇÃO: PROCESSAR CRÉDITO NA CARTEIRA (REGRA AUTOMÁTICA) ---
 # =============================================================================
 def processar_credito_carteira(dados_pedido):
     """
@@ -299,6 +299,7 @@ def dialog_novo_pedido():
             ok, res = criar_pedido(cli_selecionado, prod_selecionado, qtd, valor_unit, total, avisar)
             if ok:
                 st.success(f"Pedido {res} criado com sucesso!")
+                time.sleep(1) # Delay para evitar erro de renderização do Streamlit
                 st.rerun()
             else:
                 st.error(f"Erro: {res}")
@@ -347,6 +348,7 @@ def dialog_status_pedido(pedido):
             # Passa todos os dados necessários, incluindo CPF para a carteira
             if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs, modelo_escolhido):
                 st.success("Status Alterado!")
+                time.sleep(1.5) # Tempo para ler msg de crédito
                 st.rerun()
 
     # --- NOVA SEÇÃO: HISTÓRICO VISUAL ABAIXO DO STATUS ---
