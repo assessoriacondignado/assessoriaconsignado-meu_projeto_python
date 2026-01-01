@@ -123,6 +123,79 @@ def editar_dados_pedido(id_pedido, nova_qtd, novo_valor_unit, novo_cliente, novo
             return False
     return False
 
+# =============================================================================
+# --- NOVA FUNÇÃO: PROCESSAR CRÉDITO NA CARTEIRA (REGRA AUTOMÁTICA) ---
+# =============================================================================
+def processar_credito_carteira(dados_pedido):
+    """
+    Verifica se o produto tem vínculo com carteira e lança o crédito.
+    """
+    conn = get_conn()
+    if not conn: return False, "Erro de conexão"
+    
+    try:
+        cur = conn.cursor()
+        
+        # 1. Identificar Carteira Vinculada (Tabela de Relação)
+        # Busca pelo nome do produto
+        cur.execute("SELECT nome_carteira FROM cliente.cliente_carteira_relacao_pedido_carteira WHERE produto = %s", (dados_pedido['nome_produto'],))
+        res_rel = cur.fetchone()
+        
+        if not res_rel:
+            conn.close()
+            return False, "Este produto não está vinculado a nenhuma carteira."
+        
+        nome_carteira = res_rel[0]
+        
+        # 2. Identificar Tabela de Transações da Carteira
+        cur.execute("SELECT nome_tabela_transacoes FROM cliente.carteiras_config WHERE nome_carteira = %s", (nome_carteira,))
+        res_conf = cur.fetchone()
+        
+        if not res_conf:
+            conn.close()
+            return False, f"Configuração da carteira '{nome_carteira}' não encontrada."
+            
+        tabela_transacoes = res_conf[0]
+        
+        # 3. Calcular Saldo Atual
+        cpf_cliente = dados_pedido['cpf_cliente']
+        # Busca o último saldo registrado para este cliente nesta carteira
+        query_saldo = f"SELECT saldo_novo FROM {tabela_transacoes} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1"
+        cur.execute(query_saldo, (cpf_cliente,))
+        res_saldo = cur.fetchone()
+        saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
+        
+        valor_credito = float(dados_pedido['valor_total'])
+        saldo_novo = saldo_anterior + valor_credito
+        
+        # 4. Registrar Lançamento
+        motivo = dados_pedido['nome_produto'] # Motivo = Nome do Produto
+        origem = f"PEDIDO {dados_pedido['codigo']}"
+        
+        query_insert = f"""
+            INSERT INTO {tabela_transacoes} 
+            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
+            VALUES (%s, %s, %s, %s, 'CREDITO', %s, %s, %s, NOW())
+        """
+        cur.execute(query_insert, (
+            cpf_cliente, 
+            dados_pedido['nome_cliente'], 
+            motivo, 
+            origem, 
+            valor_credito, 
+            saldo_anterior, 
+            saldo_novo
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True, f"Crédito de R$ {valor_credito:.2f} lançado na carteira '{nome_carteira}'!"
+        
+    except Exception as e:
+        conn.close()
+        return False, f"Erro ao processar crédito: {str(e)}"
+
+
 def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente, obs_status_texto, modelo_msg_escolhido="Automático (Padrão)"):
     conn = get_conn()
     if conn:
@@ -134,6 +207,16 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente
                         (int(id_pedido), novo_status, obs_status_texto))
             conn.commit()
             conn.close()
+            
+            # --- REGRA DE CRÉDITO NA CARTEIRA ---
+            if novo_status == "Pago":
+                sucesso_cred, msg_cred = processar_credito_carteira(dados_pedido)
+                if sucesso_cred:
+                    st.success(f"💰 {msg_cred}")
+                else:
+                    if "não está vinculado" not in msg_cred: # Só avisa se for erro real ou config faltando
+                        st.warning(f"⚠️ Atenção Carteira: {msg_cred}")
+            # ------------------------------------
             
             if avisar_cliente and dados_pedido['telefone_cliente']:
                 instancia = modulo_wapi.buscar_instancia_ativa()
@@ -261,6 +344,7 @@ def dialog_status_pedido(pedido):
         avisar = st.checkbox("Avisar cliente?", value=True)
         
         if st.form_submit_button("Atualizar"):
+            # Passa todos os dados necessários, incluindo CPF para a carteira
             if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs, modelo_escolhido):
                 st.success("Status Alterado!")
                 st.rerun()
