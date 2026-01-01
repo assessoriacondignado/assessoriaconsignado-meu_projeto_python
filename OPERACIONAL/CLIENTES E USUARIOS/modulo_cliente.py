@@ -28,7 +28,6 @@ def formatar_cnpj(v):
     return f"{v[:2]}.{v[2:5]}.{v[5:8]}/{v[8:12]}-{v[12:]}" if len(v) == 14 else v
 
 def limpar_formatacao_texto(texto):
-    """Remove caracteres markdown como ** e espaços extras"""
     if not texto: return ""
     return str(texto).replace('*', '').strip()
 
@@ -158,7 +157,7 @@ def excluir_cliente_db(id_cliente):
     except: conn.close(); return False
 
 # =============================================================================
-# 2. FUNÇÕES DE USUÁRIO (MIGRADO E ADAPTADO)
+# 2. FUNÇÕES DE USUÁRIO
 # =============================================================================
 
 def hash_senha(senha):
@@ -179,28 +178,30 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
     except Exception as e: conn.close(); return None
 
 # =============================================================================
-# 3. DIALOGS (POP-UPS)
+# 3. DIALOGS (POP-UPS PADRONIZADOS)
 # =============================================================================
 
-@st.dialog("✏️ Editar Agrupamento")
+@st.dialog("✏️ Editar")
 def dialog_editar_agrupamento(tipo, id_agrup, nome_atual):
-    st.write(f"Editando: **{nome_atual}**")
-    novo_nome = st.text_input("Novo Nome", value=nome_atual)
-    if st.button("Salvar Alteração"):
-        if novo_nome:
-            if atualizar_agrupamento(tipo, id_agrup, novo_nome):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_agrup"):
+        novo_nome = st.text_input("Nome", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if novo_nome:
+                if atualizar_agrupamento(tipo, id_agrup, novo_nome):
+                    st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+                else: st.error("Erro ao atualizar.")
+
+@st.dialog("✏️ Editar")
+def dialog_editar_cliente_cnpj(id_reg, cnpj_atual, nome_atual):
+    st.caption(f"Editando: {cnpj_atual}")
+    with st.form("form_edit_cnpj"):
+        novo_cnpj = st.text_input("CNPJ", value=cnpj_atual)
+        novo_nome = st.text_input("Nome Empresa", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_cliente_cnpj(id_reg, novo_cnpj, novo_nome):
                 st.success("Atualizado!"); time.sleep(0.5); st.rerun()
             else: st.error("Erro ao atualizar.")
-
-@st.dialog("✏️ Editar Empresa/CNPJ")
-def dialog_editar_cliente_cnpj(id_reg, cnpj_atual, nome_atual):
-    st.write(f"Editando ID: {id_reg}")
-    novo_cnpj = st.text_input("CNPJ", value=cnpj_atual)
-    novo_nome = st.text_input("Nome Empresa", value=nome_atual)
-    if st.button("Salvar Alteração"):
-        if atualizar_cliente_cnpj(id_reg, novo_cnpj, novo_nome):
-            st.success("Atualizado!"); time.sleep(0.5); st.rerun()
-        else: st.error("Erro ao atualizar.")
 
 @st.dialog("🔗 Gestão de Acesso do Cliente")
 def dialog_gestao_usuario_vinculo(dados_cliente):
@@ -358,15 +359,16 @@ def app_clientes():
                         else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, n_ativo, u['id']))
                         conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
 
-    # --- ABA AGRUPAMENTOS (LAYOUT VERTICAL - UM ABAIXO DO OUTRO) ---
+    # --- ABA AGRUPAMENTOS (PADRONIZADA E VERTICAL) ---
     with tab_agrup:
         
         # 1. AGRUPAMENTO CLIENTES
         with st.expander("🏷️ Agrupamento Clientes", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Item")
-                c_in, c_bt = st.columns([4, 1]) # Ajustei proporção para ficar melhor em largura total
-                n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed")
+                # Input alinhado com botão
+                c_in, c_bt = st.columns([5, 1])
+                n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed", placeholder="Digite o nome...")
                 if c_bt.button("➕", key="add_ac", use_container_width=True):
                     if n_ac: salvar_agrupamento("cliente", n_ac); st.rerun()
             
@@ -375,9 +377,8 @@ def app_clientes():
             df_ac = listar_agrupamentos("cliente")
             if not df_ac.empty:
                 for _, r in df_ac.iterrows():
-                    # Ajuste de colunas para largura total: Nome ocupa mais espaço
                     ca1, ca2, ca3 = st.columns([8, 1, 1]) 
-                    ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
+                    ca1.markdown(f"**{r['id']}** | {r['nome_agrupamento']}")
                     if ca2.button("✏️", key=f"ed_ac_{r['id']}"): dialog_editar_agrupamento("cliente", r['id'], r['nome_agrupamento'])
                     if ca3.button("🗑️", key=f"del_ac_{r['id']}"): excluir_agrupamento("cliente", r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
@@ -387,8 +388,8 @@ def app_clientes():
         with st.expander("🏢 Agrupamento Empresas", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Item")
-                c_in, c_bt = st.columns([4, 1])
-                n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed")
+                c_in, c_bt = st.columns([5, 1])
+                n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed", placeholder="Digite o nome...")
                 if c_bt.button("➕", key="add_ae", use_container_width=True):
                     if n_ae: salvar_agrupamento("empresa", n_ae); st.rerun()
             
@@ -398,7 +399,7 @@ def app_clientes():
             if not df_ae.empty:
                 for _, r in df_ae.iterrows():
                     ca1, ca2, ca3 = st.columns([8, 1, 1])
-                    ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
+                    ca1.markdown(f"**{r['id']}** | {r['nome_agrupamento']}")
                     if ca2.button("✏️", key=f"ed_ae_{r['id']}"): dialog_editar_agrupamento("empresa", r['id'], r['nome_agrupamento'])
                     if ca3.button("🗑️", key=f"del_ae_{r['id']}"): excluir_agrupamento("empresa", r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
@@ -408,11 +409,11 @@ def app_clientes():
         with st.expander("💼 Cliente CNPJ", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Cadastro")
-                # Ajuste de inputs para ficarem lado a lado na largura total
+                # 3 colunas, mas mantendo a estética
                 c_inp1, c_inp2, c_bt = st.columns([2, 3, 1])
-                n_cnpj = c_inp1.text_input("CNPJ", key="n_cnpj", placeholder="00.000.000/0000-00", label_visibility="collapsed")
+                n_cnpj = c_inp1.text_input("CNPJ", key="n_cnpj", placeholder="00.000...", label_visibility="collapsed")
                 n_emp = c_inp2.text_input("Nome Empresa", key="n_emp", placeholder="Razão Social", label_visibility="collapsed")
-                if c_bt.button("Adicionar", key="add_cnpj", use_container_width=True):
+                if c_bt.button("➕", key="add_cnpj", use_container_width=True):
                     if n_cnpj and n_emp: salvar_cliente_cnpj(n_cnpj, n_emp); st.rerun()
             
             st.divider()
@@ -421,7 +422,6 @@ def app_clientes():
             if not df_cnpj.empty:
                 for _, r in df_cnpj.iterrows():
                     cc1, cc2, cc3 = st.columns([8, 1, 1])
-                    # Exibição melhorada para linha única
                     cc1.markdown(f"**{r['cnpj']}** | {r['nome_empresa']}")
                     if cc2.button("✏️", key=f"ed_cn_{r['id']}"): dialog_editar_cliente_cnpj(r['id'], r['cnpj'], r['nome_empresa'])
                     if cc3.button("🗑️", key=f"del_cn_{r['id']}"): excluir_cliente_cnpj(r['id']); st.rerun()
