@@ -31,6 +31,14 @@ def limpar_formatacao_texto(texto):
     if not texto: return ""
     return str(texto).replace('*', '').strip()
 
+# --- FUNÇÃO AUXILIAR: SANITIZAR NOME DE TABELA ---
+def sanitizar_nome_tabela(nome):
+    """Remove caracteres especiais e espaços para criar nomes de tabelas SQL seguros."""
+    s = str(nome).lower().strip()
+    s = re.sub(r'[^a-z0-9]', '_', s)
+    s = re.sub(r'_+', '_', s)
+    return s.strip('_')
+
 # --- AGRUPAMENTOS (CLIENTE/EMPRESA) ---
 
 def listar_agrupamentos(tipo):
@@ -118,7 +126,7 @@ def atualizar_cliente_cnpj(id_reg, cnpj, nome):
     except: 
         conn.close(); return False
 
-# --- RELAÇÃO PEDIDO CARTEIRA (NOVO) ---
+# --- RELAÇÃO PEDIDO CARTEIRA ---
 
 def listar_relacao_pedido_carteira():
     conn = get_conn()
@@ -151,7 +159,7 @@ def excluir_relacao_pedido_carteira(id_reg):
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
 
-# --- CLIENTE CARTEIRA LISTA (NOVO) ---
+# --- CLIENTE CARTEIRA LISTA ---
 
 def listar_cliente_carteira_lista():
     conn = get_conn()
@@ -190,6 +198,119 @@ def excluir_cliente_carteira_lista(id_reg):
         cur.execute("DELETE FROM cliente.cliente_carteira_lista WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
+
+# =============================================================================
+# --- NOVA FUNÇÃO: CARTEIRA CLIENTE (CONFIGURAÇÃO E TABELAS DINÂMICAS) ---
+# =============================================================================
+
+def garantir_tabela_config_carteiras():
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # Cria a tabela mestre de configurações se não existir
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
+                    id SERIAL PRIMARY KEY,
+                    id_produto INTEGER,
+                    nome_produto VARCHAR(255),
+                    nome_carteira VARCHAR(255),
+                    nome_tabela_transacoes VARCHAR(255),
+                    status VARCHAR(50) DEFAULT 'ATIVO',
+                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            conn.commit(); conn.close()
+        except: conn.close()
+
+def listar_produtos_para_selecao():
+    conn = get_conn()
+    try:
+        # Busca produtos da tabela do módulo de produtos
+        df = pd.read_sql("SELECT id, nome FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
+        conn.close(); return df
+    except: 
+        conn.close(); return pd.DataFrame()
+
+def listar_carteiras_config():
+    garantir_tabela_config_carteiras()
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT * FROM cliente.carteiras_config ORDER BY id DESC", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_nova_carteira_sistema(id_prod, nome_prod, nome_carteira, status):
+    conn = get_conn()
+    if not conn: return False, "Erro conexão"
+    
+    try:
+        cur = conn.cursor()
+        
+        # 1. Gerar nome da tabela dinâmica
+        sufixo = sanitizar_nome_tabela(nome_carteira)
+        nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
+        
+        # 2. Criar a Tabela Dinâmica de Transações
+        # Segue o modelo: cliente_carteira_transacoes_modelo
+        sql_create = f"""
+            CREATE TABLE IF NOT EXISTS {nome_tabela_dinamica} (
+                id SERIAL PRIMARY KEY,
+                cpf_cliente VARCHAR(20),
+                nome_cliente VARCHAR(255),
+                motivo VARCHAR(255),
+                origem_lancamento VARCHAR(100),
+                data_transacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tipo_lancamento VARCHAR(50),
+                valor NUMERIC(10, 2),
+                saldo_anterior NUMERIC(10, 2),
+                saldo_novo NUMERIC(10, 2)
+            );
+        """
+        cur.execute(sql_create)
+        
+        # 3. Registrar na tabela de configuração
+        sql_insert = """
+            INSERT INTO cliente.carteiras_config 
+            (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        cur.execute(sql_insert, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, status))
+        
+        conn.commit(); conn.close()
+        return True, f"Carteira '{nome_carteira}' criada com a tabela '{nome_tabela_dinamica}'!"
+    except Exception as e:
+        conn.close()
+        return False, str(e)
+
+def excluir_carteira_config(id_conf, nome_tabela):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # 1. Remove o registro
+            cur.execute("DELETE FROM cliente.carteiras_config WHERE id = %s", (id_conf,))
+            
+            # 2. Opcional: Dropar a tabela criada?
+            # Por segurança, vamos apenas remover o registro de configuração para não perder histórico financeiro acidentalmente.
+            # Se quiser dropar, descomente abaixo:
+            # cur.execute(f"DROP TABLE IF EXISTS {nome_tabela}")
+            
+            conn.commit(); conn.close()
+            return True
+        except: conn.close(); return False
+    return False
+
+def atualizar_carteira_config(id_conf, status):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE cliente.carteiras_config SET status = %s WHERE id = %s", (status, id_conf))
+            conn.commit(); conn.close()
+            return True
+        except: conn.close(); return False
+    return False
 
 # --- USUÁRIOS E CLIENTES (VINCULOS) ---
 
@@ -300,6 +421,16 @@ def dialog_editar_cart_lista(dados):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
 
+@st.dialog("✏️ Editar Config Carteira")
+def dialog_editar_carteira_config(dados):
+    st.write(f"Carteira: **{dados['nome_carteira']}**")
+    st.caption(f"Tabela: {dados['nome_tabela_transacoes']}")
+    with st.form("form_edit_cart_conf"):
+        n_status = st.selectbox("Status", ["ATIVO", "INATIVO"], index=0 if dados['status'] == "ATIVO" else 1)
+        if st.form_submit_button("Salvar"):
+            if atualizar_carteira_config(dados['id'], n_status):
+                st.success("Status Atualizado!"); st.rerun()
+
 @st.dialog("🔗 Gestão de Acesso do Cliente")
 def dialog_gestao_usuario_vinculo(dados_cliente):
     id_vinculo = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
@@ -367,6 +498,7 @@ def dialog_historico_consultas(cpf_cliente):
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
+    # Atualizado: Aba 3 renomeada para "Parâmetros"
     tab_cli, tab_user, tab_param, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
@@ -496,7 +628,7 @@ def app_clientes():
     with tab_param:
         
         # 1. AGRUPAMENTO CLIENTES
-        with st.expander("🏷️ Agrupamento Clientes", expanded=True):
+        with st.expander("🏷️ Agrupamento Clientes", expanded=False):
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
@@ -517,7 +649,7 @@ def app_clientes():
             else: st.info("Vazio.")
 
         # 2. AGRUPAMENTO EMPRESAS
-        with st.expander("🏢 Agrupamento Empresas", expanded=True):
+        with st.expander("🏢 Agrupamento Empresas", expanded=False):
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
@@ -538,7 +670,7 @@ def app_clientes():
             else: st.info("Vazio.")
 
         # 3. CLIENTE CNPJ
-        with st.expander("💼 Cliente CNPJ", expanded=True):
+        with st.expander("💼 Cliente CNPJ", expanded=False):
             with st.container(border=True):
                 st.caption("Novo Cadastro")
                 c_inp1, c_inp2, c_bt = st.columns([2, 3, 1])
@@ -560,7 +692,7 @@ def app_clientes():
             else: st.info("Vazio.")
 
         # 4. RELAÇÃO PEDIDO X CARTEIRA
-        with st.expander("🔗 Relação Pedido/Carteira", expanded=True):
+        with st.expander("🔗 Relação Pedido/Carteira", expanded=False):
             with st.container(border=True):
                 st.caption("Novo Vínculo")
                 c_rp1, c_rp2, c_bt = st.columns([2, 2, 1])
@@ -583,7 +715,7 @@ def app_clientes():
             else: st.info("Vazio.")
 
         # 5. LISTA DE CARTEIRAS
-        with st.expander("📂 Lista de Carteiras", expanded=True):
+        with st.expander("📂 Lista de Carteiras", expanded=False):
             with st.container(border=True):
                 st.caption("Nova Carteira")
                 c_lc1, c_lc2, c_lc3, c_lc4, c_bt = st.columns([1.5, 2, 1.5, 1, 1])
@@ -606,6 +738,62 @@ def app_clientes():
                     if cc3.button("🗑️", key=f"del_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
+
+        # 6. CONFIGURAÇÃO DE CARTEIRAS (PRODUTOS) - NOVO
+        with st.expander("📂 Configuração de Carteiras (Produtos)", expanded=False):
+            st.info("Cria carteiras e suas tabelas de transação automaticamente.")
+            
+            df_prods = listar_produtos_para_selecao()
+            
+            if not df_prods.empty:
+                with st.container(border=True):
+                    c_conf1, c_conf2, c_conf3, c_conf4 = st.columns([3, 3, 2, 2])
+                    
+                    # Select de Produtos
+                    opts_p = df_prods.apply(lambda x: f"{x['nome']}", axis=1)
+                    idx_p = c_conf1.selectbox("Produto", range(len(df_prods)), format_func=lambda x: opts_p[x], label_visibility="visible")
+                    
+                    # Nome Carteira
+                    nome_cart = c_conf2.text_input("Nome da Carteira", placeholder="Ex: Vip 2024", label_visibility="visible")
+                    
+                    # Status
+                    status_cart = c_conf3.selectbox("Status", ["ATIVO", "INATIVO"], label_visibility="visible")
+                    
+                    # Botão Salvar
+                    c_conf4.write(""); c_conf4.write("")
+                    if c_conf4.button("💾 Criar Carteira", type="primary", use_container_width=True):
+                        if nome_cart:
+                            prod_sel = df_prods.iloc[idx_p]
+                            ok, msg = salvar_nova_carteira_sistema(int(prod_sel['id']), prod_sel['nome'], nome_cart, status_cart)
+                            if ok: st.success(msg); time.sleep(1.5); st.rerun()
+                            else: st.error(f"Erro: {msg}")
+                        else:
+                            st.warning("Preencha o nome da carteira.")
+            else:
+                st.warning("Nenhum produto cadastrado no sistema (Módulo Comercial).")
+
+            st.divider()
+            
+            # Listagem das carteiras configuradas
+            df_confs = listar_carteiras_config()
+            if not df_confs.empty:
+                st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;">
+                <div style="flex: 2;">Produto</div><div style="flex: 2;">Carteira</div><div style="flex: 2;">Tabela SQL</div><div style="flex: 1;">Status</div><div style="flex: 1;">Ações</div></div>""", unsafe_allow_html=True)
+                
+                for _, row in df_confs.iterrows():
+                    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
+                    c1.write(row['nome_produto'])
+                    c2.write(row['nome_carteira'])
+                    c3.code(row['nome_tabela_transacoes'])
+                    c4.write(row['status'])
+                    with c5:
+                        b_ed, b_del = st.columns(2)
+                        if b_ed.button("✏️", key=f"e_cf_{row['id']}"): dialog_editar_carteira_config(row)
+                        if b_del.button("🗑️", key=f"d_cf_{row['id']}"): 
+                            if excluir_carteira_config(row['id'], row['nome_tabela_transacoes']): st.success("Apagado!"); st.rerun()
+                    st.markdown("<hr style='margin: 2px 0'>", unsafe_allow_html=True)
+            else:
+                st.info("Nenhuma carteira configurada.")
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
