@@ -120,12 +120,20 @@ def consultar_saldo_api():
         return False, str(e)
 
 # =============================================================================
-# FLUXO PRINCIPAL DE CONSULTA (AJUSTADO)
+# FLUXO PRINCIPAL DE CONSULTA (AJUSTADO: PADRONIZAÇÃO DE CPF/CNPJ)
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
-    # A.3 Limpeza
+    # 1. Limpeza de caracteres não numéricos
     cpf_limpo = ''.join(filter(str.isdigit, str(cpf)))
+    
+    # 2. Padronização (Zeros à esquerda)
+    # Se for CPF (até 11 dígitos), completa com zeros à esquerda até 11
+    # Se for maior que 11 (CNPJ), completa até 14
+    if len(cpf_limpo) <= 11:
+        cpf_limpo = cpf_limpo.zfill(11)
+    else:
+        cpf_limpo = cpf_limpo.zfill(14)
     
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro de conexão com banco de dados."}
@@ -133,8 +141,8 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
     try:
         cur = conn.cursor()
         
-        # A.1 Bloqueio tempo consulta (Verificação de Cache)
-        # 1. Confere no registro se já foi feito
+        # A.1 Bloqueio tempo consulta (Verificação de Cache no BANCO)
+        # O CPF pesquisado aqui já está padronizado (ex: 065...)
         cur.execute("""
             SELECT caminho_json, link_arquivo_consulta 
             FROM conexoes.fatorconferi_registo_consulta 
@@ -149,32 +157,34 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
             caminho_existente = registro_anterior[0]
             link_existente = registro_anterior[1]
             
-            # Tenta ler o arquivo JSON existente para retornar os dados
-            # Se o arquivo não existir fisicamente, forçamos uma nova consulta (fallback)
-            if os.path.exists(caminho_existente):
+            dados_parsed = {}
+            msg_retorno = "Dados recuperados do histórico (R$ 0,00)."
+
+            # Tenta ler o arquivo apenas para exibir, mas o bloqueio já está valendo
+            if caminho_existente and os.path.exists(caminho_existente):
                 try:
                     with open(caminho_existente, 'r', encoding='utf-8') as f:
                         dados_parsed = json.load(f)
-                    
-                    # 1.2.1 Consulta API NÃO deve ser feita
-                    # 1.2.2 Replicar histórico (Novo Log)
-                    usuario = st.session_state.get('usuario_nome', 'Sistema')
-                    id_user = st.session_state.get('usuario_id', 0)
-                    
-                    # 1.2.2.1 Valor 0,00 e Data Atual (NOW())
-                    sql_cache = """
-                        INSERT INTO conexoes.fatorconferi_registo_consulta 
-                        (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
-                        VALUES (%s, %s, %s, %s, 0.00, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
-                    """
-                    cur.execute(sql_cache, (tipo, cpf_limpo, id_user, usuario, caminho_existente, link_existente, origem))
-                    conn.commit()
-                    conn.close()
-                    
-                    return {"sucesso": True, "dados": dados_parsed, "msg": "Dados recuperados do cache (R$ 0,00)."}
-                except:
-                    # Se der erro ao ler arquivo, segue para consulta nova
-                    pass
+                except: 
+                    msg_retorno += " (Erro ao ler arquivo físico)"
+            else:
+                msg_retorno += " (Arquivo físico original não localizado)"
+
+            # 1.2.2 Replicar histórico (Novo Log) - SEMPRE EXECUTA SE ACHOU NO BANCO
+            usuario = st.session_state.get('usuario_nome', 'Sistema')
+            id_user = st.session_state.get('usuario_id', 0)
+            
+            # 1.2.2.1 Valor 0,00 e Data Atual (NOW())
+            sql_cache = """
+                INSERT INTO conexoes.fatorconferi_registo_consulta 
+                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
+                VALUES (%s, %s, %s, %s, 0.00, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
+            """
+            cur.execute(sql_cache, (tipo, cpf_limpo, id_user, usuario, caminho_existente, link_existente, origem))
+            conn.commit()
+            conn.close()
+            
+            return {"sucesso": True, "dados": dados_parsed, "msg": msg_retorno}
         
         # 1.1 Caso não (Nova Consulta)
         
@@ -763,6 +773,7 @@ def app_fator_conferi():
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
+            # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
             query_hist = """
                 SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
                        valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
@@ -774,24 +785,31 @@ def app_fator_conferi():
                 df_logs = pd.read_sql(query_hist, conn)
                 
                 if not df_logs.empty:
+                    # 1.1 Formatação da Data (dd/mm/yyyy hh:mm:ss)
                     df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
+                    
+                    # 2.1 Formatação CPF/CNPJ com pontuação
                     df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
+                    
+                    # 4.2 Formatação Valor Pago em Decimal BR (0,00)
                     df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
+                    # RENOMEAÇÃO DE COLUNAS (Regras Visuais)
                     df_logs.rename(columns={
-                        'data_hora': 'Data Consulta',
-                        'cpf_consultado': 'CPF/CNPJ',
-                        'id_usuario': 'ID Usuário',
-                        'nome_usuario': 'Nome Usuário',
-                        'valor_pago': 'Valor Pago',
-                        'caminho_json': 'Caminho JSON',
-                        'status_api': 'Status API',
-                        'link_arquivo_consulta': 'Link Arquivo Consulta',
+                        'data_hora': 'Data Consulta',       # 1.2
+                        'cpf_consultado': 'CPF/CNPJ',       # 2.2
+                        'id_usuario': 'ID Usuário',         # 3.1
+                        'nome_usuario': 'Nome Usuário',     # 4.1
+                        'valor_pago': 'Valor Pago',         # 4.1
+                        'caminho_json': 'Caminho JSON',     # 5.1
+                        'status_api': 'Status API',         # 6.1
+                        'link_arquivo_consulta': 'Link Arquivo Consulta', # 7.1
                         'tipo_consulta': 'Tipo Consulta',
                         'origem_consulta': 'Origem',
                         'tipo_cobranca': 'Cobrança'
                     }, inplace=True)
 
+                    # 7.1 Link Clicável e Exibição Final
                     st.dataframe(
                         df_logs, 
                         use_container_width=True,
