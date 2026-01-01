@@ -280,7 +280,7 @@ def excluir_transacao_db(id_transacao, id_carteira):
     return False
 
 # =============================================================================
-# 3. FUNÇÕES CRUD PARÂMETROS (ATUALIZADAS PARA NOVOS NOMES)
+# 3. FUNÇÕES CRUD PARÂMETROS
 # =============================================================================
 
 # --- ORIGEM CONSULTA ---
@@ -617,12 +617,24 @@ def app_fator_conferi():
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
-            # Query ajustada para mostrar também a origem e tipo (se já populados)
-            df_logs = pd.read_sql("SELECT id, data_hora, cpf_consultado, nome_usuario, origem_consulta, tipo_consulta, status_api FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 50", conn)
-            st.dataframe(df_logs, use_container_width=True)
-            conn.close()
+            # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
+            # A query abaixo seleciona todas as colunas existentes
+            query_hist = """
+                SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
+                       valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
+                       tipo_cobranca, id_grupo_cliente, id_grupo_empresas, id_empresa
+                FROM conexoes.fatorconferi_registo_consulta 
+                ORDER BY id DESC LIMIT 50
+            """
+            try:
+                df_logs = pd.read_sql(query_hist, conn)
+                st.dataframe(df_logs, use_container_width=True)
+            except Exception as e:
+                st.error(f"Erro ao carregar histórico: {e}")
+            finally:
+                conn.close()
 
-    # --- ABA 5: PARÂMETROS (NOVO LAYOUT) ---
+    # --- ABA 5: PARÂMETROS ---
     with tabs[4]: 
         
         # 1. ORIGEM CONSULTA
