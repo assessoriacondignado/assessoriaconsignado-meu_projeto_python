@@ -767,11 +767,10 @@ def app_fator_conferi():
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
-            # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
             query_hist = """
                 SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
-                       valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
-                       tipo_cobranca, id_grupo_cliente, id_grupo_empresas, id_empresa
+                       valor_pago, caminho_json, status_api, origem_consulta, 
+                       tipo_cobranca
                 FROM conexoes.fatorconferi_registo_consulta 
                 ORDER BY id DESC LIMIT 50
             """
@@ -779,45 +778,64 @@ def app_fator_conferi():
                 df_logs = pd.read_sql(query_hist, conn)
                 
                 if not df_logs.empty:
-                    # 1.1 Formatação da Data (dd/mm/yyyy hh:mm:ss)
+                    # 1. Formatações Visuais
                     df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
-                    
-                    # 2.1 Formatação CPF/CNPJ com pontuação
                     df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
+                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"R$ {float(x):,.2f}")
+
+                    # 2. Criamos um DataFrame apenas para EXIBIÇÃO (Renomeando colunas)
+                    df_view = df_logs.rename(columns={
+                        'data_hora': 'Data',
+                        'cpf_consultado': 'CPF/CNPJ',
+                        'nome_usuario': 'Usuário',
+                        'valor_pago': 'Custo',
+                        'status_api': 'Status',
+                        'tipo_consulta': 'Tipo',
+                        'origem_consulta': 'Origem'
+                    })
                     
-                    # 4.2 Formatação Valor Pago em Decimal BR (0,00)
-                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-                    # Lógica para converter o arquivo JSON local em LINK DE DOWNLOAD TXT (Data URI)
-                    df_logs['link_arquivo_consulta'] = df_logs['caminho_json'].apply(criar_link_txt_base64)
-
-                    # RENOMEAÇÃO DE COLUNAS (Regras Visuais)
-                    df_logs.rename(columns={
-                        'data_hora': 'Data Consulta',       # 1.2
-                        'cpf_consultado': 'CPF/CNPJ',       # 2.2
-                        'id_usuario': 'ID Usuário',         # 3.1
-                        'nome_usuario': 'Nome Usuário',     # 4.1
-                        'valor_pago': 'Valor Pago',         # 4.1
-                        'caminho_json': 'Caminho JSON',     # 5.1
-                        'status_api': 'Status API',         # 6.1
-                        'link_arquivo_consulta': 'Link Arquivo Consulta', # 7.1
-                        'tipo_consulta': 'Tipo Consulta',
-                        'origem_consulta': 'Origem',
-                        'tipo_cobranca': 'Cobrança'
-                    }, inplace=True)
-
-                    # 7.1 Link Clicável e Exibição Final
-                    st.dataframe(
-                        df_logs, 
+                    # Selecionamos apenas as colunas úteis para visualização
+                    cols_visual = ['Data', 'Tipo', 'CPF/CNPJ', 'Usuário', 'Custo', 'Status', 'Origem']
+                    
+                    # 3. Tabela Interativa (Com Seleção)
+                    st.info("👆 Selecione uma linha na tabela para baixar o arquivo.")
+                    
+                    event = st.dataframe(
+                        df_view[cols_visual],
                         use_container_width=True,
-                        column_config={
-                            "Link Arquivo Consulta": st.column_config.LinkColumn(
-                                "Link Arquivo Consulta",
-                                help="Clique para baixar o arquivo como texto",
-                                display_text="📥 Abrir"
-                            )
-                        }
+                        hide_index=True,
+                        on_select="rerun",     # Habilita a seleção
+                        selection_mode="single-row"
                     )
+
+                    # 4. Lógica do Botão de Download (Só lê o arquivo se selecionar)
+                    if event.selection.rows:
+                        idx_selecionado = event.selection.rows[0]
+                        dados_reais = df_logs.iloc[idx_selecionado] # Pega os dados originais (com o caminho)
+                        caminho_arquivo = dados_reais['caminho_json']
+                        
+                        st.divider()
+                        col_d1, col_d2 = st.columns([1, 4])
+                        
+                        if caminho_arquivo and os.path.exists(caminho_arquivo):
+                            with open(caminho_arquivo, "rb") as f:
+                                file_data = f.read()
+                            
+                            file_name = os.path.basename(caminho_arquivo)
+                            
+                            with col_d1:
+                                st.download_button(
+                                    label="⬇️ BAIXAR ARQUIVO JSON",
+                                    data=file_data,
+                                    file_name=file_name,
+                                    mime="application/json",
+                                    type="primary"
+                                )
+                            with col_d2:
+                                st.success(f"Arquivo pronto: {file_name}")
+                        else:
+                            st.warning(f"⚠️ O arquivo físico não foi encontrado no servidor: {caminho_arquivo}")
+
                 else:
                     st.info("Nenhum histórico encontrado.")
 
