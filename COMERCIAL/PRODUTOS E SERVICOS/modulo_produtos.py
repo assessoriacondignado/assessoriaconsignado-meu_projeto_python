@@ -7,18 +7,13 @@ import uuid
 from datetime import datetime
 import conexao
 
-# --- CONFIGURAÇÕES DE DIRETÓRIO ---
-# Usamos caminhos relativos para funcionar tanto no servidor SSH quanto no Streamlit Cloud
-BASE_DIR = os.path.join(os.getcwd(), "COMERCIAL", "PRODUTOS E SERVICOS")
+# --- CONFIGURAÇÕES DE DIRETÓRIO (AJUSTADO PARA SERVIDOR LINUX) ---
+# Caminho absoluto baseado na localização deste arquivo
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Bloco de segurança para evitar travamento por falta de permissão
-try:
-    if not os.path.exists(BASE_DIR):
-        os.makedirs(BASE_DIR, exist_ok=True)
-except PermissionError:
-    # Fallback para pasta temporária permitida no Streamlit Cloud
-    BASE_DIR = "/tmp" 
-    st.info("Sistema operando em modo de nuvem (Arquivos locais desativados).")
+# Garante que o diretório exista (Sem fallback para /tmp)
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR, exist_ok=True)
 
 # --- CONEXÃO COM BANCO ---
 def get_conn():
@@ -44,26 +39,23 @@ def gerar_codigo_automatico():
 def criar_pasta_produto(codigo, nome):
     data_str = datetime.now().strftime("%Y-%m-%d")
     nome_pasta = f"{codigo} - {nome} - {data_str}"
+    # Sanitização do nome da pasta
     nome_pasta = "".join(c for c in nome_pasta if c.isalnum() or c in (' ', '-', '_')).strip()
+    
+    # Cria subpasta para armazenar os arquivos do produto
     caminho_completo = os.path.join(BASE_DIR, nome_pasta)
     
-    try:
-        if not os.path.exists(caminho_completo):
-            os.makedirs(caminho_completo)
-    except PermissionError:
-        # Apenas ignora se não puder criar a pasta na nuvem
-        pass 
+    if not os.path.exists(caminho_completo):
+        os.makedirs(caminho_completo, exist_ok=True)
+        
     return caminho_completo
 
 def salvar_arquivos(uploaded_files, caminho_destino):
     if uploaded_files:
         for file in uploaded_files:
             file_path = os.path.join(caminho_destino, file.name)
-            try:
-                with open(file_path, "wb") as f:
-                    f.write(file.getbuffer())
-            except PermissionError:
-                st.warning(f"Atenção: O arquivo {file.name} não foi salvo localmente (Restrição de Nuvem).")
+            with open(file_path, "wb") as f:
+                f.write(file.getbuffer())
 
 # --- FUNÇÕES DE CRUD (BANCO) ---
 def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
@@ -136,12 +128,10 @@ def excluir_produto(id_prod, caminho_pasta):
             cur.execute("DELETE FROM produtos_servicos WHERE id = %s", (id_prod,))
             conn.commit()
             conn.close()
-            # Só tenta excluir a pasta se ela existir e houver permissão
+            
+            # Remove a pasta física do servidor
             if caminho_pasta and os.path.exists(caminho_pasta):
-                try:
-                    shutil.rmtree(caminho_pasta)
-                except PermissionError:
-                    pass
+                shutil.rmtree(caminho_pasta)
             return True
         except Exception as e:
             st.error(f"Erro ao excluir: {e}")
@@ -171,7 +161,7 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
         else:
             st.warning("Pasta vazia.")
     else:
-        st.error("Arquivos não localizados no servidor de nuvem.")
+        st.error("Pasta de arquivos não localizada no servidor.")
 
 @st.dialog("✏️ Editar Item")
 def dialog_editar_produto(dados_atuais):
@@ -203,7 +193,10 @@ def dialog_novo_cadastro():
             if nome:
                 codigo_auto = gerar_codigo_automatico()
                 caminho = criar_pasta_produto(codigo_auto, nome)
+                
+                # Salva arquivos antes de registrar no banco
                 if arquivos: salvar_arquivos(arquivos, caminho)
+                
                 if cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho):
                     st.success(f"Criado: {codigo_auto}")
                     st.rerun()

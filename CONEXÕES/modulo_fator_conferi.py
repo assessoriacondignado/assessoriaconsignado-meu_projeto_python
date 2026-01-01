@@ -11,19 +11,14 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 import conexao
 
-# --- CONFIGURAÇÕES ---
-# Caminho fixo solicitado
-PASTA_JSON = "/root/meu_sistema/CONEXÕES/FATOR CONFERI/JSON"
+# --- CONFIGURAÇÕES DE DIRETÓRIO (AJUSTADO PARA SERVIDOR LINUX) ---
+# Define o caminho base como a pasta onde este arquivo está localizado
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PASTA_JSON = os.path.join(BASE_DIR, "JSON")
 
-# Garante que a pasta exista (Segurança de I/O)
-try:
-    if not os.path.exists(PASTA_JSON):
-        os.makedirs(PASTA_JSON, exist_ok=True)
-except Exception as e:
-    # Fallback para pasta local caso não tenha permissão no /root
-    PASTA_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "JSON")
-    if not os.path.exists(PASTA_JSON):
-        os.makedirs(PASTA_JSON)
+# Garante que a pasta exista
+if not os.path.exists(PASTA_JSON):
+    os.makedirs(PASTA_JSON, exist_ok=True)
 
 def get_conn():
     try:
