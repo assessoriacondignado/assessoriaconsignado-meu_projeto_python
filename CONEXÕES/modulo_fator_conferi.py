@@ -115,21 +115,6 @@ def consultar_saldo_api():
     except Exception as e:
         return False, str(e)
 
-def criar_link_txt_base64(caminho_arquivo):
-    """Lê o arquivo local e gera um link Base64 para download como .txt"""
-    try:
-        if not caminho_arquivo or not os.path.exists(caminho_arquivo):
-            return None
-        
-        with open(caminho_arquivo, "r", encoding="utf-8") as f:
-            conteudo = f.read()
-            
-        b64 = base64.b64encode(conteudo.encode()).decode()
-        # Força o download como arquivo de texto
-        return f"data:text/plain;base64,{b64}"
-    except:
-        return None
-
 # =============================================================================
 # FLUXO PRINCIPAL DE CONSULTA
 # =============================================================================
@@ -767,10 +752,11 @@ def app_fator_conferi():
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
+            # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
             query_hist = """
                 SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
-                       valor_pago, caminho_json, status_api, origem_consulta, 
-                       tipo_cobranca
+                       valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
+                       tipo_cobranca, id_grupo_cliente, id_grupo_empresas, id_empresa
                 FROM conexoes.fatorconferi_registo_consulta 
                 ORDER BY id DESC LIMIT 50
             """
@@ -778,40 +764,51 @@ def app_fator_conferi():
                 df_logs = pd.read_sql(query_hist, conn)
                 
                 if not df_logs.empty:
-                    # 1. Formatações Visuais
+                    # 1.1 Formatação da Data (dd/mm/yyyy hh:mm:ss)
                     df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
+                    
+                    # 2.1 Formatação CPF/CNPJ com pontuação
                     df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
-                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"R$ {float(x):,.2f}")
+                    
+                    # 4.2 Formatação Valor Pago em Decimal BR (0,00)
+                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-                    # 2. Criamos um DataFrame apenas para EXIBIÇÃO (Renomeando colunas)
+                    # RENOMEAÇÃO DE COLUNAS (Regras Visuais)
                     df_view = df_logs.rename(columns={
-                        'data_hora': 'Data',
+                        'id': 'ID',
+                        'data_hora': 'Data Consulta',
+                        'tipo_consulta': 'Tipo',
                         'cpf_consultado': 'CPF/CNPJ',
                         'nome_usuario': 'Usuário',
+                        'id_usuario': 'ID User',
                         'valor_pago': 'Custo',
-                        'status_api': 'Status',
-                        'tipo_consulta': 'Tipo',
-                        'origem_consulta': 'Origem'
+                        'status_api': 'Status API',
+                        'origem_consulta': 'Origem',
+                        'tipo_cobranca': 'Cobrança',
+                        'caminho_json': 'Caminho Arquivo'
                     })
                     
-                    # Selecionamos apenas as colunas úteis para visualização
-                    cols_visual = ['Data', 'Tipo', 'CPF/CNPJ', 'Usuário', 'Custo', 'Status', 'Origem']
+                    # 3. Selecionamos TODAS as colunas para preencher a tela
+                    cols_visual = [
+                        'ID', 'Data Consulta', 'Tipo', 'CPF/CNPJ', 'Usuário', 
+                        'Custo', 'Cobrança', 'Status API', 'Origem', 'Caminho Arquivo'
+                    ]
                     
-                    # 3. Tabela Interativa (Com Seleção)
-                    st.info("👆 Selecione uma linha na tabela para baixar o arquivo.")
+                    # 4. Tabela Interativa (Com Seleção)
+                    st.info("👆 Clique na linha desejada para liberar o download.")
                     
                     event = st.dataframe(
                         df_view[cols_visual],
                         use_container_width=True,
                         hide_index=True,
-                        on_select="rerun",     # Habilita a seleção
+                        on_select="rerun",
                         selection_mode="single-row"
                     )
 
-                    # 4. Lógica do Botão de Download (Só lê o arquivo se selecionar)
+                    # 5. Lógica do Botão de Download
                     if event.selection.rows:
                         idx_selecionado = event.selection.rows[0]
-                        dados_reais = df_logs.iloc[idx_selecionado] # Pega os dados originais (com o caminho)
+                        dados_reais = df_logs.iloc[idx_selecionado]
                         caminho_arquivo = dados_reais['caminho_json']
                         
                         st.divider()
@@ -832,9 +829,9 @@ def app_fator_conferi():
                                     type="primary"
                                 )
                             with col_d2:
-                                st.success(f"Arquivo pronto: {file_name}")
+                                st.success(f"Arquivo selecionado: **{file_name}**")
                         else:
-                            st.warning(f"⚠️ O arquivo físico não foi encontrado no servidor: {caminho_arquivo}")
+                            st.warning(f"⚠️ Arquivo não encontrado no servidor: {caminho_arquivo}")
 
                 else:
                     st.info("Nenhum histórico encontrado.")
