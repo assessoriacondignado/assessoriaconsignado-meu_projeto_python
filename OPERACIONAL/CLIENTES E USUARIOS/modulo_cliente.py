@@ -1,626 +1,914 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-import bcrypt
-import re
+import requests
+import json
+import os
 import time
-from datetime import datetime
+import re
+import base64
+import xml.etree.ElementTree as ET
+from datetime import datetime, date, timedelta
+import conexao
 
-try: 
-    import conexao
-except ImportError: 
-    st.error("Erro crítico: conexao.py não encontrado.")
+# --- CONFIGURAÇÕES DE DIRETÓRIO (AJUSTADO PARA SERVIDOR LINUX) ---
+# Define o caminho base como a pasta onde este arquivo está localizado
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PASTA_JSON = os.path.join(BASE_DIR, "JSON")
+
+# Garante que a pasta exista
+if not os.path.exists(PASTA_JSON):
+    os.makedirs(PASTA_JSON, exist_ok=True)
 
 def get_conn():
     try:
         return psycopg2.connect(
-            host=conexao.host, port=conexao.port, database=conexao.database, 
+            host=conexao.host, port=conexao.port, database=conexao.database,
             user=conexao.user, password=conexao.password
         )
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES E DB (GERAL)
+# 1. FUNÇÕES AUXILIARES (API, XML, CREDENCIAIS, FORMATAÇÃO)
 # =============================================================================
 
-def formatar_cnpj(v):
-    v = re.sub(r'\D', '', str(v))
-    return f"{v[:2]}.{v[2:5]}.{v[5:8]}/{v[8:12]}-{v[12:]}" if len(v) == 14 else v
-
-def limpar_formatacao_texto(texto):
-    if not texto: return ""
-    return str(texto).replace('*', '').strip()
-
-# --- AGRUPAMENTOS (CLIENTE/EMPRESA) ---
-
-def listar_agrupamentos(tipo):
+def buscar_credenciais():
     conn = get_conn()
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-    try:
-        df = pd.read_sql(f"SELECT id, nome_agrupamento FROM {tabela} ORDER BY id", conn)
-        conn.close()
-        return df
-    except: 
-        conn.close()
-        return pd.DataFrame()
+    cred = {"url": "https://fator.confere.link/api/", "token": ""}
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT key_conexao FROM conexoes.relacao WHERE nome_conexao ILIKE '%FATOR%' LIMIT 1")
+            res = cur.fetchone()
+            if res: cred["token"] = res[0]
+        except: pass
+        finally: conn.close()
+    return cred
 
-def salvar_agrupamento(tipo, nome):
+def buscar_valor_consulta_atual():
+    """Busca o valor atual da consulta na tabela de parâmetros"""
     conn = get_conn()
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+    valor = 0.50 # Fallback padrão
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT valor_da_consulta FROM conexoes.fatorconferi_valor_da_consulta ORDER BY id DESC LIMIT 1")
+            res = cur.fetchone()
+            if res: valor = float(res[0])
+        except: pass
+        finally: conn.close()
+    return valor
+
+def formatar_cpf_cnpj_visual(valor):
+    """Aplica máscara de CPF ou CNPJ para visualização na tabela"""
+    dado = re.sub(r'\D', '', str(valor))
+    if len(dado) == 11:
+        return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
+    elif len(dado) == 14:
+        return f"{dado[:2]}.{dado[2:5]}.{dado[5:8]}/{dado[8:12]}-{dado[12:]}"
+    return valor
+
+def parse_xml_to_dict(xml_string):
     try:
-        cur = conn.cursor()
-        cur.execute(f"INSERT INTO {tabela} (nome_agrupamento) VALUES (%s)", (nome,))
-        conn.commit(); conn.close()
-        return True
-    except: 
-        conn.close(); return False
+        xml_string = xml_string.replace('ISO-8859-1', 'UTF-8') 
+        root = ET.fromstring(xml_string)
+        dados = {}
+        cad = root.find('cadastrais')
+        if cad is not None:
+            dados['nome'] = cad.findtext('nome')
+            dados['cpf'] = cad.findtext('cpf')
+            dados['nascimento'] = cad.findtext('nascto')
+            dados['mae'] = cad.findtext('nome_mae')
+            dados['situacao'] = cad.findtext('situacao_receita')
+        telefones = []
+        tm = root.find('telefones_movel')
+        if tm is not None:
+            for fone in tm.findall('telefone'):
+                telefones.append({
+                    'numero': fone.findtext('numero'),
+                    'whatsapp': fone.findtext('tem_zap')
+                })
+        dados['telefones'] = telefones
+        return dados
+    except Exception as e:
+        return {"erro": f"Falha ao processar XML: {e}", "raw": xml_string}
 
-def excluir_agrupamento(tipo, id_agrup):
-    conn = get_conn()
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+def consultar_saldo_api():
+    cred = buscar_credenciais()
+    if not cred['token']: return False, "Token não configurado."
+    url = f"{cred['url']}?acao=VER_SALDO&TK={cred['token']}"
     try:
-        cur = conn.cursor()
-        cur.execute(f"DELETE FROM {tabela} WHERE id = %s", (id_agrup,))
-        conn.commit(); conn.close()
-        return True
-    except: 
-        conn.close(); return False
-
-def atualizar_agrupamento(tipo, id_agrup, novo_nome):
-    conn = get_conn()
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-    try:
-        cur = conn.cursor()
-        cur.execute(f"UPDATE {tabela} SET nome_agrupamento = %s WHERE id = %s", (novo_nome, id_agrup))
-        conn.commit(); conn.close()
-        return True
-    except: 
-        conn.close(); return False
-
-# --- CLIENTE CNPJ ---
-
-def listar_cliente_cnpj():
-    conn = get_conn()
-    try:
-        df = pd.read_sql("SELECT id, cnpj, nome_empresa FROM admin.cliente_cnpj ORDER BY nome_empresa", conn)
-        conn.close()
-        return df
-    except: 
-        conn.close(); return pd.DataFrame()
-
-def salvar_cliente_cnpj(cnpj, nome):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj, nome))
-        conn.commit(); conn.close()
-        return True
-    except: 
-        conn.close(); return False
-
-def excluir_cliente_cnpj(id_reg):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM admin.cliente_cnpj WHERE id = %s", (id_reg,))
-        conn.commit(); conn.close()
-        return True
-    except: 
-        conn.close(); return False
-
-def atualizar_cliente_cnpj(id_reg, cnpj, nome):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE admin.cliente_cnpj SET cnpj=%s, nome_empresa=%s WHERE id=%s", (cnpj, nome, id_reg))
-        conn.commit(); conn.close()
-        return True
-    except: 
-        conn.close(); return False
-
-# --- NOVAS FUNÇÕES: RELAÇÃO PEDIDO CARTEIRA ---
-
-def listar_relacao_pedido_carteira():
-    conn = get_conn()
-    try:
-        df = pd.read_sql("SELECT id, produto, nome_carteira FROM cliente.cliente_carteira_relacao_pedido_carteira ORDER BY id DESC", conn)
-        conn.close(); return df
-    except: conn.close(); return pd.DataFrame()
-
-def salvar_relacao_pedido_carteira(produto, carteira):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO cliente.cliente_carteira_relacao_pedido_carteira (produto, nome_carteira) VALUES (%s, %s)", (produto, carteira))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-def atualizar_relacao_pedido_carteira(id_reg, produto, carteira):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE cliente.cliente_carteira_relacao_pedido_carteira SET produto=%s, nome_carteira=%s WHERE id=%s", (produto, carteira, id_reg))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-def excluir_relacao_pedido_carteira(id_reg):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM cliente.cliente_carteira_relacao_pedido_carteira WHERE id=%s", (id_reg,))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-# --- NOVAS FUNÇÕES: CLIENTE CARTEIRA LISTA ---
-
-def listar_cliente_carteira_lista():
-    conn = get_conn()
-    try:
-        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
-        conn.close(); return df
-    except: conn.close(); return pd.DataFrame()
-
-def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO cliente.cliente_carteira_lista (cpf_cliente, nome_cliente, nome_carteira, custo_carteira) 
-            VALUES (%s, %s, %s, %s)
-        """, (cpf, nome, carteira, custo))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE cliente.cliente_carteira_lista 
-            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s 
-            WHERE id=%s
-        """, (cpf, nome, carteira, custo, id_reg))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-def excluir_cliente_carteira_lista(id_reg):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM cliente.cliente_carteira_lista WHERE id=%s", (id_reg,))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-# --- USUÁRIOS E CLIENTES (VINCULOS) ---
-
-def buscar_usuarios_disponiveis():
-    conn = get_conn()
-    try:
-        query = """
-            SELECT id, nome, email, cpf 
-            FROM clientes_usuarios 
-            WHERE id NOT IN (SELECT id_usuario_vinculo FROM admin.clientes WHERE id_usuario_vinculo IS NOT NULL)
-            ORDER BY nome
-        """
-        df = pd.read_sql(query, conn); conn.close(); return df
-    except: conn.close(); return pd.DataFrame()
-
-def vincular_usuario_cliente(id_cliente, id_usuario):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE admin.clientes SET id_usuario_vinculo = %s WHERE id = %s", (id_usuario, id_cliente))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-def desvincular_usuario_cliente(id_cliente):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE admin.clientes SET id_usuario_vinculo = NULL WHERE id = %s", (id_cliente,))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-def excluir_cliente_db(id_cliente):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM admin.clientes WHERE id = %s", (id_cliente,))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
-
-# =============================================================================
-# 2. FUNÇÕES DE USUÁRIO
-# =============================================================================
-
-def hash_senha(senha):
-    if senha.startswith('$2b$'): return senha
-    return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        senha_final = hash_senha(senha)
-        cur.execute("""
-            INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, hierarquia, ativo)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-        """, (nome, email, cpf, tel, senha_final, hierarquia, ativo))
-        novo_id = cur.fetchone()[0]; conn.commit(); conn.close(); return novo_id
-    except Exception as e: conn.close(); return None
-
-# =============================================================================
-# 3. DIALOGS (POP-UPS PADRONIZADOS)
-# =============================================================================
-
-@st.dialog("✏️ Editar")
-def dialog_editar_agrupamento(tipo, id_agrup, nome_atual):
-    st.caption(f"Editando: {nome_atual}")
-    with st.form("form_edit_agrup"):
-        novo_nome = st.text_input("Nome", value=nome_atual)
-        if st.form_submit_button("💾 Salvar", use_container_width=True):
-            if novo_nome:
-                if atualizar_agrupamento(tipo, id_agrup, novo_nome):
-                    st.success("Atualizado!"); time.sleep(0.5); st.rerun()
-                else: st.error("Erro ao atualizar.")
-
-@st.dialog("✏️ Editar")
-def dialog_editar_cliente_cnpj(id_reg, cnpj_atual, nome_atual):
-    st.caption(f"Editando: {cnpj_atual}")
-    with st.form("form_edit_cnpj"):
-        novo_cnpj = st.text_input("CNPJ", value=cnpj_atual)
-        novo_nome = st.text_input("Nome Empresa", value=nome_atual)
-        if st.form_submit_button("💾 Salvar", use_container_width=True):
-            if atualizar_cliente_cnpj(id_reg, novo_cnpj, novo_nome):
-                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
-            else: st.error("Erro ao atualizar.")
-
-@st.dialog("✏️ Editar Relação")
-def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
-    st.caption("Editando Relação")
-    with st.form("form_edit_rel_pc"):
-        n_prod = st.text_input("Produto", value=prod_atual)
-        n_cart = st.text_input("Nome Carteira", value=cart_atual)
-        if st.form_submit_button("💾 Salvar"):
-            if atualizar_relacao_pedido_carteira(id_reg, n_prod, n_cart):
-                st.success("Atualizado!"); st.rerun()
-            else: st.error("Erro.")
-
-@st.dialog("✏️ Editar Carteira Cliente")
-def dialog_editar_cart_lista(dados):
-    st.caption(f"Editando: {dados['nome_cliente']}")
-    with st.form("form_edit_cart_li"):
-        n_cpf = st.text_input("CPF Cliente", value=dados['cpf_cliente'])
-        n_nome = st.text_input("Nome Cliente", value=dados['nome_cliente'])
-        n_cart = st.text_input("Nome Carteira", value=dados['nome_carteira'])
-        n_custo = st.number_input("Custo Carteira (R$)", value=float(dados['custo_carteira'] or 0.0), step=0.01)
-        if st.form_submit_button("💾 Salvar"):
-            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo):
-                st.success("Atualizado!"); st.rerun()
-            else: st.error("Erro.")
-
-@st.dialog("🔗 Gestão de Acesso do Cliente")
-def dialog_gestao_usuario_vinculo(dados_cliente):
-    id_vinculo = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
-    if id_vinculo:
-        st.success("✅ Este cliente já possui um usuário vinculado.")
+        response = requests.get(url, timeout=10)
+        valor_texto = response.text.strip()
+        if '<' in valor_texto:
+            try:
+                root = ET.fromstring(valor_texto)
+                valor_texto = root.text 
+            except: pass
+        saldo = float(valor_texto.replace(',', '.')) if valor_texto else 0.0
         conn = get_conn()
-        df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn); conn.close()
-        if not df_u.empty:
-            usr = df_u.iloc[0]
-            st.write(f"**Nome:** {usr['nome']}"); st.write(f"**Login:** {usr['email']}"); st.write(f"**CPF:** {usr['cpf']}")
-            st.markdown("---")
-            if st.button("🔓 Desvincular Usuário", type="primary"):
-                if desvincular_usuario_cliente(dados_cliente['id']): st.success("Desvinculado!"); time.sleep(1.5); st.rerun()
-                else: st.error("Erro.")
-        else:
-            st.warning("Usuário vinculado não encontrado.")
-            if st.button("Forçar Desvinculo"): desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
-    else:
-        st.warning("⚠️ Este cliente não tem acesso ao sistema.")
-        tab_novo, tab_existente = st.tabs(["✨ Criar Novo", "🔍 Vincular Existente"])
-        with tab_novo:
-            with st.form("form_cria_vincula"):
-                u_email = st.text_input("Login (Email)", value=dados_cliente['email'])
-                u_senha = st.text_input("Senha Inicial", value="1234")
-                u_cpf = st.text_input("CPF", value=dados_cliente['cpf'])
-                u_nome = st.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
-                if st.form_submit_button("Criar e Vincular"):
-                    novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente', True)
-                    if novo_id: vincular_usuario_cliente(dados_cliente['id'], novo_id); st.success("Criado e vinculado!"); time.sleep(1); st.rerun()
-                    else: st.error("Erro ao criar.")
-        with tab_existente:
-            df_livres = buscar_usuarios_disponiveis()
-            if not df_livres.empty:
-                opcoes = df_livres.apply(lambda x: f"{x['nome']} ({x['email']})", axis=1)
-                idx_sel = st.selectbox("Selecione o Usuário", range(len(df_livres)), format_func=lambda x: opcoes[x])
-                if st.button("Vincular Selecionado"):
-                    if vincular_usuario_cliente(dados_cliente['id'], df_livres.iloc[idx_sel]['id']): st.success("Vinculado!"); time.sleep(1); st.rerun()
-                    else: st.error("Erro.")
-            else: st.info("Sem usuários livres.")
+        if conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO conexoes.fatorconferi_registro_de_saldo (valor_saldo) VALUES (%s)", (saldo,))
+            conn.commit(); conn.close()
+        return True, saldo
+    except Exception as e:
+        return False, str(e)
 
-@st.dialog("🚨 Excluir Cliente")
-def dialog_excluir_cliente(id_cli, nome):
-    st.error(f"Excluir **{nome}**?"); st.warning("Apenas a ficha cadastral será apagada.")
-    c1, c2 = st.columns(2)
-    if c1.button("Sim, Excluir"):
-        if excluir_cliente_db(id_cli): st.success("Removido."); time.sleep(1); st.session_state['view_cliente'] = 'lista'; st.rerun()
-    if c2.button("Cancelar"): st.rerun()
+def criar_link_txt_base64(caminho_arquivo):
+    """Lê o arquivo local e gera um link Base64 para download como .txt"""
+    try:
+        if not caminho_arquivo or not os.path.exists(caminho_arquivo):
+            return None
+        
+        with open(caminho_arquivo, "r", encoding="utf-8") as f:
+            conteudo = f.read()
+            
+        b64 = base64.b64encode(conteudo.encode()).decode()
+        # Força o download como arquivo de texto
+        return f"data:text/plain;base64,{b64}"
+    except:
+        return None
 
-@st.dialog("🔎 Histórico de Consultas", width="large")
-def dialog_historico_consultas(cpf_cliente):
+# =============================================================================
+# FLUXO PRINCIPAL DE CONSULTA
+# =============================================================================
+
+def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
+    # 1. Limpeza e Definição Automática do Tipo
+    cpf_limpo_raw = ''.join(filter(str.isdigit, str(cpf)))
+    
+    # Definição do Tipo e Padronização
+    if len(cpf_limpo_raw) <= 11: 
+        cpf_padrao = cpf_limpo_raw.zfill(11)
+        tipo_registro = "CPF SIMPLES"
+    else: 
+        cpf_padrao = cpf_limpo_raw.zfill(14)
+        tipo_registro = "CNPJ SIMPLES"
+    
+    conn = get_conn()
+    if not conn: return {"sucesso": False, "msg": "Erro de conexão com banco de dados."}
+    
+    try:
+        cur = conn.cursor()
+        
+        # --- A.1 VERIFICAÇÃO DE CACHE ---
+        cur.execute("""
+            SELECT caminho_json, link_arquivo_consulta 
+            FROM conexoes.fatorconferi_registo_consulta 
+            WHERE cpf_consultado = %s AND status_api = 'SUCESSO'
+            ORDER BY id DESC LIMIT 1
+        """, (cpf_padrao,))
+        
+        registro_anterior = cur.fetchone()
+        
+        if registro_anterior:
+            caminho_existente = registro_anterior[0]
+            link_existente = registro_anterior[1] if registro_anterior[1] else caminho_existente
+            
+            dados_parsed = {}
+            msg_retorno = "Dados recuperados do histórico (R$ 0,00)."
+
+            if caminho_existente and os.path.exists(caminho_existente):
+                try:
+                    with open(caminho_existente, 'r', encoding='utf-8') as f:
+                        dados_parsed = json.load(f)
+                except: 
+                    msg_retorno += " (Erro leitura arquivo)"
+            else:
+                msg_retorno += " (Arquivo físico não localizado)"
+
+            usuario = st.session_state.get('usuario_nome', 'Sistema')
+            id_user = st.session_state.get('usuario_id', 0)
+            
+            sql_cache = """
+                INSERT INTO conexoes.fatorconferi_registo_consulta 
+                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
+                VALUES (%s, %s, %s, %s, 0.00, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
+            """
+            cur.execute(sql_cache, (tipo_registro, cpf_padrao, id_user, usuario, caminho_existente, link_existente, origem))
+            conn.commit(); conn.close()
+            return {"sucesso": True, "dados": dados_parsed, "msg": msg_retorno}
+        
+        # --- NOVA CONSULTA API ---
+        cred = buscar_credenciais()
+        if not cred['token']:
+            conn.close(); return {"sucesso": False, "msg": "sem token registrado"}
+            
+        url = f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}"
+        response = requests.get(url, timeout=15)
+        response.encoding = 'ISO-8859-1'
+        xml_content = response.text
+        
+        if "Não localizado" in xml_content or "erro" in xml_content.lower():
+             conn.close()
+             return {"sucesso": False, "msg": "CPF Não localizado ou erro na API", "raw": xml_content}
+        
+        dados_parsed = parse_xml_to_dict(xml_content)
+        
+        # --- SALVAMENTO DO ARQUIVO ---
+        nome_arquivo = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
+        caminho_completo = os.path.join(PASTA_JSON, nome_arquivo)
+        
+        with open(caminho_completo, 'w', encoding='utf-8') as f:
+            json.dump(dados_parsed, f, ensure_ascii=False, indent=4)
+        
+        # --- REGISTRO NO BANCO ---
+        usuario = st.session_state.get('usuario_nome', 'Sistema')
+        id_user = st.session_state.get('usuario_id', 0)
+        custo = buscar_valor_consulta_atual()
+        
+        link_arquivo = caminho_completo 
+        
+        sql = """
+            INSERT INTO conexoes.fatorconferi_registo_consulta 
+            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
+            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())
+        """
+        cur.execute(sql, (tipo_registro, cpf_padrao, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
+        conn.commit(); conn.close()
+        
+        return {"sucesso": True, "dados": dados_parsed}
+        
+    except Exception as e:
+        if conn: conn.close()
+        return {"sucesso": False, "msg": str(e)}
+
+# =============================================================================
+# 2. FUNÇÕES DE GESTÃO FINANCEIRA
+# =============================================================================
+
+def listar_clientes_carteira():
+    conn = get_conn()
+    if conn:
+        try:
+            query = """
+                SELECT cc.id, cc.nome_cliente, cc.custo_por_consulta, cc.saldo_atual, cc.status,
+                       ac.cpf, ac.telefone
+                FROM conexoes.fator_cliente_carteira cc
+                LEFT JOIN admin.clientes ac ON cc.id_cliente_admin = ac.id
+                ORDER BY cc.nome_cliente
+            """
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df
+        except: conn.close()
+    return pd.DataFrame()
+
+def cadastrar_carteira_cliente(id_admin, nome, custo_inicial):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO conexoes.fator_cliente_carteira (id_cliente_admin, nome_cliente, custo_por_consulta, saldo_atual)
+                VALUES (%s, %s, %s, 0.00)
+                ON CONFLICT (id_cliente_admin) DO NOTHING
+            """, (id_admin, nome, custo_inicial))
+            conn.commit(); conn.close()
+            return True
+        except: conn.close()
+    return False
+
+def movimentar_saldo(id_carteira, tipo, valor, motivo, usuario_resp):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT saldo_atual FROM conexoes.fator_cliente_carteira WHERE id = %s", (id_carteira,))
+            res = cur.fetchone()
+            if not res: return False, "Carteira não encontrada"
+            saldo_ant = float(res[0])
+            
+            valor = float(valor)
+            if tipo == 'DEBITO': novo_saldo = saldo_ant - valor
+            else: novo_saldo = saldo_ant + valor
+            
+            cur.execute("UPDATE conexoes.fator_cliente_carteira SET saldo_atual = %s WHERE id = %s", (novo_saldo, id_carteira))
+            cur.execute("""
+                INSERT INTO conexoes.fator_cliente_transacoes 
+                (id_carteira, tipo, valor, saldo_anterior, saldo_novo, motivo, usuario_responsavel)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (id_carteira, tipo, valor, saldo_ant, novo_saldo, motivo, usuario_resp))
+            conn.commit(); conn.close()
+            return True, "Sucesso"
+        except Exception as e:
+            conn.close(); return False, str(e)
+    return False
+
+def atualizar_custo_cliente(id_carteira, novo_custo):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE conexoes.fator_cliente_carteira SET custo_por_consulta = %s WHERE id = %s", (novo_custo, id_carteira))
+            conn.commit(); conn.close()
+            return True
+        except: conn.close()
+    return False
+
+def excluir_carteira_cliente(id_carteira):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM conexoes.fator_cliente_carteira WHERE id = %s", (id_carteira,))
+            conn.commit(); conn.close()
+            return True
+        except: conn.close()
+    return False
+
+def buscar_extrato_cliente_filtrado(id_carteira, data_ini, data_fim):
+    conn = get_conn()
+    if conn:
+        try:
+            dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
+            dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
+            
+            query = """
+                SELECT id, data_transacao, tipo, valor, saldo_novo, motivo, usuario_responsavel 
+                FROM conexoes.fator_cliente_transacoes 
+                WHERE id_carteira = %s 
+                  AND data_transacao BETWEEN %s AND %s
+                ORDER BY data_transacao DESC
+            """
+            df = pd.read_sql(query, conn, params=(id_carteira, dt_ini_str, dt_fim_str))
+            conn.close()
+            return df
+        except: conn.close()
+    return pd.DataFrame()
+
+def editar_transacao_db(id_transacao, id_carteira, novo_tipo, novo_valor, novo_motivo):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT tipo, valor FROM conexoes.fator_cliente_transacoes WHERE id=%s", (id_transacao,))
+            res = cur.fetchone()
+            if not res: return False
+            tipo_ant, valor_ant = res
+            valor_ant = float(valor_ant)
+            
+            fator_ant = -1 if tipo_ant == 'DEBITO' else 1
+            fator_novo = -1 if novo_tipo == 'DEBITO' else 1
+            diff = (float(novo_valor) * fator_novo) - (valor_ant * fator_ant)
+            
+            cur.execute("""
+                UPDATE conexoes.fator_cliente_transacoes 
+                SET tipo=%s, valor=%s, motivo=%s 
+                WHERE id=%s
+            """, (novo_tipo, novo_valor, novo_motivo, id_transacao))
+            
+            cur.execute("""
+                UPDATE conexoes.fator_cliente_carteira 
+                SET saldo_atual = saldo_atual + %s 
+                WHERE id=%s
+            """, (diff, id_carteira))
+            
+            conn.commit(); conn.close()
+            return True
+        except: conn.close()
+    return False
+
+def excluir_transacao_db(id_transacao, id_carteira):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT tipo, valor FROM conexoes.fator_cliente_transacoes WHERE id=%s", (id_transacao,))
+            res = cur.fetchone()
+            if not res: return False
+            tipo, valor = res
+            
+            fator = 1 if tipo == 'DEBITO' else -1
+            ajuste = float(valor) * fator
+            
+            cur.execute("DELETE FROM conexoes.fator_cliente_transacoes WHERE id=%s", (id_transacao,))
+            cur.execute("UPDATE conexoes.fator_cliente_carteira SET saldo_atual = saldo_atual + %s WHERE id=%s", (ajuste, id_carteira))
+            
+            conn.commit(); conn.close()
+            return True
+        except: conn.close()
+    return False
+
+# =============================================================================
+# 3. FUNÇÕES CRUD PARÂMETROS
+# =============================================================================
+
+# --- ORIGEM CONSULTA ---
+def listar_origem_consulta():
     conn = get_conn()
     try:
-        cur = conn.cursor(); cur.execute(f"SELECT id FROM clientes_usuarios WHERE cpf = '{cpf_cliente}'"); res = cur.fetchone()
-        if res:
-            df = pd.read_sql(f"SELECT data_hora, tipo_consulta, cpf_consultado, valor_pago FROM conexoes.fatorconferi_registo_consulta WHERE id_usuario = {res[0]} ORDER BY id DESC LIMIT 200", conn)
-            st.dataframe(df, hide_index=True)
-        else: st.warning("Nenhum usuário vinculado.")
-    except: pass
-    finally: conn.close()
+        df = pd.read_sql("SELECT id, origem FROM conexoes.fatorconferi_origem_consulta ORDER BY origem", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_origem_consulta(origem):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conexoes.fatorconferi_origem_consulta (origem) VALUES (%s)", (origem,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def atualizar_origem_consulta(id_reg, nova_origem):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE conexoes.fatorconferi_origem_consulta SET origem=%s WHERE id=%s", (nova_origem, id_reg))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def excluir_origem_consulta(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM conexoes.fatorconferi_origem_consulta WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+# --- TIPO CONSULTA FATOR ---
+def listar_tipo_consulta_fator():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, tipo FROM conexoes.fatorconferi_tipo_consulta_fator ORDER BY tipo", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_tipo_consulta_fator(tipo):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conexoes.fatorconferi_tipo_consulta_fator (tipo) VALUES (%s)", (tipo,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def atualizar_tipo_consulta_fator(id_reg, novo_tipo):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE conexoes.fatorconferi_tipo_consulta_fator SET tipo=%s WHERE id=%s", (novo_tipo, id_reg))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def excluir_tipo_consulta_fator(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM conexoes.fatorconferi_tipo_consulta_fator WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+# --- VALOR DA CONSULTA ---
+def listar_valor_consulta():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, valor_da_consulta, data_atualizacao FROM conexoes.fatorconferi_valor_da_consulta ORDER BY data_atualizacao DESC", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_valor_consulta(valor):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conexoes.fatorconferi_valor_da_consulta (valor_da_consulta) VALUES (%s)", (valor,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def atualizar_valor_consulta(id_reg, novo_valor):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE conexoes.fatorconferi_valor_da_consulta SET valor_da_consulta=%s, data_atualizacao=NOW() WHERE id=%s", (novo_valor, id_reg))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def excluir_valor_consulta(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM conexoes.fatorconferi_valor_da_consulta WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
 
 # =============================================================================
-# 4. INTERFACE PRINCIPAL
+# 4. DIALOGS (POP-UPS)
 # =============================================================================
 
-def app_clientes():
-    st.markdown("## 👥 Central de Clientes e Usuários")
+@st.dialog("💰 Movimentar Saldo")
+def dialog_movimentar(id_cart, nome_cli):
+    st.write(f"Cliente: **{nome_cli}**")
+    tipo = st.selectbox("Tipo de Operação", ["CREDITO", "DEBITO"])
+    valor = st.number_input("Valor (R$)", min_value=0.01, step=1.00)
+    motivo = st.text_input("Motivo", placeholder="Ex: Pix, Consulta Avulsa...")
+    if st.button("Confirmar Movimentação", type="primary"):
+        user_logado = st.session_state.get('usuario_nome', 'Admin')
+        ok, msg = movimentar_saldo(id_cart, tipo, valor, motivo, user_logado)
+        if ok:
+            st.success("Saldo atualizado!")
+            time.sleep(1); st.rerun()
+        else: st.error(f"Erro: {msg}")
+
+@st.dialog("➕ Novo Cliente Fator")
+def dialog_novo_cliente_fator():
+    conn = get_conn()
+    query = """
+        SELECT id, nome FROM admin.clientes 
+        WHERE id NOT IN (SELECT id_cliente_admin FROM conexoes.fator_cliente_carteira)
+        ORDER BY nome
+    """
+    df_adm = pd.read_sql(query, conn); conn.close()
+    if df_adm.empty:
+        st.info("Todos os clientes já possuem carteira.")
+        return
+    sel_idx = st.selectbox("Selecione o Cliente", range(len(df_adm)), format_func=lambda x: df_adm.iloc[x]['nome'])
+    custo = st.number_input("Custo por Consulta (R$)", value=0.50, step=0.01)
+    if st.button("Criar Carteira"):
+        cli = df_adm.iloc[sel_idx]
+        if cadastrar_carteira_cliente(int(cli['id']), cli['nome'], custo):
+            st.success("Carteira criada!"); st.rerun()
+
+@st.dialog("✏️ Editar Custo")
+def dialog_editar_custo(id_cart, nome_cli, custo_atual):
+    st.write(f"Editando: **{nome_cli}**")
+    novo_custo = st.number_input("Custo por Consulta (R$)", value=float(custo_atual), step=0.01, min_value=0.0)
+    if st.button("Salvar Alteração"):
+        if atualizar_custo_cliente(id_cart, novo_custo):
+            st.success("Atualizado!"); time.sleep(1); st.rerun()
+        else: st.error("Erro ao salvar.")
+
+@st.dialog("🚨 Excluir Carteira")
+def dialog_excluir_carteira(id_cart, nome_cli):
+    st.warning(f"Tem certeza que deseja excluir a carteira de **{nome_cli}**?")
+    st.caption("O histórico financeiro será perdido permanentemente.")
+    c1, c2 = st.columns(2)
+    if c1.button("✅ Sim, Excluir", type="primary", use_container_width=True):
+        if excluir_carteira_cliente(id_cart):
+            st.success("Excluído."); time.sleep(1); st.rerun()
+    if c2.button("❌ Cancelar", use_container_width=True): st.rerun()
+
+@st.dialog("✏️ Editar Transação")
+def dialog_editar_transacao(transacao, id_carteira):
+    st.write(f"Editando Transação")
+    n_tipo = st.selectbox("Tipo", ["CREDITO", "DEBITO"], index=0 if transacao['tipo']=="CREDITO" else 1)
+    n_valor = st.number_input("Valor", value=float(transacao['valor']), step=0.10)
+    n_motivo = st.text_input("Motivo", value=transacao['motivo'])
     
-    # Atualizado: Aba 3 renomeada para "Parâmetros"
-    tab_cli, tab_user, tab_param, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "📊 Relatórios"])
+    if st.button("Salvar Alterações"):
+        if editar_transacao_db(transacao['id'], id_carteira, n_tipo, n_valor, n_motivo):
+            st.success("Atualizado!")
+            time.sleep(1); st.rerun()
+        else:
+            st.error("Erro ao atualizar.")
 
-    # --- ABA CLIENTES ---
-    with tab_cli:
-        c1, c2 = st.columns([6, 1])
-        filtro = c1.text_input("🔍 Buscar Cliente", placeholder="Nome, CPF ou Nome Empresa")
-        if c2.button("➕ Novo", type="primary"): st.session_state['view_cliente'] = 'novo'; st.rerun()
+@st.dialog("🗑️ Excluir Transação")
+def dialog_excluir_transacao(id_transacao, id_carteira):
+    st.warning("Tem certeza? O saldo será ajustado automaticamente.")
+    c1, c2 = st.columns(2)
+    if c1.button("Sim, Excluir", type="primary"):
+        if excluir_transacao_db(id_transacao, id_carteira):
+            st.success("Excluído!")
+            time.sleep(1); st.rerun()
+    if c2.button("Cancelar"):
+        st.rerun()
 
-        if st.session_state.get('view_cliente', 'lista') == 'lista':
-            conn = get_conn()
-            sql = "SELECT *, id_usuario_vinculo as id_vinculo FROM admin.clientes"
-            if filtro: sql += f" WHERE nome ILIKE '%%{filtro}%%' OR cpf ILIKE '%%{filtro}%%' OR nome_empresa ILIKE '%%{filtro}%%'"
-            sql += " ORDER BY id DESC LIMIT 50"
-            df_cli = pd.read_sql(sql, conn); conn.close()
+@st.dialog("✏️ Editar Origem")
+def dialog_editar_origem(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_origem"):
+        novo_nome = st.text_input("Origem", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_origem_consulta(id_reg, novo_nome):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro.")
 
-            if not df_cli.empty:
-                st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 10px; border-radius: 5px;"><div style="flex: 2;">Nome</div><div style="flex: 1;">CPF</div><div style="flex: 2;">Empresa</div><div style="flex: 1; text-align: center;">Status</div><div style="flex: 1; text-align: center;">Ações</div></div>""", unsafe_allow_html=True)
-                for _, row in df_cli.iterrows():
-                    with st.container():
-                        c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 1, 1])
-                        c1.write(f"**{limpar_formatacao_texto(row['nome'])}**"); c2.write(row['cpf'] or "-"); c3.write(row['nome_empresa'] or "-")
-                        c4.markdown(f":{'green' if row.get('status','ATIVO')=='ATIVO' else 'red'}[{row.get('status','ATIVO')}]")
-                        with c5:
-                            b1, b2 = st.columns(2)
-                            if b1.button("👁️", key=f"v_{row['id']}"): st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
-                            if b2.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}"): dialog_gestao_usuario_vinculo(row)
-                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-            else: st.info("Nenhum cliente encontrado.")
+@st.dialog("✏️ Editar Tipo Consulta")
+def dialog_editar_tipo_consulta(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_tipo"):
+        novo_nome = st.text_input("Tipo", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_tipo_consulta_fator(id_reg, novo_nome):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro.")
 
-        elif st.session_state['view_cliente'] in ['novo', 'editar']:
-            st.markdown(f"### {'📝 Novo' if st.session_state['view_cliente']=='novo' else '✏️ Editar'}")
+@st.dialog("✏️ Editar Valor")
+def dialog_editar_valor_consulta(id_reg, valor_atual):
+    st.caption(f"Editando ID: {id_reg}")
+    with st.form("form_edit_valor"):
+        novo_valor = st.number_input("Valor (R$)", value=float(valor_atual), step=0.01)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_valor_consulta(id_reg, novo_valor):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro.")
+
+# =============================================================================
+# 5. INTERFACE PRINCIPAL
+# =============================================================================
+
+def app_fator_conferi():
+    st.markdown("### ⚡ Painel Fator Conferi")
+    
+    creds = buscar_credenciais()
+    if not creds['token']:
+        st.warning("⚠️ Token da API não configurado.")
+    
+    tabs = st.tabs([
+        "👥 Clientes (Financeiro)", "🔍 Teste de Consulta", "💰 Saldo API (Global)", 
+        "📋 Histórico (Logs)", "⚙️ Parâmetros", "🤖 Chatbot Config", "📂 Consulta em Lote"
+    ])
+
+    # --- ABA 1: CLIENTES ---
+    with tabs[0]:
+        c1, c2 = st.columns([5, 1])
+        c1.markdown("#### Gestão de Saldo dos Clientes")
+        if c2.button("➕ Novo", key="add_cli_fator"): dialog_novo_cliente_fator()
             
-            # --- CARREGA DADOS PRÉVIOS (EDITAR) ---
-            dados = {}
-            if st.session_state['view_cliente'] == 'editar':
-                conn = get_conn(); df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}", conn); conn.close()
-                if not df.empty: dados = df.iloc[0]
-
-            # --- CARREGA LISTAS PARA OS SELETORES ---
-            df_empresas = listar_cliente_cnpj() # Tabela: admin.cliente_cnpj
-            df_ag_cli = listar_agrupamentos("cliente")
-            df_ag_emp = listar_agrupamentos("empresa")
-
-            with st.form("form_cliente"):
-                c1, c2, c3 = st.columns(3)
-                nome = c1.text_input("Nome Completo *", value=limpar_formatacao_texto(dados.get('nome', '')))
-                
-                lista_empresas = df_empresas['nome_empresa'].unique().tolist()
-                idx_emp = 0
-                val_emp_atual = dados.get('nome_empresa', '')
-                if val_emp_atual in lista_empresas: idx_emp = lista_empresas.index(val_emp_atual)
-                
-                nome_emp = c2.selectbox("Empresa (Selecionar)", options=[""] + lista_empresas, index=idx_emp + 1 if val_emp_atual else 0, help="Ao selecionar, o CNPJ será preenchido automaticamente ao salvar.")
-                cnpj_display = dados.get('cnpj_empresa', '')
-                c3.text_input("CNPJ (Vinculado)", value=cnpj_display, disabled=True, help="Este campo é atualizado automaticamente com base na Empresa selecionada.")
-
-                c4, c5, c6, c7 = st.columns(4)
-                email = c4.text_input("E-mail *", value=dados.get('email', ''))
-                cpf = c5.text_input("CPF *", value=dados.get('cpf', ''))
-                tel1 = c6.text_input("Telefone 1", value=dados.get('telefone', ''))
-                tel2 = c7.text_input("Telefone 2", value=dados.get('telefone2', ''))
-                
-                c8, c9, c10 = st.columns([1, 1, 1])
-                id_gp = c8.text_input("ID Grupo WhatsApp", value=dados.get('id_grupo_whats', ''))
-                
-                padrao_cli = []
-                if dados.get('ids_agrupamento_cliente'):
-                    try: padrao_cli = [int(x.strip()) for x in str(dados.get('ids_agrupamento_cliente')).split(',') if x.strip().isdigit()]
-                    except: pass
-                sel_ag_cli = c9.multiselect("Agrupamento Cliente", options=df_ag_cli['id'], format_func=lambda x: df_ag_cli[df_ag_cli['id']==x]['nome_agrupamento'].values[0] if not df_ag_cli[df_ag_cli['id']==x].empty else x, default=[x for x in padrao_cli if x in df_ag_cli['id'].values])
-
-                padrao_emp = []
-                if dados.get('ids_agrupamento_empresa'):
-                    try: padrao_emp = [int(x.strip()) for x in str(dados.get('ids_agrupamento_empresa')).split(',') if x.strip().isdigit()]
-                    except: pass
-                sel_ag_emp = c10.multiselect("Agrupamento Empresa", options=df_ag_emp['id'], format_func=lambda x: df_ag_emp[df_ag_emp['id']==x]['nome_agrupamento'].values[0] if not df_ag_emp[df_ag_emp['id']==x].empty else x, default=[x for x in padrao_emp if x in df_ag_emp['id'].values])
-                
-                status_final = "ATIVO"
-                if st.session_state['view_cliente'] == 'editar':
-                    st.divider(); cs1, _ = st.columns([1, 4])
-                    status_final = cs1.selectbox("Status", ["ATIVO", "INATIVO"], index=0 if dados.get('status','ATIVO')=="ATIVO" else 1)
-
-                st.markdown("<br>", unsafe_allow_html=True); ca = st.columns([1, 1, 4])
-                
-                if ca[0].form_submit_button("💾 Salvar"):
-                    cnpj_final = ""
-                    if nome_emp:
-                        filtro_cnpj = df_empresas[df_empresas['nome_empresa'] == nome_emp]
-                        if not filtro_cnpj.empty: cnpj_final = filtro_cnpj.iloc[0]['cnpj']
-                    
-                    str_ag_cli = ",".join(map(str, sel_ag_cli))
-                    str_ag_emp = ",".join(map(str, sel_ag_emp))
-
-                    conn = get_conn(); cur = conn.cursor()
-                    if st.session_state['view_cliente'] == 'novo':
-                        cur.execute("INSERT INTO admin.clientes (nome, nome_empresa, cnpj_empresa, email, cpf, telefone, telefone2, id_grupo_whats, ids_agrupamento_cliente, ids_agrupamento_empresa, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ATIVO')", (nome, nome_emp, cnpj_final, email, cpf, tel1, tel2, id_gp, str_ag_cli, str_ag_emp))
-                    else:
-                        cur.execute("UPDATE admin.clientes SET nome=%s, nome_empresa=%s, cnpj_empresa=%s, email=%s, cpf=%s, telefone=%s, telefone2=%s, id_grupo_whats=%s, ids_agrupamento_cliente=%s, ids_agrupamento_empresa=%s, status=%s WHERE id=%s", (nome, nome_emp, cnpj_final, email, cpf, tel1, tel2, id_gp, str_ag_cli, str_ag_emp, status_final, st.session_state['cli_id']))
-                    conn.commit(); conn.close(); st.success("Salvo!"); time.sleep(1); st.session_state['view_cliente'] = 'lista'; st.rerun()
-                
-                if ca[1].form_submit_button("Cancelar"): st.session_state['view_cliente'] = 'lista'; st.rerun()
-
-            if st.session_state['view_cliente'] == 'editar':
-                st.markdown("---")
-                if st.button("🗑️ Excluir Cliente", type="primary"): dialog_excluir_cliente(st.session_state['cli_id'], nome)
-
-    # --- ABA USUÁRIOS ---
-    with tab_user:
-        st.markdown("### Gestão de Acesso")
-        busca_user = st.text_input("Buscar Usuário", placeholder="Nome ou Email")
-        conn = get_conn(); sql_u = "SELECT id, nome, email, hierarquia, ativo FROM clientes_usuarios WHERE 1=1"
-        if busca_user: sql_u += f" AND (nome ILIKE '%{busca_user}%' OR email ILIKE '%{busca_user}%')"
-        sql_u += " ORDER BY id DESC"
-        df_users = pd.read_sql(sql_u, conn); conn.close()
-        for _, u in df_users.iterrows():
-            with st.expander(f"{u['nome']} ({u['hierarquia']})"):
-                with st.form(f"form_user_{u['id']}"):
-                    c_n, c_e = st.columns(2); n_nome = c_n.text_input("Nome", value=u['nome']); n_mail = c_e.text_input("Email", value=u['email'])
-                    c_h, c_s, c_a = st.columns(3); n_hier = c_h.selectbox("Nível", ["Cliente", "Admin", "Gerente"], index=["Cliente", "Admin", "Gerente"].index(u['hierarquia']) if u['hierarquia'] in ["Cliente", "Admin", "Gerente"] else 0); n_senha = c_s.text_input("Nova Senha", type="password"); n_ativo = c_a.checkbox("Ativo", value=u['ativo'])
-                    if st.form_submit_button("Atualizar"):
-                        conn = get_conn(); cur = conn.cursor()
-                        if n_senha: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, senha=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, hash_senha(n_senha), n_ativo, u['id']))
-                        else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, n_ativo, u['id']))
-                        conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
-
-    # --- ABA PARÂMETROS (ANTIGA AGRUPAMENTOS) ---
-    with tab_param:
+        df_cli = listar_clientes_carteira()
         
-        # 1. AGRUPAMENTO CLIENTES
-        with st.expander("🏷️ Agrupamento Clientes", expanded=True):
+        if not df_cli.empty:
+            # Cabeçalho Fixo
+            st.markdown("""
+            <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
+                <div style="flex:3;">Nome / CPF</div>
+                <div style="flex:1;">Saldo</div>
+                <div style="flex:1;">Custo</div>
+                <div style="flex:2; text-align:center;">Ações</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            for _, row in df_cli.iterrows():
+                with st.container():
+                    cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 2])
+                    
+                    cpf_txt = f" / {row['cpf']}" if row.get('cpf') else ""
+                    cc1.write(f"**{row['nome_cliente']}**{cpf_txt}")
+                    
+                    val = float(row['saldo_atual'])
+                    cor = "green" if val > 0 else "red"
+                    cc2.markdown(f":{cor}[R$ {val:.2f}]")
+                    
+                    cc3.write(f"R$ {float(row['custo_por_consulta']):.2f}")
+                    
+                    with cc4:
+                        b1, b2, b3, b4 = st.columns(4)
+                        if b1.button("💲", key=f"mov_{row['id']}", help="Movimentar Saldo"):
+                            dialog_movimentar(row['id'], row['nome_cliente'])
+                        
+                        if b2.button("📜", key=f"ext_{row['id']}", help="Ver/Ocultar Extrato"):
+                            if st.session_state.get('cli_expandido') == row['id']:
+                                st.session_state['cli_expandido'] = None
+                            else:
+                                st.session_state['cli_expandido'] = row['id']
+                                st.session_state['pag_hist'] = 1 
+                        
+                        if b3.button("✏️", key=f"edt_{row['id']}", help="Editar Custo"):
+                            dialog_editar_custo(row['id'], row['nome_cliente'], row['custo_por_consulta'])
+                        if b4.button("🗑️", key=f"del_{row['id']}", help="Excluir Carteira"):
+                            dialog_excluir_carteira(row['id'], row['nome_cliente'])
+                    
+                    st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
+
+                if st.session_state.get('cli_expandido') == row['id']:
+                    with st.container(border=True):
+                        st.caption(f"📜 Histórico: {row['nome_cliente']}")
+                        
+                        fd1, fd2, fd3 = st.columns([2, 2, 4])
+                        data_ini = fd1.date_input("Data Inicial", value=date.today() - timedelta(days=30), key=f"ini_{row['id']}")
+                        data_fim = fd2.date_input("Data Final", value=date.today(), key=f"fim_{row['id']}")
+                        
+                        df_ext = buscar_extrato_cliente_filtrado(row['id'], data_ini, data_fim)
+                        
+                        if not df_ext.empty:
+                            items_por_pag = 15
+                            total_items = len(df_ext)
+                            pag_atual = st.session_state.get('pag_hist', 1)
+                            total_pags = (total_items // items_por_pag) + (1 if total_items % items_por_pag > 0 else 0)
+                            
+                            inicio = (pag_atual - 1) * items_por_pag
+                            fim = inicio + items_por_pag
+                            df_view = df_ext.iloc[inicio:fim]
+                            
+                            st.markdown("""
+                            <div style="display: flex; font-weight: bold; background-color: #e9ecef; padding: 5px; border-radius: 4px; font-size:0.9em;">
+                                <div style="flex: 2;">Data</div>
+                                <div style="flex: 3;">Motivo</div>
+                                <div style="flex: 1;">Tipo</div>
+                                <div style="flex: 1.5;">Valor</div>
+                                <div style="flex: 1.5;">Saldo</div>
+                                <div style="flex: 1.5; text-align: center;">Ações</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            for _, tr in df_view.iterrows():
+                                tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
+                                tc1.write(pd.to_datetime(tr['data_transacao']).strftime('%d/%m/%y %H:%M'))
+                                tc2.write(tr['motivo'])
+                                
+                                cor_t = "green" if tr['tipo'] == 'CREDITO' else "red"
+                                tc3.markdown(f":{cor_t}[{tr['tipo']}]")
+                                tc4.write(f"R$ {float(tr['valor']):.2f}")
+                                tc5.write(f"R$ {float(tr['saldo_novo']):.2f}")
+                                
+                                with tc6:
+                                    bc1, bc2 = st.columns(2)
+                                    if bc1.button("✏️", key=f"e_tr_{tr['id']}", help="Editar"):
+                                        dialog_editar_transacao(tr, row['id'])
+                                    if bc2.button("❌", key=f"d_tr_{tr['id']}", help="Excluir"):
+                                        dialog_excluir_transacao(tr['id'], row['id'])
+                                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+                            
+                            pc1, pc2, pc3 = st.columns([1, 3, 1])
+                            if pc1.button("⬅️ Anterior", key=f"prev_{row['id']}"):
+                                if st.session_state['pag_hist'] > 1:
+                                    st.session_state['pag_hist'] -= 1
+                                    st.rerun()
+                            pc2.markdown(f"<div style='text-align:center;'>Página {pag_atual} de {total_pags}</div>", unsafe_allow_html=True)
+                            if pc3.button("Próxima ➡️", key=f"next_{row['id']}"):
+                                if st.session_state['pag_hist'] < total_pags:
+                                    st.session_state['pag_hist'] += 1
+                                    st.rerun()
+                        else: st.warning("Nenhum registro encontrado no período selecionado.")
+        else: st.info("Nenhum cliente configurado.")
+
+    # --- ABA 2: TESTE MANUAL ---
+    with tabs[1]:
+        st.markdown("#### 1.1 Ambiente de Teste Manual")
+        c1, c2 = st.columns([3, 1])
+        cpf_input = c1.text_input("CPF para Consulta")
+        if c2.button("🔍 Consultar", type="primary"):
+            if cpf_input:
+                # Chama a consulta passando a origem correta
+                with st.spinner("Consultando..."):
+                    res = realizar_consulta_cpf(cpf_input, origem="WEB USUÁRIO")
+                    if res['sucesso']:
+                        if "msg" in res:
+                            st.info(f"ℹ️ {res['msg']}")
+                        else:
+                            st.success("Sucesso!")
+                        st.json(res['dados'])
+                    else: st.error(f"Erro: {res.get('msg', 'Erro desconhecido')}")
+
+    # --- ABA 3: SALDO API ---
+    with tabs[2]: 
+        st.markdown("#### 2.1 Controle de Saldo API (Fator)")
+        if st.button("🔄 Atualizar Saldo API"):
+            ok, val = consultar_saldo_api()
+            if ok: st.metric("Saldo Atual", f"R$ {val:.2f}")
+            else: st.error(f"Erro: {val}")
+        conn = get_conn()
+        if conn:
+            df_saldo = pd.read_sql("SELECT data_consulta, valor_saldo FROM conexoes.fatorconferi_registro_de_saldo ORDER BY id DESC LIMIT 10", conn)
+            st.dataframe(df_saldo, use_container_width=True)
+            conn.close()
+
+    # --- ABA 4: HISTÓRICO ---
+    with tabs[3]: 
+        st.markdown("#### 5.1 Histórico de Consultas")
+        conn = get_conn()
+        if conn:
+            query_hist = """
+                SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
+                       valor_pago, caminho_json, status_api, origem_consulta, 
+                       tipo_cobranca
+                FROM conexoes.fatorconferi_registo_consulta 
+                ORDER BY id DESC LIMIT 50
+            """
+            try:
+                df_logs = pd.read_sql(query_hist, conn)
+                
+                if not df_logs.empty:
+                    # 1. Formatações Visuais
+                    df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
+                    df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
+                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"R$ {float(x):,.2f}")
+
+                    # 2. Criamos um DataFrame apenas para EXIBIÇÃO (Renomeando colunas)
+                    df_view = df_logs.rename(columns={
+                        'data_hora': 'Data',
+                        'cpf_consultado': 'CPF/CNPJ',
+                        'nome_usuario': 'Usuário',
+                        'valor_pago': 'Custo',
+                        'status_api': 'Status',
+                        'tipo_consulta': 'Tipo',
+                        'origem_consulta': 'Origem'
+                    })
+                    
+                    # Selecionamos apenas as colunas úteis para visualização
+                    cols_visual = ['Data', 'Tipo', 'CPF/CNPJ', 'Usuário', 'Custo', 'Status', 'Origem']
+                    
+                    # 3. Tabela Interativa (Com Seleção)
+                    st.info("👆 Selecione uma linha na tabela para baixar o arquivo.")
+                    
+                    event = st.dataframe(
+                        df_view[cols_visual],
+                        use_container_width=True,
+                        hide_index=True,
+                        on_select="rerun",     # Habilita a seleção
+                        selection_mode="single-row"
+                    )
+
+                    # 4. Lógica do Botão de Download (Só lê o arquivo se selecionar)
+                    if event.selection.rows:
+                        idx_selecionado = event.selection.rows[0]
+                        dados_reais = df_logs.iloc[idx_selecionado] # Pega os dados originais (com o caminho)
+                        caminho_arquivo = dados_reais['caminho_json']
+                        
+                        st.divider()
+                        col_d1, col_d2 = st.columns([1, 4])
+                        
+                        if caminho_arquivo and os.path.exists(caminho_arquivo):
+                            with open(caminho_arquivo, "rb") as f:
+                                file_data = f.read()
+                            
+                            file_name = os.path.basename(caminho_arquivo)
+                            
+                            with col_d1:
+                                st.download_button(
+                                    label="⬇️ BAIXAR ARQUIVO JSON",
+                                    data=file_data,
+                                    file_name=file_name,
+                                    mime="application/json",
+                                    type="primary"
+                                )
+                            with col_d2:
+                                st.success(f"Arquivo pronto: {file_name}")
+                        else:
+                            st.warning(f"⚠️ O arquivo físico não foi encontrado no servidor: {caminho_arquivo}")
+
+                else:
+                    st.info("Nenhum histórico encontrado.")
+
+            except Exception as e:
+                st.error(f"Erro ao carregar histórico: {e}")
+            finally:
+                conn.close()
+
+    # --- ABA 5: PARÂMETROS ---
+    with tabs[4]: 
+        
+        # 1. ORIGEM CONSULTA
+        with st.expander("📍 Origem da Consulta", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
-                n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed", placeholder="Digite o nome...")
-                if c_bt.button("➕", key="add_ac", use_container_width=True):
-                    if n_ac: salvar_agrupamento("cliente", n_ac); st.rerun()
+                n_orig = c_in.text_input("Origem", key="in_orig", label_visibility="collapsed", placeholder="Ex: API, Web...")
+                if c_bt.button("➕", key="add_orig", use_container_width=True):
+                    if n_orig: salvar_origem_consulta(n_orig); st.rerun()
             
             st.divider()
-            
-            df_ac = listar_agrupamentos("cliente")
-            if not df_ac.empty:
-                for _, r in df_ac.iterrows():
+            df_orig = listar_origem_consulta()
+            if not df_orig.empty:
+                for _, r in df_orig.iterrows():
                     ca1, ca2, ca3 = st.columns([8, 1, 1]) 
-                    ca1.markdown(f"**{r['id']}** | {r['nome_agrupamento']}")
-                    if ca2.button("✏️", key=f"ed_ac_{r['id']}"): dialog_editar_agrupamento("cliente", r['id'], r['nome_agrupamento'])
-                    if ca3.button("🗑️", key=f"del_ac_{r['id']}"): excluir_agrupamento("cliente", r['id']); st.rerun()
+                    ca1.markdown(f"**{r['id']}** | {r['origem']}")
+                    if ca2.button("✏️", key=f"ed_orig_{r['id']}"): dialog_editar_origem(r['id'], r['origem'])
+                    if ca3.button("🗑️", key=f"del_orig_{r['id']}"): excluir_origem_consulta(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 2. AGRUPAMENTO EMPRESAS
-        with st.expander("🏢 Agrupamento Empresas", expanded=True):
+        # 2. TIPO CONSULTA FATOR
+        with st.expander("🔍 Tipo Consulta Fator", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
-                n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed", placeholder="Digite o nome...")
-                if c_bt.button("➕", key="add_ae", use_container_width=True):
-                    if n_ae: salvar_agrupamento("empresa", n_ae); st.rerun()
+                n_tipo = c_in.text_input("Tipo", key="in_tipo", label_visibility="collapsed", placeholder="Ex: Simples, Completa...")
+                if c_bt.button("➕", key="add_tipo", use_container_width=True):
+                    if n_tipo: salvar_tipo_consulta_fator(n_tipo); st.rerun()
             
             st.divider()
-            
-            df_ae = listar_agrupamentos("empresa")
-            if not df_ae.empty:
-                for _, r in df_ae.iterrows():
+            df_tipo = listar_tipo_consulta_fator()
+            if not df_tipo.empty:
+                for _, r in df_tipo.iterrows():
                     ca1, ca2, ca3 = st.columns([8, 1, 1])
-                    ca1.markdown(f"**{r['id']}** | {r['nome_agrupamento']}")
-                    if ca2.button("✏️", key=f"ed_ae_{r['id']}"): dialog_editar_agrupamento("empresa", r['id'], r['nome_agrupamento'])
-                    if ca3.button("🗑️", key=f"del_ae_{r['id']}"): excluir_agrupamento("empresa", r['id']); st.rerun()
+                    ca1.markdown(f"**{r['id']}** | {r['tipo']}")
+                    if ca2.button("✏️", key=f"ed_tipo_{r['id']}"): dialog_editar_tipo_consulta(r['id'], r['tipo'])
+                    if ca3.button("🗑️", key=f"del_tipo_{r['id']}"): excluir_tipo_consulta_fator(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 3. CLIENTE CNPJ
-        with st.expander("💼 Cliente CNPJ", expanded=True):
+        # 3. VALOR DA CONSULTA (NOVO)
+        with st.expander("💲 Valor da Consulta (Custo)", expanded=True):
             with st.container(border=True):
-                st.caption("Novo Cadastro")
-                c_inp1, c_inp2, c_bt = st.columns([2, 3, 1])
-                n_cnpj = c_inp1.text_input("CNPJ", key="n_cnpj", placeholder="00.000...", label_visibility="collapsed")
-                n_emp = c_inp2.text_input("Nome Empresa", key="n_emp", placeholder="Razão Social", label_visibility="collapsed")
-                if c_bt.button("➕", key="add_cnpj", use_container_width=True):
-                    if n_cnpj and n_emp: salvar_cliente_cnpj(n_cnpj, n_emp); st.rerun()
+                st.caption("Novo Valor Base")
+                c_in, c_bt = st.columns([5, 1])
+                n_valor = c_in.number_input("Valor (R$)", key="in_valor_cons", step=0.01, label_visibility="collapsed")
+                if c_bt.button("➕", key="add_valor_cons", use_container_width=True):
+                    if n_valor >= 0: salvar_valor_consulta(n_valor); st.rerun()
             
             st.divider()
-            
-            df_cnpj = listar_cliente_cnpj()
-            if not df_cnpj.empty:
-                for _, r in df_cnpj.iterrows():
-                    cc1, cc2, cc3 = st.columns([8, 1, 1])
-                    cc1.markdown(f"**{r['cnpj']}** | {r['nome_empresa']}")
-                    if cc2.button("✏️", key=f"ed_cn_{r['id']}"): dialog_editar_cliente_cnpj(r['id'], r['cnpj'], r['nome_empresa'])
-                    if cc3.button("🗑️", key=f"del_cn_{r['id']}"): excluir_cliente_cnpj(r['id']); st.rerun()
+            df_val = listar_valor_consulta()
+            if not df_val.empty:
+                for _, r in df_val.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1])
+                    val_fmt = f"R$ {float(r['valor_da_consulta']):.2f}"
+                    dt_fmt = r['data_atualizacao'].strftime('%d/%m/%Y %H:%M') if r['data_atualizacao'] else "-"
+                    
+                    ca1.markdown(f"**{val_fmt}** | Atualizado em: {dt_fmt}")
+                    if ca2.button("✏️", key=f"ed_val_{r['id']}"): dialog_editar_valor_consulta(r['id'], r['valor_da_consulta'])
+                    if ca3.button("🗑️", key=f"del_val_{r['id']}"): excluir_valor_consulta(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-            else: st.info("Vazio.")
+            else: st.info("Nenhum valor configurado.")
 
-        # 4. RELAÇÃO PEDIDO X CARTEIRA
-        with st.expander("🔗 Relação Pedido/Carteira", expanded=True):
-            with st.container(border=True):
-                st.caption("Novo Vínculo")
-                c_rp1, c_rp2, c_bt = st.columns([2, 2, 1])
-                n_prod = c_rp1.text_input("Produto", key="n_prod_rel", placeholder="Nome Produto", label_visibility="collapsed")
-                n_cart = c_rp2.text_input("Carteira", key="n_cart_rel", placeholder="Nome Carteira", label_visibility="collapsed")
-                if c_bt.button("➕", key="add_rel_pc", use_container_width=True):
-                    if n_prod and n_cart: salvar_relacao_pedido_carteira(n_prod, n_cart); st.rerun()
-            
-            st.divider()
-            df_rel_pc = listar_relacao_pedido_carteira()
-            if not df_rel_pc.empty:
-                for _, r in df_rel_pc.iterrows():
-                    cc1, cc2, cc3 = st.columns([8, 1, 1])
-                    cc1.markdown(f"**{r['produto']}** -> {r['nome_carteira']}")
-                    if cc2.button("✏️", key=f"ed_rpc_{r['id']}"): dialog_editar_relacao_ped_cart(r['id'], r['produto'], r['nome_carteira'])
-                    if cc3.button("🗑️", key=f"del_rpc_{r['id']}"): excluir_relacao_pedido_carteira(r['id']); st.rerun()
-                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-            else: st.info("Vazio.")
-
-        # 5. LISTA DE CARTEIRAS
-        with st.expander("📂 Lista de Carteiras", expanded=True):
-            with st.container(border=True):
-                st.caption("Nova Carteira")
-                c_lc1, c_lc2, c_lc3, c_lc4, c_bt = st.columns([1.5, 2, 1.5, 1, 1])
-                n_cpf = c_lc1.text_input("CPF Cli", key="n_cpf_l", label_visibility="collapsed")
-                n_nome = c_lc2.text_input("Nome Cli", key="n_nome_l", label_visibility="collapsed")
-                n_carteira = c_lc3.text_input("Carteira", key="n_cart_l", label_visibility="collapsed")
-                n_custo = c_lc4.number_input("Custo", key="n_custo_l", step=0.01, label_visibility="collapsed")
-                if c_bt.button("➕", key="add_cart_l", use_container_width=True):
-                    if n_cpf and n_nome: salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo); st.rerun()
-            
-            st.divider()
-            df_cart_l = listar_cliente_carteira_lista()
-            if not df_cart_l.empty:
-                for _, r in df_cart_l.iterrows():
-                    cc1, cc2, cc3 = st.columns([8, 1, 1])
-                    cc1.markdown(f"**{r['nome_cliente']}** | {r['nome_carteira']} (R$ {float(r['custo_carteira'] or 0):.2f})")
-                    if cc2.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
-                    if cc3.button("🗑️", key=f"del_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
-                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-            else: st.info("Vazio.")
-
-    # --- ABA RELATÓRIOS ---
-    with tab_rel:
-        st.markdown("### 📊 Relatórios")
-        conn = get_conn(); opts = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn); conn.close()
-        sel = st.selectbox("Cliente", opts['id'], format_func=lambda x: opts[opts['id']==x]['nome'].values[0])
-        if sel:
-            row = opts[opts['id']==sel].iloc[0]; st.divider(); c1, c2 = st.columns(2)
-            with c1:
-                st.info("💰 Saldo Fator")
-                try:
-                    conn = get_conn(); id_c = pd.read_sql(f"SELECT id FROM conexoes.fator_cliente_carteira WHERE id_cliente_admin = {sel}", conn).iloc[0]['id']
-                    st.dataframe(pd.read_sql(f"SELECT data_transacao, tipo, valor, saldo_novo FROM conexoes.fator_cliente_transacoes WHERE id_carteira = {id_c} ORDER BY id DESC LIMIT 20", conn), hide_index=True)
-                    conn.close()
-                except: st.warning("Sem carteira.")
-            with c2:
-                st.info("🔎 Consultas"); 
-                if st.button("Ver Histórico"): dialog_historico_consultas(row['cpf'])
-
-if __name__ == "__main__":
-    app_clientes()
+    with tabs[5]: st.info("Chatbot em desenvolvimento.")
+    with tabs[6]: st.info("Lote em desenvolvimento.")
