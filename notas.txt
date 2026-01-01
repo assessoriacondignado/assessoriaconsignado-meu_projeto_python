@@ -12,4 +12,29 @@ precido que a tabela seja em formato st.data_editor
 - botões a esqueda, juntos ao máximo
 
 
-preciso que a tabela seja formada no tipo st.dataframe
+
+✅ REGRA EDIÇÃO PARA PLANILHA TIPO st.dataframe
+2 - edição
+2.1 abrir um pop up com a lista dos itens para editar (st.data_editor)
+2.1.1 itens da planilha / conteúdo atual / nova alteração / botão SALVAR
+2.1.2 no canto inferior do pop up um botão VOLTAR, para desfazer a solicitação
+2.1.2 ao clicar salvar
+2.1.3 sistema deve verificar regra de formatação
+2.1.3.1 se passou na validação, salvar
+2.1.3.2 se não passou na validação, não savar, informar "erro formatação"
+ao salvar deve alterar o valor da celular
+
+
+✅ COMANDOS POR EMOGIM
+💾 - usar o emogem no lugar do nome SALVAR
+📝 - usar o emogem no lugar do nome EDITAR
+🔙 - usar o emogem no lugar do nome voltar
+🗑️ - usar o emogem no lugar do nome EXCLUIR
+📁 - usar o emogem no lugar do nome ARQUIVO
+
+MODELO DE TELA: CAIXA DE INFORMAÇÕES
+1. Modelo para apresentar:
+1.1 titulo
+1.2 caixa retratio para apresentar o conteúdo, dentro da caixa
+1.2.1 espaço para aplicar conteúdo
+1.2.2 espaço para aplicar botões

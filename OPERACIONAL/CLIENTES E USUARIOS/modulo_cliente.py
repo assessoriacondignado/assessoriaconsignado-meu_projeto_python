@@ -65,6 +65,17 @@ def excluir_agrupamento(tipo, id_agrup):
     except: 
         conn.close(); return False
 
+def atualizar_agrupamento(tipo, id_agrup, novo_nome):
+    conn = get_conn()
+    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+    try:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE {tabela} SET nome_agrupamento = %s WHERE id = %s", (novo_nome, id_agrup))
+        conn.commit(); conn.close()
+        return True
+    except: 
+        conn.close(); return False
+
 def buscar_usuarios_disponiveis():
     """Busca usuários que ainda não estão vinculados a nenhum cliente"""
     conn = get_conn()
@@ -138,7 +149,135 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
         conn.close(); return None
 
 # =============================================================================
-# 3. INTERFACE PRINCIPAL
+# 3. DIALOGS (POP-UPS)
+# =============================================================================
+
+@st.dialog("✏️ Editar Agrupamento")
+def dialog_editar_agrupamento(tipo, id_agrup, nome_atual):
+    st.write(f"Editando: **{nome_atual}**")
+    novo_nome = st.text_input("Novo Nome", value=nome_atual)
+    
+    if st.button("Salvar Alteração"):
+        if novo_nome:
+            if atualizar_agrupamento(tipo, id_agrup, novo_nome):
+                st.success("Atualizado!")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("Erro ao atualizar.")
+
+@st.dialog("🔗 Gestão de Acesso do Cliente")
+def dialog_gestao_usuario_vinculo(dados_cliente):
+    # Verifica se já tem vinculo
+    id_vinculo = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
+    
+    if id_vinculo:
+        # Cenario 1.2: Já vinculado
+        st.success("✅ Este cliente já possui um usuário vinculado.")
+        
+        # Busca dados do usuário vinculado
+        conn = get_conn()
+        df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn)
+        conn.close()
+        
+        if not df_u.empty:
+            usr = df_u.iloc[0]
+            st.write(f"**Nome:** {usr['nome']}")
+            st.write(f"**Login:** {usr['email']}")
+            st.write(f"**CPF:** {usr['cpf']}")
+            
+            st.markdown("---")
+            if st.button("🔓 Desvincular Usuário", type="primary"):
+                if desvincular_usuario_cliente(dados_cliente['id']):
+                    st.success("Usuário desvinculado! O cadastro de login permanece ativo, mas solto.")
+                    time.sleep(1.5); st.rerun()
+                else:
+                    st.error("Erro ao desvincular.")
+        else:
+            st.warning("Usuário vinculado não encontrado no banco (Id inválido).")
+            if st.button("Forçar Desvinculo"):
+                desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
+
+    else:
+        # Cenario 1.1: Não possui usuário
+        st.warning("⚠️ Este cliente não tem acesso ao sistema.")
+        
+        tab_novo, tab_existente = st.tabs(["✨ Criar Novo", "🔍 Vincular Existente"])
+        
+        with tab_novo:
+            st.caption("Cria um novo login baseado nos dados do cliente.")
+            with st.form("form_cria_vincula"):
+                u_email = st.text_input("Login (Email)", value=dados_cliente['email'])
+                u_senha = st.text_input("Senha Inicial", value="1234")
+                u_cpf = st.text_input("CPF", value=dados_cliente['cpf'])
+                u_nome = st.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
+                
+                if st.form_submit_button("Criar e Vincular"):
+                    novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente', True)
+                    if novo_id:
+                        vincular_usuario_cliente(dados_cliente['id'], novo_id)
+                        st.success("Usuário criado e vinculado!")
+                        time.sleep(1); st.rerun()
+                    else:
+                        st.error("Erro ao criar (Email já existe?).")
+
+        with tab_existente:
+            st.caption("Selecione um usuário que já existe mas não está vinculado a ninguém.")
+            df_livres = buscar_usuarios_disponiveis()
+            
+            if not df_livres.empty:
+                opcoes = df_livres.apply(lambda x: f"{x['nome']} ({x['email']})", axis=1)
+                idx_sel = st.selectbox("Selecione o Usuário", range(len(df_livres)), format_func=lambda x: opcoes[x])
+                
+                if st.button("Vincular Selecionado"):
+                    id_user_sel = df_livres.iloc[idx_sel]['id']
+                    if vincular_usuario_cliente(dados_cliente['id'], id_user_sel):
+                        st.success("Vinculado com sucesso!")
+                        time.sleep(1); st.rerun()
+                    else:
+                        st.error("Erro ao vincular.")
+            else:
+                st.info("Não há usuários livres disponíveis.")
+
+@st.dialog("🚨 Excluir Cliente")
+def dialog_excluir_cliente(id_cli, nome):
+    st.error(f"Tem certeza que deseja excluir o cliente **{nome}**?")
+    st.warning("Isso não apaga o usuário de login vinculado, apenas a ficha cadastral.")
+    
+    c1, c2 = st.columns(2)
+    if c1.button("Sim, Excluir"):
+        if excluir_cliente_db(id_cli):
+            st.success("Cliente removido."); time.sleep(1)
+            st.session_state['view_cliente'] = 'lista'
+            st.rerun()
+    if c2.button("Cancelar"):
+        st.rerun()
+
+@st.dialog("🔎 Histórico de Consultas", width="large")
+def dialog_historico_consultas(cpf_cliente):
+    st.markdown("###### Últimas 200 Consultas")
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT id FROM clientes_usuarios WHERE cpf = '{cpf_cliente}'")
+        res = cur.fetchone()
+        if res:
+            id_user = res[0]
+            query = f"""
+                SELECT data_hora, tipo_consulta, cpf_consultado, valor_pago 
+                FROM conexoes.fatorconferi_registo_consulta 
+                WHERE id_usuario = {id_user}
+                ORDER BY id DESC LIMIT 200
+            """
+            df = pd.read_sql(query, conn)
+            st.dataframe(df, hide_index=True)
+        else:
+            st.warning("Nenhum usuário de sistema vinculado a este CPF de cliente.")
+    except: pass
+    finally: conn.close()
+
+# =============================================================================
+# 4. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_clientes():
@@ -281,10 +420,6 @@ def app_clientes():
                 if st.button("🗑️ Excluir Cliente", type="primary"):
                     dialog_excluir_cliente(st.session_state['cli_id'], nome_val)
 
-    # ... (MANTENHA AQUI AS ABAS DE USUÁRIOS, AGRUPAMENTOS E RELATÓRIOS DO CÓDIGO ANTERIOR) ...
-    # Para brevidade, vou focar apenas nas funções novas abaixo. 
-    # O conteúdo das abas Tab_user, Tab_agrup e Tab_rel permanece o mesmo que enviei anteriormente.
-    
     with tab_user:
         st.markdown("### Gestão de Acesso")
         busca_user = st.text_input("Buscar Usuário", placeholder="Nome ou Email")
@@ -314,28 +449,76 @@ def app_clientes():
 
     with tab_agrup:
         c_ag1, c_ag2 = st.columns(2)
+        
+        # --- COLUNA 1: AGRUPAMENTO CLIENTES ---
         with c_ag1:
-            st.markdown("##### 🏷️ Agrupamento Clientes")
-            novo_ac = st.text_input("Novo Agrupamento Cliente")
-            if st.button("Adicionar", key="add_ac"):
-                if novo_ac: salvar_agrupamento("cliente", novo_ac); st.rerun()
-            df_ac = listar_agrupamentos("cliente")
-            if not df_ac.empty:
-                for _, r in df_ac.iterrows():
-                    ca1, ca2 = st.columns([4, 1])
-                    ca1.write(f"{r['id']} - {r['nome_agrupamento']}")
-                    if ca2.button("🗑️", key=f"del_ac_{r['id']}"): excluir_agrupamento("cliente", r['id']); st.rerun()
+            # Caixa Recolhível (Expander)
+            with st.expander("🏷️ Agrupamento Clientes", expanded=True):
+                # Área de Adicionar
+                with st.container(border=True):
+                    st.caption("Novo Agrupamento Cliente")
+                    c_in, c_bt = st.columns([3, 1])
+                    novo_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed")
+                    if c_bt.button("Adicionar", key="add_ac", use_container_width=True):
+                        if novo_ac: salvar_agrupamento("cliente", novo_ac); st.rerun()
+                
+                st.divider()
+                
+                # Lista de Itens
+                df_ac = listar_agrupamentos("cliente")
+                if not df_ac.empty:
+                    for _, r in df_ac.iterrows():
+                        # Layout: ID - Nome | Editar | Excluir
+                        ca1, ca2, ca3 = st.columns([6, 1, 1])
+                        
+                        ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
+                        
+                        # Botão Editar
+                        if ca2.button("✏️", key=f"ed_ac_{r['id']}", help="Editar"):
+                            dialog_editar_agrupamento("cliente", r['id'], r['nome_agrupamento'])
+                        
+                        # Botão Excluir
+                        if ca3.button("🗑️", key=f"del_ac_{r['id']}", help="Excluir"):
+                            excluir_agrupamento("cliente", r['id']); st.rerun()
+                        
+                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+                else:
+                    st.info("Nenhum agrupamento cadastrado.")
+
+        # --- COLUNA 2: AGRUPAMENTO EMPRESAS ---
         with c_ag2:
-            st.markdown("##### 🏢 Agrupamento Empresas")
-            novo_ae = st.text_input("Novo Agrupamento Empresa")
-            if st.button("Adicionar", key="add_ae"):
-                if novo_ae: salvar_agrupamento("empresa", novo_ae); st.rerun()
-            df_ae = listar_agrupamentos("empresa")
-            if not df_ae.empty:
-                for _, r in df_ae.iterrows():
-                    ca1, ca2 = st.columns([4, 1])
-                    ca1.write(f"{r['id']} - {r['nome_agrupamento']}")
-                    if ca2.button("🗑️", key=f"del_ae_{r['id']}"): excluir_agrupamento("empresa", r['id']); st.rerun()
+            # Caixa Recolhível (Expander)
+            with st.expander("🏢 Agrupamento Empresas", expanded=True):
+                # Área de Adicionar
+                with st.container(border=True):
+                    st.caption("Novo Agrupamento Empresa")
+                    c_in, c_bt = st.columns([3, 1])
+                    novo_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed")
+                    if c_bt.button("Adicionar", key="add_ae", use_container_width=True):
+                        if novo_ae: salvar_agrupamento("empresa", novo_ae); st.rerun()
+                
+                st.divider()
+                
+                # Lista de Itens
+                df_ae = listar_agrupamentos("empresa")
+                if not df_ae.empty:
+                    for _, r in df_ae.iterrows():
+                        # Layout: ID - Nome | Editar | Excluir
+                        ca1, ca2, ca3 = st.columns([6, 1, 1])
+                        
+                        ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
+                        
+                        # Botão Editar
+                        if ca2.button("✏️", key=f"ed_ae_{r['id']}", help="Editar"):
+                            dialog_editar_agrupamento("empresa", r['id'], r['nome_agrupamento'])
+                            
+                        # Botão Excluir
+                        if ca3.button("🗑️", key=f"del_ae_{r['id']}", help="Excluir"):
+                            excluir_agrupamento("empresa", r['id']); st.rerun()
+                            
+                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+                else:
+                    st.info("Nenhum agrupamento cadastrado.")
 
     with tab_rel:
         st.markdown("### 📊 Relatórios Integrados")
@@ -364,118 +547,6 @@ def app_clientes():
             with col_r2:
                 st.info("🔎 Últimas Consultas (CPF)")
                 if st.button("Abrir Histórico Detalhado"): dialog_historico_consultas(cli_row['cpf'])
-
-# --- DIALOGS DE VINCULO E AÇÃO ---
-
-@st.dialog("🔗 Gestão de Acesso do Cliente")
-def dialog_gestao_usuario_vinculo(dados_cliente):
-    # Verifica se já tem vinculo
-    id_vinculo = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
-    
-    if id_vinculo:
-        # Cenario 1.2: Já vinculado
-        st.success("✅ Este cliente já possui um usuário vinculado.")
-        
-        # Busca dados do usuário vinculado
-        conn = get_conn()
-        df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn)
-        conn.close()
-        
-        if not df_u.empty:
-            usr = df_u.iloc[0]
-            st.write(f"**Nome:** {usr['nome']}")
-            st.write(f"**Login:** {usr['email']}")
-            st.write(f"**CPF:** {usr['cpf']}")
-            
-            st.markdown("---")
-            if st.button("🔓 Desvincular Usuário", type="primary"):
-                if desvincular_usuario_cliente(dados_cliente['id']):
-                    st.success("Usuário desvinculado! O cadastro de login permanece ativo, mas solto.")
-                    time.sleep(1.5); st.rerun()
-                else:
-                    st.error("Erro ao desvincular.")
-        else:
-            st.warning("Usuário vinculado não encontrado no banco (Id inválido).")
-            if st.button("Forçar Desvinculo"):
-                desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
-
-    else:
-        # Cenario 1.1: Não possui usuário
-        st.warning("⚠️ Este cliente não tem acesso ao sistema.")
-        
-        tab_novo, tab_existente = st.tabs(["✨ Criar Novo", "🔍 Vincular Existente"])
-        
-        with tab_novo:
-            st.caption("Cria um novo login baseado nos dados do cliente.")
-            with st.form("form_cria_vincula"):
-                u_email = st.text_input("Login (Email)", value=dados_cliente['email'])
-                u_senha = st.text_input("Senha Inicial", value="1234")
-                u_cpf = st.text_input("CPF", value=dados_cliente['cpf'])
-                u_nome = st.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
-                
-                if st.form_submit_button("Criar e Vincular"):
-                    novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente', True)
-                    if novo_id:
-                        vincular_usuario_cliente(dados_cliente['id'], novo_id)
-                        st.success("Usuário criado e vinculado!")
-                        time.sleep(1); st.rerun()
-                    else:
-                        st.error("Erro ao criar (Email já existe?).")
-
-        with tab_existente:
-            st.caption("Selecione um usuário que já existe mas não está vinculado a ninguém.")
-            df_livres = buscar_usuarios_disponiveis()
-            
-            if not df_livres.empty:
-                opcoes = df_livres.apply(lambda x: f"{x['nome']} ({x['email']})", axis=1)
-                idx_sel = st.selectbox("Selecione o Usuário", range(len(df_livres)), format_func=lambda x: opcoes[x])
-                
-                if st.button("Vincular Selecionado"):
-                    id_user_sel = df_livres.iloc[idx_sel]['id']
-                    if vincular_usuario_cliente(dados_cliente['id'], id_user_sel):
-                        st.success("Vinculado com sucesso!")
-                        time.sleep(1); st.rerun()
-                    else:
-                        st.error("Erro ao vincular.")
-            else:
-                st.info("Não há usuários livres disponíveis.")
-
-@st.dialog("🚨 Excluir Cliente")
-def dialog_excluir_cliente(id_cli, nome):
-    st.error(f"Tem certeza que deseja excluir o cliente **{nome}**?")
-    st.warning("Isso não apaga o usuário de login vinculado, apenas a ficha cadastral.")
-    
-    c1, c2 = st.columns(2)
-    if c1.button("Sim, Excluir"):
-        if excluir_cliente_db(id_cli):
-            st.success("Cliente removido."); time.sleep(1)
-            st.session_state['view_cliente'] = 'lista'
-            st.rerun()
-    if c2.button("Cancelar"):
-        st.rerun()
-
-@st.dialog("🔎 Histórico de Consultas", width="large")
-def dialog_historico_consultas(cpf_cliente):
-    st.markdown("###### Últimas 200 Consultas")
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT id FROM clientes_usuarios WHERE cpf = '{cpf_cliente}'")
-        res = cur.fetchone()
-        if res:
-            id_user = res[0]
-            query = f"""
-                SELECT data_hora, tipo_consulta, cpf_consultado, valor_pago 
-                FROM conexoes.fatorconferi_registo_consulta 
-                WHERE id_usuario = {id_user}
-                ORDER BY id DESC LIMIT 200
-            """
-            df = pd.read_sql(query, conn)
-            st.dataframe(df, hide_index=True)
-        else:
-            st.warning("Nenhum usuário de sistema vinculado a este CPF de cliente.")
-    except: pass
-    finally: conn.close()
 
 if __name__ == "__main__":
     app_clientes()
