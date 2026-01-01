@@ -4,7 +4,7 @@ import psycopg2
 import bcrypt
 import re
 import time
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 try: 
     import conexao
@@ -293,17 +293,22 @@ def atualizar_carteira_config(id_conf, status):
         except: conn.close(); return False
     return False
 
-def buscar_transacoes_carteira(nome_tabela_sql, cpf_cliente):
+def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, data_fim):
+    """Busca o extrato na tabela dinâmica específica da carteira com filtro de data"""
     conn = get_conn()
     if not conn: return pd.DataFrame()
     try:
+        dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
+        dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
+
         query = f"""
             SELECT data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento 
             FROM {nome_tabela_sql} 
             WHERE cpf_cliente = %s 
+              AND data_transacao BETWEEN %s AND %s
             ORDER BY data_transacao DESC
         """
-        df = pd.read_sql(query, conn, params=(str(cpf_cliente),))
+        df = pd.read_sql(query, conn, params=(str(cpf_cliente), dt_ini_str, dt_fim_str))
         conn.close()
         return df
     except Exception as e:
@@ -369,7 +374,7 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
     except Exception as e: conn.close(); return None
 
 # =============================================================================
-# 3. DIALOGS (POP-UPS)
+# 3. DIALOGS (POP-UPS PADRONIZADOS)
 # =============================================================================
 
 @st.dialog("✏️ Editar")
@@ -511,35 +516,55 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 10px; border-radius: 5px;"><div style="flex: 2;">Nome</div><div style="flex: 1;">CPF</div><div style="flex: 2;">Empresa</div><div style="flex: 1; text-align: center;">Status</div><div style="flex: 1.5; text-align: center;">Ações</div></div>""", unsafe_allow_html=True)
+                # Cabeçalho Fixo (Layout similar ao Fator Conferi)
+                st.markdown("""
+                <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
+                    <div style="flex:3;">Nome</div>
+                    <div style="flex:2;">CPF</div>
+                    <div style="flex:2;">Empresa</div>
+                    <div style="flex:1;">Status</div>
+                    <div style="flex:2; text-align:center;">Ações</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 for _, row in df_cli.iterrows():
                     with st.container():
-                        c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 1, 1.5])
-                        c1.write(f"**{limpar_formatacao_texto(row['nome'])}**"); c2.write(row['cpf'] or "-"); c3.write(row['nome_empresa'] or "-")
-                        c4.markdown(f":{'green' if row.get('status','ATIVO')=='ATIVO' else 'red'}[{row.get('status','ATIVO')}]")
+                        c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 1, 2])
+                        c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
+                        c2.write(row['cpf'] or "-")
+                        c3.write(row['nome_empresa'] or "-")
+                        cor_st = 'green' if row.get('status','ATIVO')=='ATIVO' else 'red'
+                        c4.markdown(f":{cor_st}[{row.get('status','ATIVO')}]")
+                        
                         with c5:
-                            b1, b2, b3 = st.columns(3)
+                            b1, b2, b3, b4 = st.columns(4)
+                            # Botão Ver/Editar
+                            if b1.button("✏️", key=f"e_{row['id']}", help="Editar Cadastro"): 
+                                st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
                             
-                            # Ações
-                            if b1.button("👁️", key=f"v_{row['id']}"): st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
-                            
-                            # BOTÃO EXTRATO: Expande na própria tela
-                            if b2.button("📜", key=f"ext_{row['id']}", help="Extrato Financeiro"):
+                            # Botão Extrato
+                            if b2.button("📜", key=f"ext_{row['id']}", help="Ver Extrato"):
                                 if st.session_state.get('extrato_expandido') == row['id']:
                                     st.session_state['extrato_expandido'] = None
                                 else:
                                     st.session_state['extrato_expandido'] = row['id']
+                                    st.session_state['pag_hist'] = 1 
                                 st.rerun()
                                 
-                            if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}"): dialog_gestao_usuario_vinculo(row)
+                            # Botão Vínculo Usuário
+                            if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
+                                dialog_gestao_usuario_vinculo(row)
+                                
+                            # Botão Excluir (Opcional, se quiser manter no grid)
+                            if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
+                                dialog_excluir_cliente(row['id'], row['nome'])
                         
-                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
 
                         # --- ÁREA EXPANSÍVEL DO EXTRATO ---
                         if st.session_state.get('extrato_expandido') == row['id']:
                             with st.container(border=True):
-                                st.markdown(f"#### 📜 Extrato Financeiro: {row['nome']}")
-                                st.caption(f"CPF: {row.get('cpf', '-')}")
+                                st.caption(f"📜 Histórico: {row['nome']}")
                                 
                                 # Busca Carteiras Ativas
                                 df_carteiras = listar_todas_carteiras_ativas()
@@ -548,27 +573,44 @@ def app_clientes():
                                     opcoes_cart = df_carteiras.apply(lambda x: f"{x['nome_carteira']}", axis=1)
                                     idx_sel = st.selectbox("Selecione a Carteira", range(len(df_carteiras)), format_func=lambda x: opcoes_cart[x], key=f"sel_cart_{row['id']}")
                                     
-                                    # Carrega dados da carteira selecionada
+                                    # Filtros de Data
+                                    fd1, fd2 = st.columns(2)
+                                    data_ini = fd1.date_input("Data Inicial", value=date.today() - timedelta(days=30), key=f"ini_{row['id']}")
+                                    data_fim = fd2.date_input("Data Final", value=date.today(), key=f"fim_{row['id']}")
+                                    
+                                    # Carrega dados
                                     carteira_sel = df_carteiras.iloc[idx_sel]
                                     tabela_sql = carteira_sel['nome_tabela_transacoes']
                                     cpf_limpo = str(row.get('cpf', '')).strip()
                                     
-                                    df_extrato = buscar_transacoes_carteira(tabela_sql, cpf_limpo)
+                                    df_extrato = buscar_transacoes_carteira_filtrada(tabela_sql, cpf_limpo, data_ini, data_fim)
                                     
                                     if not df_extrato.empty:
-                                        # Formatação
-                                        df_extrato['data_transacao'] = pd.to_datetime(df_extrato['data_transacao']).dt.strftime('%d/%m/%Y %H:%M')
-                                        df_extrato['valor'] = df_extrato['valor'].apply(lambda x: f"R$ {float(x):,.2f}")
-                                        df_extrato['saldo_novo'] = df_extrato['saldo_novo'].apply(lambda x: f"R$ {float(x):,.2f}")
+                                        # Cabeçalho Visual
+                                        st.markdown("""
+                                        <div style="display: flex; font-weight: bold; background-color: #e9ecef; padding: 5px; border-radius: 4px; font-size:0.9em; margin-top:10px;">
+                                            <div style="flex: 2;">Data</div>
+                                            <div style="flex: 3;">Motivo</div>
+                                            <div style="flex: 1;">Tipo</div>
+                                            <div style="flex: 1.5;">Valor</div>
+                                            <div style="flex: 1.5;">Saldo</div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
                                         
-                                        st.dataframe(df_extrato.rename(columns={'data_transacao':'Data', 'tipo_lancamento':'Tipo', 'saldo_novo':'Saldo'}), use_container_width=True, hide_index=True)
+                                        for _, tr in df_extrato.iterrows():
+                                            tc1, tc2, tc3, tc4, tc5 = st.columns([2, 3, 1, 1.5, 1.5])
+                                            tc1.write(pd.to_datetime(tr['data_transacao']).strftime('%d/%m/%y %H:%M'))
+                                            tc2.write(tr['motivo'])
+                                            
+                                            cor_t = "green" if tr['tipo_lancamento'] == 'CREDITO' else "red"
+                                            tc3.markdown(f":{cor_t}[{tr['tipo_lancamento']}]")
+                                            tc4.write(f"R$ {float(tr['valor']):.2f}")
+                                            tc5.write(f"R$ {float(tr['saldo_novo']):.2f}")
+                                            st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                                     else:
-                                        st.warning("Nenhuma movimentação encontrada.")
+                                        st.warning("Nenhuma movimentação encontrada no período.")
                                 else:
                                     st.info("Nenhuma carteira configurada no sistema.")
-                                
-                                if st.button("Fechar Extrato", key=f"close_{row['id']}"):
-                                    st.session_state['extrato_expandido'] = None; st.rerun()
 
             else: st.info("Nenhum cliente encontrado.")
 
