@@ -358,69 +358,75 @@ def app_clientes():
                         else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, n_ativo, u['id']))
                         conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
 
-    # --- ABA AGRUPAMENTOS (COM NOVA COLUNA CLIENTE CNPJ) ---
+    # --- ABA AGRUPAMENTOS (LAYOUT VERTICAL - UM ABAIXO DO OUTRO) ---
     with tab_agrup:
-        c_ag1, c_ag2, c_ag3 = st.columns(3)
         
-        # COLUNA 1: CLIENTES
-        with c_ag1:
-            with st.expander("🏷️ Agrupamento Clientes", expanded=True):
-                with st.container(border=True):
-                    st.caption("Novo Item")
-                    c_in, c_bt = st.columns([3, 1])
-                    n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed")
-                    if c_bt.button("➕", key="add_ac", use_container_width=True):
-                        if n_ac: salvar_agrupamento("cliente", n_ac); st.rerun()
-                st.divider()
-                df_ac = listar_agrupamentos("cliente")
-                if not df_ac.empty:
-                    for _, r in df_ac.iterrows():
-                        ca1, ca2, ca3 = st.columns([6, 1, 1])
-                        ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
-                        if ca2.button("✏️", key=f"ed_ac_{r['id']}"): dialog_editar_agrupamento("cliente", r['id'], r['nome_agrupamento'])
-                        if ca3.button("🗑️", key=f"del_ac_{r['id']}"): excluir_agrupamento("cliente", r['id']); st.rerun()
-                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-                else: st.info("Vazio.")
+        # 1. AGRUPAMENTO CLIENTES
+        with st.expander("🏷️ Agrupamento Clientes", expanded=True):
+            with st.container(border=True):
+                st.caption("Novo Item")
+                c_in, c_bt = st.columns([4, 1]) # Ajustei proporção para ficar melhor em largura total
+                n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed")
+                if c_bt.button("➕", key="add_ac", use_container_width=True):
+                    if n_ac: salvar_agrupamento("cliente", n_ac); st.rerun()
+            
+            st.divider()
+            
+            df_ac = listar_agrupamentos("cliente")
+            if not df_ac.empty:
+                for _, r in df_ac.iterrows():
+                    # Ajuste de colunas para largura total: Nome ocupa mais espaço
+                    ca1, ca2, ca3 = st.columns([8, 1, 1]) 
+                    ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
+                    if ca2.button("✏️", key=f"ed_ac_{r['id']}"): dialog_editar_agrupamento("cliente", r['id'], r['nome_agrupamento'])
+                    if ca3.button("🗑️", key=f"del_ac_{r['id']}"): excluir_agrupamento("cliente", r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
 
-        # COLUNA 2: EMPRESAS
-        with c_ag2:
-            with st.expander("🏢 Agrupamento Empresas", expanded=True):
-                with st.container(border=True):
-                    st.caption("Novo Item")
-                    c_in, c_bt = st.columns([3, 1])
-                    n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed")
-                    if c_bt.button("➕", key="add_ae", use_container_width=True):
-                        if n_ae: salvar_agrupamento("empresa", n_ae); st.rerun()
-                st.divider()
-                df_ae = listar_agrupamentos("empresa")
-                if not df_ae.empty:
-                    for _, r in df_ae.iterrows():
-                        ca1, ca2, ca3 = st.columns([6, 1, 1])
-                        ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
-                        if ca2.button("✏️", key=f"ed_ae_{r['id']}"): dialog_editar_agrupamento("empresa", r['id'], r['nome_agrupamento'])
-                        if ca3.button("🗑️", key=f"del_ae_{r['id']}"): excluir_agrupamento("empresa", r['id']); st.rerun()
-                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-                else: st.info("Vazio.")
+        # 2. AGRUPAMENTO EMPRESAS
+        with st.expander("🏢 Agrupamento Empresas", expanded=True):
+            with st.container(border=True):
+                st.caption("Novo Item")
+                c_in, c_bt = st.columns([4, 1])
+                n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed")
+                if c_bt.button("➕", key="add_ae", use_container_width=True):
+                    if n_ae: salvar_agrupamento("empresa", n_ae); st.rerun()
+            
+            st.divider()
+            
+            df_ae = listar_agrupamentos("empresa")
+            if not df_ae.empty:
+                for _, r in df_ae.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1])
+                    ca1.markdown(f"**{r['id']}** - {r['nome_agrupamento']}")
+                    if ca2.button("✏️", key=f"ed_ae_{r['id']}"): dialog_editar_agrupamento("empresa", r['id'], r['nome_agrupamento'])
+                    if ca3.button("🗑️", key=f"del_ae_{r['id']}"): excluir_agrupamento("empresa", r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
 
-        # COLUNA 3: CLIENTE CNPJ (NOVO)
-        with c_ag3:
-            with st.expander("💼 Cliente CNPJ", expanded=True):
-                with st.container(border=True):
-                    st.caption("Novo Cadastro")
-                    n_cnpj = st.text_input("CNPJ", key="n_cnpj", placeholder="00.000.000/0000-00")
-                    n_emp = st.text_input("Nome Empresa", key="n_emp", placeholder="Razão Social")
-                    if st.button("Adicionar", key="add_cnpj", use_container_width=True):
-                        if n_cnpj and n_emp: salvar_cliente_cnpj(n_cnpj, n_emp); st.rerun()
-                st.divider()
-                df_cnpj = listar_cliente_cnpj()
-                if not df_cnpj.empty:
-                    for _, r in df_cnpj.iterrows():
-                        cc1, cc2, cc3 = st.columns([6, 1, 1])
-                        cc1.markdown(f"**{r['cnpj']}**\n{r['nome_empresa']}")
-                        if cc2.button("✏️", key=f"ed_cn_{r['id']}"): dialog_editar_cliente_cnpj(r['id'], r['cnpj'], r['nome_empresa'])
-                        if cc3.button("🗑️", key=f"del_cn_{r['id']}"): excluir_cliente_cnpj(r['id']); st.rerun()
-                        st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-                else: st.info("Vazio.")
+        # 3. CLIENTE CNPJ
+        with st.expander("💼 Cliente CNPJ", expanded=True):
+            with st.container(border=True):
+                st.caption("Novo Cadastro")
+                # Ajuste de inputs para ficarem lado a lado na largura total
+                c_inp1, c_inp2, c_bt = st.columns([2, 3, 1])
+                n_cnpj = c_inp1.text_input("CNPJ", key="n_cnpj", placeholder="00.000.000/0000-00", label_visibility="collapsed")
+                n_emp = c_inp2.text_input("Nome Empresa", key="n_emp", placeholder="Razão Social", label_visibility="collapsed")
+                if c_bt.button("Adicionar", key="add_cnpj", use_container_width=True):
+                    if n_cnpj and n_emp: salvar_cliente_cnpj(n_cnpj, n_emp); st.rerun()
+            
+            st.divider()
+            
+            df_cnpj = listar_cliente_cnpj()
+            if not df_cnpj.empty:
+                for _, r in df_cnpj.iterrows():
+                    cc1, cc2, cc3 = st.columns([8, 1, 1])
+                    # Exibição melhorada para linha única
+                    cc1.markdown(f"**{r['cnpj']}** | {r['nome_empresa']}")
+                    if cc2.button("✏️", key=f"ed_cn_{r['id']}"): dialog_editar_cliente_cnpj(r['id'], r['cnpj'], r['nome_empresa'])
+                    if cc3.button("🗑️", key=f"del_cn_{r['id']}"): excluir_cliente_cnpj(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
