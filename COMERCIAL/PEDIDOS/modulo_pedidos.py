@@ -299,7 +299,7 @@ def dialog_novo_pedido():
             ok, res = criar_pedido(cli_selecionado, prod_selecionado, qtd, valor_unit, total, avisar)
             if ok:
                 st.success(f"Pedido {res} criado com sucesso!")
-                time.sleep(1) # Delay para evitar erro de renderização do Streamlit
+                time.sleep(1.5) # Correção do erro NotFoundError
                 st.rerun()
             else:
                 st.error(f"Erro: {res}")
@@ -328,6 +328,7 @@ def dialog_editar_dados(pedido):
         if st.form_submit_button("💾 Salvar"):
             if editar_dados_pedido(pedido['id'], nova_qtd, novo_preco, df_clientes.iloc[idx_cli], df_produtos.iloc[idx_prod]):
                 st.success("Atualizado!")
+                time.sleep(1) # Correção do erro NotFoundError
                 st.rerun()
 
 @st.dialog("🔄 Atualizar Status")
@@ -348,7 +349,7 @@ def dialog_status_pedido(pedido):
             # Passa todos os dados necessários, incluindo CPF para a carteira
             if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs, modelo_escolhido):
                 st.success("Status Alterado!")
-                time.sleep(1.5) # Tempo para ler msg de crédito
+                time.sleep(1.5) # Tempo para ler msg de crédito e evitar erro
                 st.rerun()
 
     # --- NOVA SEÇÃO: HISTÓRICO VISUAL ABAIXO DO STATUS ---
@@ -381,6 +382,7 @@ def dialog_excluir(id_pedido):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pedido_db(id_pedido):
             st.success("Pedido excluído!")
+            time.sleep(1) # Correção do erro NotFoundError
             st.rerun()
 
 # --- NOVO DIALOG: CRIAR TAREFA A PARTIR DO PEDIDO ---
@@ -415,7 +417,7 @@ def dialog_criar_tarefa_rapida(pedido):
                     conn.commit()
                     conn.close()
                     st.success("Tarefa criada com sucesso! Verifique no módulo de Tarefas.")
-                    time.sleep(1.5)
+                    time.sleep(1.5) # Correção do erro NotFoundError
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao criar tarefa: {e}")
