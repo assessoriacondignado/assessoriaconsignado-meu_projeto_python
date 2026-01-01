@@ -290,12 +290,6 @@ def excluir_carteira_config(id_conf, nome_tabela):
             cur = conn.cursor()
             # 1. Remove o registro
             cur.execute("DELETE FROM cliente.carteiras_config WHERE id = %s", (id_conf,))
-            
-            # 2. Opcional: Dropar a tabela criada?
-            # Por segurança, vamos apenas remover o registro de configuração para não perder histórico financeiro acidentalmente.
-            # Se quiser dropar, descomente abaixo:
-            # cur.execute(f"DROP TABLE IF EXISTS {nome_tabela}")
-            
             conn.commit(); conn.close()
             return True
         except: conn.close(); return False
@@ -498,7 +492,7 @@ def dialog_historico_consultas(cpf_cliente):
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # ATUALIZADO: Adicionada a aba "Carteira"
+    # Atualizado: Aba 3 renomeada para "Parâmetros"
     tab_cli, tab_user, tab_param, tab_carteira, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
@@ -739,7 +733,11 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 6. CONFIGURAÇÃO DE CARTEIRAS (PRODUTOS) - NOVO
+    # --- ABA CARTEIRA (NOVO: EM DESENVOLVIMENTO) ---
+    with tab_carteira:
+        st.markdown("### 💼 Gestão de Carteira")
+        
+        # 6. CONFIGURAÇÃO DE CARTEIRAS (PRODUTOS)
         with st.expander("📂 Configuração de Carteiras (Produtos)", expanded=False):
             st.info("Cria carteiras e suas tabelas de transação automaticamente.")
             
@@ -794,12 +792,6 @@ def app_clientes():
                     st.markdown("<hr style='margin: 2px 0'>", unsafe_allow_html=True)
             else:
                 st.info("Nenhuma carteira configurada.")
-
-    # --- ABA CARTEIRA (NOVO: EM DESENVOLVIMENTO) ---
-    with tab_carteira:
-        st.markdown("### 💼 Gestão de Carteira")
-        st.info("🚧 Módulo de Gestão de Saldo e Transações em desenvolvimento.")
-        # Aqui entra a lógica de visualizar o saldo do cliente e lançar transações nas tabelas dinâmicas
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
