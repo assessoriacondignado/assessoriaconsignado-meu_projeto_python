@@ -140,10 +140,16 @@ def criar_link_txt_base64(caminho_arquivo):
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
-    # Limpeza e Padronização
+    # 1. Limpeza e Definição Automática do Tipo
     cpf_limpo_raw = ''.join(filter(str.isdigit, str(cpf)))
-    if len(cpf_limpo_raw) <= 11: cpf_padrao = cpf_limpo_raw.zfill(11)
-    else: cpf_padrao = cpf_limpo_raw.zfill(14)
+    
+    # Definição do Tipo e Padronização
+    if len(cpf_limpo_raw) <= 11: 
+        cpf_padrao = cpf_limpo_raw.zfill(11)
+        tipo_registro = "CPF SIMPLES"
+    else: 
+        cpf_padrao = cpf_limpo_raw.zfill(14)
+        tipo_registro = "CNPJ SIMPLES"
     
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro de conexão com banco de dados."}
@@ -163,7 +169,6 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         
         if registro_anterior:
             caminho_existente = registro_anterior[0]
-            # Usa o link existente ou o próprio caminho se estiver vazio
             link_existente = registro_anterior[1] if registro_anterior[1] else caminho_existente
             
             dados_parsed = {}
@@ -176,9 +181,8 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
                 except: 
                     msg_retorno += " (Erro leitura arquivo)"
             else:
-                msg_retorno += " (Arquivo físico original não localizado)"
+                msg_retorno += " (Arquivo físico não localizado)"
 
-            # Replica o log com valor 0
             usuario = st.session_state.get('usuario_nome', 'Sistema')
             id_user = st.session_state.get('usuario_id', 0)
             
@@ -187,7 +191,7 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
                 (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
                 VALUES (%s, %s, %s, %s, 0.00, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
             """
-            cur.execute(sql_cache, (tipo, cpf_padrao, id_user, usuario, caminho_existente, link_existente, origem))
+            cur.execute(sql_cache, (tipo_registro, cpf_padrao, id_user, usuario, caminho_existente, link_existente, origem))
             conn.commit(); conn.close()
             return {"sucesso": True, "dados": dados_parsed, "msg": msg_retorno}
         
@@ -219,7 +223,6 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         id_user = st.session_state.get('usuario_id', 0)
         custo = buscar_valor_consulta_atual()
         
-        # O link salvo no banco é o caminho absoluto
         link_arquivo = caminho_completo 
         
         sql = """
@@ -227,7 +230,7 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
             (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
             VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())
         """
-        cur.execute(sql, (tipo, cpf_padrao, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
+        cur.execute(sql, (tipo_registro, cpf_padrao, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
         conn.commit(); conn.close()
         
         return {"sucesso": True, "dados": dados_parsed}
