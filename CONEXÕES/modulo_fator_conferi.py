@@ -372,6 +372,38 @@ def excluir_tipo_consulta_fator(id_reg):
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
 
+# --- VALOR DA CONSULTA (NOVO) ---
+def listar_valor_consulta():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, valor_da_consulta, data_atualizacao FROM conexoes.fatorconferi_valor_da_consulta ORDER BY data_atualizacao DESC", conn)
+        conn.close(); return df
+    except: conn.close(); return pd.DataFrame()
+
+def salvar_valor_consulta(valor):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conexoes.fatorconferi_valor_da_consulta (valor_da_consulta) VALUES (%s)", (valor,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def atualizar_valor_consulta(id_reg, novo_valor):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE conexoes.fatorconferi_valor_da_consulta SET valor_da_consulta=%s, data_atualizacao=NOW() WHERE id=%s", (novo_valor, id_reg))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
+def excluir_valor_consulta(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM conexoes.fatorconferi_valor_da_consulta WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: conn.close(); return False
+
 # =============================================================================
 # 4. DIALOGS (POP-UPS)
 # =============================================================================
@@ -470,6 +502,16 @@ def dialog_editar_tipo_consulta(id_reg, nome_atual):
         novo_nome = st.text_input("Tipo", value=nome_atual)
         if st.form_submit_button("💾 Salvar", use_container_width=True):
             if atualizar_tipo_consulta_fator(id_reg, novo_nome):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro.")
+
+@st.dialog("✏️ Editar Valor")
+def dialog_editar_valor_consulta(id_reg, valor_atual):
+    st.caption(f"Editando ID: {id_reg}")
+    with st.form("form_edit_valor"):
+        novo_valor = st.number_input("Valor (R$)", value=float(valor_atual), step=0.01)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if atualizar_valor_consulta(id_reg, novo_valor):
                 st.success("Atualizado!"); time.sleep(0.5); st.rerun()
             else: st.error("Erro.")
 
@@ -634,7 +676,7 @@ def app_fator_conferi():
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
-            # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
+            # Busca colunas originais do banco
             query_hist = """
                 SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
                        valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
@@ -646,41 +688,39 @@ def app_fator_conferi():
                 df_logs = pd.read_sql(query_hist, conn)
                 
                 if not df_logs.empty:
-                    # 1.1 Formatação da Data
+                    # 1.1 Formatação da Data (dd/mm/yyyy hh:mm:ss)
                     df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
                     
-                    # 2.1 Formatação CPF/CNPJ
+                    # 2.1 Formatação CPF/CNPJ com pontuação
                     df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
                     
-                    # 4.2 Formatação Valor Pago
-                    # Se vier nulo, considera 0.0
+                    # 4.2 Formatação Valor Pago em Decimal BR (0,00)
                     df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-                    # Renomeação das Colunas (Regras 1.2, 2.2, etc.)
+                    # RENOMEAÇÃO DE COLUNAS (Regras Visuais)
                     df_logs.rename(columns={
-                        'data_hora': 'Data Consulta',
-                        'cpf_consultado': 'CPF/CNPJ',
-                        'id_usuario': 'ID Usuário',
-                        'nome_usuario': 'Nome Usuário',
-                        'valor_pago': 'Valor Pago',
-                        'caminho_json': 'Caminho JSON',
-                        'status_api': 'Status API',
-                        'link_arquivo_consulta': 'Link Arquivo Consulta',
+                        'data_hora': 'Data Consulta',       # 1.2
+                        'cpf_consultado': 'CPF/CNPJ',       # 2.2
+                        'id_usuario': 'ID Usuário',         # 3.1
+                        'nome_usuario': 'Nome Usuário',     # 4.1
+                        'valor_pago': 'Valor Pago',         # 4.1
+                        'caminho_json': 'Caminho JSON',     # 5.1
+                        'status_api': 'Status API',         # 6.1
+                        'link_arquivo_consulta': 'Link Arquivo Consulta', # 7.1
                         'tipo_consulta': 'Tipo Consulta',
                         'origem_consulta': 'Origem',
                         'tipo_cobranca': 'Cobrança'
                     }, inplace=True)
 
-                    # Configuração para Link Clicável
+                    # 7.1 Link Clicável e Exibição Final
                     st.dataframe(
                         df_logs, 
                         use_container_width=True,
                         column_config={
                             "Link Arquivo Consulta": st.column_config.LinkColumn(
-                                "Link Arquivo",
-                                help="Clique para acessar o arquivo",
-                                validate="^https?://", # Validação opcional para URLs web
-                                display_text="📥 Abrir Arquivo"
+                                "Link Arquivo Consulta",
+                                help="Clique para baixar o arquivo",
+                                display_text="📥 Abrir"
                             )
                         }
                     )
@@ -734,6 +774,29 @@ def app_fator_conferi():
                     if ca3.button("🗑️", key=f"del_tipo_{r['id']}"): excluir_tipo_consulta_fator(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
+
+        # 3. VALOR DA CONSULTA (NOVO)
+        with st.expander("💲 Valor da Consulta (Custo)", expanded=True):
+            with st.container(border=True):
+                st.caption("Novo Valor Base")
+                c_in, c_bt = st.columns([5, 1])
+                n_valor = c_in.number_input("Valor (R$)", key="in_valor_cons", step=0.01, label_visibility="collapsed")
+                if c_bt.button("➕", key="add_valor_cons", use_container_width=True):
+                    if n_valor >= 0: salvar_valor_consulta(n_valor); st.rerun()
+            
+            st.divider()
+            df_val = listar_valor_consulta()
+            if not df_val.empty:
+                for _, r in df_val.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1])
+                    val_fmt = f"R$ {float(r['valor_da_consulta']):.2f}"
+                    dt_fmt = r['data_atualizacao'].strftime('%d/%m/%Y %H:%M') if r['data_atualizacao'] else "-"
+                    
+                    ca1.markdown(f"**{val_fmt}** | Atualizado em: {dt_fmt}")
+                    if ca2.button("✏️", key=f"ed_val_{r['id']}"): dialog_editar_valor_consulta(r['id'], r['valor_da_consulta'])
+                    if ca3.button("🗑️", key=f"del_val_{r['id']}"): excluir_valor_consulta(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Nenhum valor configurado.")
 
     with tabs[5]: st.info("Chatbot em desenvolvimento.")
     with tabs[6]: st.info("Lote em desenvolvimento.")
