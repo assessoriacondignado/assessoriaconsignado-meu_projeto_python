@@ -118,7 +118,7 @@ def atualizar_cliente_cnpj(id_reg, cnpj, nome):
     except: 
         conn.close(); return False
 
-# --- NOVAS FUNÇÕES: RELAÇÃO PEDIDO CARTEIRA ---
+# --- RELAÇÃO PEDIDO CARTEIRA (NOVO) ---
 
 def listar_relacao_pedido_carteira():
     conn = get_conn()
@@ -151,7 +151,7 @@ def excluir_relacao_pedido_carteira(id_reg):
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
 
-# --- NOVAS FUNÇÕES: CLIENTE CARTEIRA LISTA ---
+# --- CLIENTE CARTEIRA LISTA (NOVO) ---
 
 def listar_cliente_carteira_lista():
     conn = get_conn()
@@ -280,7 +280,7 @@ def dialog_editar_cliente_cnpj(id_reg, cnpj_atual, nome_atual):
 def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
     st.caption("Editando Relação")
     with st.form("form_edit_rel_pc"):
-        n_prod = st.text_input("Produto", value=prod_atual)
+        n_prod = st.text_input("Nome Produto", value=prod_atual)
         n_cart = st.text_input("Nome Carteira", value=cart_atual)
         if st.form_submit_button("💾 Salvar"):
             if atualizar_relacao_pedido_carteira(id_reg, n_prod, n_cart):
@@ -367,7 +367,6 @@ def dialog_historico_consultas(cpf_cliente):
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # Atualizado: Aba 3 renomeada para "Parâmetros"
     tab_cli, tab_user, tab_param, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
@@ -493,7 +492,7 @@ def app_clientes():
                         else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, n_ativo, u['id']))
                         conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
 
-    # --- ABA PARÂMETROS (ANTIGA AGRUPAMENTOS) ---
+    # --- ABA PARÂMETROS ---
     with tab_param:
         
         # 1. AGRUPAMENTO CLIENTES
@@ -501,12 +500,12 @@ def app_clientes():
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
-                n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="collapsed", placeholder="Digite o nome...")
+                n_ac = c_in.text_input("Nome", key="in_ac", label_visibility="visible", placeholder="Digite o nome...")
+                c_bt.write(""); c_bt.write("") 
                 if c_bt.button("➕", key="add_ac", use_container_width=True):
                     if n_ac: salvar_agrupamento("cliente", n_ac); st.rerun()
             
             st.divider()
-            
             df_ac = listar_agrupamentos("cliente")
             if not df_ac.empty:
                 for _, r in df_ac.iterrows():
@@ -522,12 +521,12 @@ def app_clientes():
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
-                n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="collapsed", placeholder="Digite o nome...")
+                n_ae = c_in.text_input("Nome", key="in_ae", label_visibility="visible", placeholder="Digite o nome...")
+                c_bt.write(""); c_bt.write("")
                 if c_bt.button("➕", key="add_ae", use_container_width=True):
                     if n_ae: salvar_agrupamento("empresa", n_ae); st.rerun()
             
             st.divider()
-            
             df_ae = listar_agrupamentos("empresa")
             if not df_ae.empty:
                 for _, r in df_ae.iterrows():
@@ -543,13 +542,13 @@ def app_clientes():
             with st.container(border=True):
                 st.caption("Novo Cadastro")
                 c_inp1, c_inp2, c_bt = st.columns([2, 3, 1])
-                n_cnpj = c_inp1.text_input("CNPJ", key="n_cnpj", placeholder="00.000...", label_visibility="collapsed")
-                n_emp = c_inp2.text_input("Nome Empresa", key="n_emp", placeholder="Razão Social", label_visibility="collapsed")
+                n_cnpj = c_inp1.text_input("CNPJ", key="n_cnpj", placeholder="00.000...", label_visibility="visible")
+                n_emp = c_inp2.text_input("Nome Empresa", key="n_emp", placeholder="Razão Social", label_visibility="visible")
+                c_bt.write(""); c_bt.write("")
                 if c_bt.button("➕", key="add_cnpj", use_container_width=True):
                     if n_cnpj and n_emp: salvar_cliente_cnpj(n_cnpj, n_emp); st.rerun()
             
             st.divider()
-            
             df_cnpj = listar_cliente_cnpj()
             if not df_cnpj.empty:
                 for _, r in df_cnpj.iterrows():
@@ -565,8 +564,10 @@ def app_clientes():
             with st.container(border=True):
                 st.caption("Novo Vínculo")
                 c_rp1, c_rp2, c_bt = st.columns([2, 2, 1])
-                n_prod = c_rp1.text_input("Produto", key="n_prod_rel", placeholder="Nome Produto", label_visibility="collapsed")
-                n_cart = c_rp2.text_input("Carteira", key="n_cart_rel", placeholder="Nome Carteira", label_visibility="collapsed")
+                n_prod = c_rp1.text_input("Nome Produto", key="n_prod_rel", placeholder="Ex: Produto A", label_visibility="visible")
+                n_cart = c_rp2.text_input("Nome Carteira", key="n_cart_rel", placeholder="Ex: Carteira 2024", label_visibility="visible")
+                
+                c_bt.write(""); c_bt.write("") 
                 if c_bt.button("➕", key="add_rel_pc", use_container_width=True):
                     if n_prod and n_cart: salvar_relacao_pedido_carteira(n_prod, n_cart); st.rerun()
             
@@ -586,10 +587,12 @@ def app_clientes():
             with st.container(border=True):
                 st.caption("Nova Carteira")
                 c_lc1, c_lc2, c_lc3, c_lc4, c_bt = st.columns([1.5, 2, 1.5, 1, 1])
-                n_cpf = c_lc1.text_input("CPF Cli", key="n_cpf_l", label_visibility="collapsed")
-                n_nome = c_lc2.text_input("Nome Cli", key="n_nome_l", label_visibility="collapsed")
-                n_carteira = c_lc3.text_input("Carteira", key="n_cart_l", label_visibility="collapsed")
-                n_custo = c_lc4.number_input("Custo", key="n_custo_l", step=0.01, label_visibility="collapsed")
+                n_cpf = c_lc1.text_input("CPF Cliente", key="n_cpf_l", label_visibility="visible")
+                n_nome = c_lc2.text_input("Nome Cliente", key="n_nome_l", label_visibility="visible")
+                n_carteira = c_lc3.text_input("Nome Carteira", key="n_cart_l", label_visibility="visible")
+                n_custo = c_lc4.number_input("Custo (R$)", key="n_custo_l", step=0.01, label_visibility="visible")
+                
+                c_bt.write(""); c_bt.write("") 
                 if c_bt.button("➕", key="add_cart_l", use_container_width=True):
                     if n_cpf and n_nome: salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo); st.rerun()
             
