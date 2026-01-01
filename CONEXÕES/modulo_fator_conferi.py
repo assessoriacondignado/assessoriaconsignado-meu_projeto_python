@@ -11,19 +11,19 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 import conexao
 
-# --- CONFIGURAÇÕES DE DIRETÓRIO (CORRIGIDO) ---
-# Pega o diretório onde este arquivo (modulo_fator_conferi.py) está localizado
-DIRETORIO_ATUAL = os.path.dirname(os.path.abspath(__file__))
+# --- CONFIGURAÇÕES ---
+# Caminho fixo solicitado
+PASTA_JSON = "/root/meu_sistema/CONEXÕES/FATOR CONFERI/JSON"
 
-# Define o caminho relativo: CONEXÕES/FATOR CONFERI/JSON
-PASTA_JSON = os.path.join(DIRETORIO_ATUAL, "FATOR CONFERI", "JSON")
-
-# Garante que a pasta exista (Cria se não existir)
+# Garante que a pasta exista (Segurança de I/O)
 try:
     if not os.path.exists(PASTA_JSON):
         os.makedirs(PASTA_JSON, exist_ok=True)
 except Exception as e:
-    st.error(f"Erro ao criar pasta JSON: {e}")
+    # Fallback para pasta local caso não tenha permissão no /root
+    PASTA_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "JSON")
+    if not os.path.exists(PASTA_JSON):
+        os.makedirs(PASTA_JSON)
 
 def get_conn():
     try:
@@ -34,7 +34,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES
+# 1. FUNÇÕES AUXILIARES (API, XML, CREDENCIAIS, FORMATAÇÃO)
 # =============================================================================
 
 def buscar_credenciais():
@@ -51,8 +51,9 @@ def buscar_credenciais():
     return cred
 
 def buscar_valor_consulta_atual():
+    """Busca o valor atual da consulta na tabela de parâmetros"""
     conn = get_conn()
-    valor = 0.50 
+    valor = 0.50 # Fallback padrão
     if conn:
         try:
             cur = conn.cursor()
@@ -64,6 +65,7 @@ def buscar_valor_consulta_atual():
     return valor
 
 def formatar_cpf_cnpj_visual(valor):
+    """Aplica máscara de CPF ou CNPJ para visualização na tabela"""
     dado = re.sub(r'\D', '', str(valor))
     if len(dado) == 11:
         return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
@@ -161,7 +163,8 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         
         if registro_anterior:
             caminho_existente = registro_anterior[0]
-            link_existente = registro_anterior[1]
+            # Usa o link existente ou o próprio caminho se estiver vazio
+            link_existente = registro_anterior[1] if registro_anterior[1] else caminho_existente
             
             dados_parsed = {}
             msg_retorno = "Dados recuperados do histórico (R$ 0,00)."
@@ -173,7 +176,7 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
                 except: 
                     msg_retorno += " (Erro leitura arquivo)"
             else:
-                msg_retorno += " (Arquivo físico não localizado)"
+                msg_retorno += " (Arquivo físico original não localizado)"
 
             # Replica o log com valor 0
             usuario = st.session_state.get('usuario_nome', 'Sistema')
@@ -216,14 +219,15 @@ def realizar_consulta_cpf(cpf, tipo="COMPLETA", origem="Teste Manual"):
         id_user = st.session_state.get('usuario_id', 0)
         custo = buscar_valor_consulta_atual()
         
-        # O link salvo no banco é o caminho do arquivo. 
-        # A transformação em link clicável (Base64) é feita na exibição da tabela.
+        # O link salvo no banco é o caminho absoluto
+        link_arquivo = caminho_completo 
+        
         sql = """
             INSERT INTO conexoes.fatorconferi_registo_consulta 
             (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
             VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())
         """
-        cur.execute(sql, (tipo, cpf_padrao, id_user, usuario, custo, caminho_completo, caminho_completo, origem))
+        cur.execute(sql, (tipo, cpf_padrao, id_user, usuario, custo, caminho_completo, link_arquivo, origem))
         conn.commit(); conn.close()
         
         return {"sucesso": True, "dados": dados_parsed}
@@ -625,6 +629,7 @@ def app_fator_conferi():
         df_cli = listar_clientes_carteira()
         
         if not df_cli.empty:
+            # Cabeçalho Fixo
             st.markdown("""
             <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                 <div style="flex:3;">Nome / CPF</div>
@@ -644,6 +649,7 @@ def app_fator_conferi():
                     val = float(row['saldo_atual'])
                     cor = "green" if val > 0 else "red"
                     cc2.markdown(f":{cor}[R$ {val:.2f}]")
+                    
                     cc3.write(f"R$ {float(row['custo_por_consulta']):.2f}")
                     
                     with cc4:
@@ -700,10 +706,12 @@ def app_fator_conferi():
                                 tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
                                 tc1.write(pd.to_datetime(tr['data_transacao']).strftime('%d/%m/%y %H:%M'))
                                 tc2.write(tr['motivo'])
+                                
                                 cor_t = "green" if tr['tipo'] == 'CREDITO' else "red"
                                 tc3.markdown(f":{cor_t}[{tr['tipo']}]")
                                 tc4.write(f"R$ {float(tr['valor']):.2f}")
                                 tc5.write(f"R$ {float(tr['saldo_novo']):.2f}")
+                                
                                 with tc6:
                                     bc1, bc2 = st.columns(2)
                                     if bc1.button("✏️", key=f"e_tr_{tr['id']}", help="Editar"):
@@ -732,8 +740,9 @@ def app_fator_conferi():
         cpf_input = c1.text_input("CPF para Consulta")
         if c2.button("🔍 Consultar", type="primary"):
             if cpf_input:
+                # Chama a consulta passando a origem correta
                 with st.spinner("Consultando..."):
-                    res = realizar_consulta_cpf(cpf_input, origem="Teste Manual")
+                    res = realizar_consulta_cpf(cpf_input, origem="WEB USUÁRIO")
                     if res['sucesso']:
                         if "msg" in res:
                             st.info(f"ℹ️ {res['msg']}")
@@ -760,6 +769,7 @@ def app_fator_conferi():
         st.markdown("#### 5.1 Histórico de Consultas")
         conn = get_conn()
         if conn:
+            # ATUALIZADO: Busca TODAS AS COLUNAS da tabela fatorconferi_registo_consulta
             query_hist = """
                 SELECT id, data_hora, tipo_consulta, cpf_consultado, id_usuario, nome_usuario, 
                        valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, 
@@ -771,27 +781,34 @@ def app_fator_conferi():
                 df_logs = pd.read_sql(query_hist, conn)
                 
                 if not df_logs.empty:
+                    # 1.1 Formatação da Data (dd/mm/yyyy hh:mm:ss)
                     df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M:%S')
-                    df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
-                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                     
-                    # Converte o caminho JSON em link TXT Base64
+                    # 2.1 Formatação CPF/CNPJ com pontuação
+                    df_logs['cpf_consultado'] = df_logs['cpf_consultado'].apply(formatar_cpf_cnpj_visual)
+                    
+                    # 4.2 Formatação Valor Pago em Decimal BR (0,00)
+                    df_logs['valor_pago'] = df_logs['valor_pago'].fillna(0.0).apply(lambda x: f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+                    # Lógica para converter o arquivo JSON local em LINK DE DOWNLOAD TXT (Data URI)
                     df_logs['link_arquivo_consulta'] = df_logs['caminho_json'].apply(criar_link_txt_base64)
 
+                    # RENOMEAÇÃO DE COLUNAS (Regras Visuais)
                     df_logs.rename(columns={
-                        'data_hora': 'Data Consulta',
-                        'cpf_consultado': 'CPF/CNPJ',
-                        'id_usuario': 'ID Usuário',
-                        'nome_usuario': 'Nome Usuário',
-                        'valor_pago': 'Valor Pago',
-                        'caminho_json': 'Caminho JSON',
-                        'status_api': 'Status API',
-                        'link_arquivo_consulta': 'Link Arquivo Consulta',
+                        'data_hora': 'Data Consulta',       # 1.2
+                        'cpf_consultado': 'CPF/CNPJ',       # 2.2
+                        'id_usuario': 'ID Usuário',         # 3.1
+                        'nome_usuario': 'Nome Usuário',     # 4.1
+                        'valor_pago': 'Valor Pago',         # 4.1
+                        'caminho_json': 'Caminho JSON',     # 5.1
+                        'status_api': 'Status API',         # 6.1
+                        'link_arquivo_consulta': 'Link Arquivo Consulta', # 7.1
                         'tipo_consulta': 'Tipo Consulta',
                         'origem_consulta': 'Origem',
                         'tipo_cobranca': 'Cobrança'
                     }, inplace=True)
 
+                    # 7.1 Link Clicável e Exibição Final
                     st.dataframe(
                         df_logs, 
                         use_container_width=True,
@@ -813,6 +830,8 @@ def app_fator_conferi():
 
     # --- ABA 5: PARÂMETROS ---
     with tabs[4]: 
+        
+        # 1. ORIGEM CONSULTA
         with st.expander("📍 Origem da Consulta", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Item")
@@ -820,6 +839,7 @@ def app_fator_conferi():
                 n_orig = c_in.text_input("Origem", key="in_orig", label_visibility="collapsed", placeholder="Ex: API, Web...")
                 if c_bt.button("➕", key="add_orig", use_container_width=True):
                     if n_orig: salvar_origem_consulta(n_orig); st.rerun()
+            
             st.divider()
             df_orig = listar_origem_consulta()
             if not df_orig.empty:
@@ -831,6 +851,7 @@ def app_fator_conferi():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
+        # 2. TIPO CONSULTA FATOR
         with st.expander("🔍 Tipo Consulta Fator", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Item")
@@ -838,6 +859,7 @@ def app_fator_conferi():
                 n_tipo = c_in.text_input("Tipo", key="in_tipo", label_visibility="collapsed", placeholder="Ex: Simples, Completa...")
                 if c_bt.button("➕", key="add_tipo", use_container_width=True):
                     if n_tipo: salvar_tipo_consulta_fator(n_tipo); st.rerun()
+            
             st.divider()
             df_tipo = listar_tipo_consulta_fator()
             if not df_tipo.empty:
@@ -849,6 +871,7 @@ def app_fator_conferi():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
+        # 3. VALOR DA CONSULTA (NOVO)
         with st.expander("💲 Valor da Consulta (Custo)", expanded=True):
             with st.container(border=True):
                 st.caption("Novo Valor Base")
@@ -856,6 +879,7 @@ def app_fator_conferi():
                 n_valor = c_in.number_input("Valor (R$)", key="in_valor_cons", step=0.01, label_visibility="collapsed")
                 if c_bt.button("➕", key="add_valor_cons", use_container_width=True):
                     if n_valor >= 0: salvar_valor_consulta(n_valor); st.rerun()
+            
             st.divider()
             df_val = listar_valor_consulta()
             if not df_val.empty:
@@ -863,6 +887,7 @@ def app_fator_conferi():
                     ca1, ca2, ca3 = st.columns([8, 1, 1])
                     val_fmt = f"R$ {float(r['valor_da_consulta']):.2f}"
                     dt_fmt = r['data_atualizacao'].strftime('%d/%m/%Y %H:%M') if r['data_atualizacao'] else "-"
+                    
                     ca1.markdown(f"**{val_fmt}** | Atualizado em: {dt_fmt}")
                     if ca2.button("✏️", key=f"ed_val_{r['id']}"): dialog_editar_valor_consulta(r['id'], r['valor_da_consulta'])
                     if ca3.button("🗑️", key=f"del_val_{r['id']}"): excluir_valor_consulta(r['id']); st.rerun()
