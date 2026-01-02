@@ -209,12 +209,12 @@ def obter_origem_padronizada(nome_origem):
     return origem_final
 
 # =============================================================================
-# 2. FUNÇÃO DE DÉBITO FINANCEIRO (NOVA)
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO (ATUALIZADA)
 # =============================================================================
 
 def processar_debito_automatico(origem, valor_cobranca, dados_consulta):
     """
-    1. Identifica a carteira baseada na origem (WEB, API, LOTE).
+    1. Identifica a carteira baseada na ORIGEM DE CUSTO.
     2. Identifica o cliente pagador (baseado no usuário logado).
     3. Lança o débito na tabela dinâmica correta.
     """
@@ -226,8 +226,8 @@ def processar_debito_automatico(origem, valor_cobranca, dados_consulta):
     try:
         cur = conn.cursor()
         
-        # 1. IDENTIFICAR A CARTEIRA/TABELA PELA ORIGEM
-        # Busca qual configuração de carteira atende a essa origem de custo
+        # 1. IDENTIFICAR A CARTEIRA/TABELA PELA ORIGEM DE CUSTO
+        # [MUDANÇA AQUI]: Busca qual configuração de carteira atende a essa origem
         cur.execute("""
             SELECT nome_tabela_transacoes, nome_carteira 
             FROM cliente.carteiras_config 
@@ -238,7 +238,7 @@ def processar_debito_automatico(origem, valor_cobranca, dados_consulta):
         
         if not res_config:
             conn.close()
-            return False, f"Nenhuma carteira configurada para a origem: {origem}"
+            return False, f"Nenhuma carteira configurada para a origem: '{origem}'"
             
         tabela_transacoes = res_config[0]
         nome_carteira_log = res_config[1]
@@ -478,7 +478,7 @@ def app_fator_conferi():
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    # Define a origem padronizada
+                    # Define a origem padronizada (busca no banco pelo nome 'WEB USUÁRIO')
                     origem_padrao = obter_origem_padronizada("WEB USUÁRIO")
                     # Realiza a consulta e o débito automático
                     res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
