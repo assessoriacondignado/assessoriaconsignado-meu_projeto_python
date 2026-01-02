@@ -195,7 +195,7 @@ def consultar_saldo_api():
 def obter_origem_padronizada(nome_origem):
     """Busca o nome correto na tabela de origens para garantir integridade"""
     conn = get_conn()
-    origem_final = nome_origem # Fallback caso o banco falhe
+    origem_final = nome_origem 
     if conn:
         try:
             cur = conn.cursor()
@@ -209,83 +209,88 @@ def obter_origem_padronizada(nome_origem):
     return origem_final
 
 # =============================================================================
-# 2. FUNÇÃO DE DÉBITO FINANCEIRO (ATUALIZADA)
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO DINÂMICO
 # =============================================================================
 
-def processar_debito_automatico(origem, valor_cobranca, dados_consulta):
+def processar_debito_automatico(origem_da_consulta, dados_consulta):
     """
-    1. Identifica a carteira baseada na ORIGEM DE CUSTO.
-    2. Identifica o cliente pagador (baseado no usuário logado).
-    3. Lança o débito na tabela dinâmica correta.
+    Regra de Débito:
+    1. Localiza o valor na 'cliente.cliente_carteira_lista' (CPF + Origem).
+    2. Localiza a tabela na 'cliente.carteiras_config' (Nome da Carteira).
+    3. Lança o débito financeiro.
     """
-    if valor_cobranca <= 0: return True, "Valor zero, sem cobrança."
-    
+    id_usuario_logado = st.session_state.get('usuario_id')
+    if not id_usuario_logado:
+        return False, "Usuário não logado."
+
     conn = get_conn()
     if not conn: return False, "Erro conexão DB."
     
     try:
         cur = conn.cursor()
         
-        # 1. IDENTIFICAR A CARTEIRA/TABELA PELA ORIGEM DE CUSTO
-        # [MUDANÇA AQUI]: Busca qual configuração de carteira atende a essa origem
-        cur.execute("""
-            SELECT nome_tabela_transacoes, nome_carteira 
-            FROM cliente.carteiras_config 
-            WHERE origem_custo = %s AND status = 'ATIVO' 
-            LIMIT 1
-        """, (origem,))
-        res_config = cur.fetchone()
-        
-        if not res_config:
-            conn.close()
-            return False, f"Nenhuma carteira configurada para a origem: '{origem}'"
-            
-        tabela_transacoes = res_config[0]
-        nome_carteira_log = res_config[1]
-        
-        # 2. IDENTIFICAR O PAGADOR (CLIENTE VINCULADO AO USUÁRIO LOGADO)
-        id_usuario_logado = st.session_state.get('usuario_id')
-        if not id_usuario_logado:
-            conn.close(); return False, "Usuário não logado."
-            
-        # Busca o CPF do cliente (empresa) que tem este usuário vinculado
+        # Identificar o Cliente (Empresa) vinculado ao Usuário logado
         cur.execute("SELECT cpf, nome FROM admin.clientes WHERE id_usuario_vinculo = %s LIMIT 1", (id_usuario_logado,))
         res_pagador = cur.fetchone()
-        
         if not res_pagador:
-            conn.close()
-            return False, "Usuário logado não possui vínculo com Cliente Financeiro (admin.clientes)."
-            
+            conn.close(); return False, "Usuário sem cliente vinculado em admin.clientes."
+        
         cpf_pagador = res_pagador[0]
         nome_pagador = res_pagador[1]
+
+        # ETAPA 1: Buscar o VALOR e o NOME DA CARTEIRA na 'cliente.cliente_carteira_lista'
+        cur.execute("""
+            SELECT nome_carteira, custo_carteira 
+            FROM cliente.cliente_carteira_lista 
+            WHERE cpf_cliente = %s AND origem_custo = %s 
+            LIMIT 1
+        """, (cpf_pagador, origem_da_consulta))
+        res_lista = cur.fetchone()
+
+        if not res_lista:
+            conn.close()
+            return False, f"Cliente não possui a carteira '{origem_da_consulta}' na sua Lista de Carteiras."
         
-        # 3. REALIZAR O LANÇAMENTO
-        # Busca saldo anterior
-        cur.execute(f"SELECT saldo_novo FROM {tabela_transacoes} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_pagador,))
+        nome_carteira_vinculada = res_lista[0]
+        valor_cobranca = float(res_lista[1])
+
+        # ETAPA 2: Buscar a TABELA SQL na 'cliente.carteiras_config' usando o nome da carteira
+        cur.execute("""
+            SELECT nome_tabela_transacoes 
+            FROM cliente.carteiras_config 
+            WHERE nome_carteira = %s AND status = 'ATIVO' 
+            LIMIT 1
+        """, (nome_carteira_vinculada,))
+        res_config = cur.fetchone()
+
+        if not res_config:
+            conn.close()
+            return False, f"Configuração da tabela para '{nome_carteira_vinculada}' não encontrada ou inativa."
+            
+        tabela_sql = res_config[0]
+
+        # ETAPA 3: Realizar o Lançamento de Débito
+        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_pagador,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
-        # Calcula novo saldo
-        novo_saldo = saldo_anterior - float(valor_cobranca)
-        
-        # Monta motivo
+        novo_saldo = saldo_anterior - valor_cobranca
         cpf_consultado = dados_consulta.get('cpf', 'Desconhecido')
-        motivo = f"Consulta {origem}: {cpf_consultado}"
+        motivo = f"Consulta Fator ({origem_da_consulta}): {cpf_consultado}"
         
-        # Insere Transação
         sql_insert = f"""
-            INSERT INTO {tabela_transacoes}
+            INSERT INTO {tabela_sql}
             (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
             VALUES (%s, %s, %s, %s, 'DEBITO', %s, %s, %s, NOW())
         """
-        cur.execute(sql_insert, (cpf_pagador, nome_pagador, motivo, origem, float(valor_cobranca), saldo_anterior, novo_saldo))
+        cur.execute(sql_insert, (cpf_pagador, nome_pagador, motivo, origem_da_consulta, valor_cobranca, saldo_anterior, novo_saldo))
         
         conn.commit()
         conn.close()
-        return True, f"Débito de R$ {valor_cobranca:.2f} realizado na carteira '{nome_carteira_log}'."
+        return True, f"Débito de R$ {valor_cobranca:.2f} na tabela {tabela_sql}."
 
     except Exception as e:
-        conn.close()
+        if conn: conn.close()
         return False, f"Erro financeiro: {str(e)}"
 
 # =============================================================================
@@ -356,7 +361,7 @@ def salvar_dados_fator_no_banco(dados_api):
         conn.close(); return False, f"Erro DB: {e}"
 
 # =============================================================================
-# 4. FLUXO DE CONSULTA (INTEGRADO COM FINANCEIRO)
+# 4. FLUXO DE CONSULTA (INTEGRADO COM FINANCEIRO E CACHE)
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
@@ -370,7 +375,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
     try:
         cur = conn.cursor()
         
-        # --- LÓGICA DE CACHE (COM LOG) ---
+        # --- LÓGICA DE CACHE (COM REGISTRO DE LOG) ---
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -379,10 +384,10 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
-                            # Log de Cache (Custo Zero)
                             usr = st.session_state.get('usuario_nome', 'Sistema')
                             id_usr = st.session_state.get('usuario_id', 0)
                             
+                            # Grava log de Cache no histórico
                             cur.execute("""
                                 INSERT INTO conexoes.fatorconferi_registo_consulta 
                                 (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
@@ -410,34 +415,30 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         
         if not dados.get('nome') and not dados.get('cpf'):
              conn.close()
-             return {"sucesso": False, "msg": "Retorno vazio da API (Estrutura inválida).", "raw": xml, "dados": dados}
+             return {"sucesso": False, "msg": "Retorno vazio da API.", "raw": xml, "dados": dados}
 
-        # Salva Arquivo JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, ensure_ascii=False, indent=4)
         
-        custo = buscar_valor_consulta_atual()
+        # PROCESSAR DÉBITO FINANCEIRO DINÂMICO
+        msg_financeira = ""
+        ok_fin, txt_fin = processar_debito_automatico(origem, dados)
+        if ok_fin:
+            msg_financeira = f" | {txt_fin}"
+        else:
+            msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
+        
+        # Gravar log da nova consulta (valor pago é buscado via financeiro, mas logamos o custo padrão aqui)
+        custo_padrao = buscar_valor_consulta_atual()
         usr = st.session_state.get('usuario_nome', 'Sistema')
         id_usr = st.session_state.get('usuario_id', 0)
         
-        # --- NOVO BLOCO: PROCESSAR DÉBITO FINANCEIRO AUTOMÁTICO ---
-        msg_financeira = ""
-        # Só debita se tiver custo maior que zero
-        if custo > 0:
-            ok_fin, txt_fin = processar_debito_automatico(origem, custo, dados)
-            if ok_fin:
-                msg_financeira = f" | {txt_fin}"
-            else:
-                msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
-        # -----------------------------------------------------------
-        
-        # LOG DA NOVA CONSULTA
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
             (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
             VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())
-        """, (tipo_registro, cpf_padrao, id_usr, usr, custo, path, path, origem))
+        """, (tipo_registro, cpf_padrao, id_usr, usr, custo_padrao, path, path, origem))
         conn.commit(); conn.close()
         
         return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_financeira}
@@ -445,15 +446,6 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
     except Exception as e:
         if conn: conn.close()
         return {"sucesso": False, "msg": str(e)}
-
-def listar_clientes_carteira():
-    conn = get_conn()
-    if conn:
-        try:
-            df = pd.read_sql("SELECT cc.id, cc.nome_cliente, cc.custo_por_consulta, cc.saldo_atual, cc.status, ac.cpf FROM conexoes.fator_cliente_carteira cc LEFT JOIN admin.clientes ac ON cc.id_cliente_admin = ac.id ORDER BY cc.nome_cliente", conn)
-            conn.close(); return df
-        except: conn.close()
-    return pd.DataFrame()
 
 # =============================================================================
 # 5. INTERFACE PRINCIPAL
@@ -463,24 +455,16 @@ def app_fator_conferi():
     st.markdown("### ⚡ Painel Fator Conferi")
     tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros"])
 
-    with tabs[0]: 
-        st.info("Gestão de Carteiras (Use o Módulo Clientes para criar novas)")
-        df = listar_clientes_carteira()
-        if not df.empty: st.dataframe(df, use_container_width=True)
-
     with tabs[1]:
         st.markdown("#### 1.1 Consulta e Importação")
         c1, c2, c3 = st.columns([3, 1.5, 1.5])
         cpf_in = c1.text_input("CPF")
-        
-        forcar = c2.checkbox("Ignorar Histórico", value=False, help="Marque se a consulta anterior veio vazia ou com erro.")
+        forcar = c2.checkbox("Ignorar Histórico", value=False)
         
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    # Define a origem padronizada (busca no banco pelo nome 'WEB USUÁRIO')
                     origem_padrao = obter_origem_padronizada("WEB USUÁRIO")
-                    # Realiza a consulta e o débito automático
                     res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
                     st.session_state['resultado_fator'] = res
         
@@ -497,15 +481,7 @@ def app_fator_conferi():
                         if ok_save: st.success(msg_save)
                         else: st.error(msg_save)
                 
-                with col_info: st.caption("Atualiza cadastro e adiciona novos telefones/endereços.")
-
                 dados = res['dados']
-                
-                if not dados.get('nome'):
-                    with st.expander("⚠️ Dados Vazios (Debug)", expanded=False):
-                        st.write("Verifique se o XML bruto contém dados:")
-                        st.code(res.get('raw', 'XML não disponível'))
-
                 with st.expander("👤 Dados Pessoais", expanded=True):
                     dc1, dc2 = st.columns(2)
                     dc1.write(f"**Nome:** {dados.get('nome', '-')}")
@@ -522,16 +498,16 @@ def app_fator_conferi():
                 
                 with st.expander(f"📧 E-mails ({len(dados.get('emails', []))})", expanded=False):
                     for em in dados.get('emails', []): st.write(f"✉️ {em}")
-
             else: st.error(res.get('msg', 'Erro'))
 
     with tabs[2]: 
-        if st.button("🔄 Atualizar"): 
+        if st.button("🔄 Atualizar Saldo"): 
             ok, v = consultar_saldo_api()
             if ok: st.metric("Saldo Atual", f"R$ {v:.2f}")
             else: st.error("Erro ao consultar saldo.")
         
     with tabs[3]: 
         conn = get_conn()
-        if conn: st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)); conn.close()
-    with tabs[4]: st.write("Configurações gerais.")
+        if conn: 
+            st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 50", conn), use_container_width=True)
+            conn.close()
