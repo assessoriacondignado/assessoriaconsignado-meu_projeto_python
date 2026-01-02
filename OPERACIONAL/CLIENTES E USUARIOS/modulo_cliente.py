@@ -218,7 +218,6 @@ def listar_origens_para_selecao():
     lista = []
     if conn:
         try:
-            # Busca da tabela fatorconferi_origem_consulta_fator
             cur = conn.cursor()
             cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator ORDER BY origem ASC")
             lista = [row[0] for row in cur.fetchall()]
@@ -402,13 +401,20 @@ def buscar_usuarios_disponiveis():
         df = pd.read_sql(query, conn); conn.close(); return df
     except: conn.close(); return pd.DataFrame()
 
+# =============================================================================
+# [ATUALIZADO] FUNÇÃO DE VÍNCULO COM TRATAMENTO DE ERRO
+# =============================================================================
 def vincular_usuario_cliente(id_cliente, id_usuario):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE admin.clientes SET id_usuario_vinculo = %s WHERE id = %s", (id_usuario, id_cliente))
-        conn.commit(); conn.close(); return True
-    except: conn.close(); return False
+        # Força cast para inteiro
+        cur.execute("UPDATE admin.clientes SET id_usuario_vinculo = %s WHERE id = %s", (int(id_usuario), int(id_cliente)))
+        conn.commit(); conn.close()
+        return True, "Vinculado com sucesso!"
+    except Exception as e: 
+        conn.close()
+        return False, str(e) # Retorna a mensagem de erro original
 
 def desvincular_usuario_cliente(id_cliente):
     conn = get_conn()
@@ -555,16 +561,26 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 u_nome = st.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
                 if st.form_submit_button("Criar e Vincular"):
                     novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente', True)
-                    if novo_id: vincular_usuario_cliente(dados_cliente['id'], novo_id); st.success("Criado e vinculado!"); time.sleep(1); st.rerun()
-                    else: st.error("Erro ao criar.")
+                    if novo_id: 
+                        # Agora usa a função com retorno de mensagem
+                        ok, msg = vincular_usuario_cliente(dados_cliente['id'], novo_id)
+                        if ok: st.success("Criado e vinculado!"); time.sleep(1); st.rerun()
+                        else: st.error(f"Erro ao vincular: {msg}")
+                    else: st.error("Erro ao criar usuário.")
         with tab_existente:
             df_livres = buscar_usuarios_disponiveis()
             if not df_livres.empty:
                 opcoes = df_livres.apply(lambda x: f"{x['nome']} ({x['email']})", axis=1)
                 idx_sel = st.selectbox("Selecione o Usuário", range(len(df_livres)), format_func=lambda x: opcoes[x])
                 if st.button("Vincular Selecionado"):
-                    if vincular_usuario_cliente(dados_cliente['id'], df_livres.iloc[idx_sel]['id']): st.success("Vinculado!"); time.sleep(1); st.rerun()
-                    else: st.error("Erro.")
+                    # [CORREÇÃO APLICADA AQUI] - Exibe a mensagem real de erro
+                    ok, msg = vincular_usuario_cliente(dados_cliente['id'], df_livres.iloc[idx_sel]['id'])
+                    if ok:
+                        st.success("Vinculado com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao vincular: {msg}")
             else: st.info("Sem usuários livres.")
 
 @st.dialog("🚨 Excluir Cliente")
@@ -667,7 +683,7 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                # Cabeçalho Fixo (Layout similar ao Fator Conferi)
+                # Cabeçalho Fixo
                 st.markdown("""
                 <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                     <div style="flex:3;">Nome</div>
