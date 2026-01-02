@@ -415,6 +415,12 @@ def app_campanhas():
                 if st.button("Limpar Extras"): st.session_state['filtros_extras'] = []; st.rerun()
 
             st.divider()
+            
+            # --- ATUALIZAÇÃO DE DATA (CORREÇÃO APLICADA) ---
+            cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
+            # Adicionado min_value e max_value para permitir datas antigas (ex: nascimentos)
+            data_ref = cd2.date_input("Data Referência", value=date.today(), min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY")
+            # ------------------------------------------------
 
             if st.button("🔎 VISUALIZAR PÚBLICO ALVO", type="primary", use_container_width=True):
                 todos_filtros = filtros_db + st.session_state['filtros_extras']
