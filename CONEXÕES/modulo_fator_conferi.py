@@ -244,28 +244,40 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
     try:
         cur = conn.cursor()
         
-        # 1. DELETE
+        # 1. DELETE: IDs que existiam e não existem mais
         ids_orig = set(df_original['id'].dropna().astype(int).tolist())
-        ids_edit = set(df_editado['id'].dropna().astype(int).tolist())
-        ids_del = ids_orig - ids_edit
-        if ids_del:
-            cur.execute(f"DELETE FROM {nome_tabela} WHERE id IN ({','.join(map(str, ids_del))})")
+        
+        ids_editados_atuais = set()
+        for _, row in df_editado.iterrows():
+            if pd.notna(row.get('id')) and row.get('id') != '':
+                try: ids_editados_atuais.add(int(row['id']))
+                except: pass
 
-        # 2. UPSERT
+        ids_del = ids_orig - ids_editados_atuais
+        if ids_del:
+            ids_str = ",".join(map(str, ids_del))
+            cur.execute(f"DELETE FROM {nome_tabela} WHERE id IN ({ids_str})")
+
+        # 2. UPSERT: Insere ou Atualiza
         for index, row in df_editado.iterrows():
-            cols = [c for c in row.index if c != 'id']
-            vals = [row[c] for c in cols]
+            # Remove colunas que não devem ser escritas manualmente (ID e Datas Automáticas)
+            cols_db = [c for c in row.index if c not in ['id', 'data_hora', 'data_criacao', 'data_registro']]
+            vals = [row[c] for c in cols_db]
             
-            # Se ID é NaN ou vazio, é INSERT
-            if pd.isna(row.get('id')) or row.get('id') == '':
-                placeholders = ", ".join(["%s"] * len(cols))
-                col_names = ", ".join(cols)
+            row_id = row.get('id')
+            eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
+            
+            if eh_novo:
+                # INSERT (Não passa o ID, deixa o banco gerar)
+                placeholders = ", ".join(["%s"] * len(cols_db))
+                col_names = ", ".join(cols_db)
                 cur.execute(f"INSERT INTO {nome_tabela} ({col_names}) VALUES ({placeholders})", vals)
-            # Se ID existe no original, é UPDATE
-            elif int(row['id']) in ids_orig:
-                set_clause = ", ".join([f"{c} = %s" for c in cols])
-                vals.append(int(row['id']))
-                cur.execute(f"UPDATE {nome_tabela} SET {set_clause} WHERE id = %s", vals)
+            
+            elif int(row_id) in ids_orig:
+                # UPDATE
+                set_clause = ", ".join([f"{c} = %s" for c in cols_db])
+                vals_update = vals + [int(row_id)]
+                cur.execute(f"UPDATE {nome_tabela} SET {set_clause} WHERE id = %s", vals_update)
                 
         conn.commit(); conn.close(); return True
     except Exception as e:
@@ -449,7 +461,17 @@ def app_fator_conferi():
             df_param = carregar_dados_genericos(nome_sql)
             if not df_param.empty:
                 st.info(f"Editando: `{nome_sql}`")
-                df_editado = st.data_editor(df_param, key=f"editor_{nome_sql}", num_rows="dynamic", use_container_width=True)
+                
+                # Desabilita edição de colunas automáticas para evitar erros
+                colunas_travadas = ["id", "data_hora", "data_criacao", "data_registro"]
+                
+                df_editado = st.data_editor(
+                    df_param, 
+                    key=f"editor_{nome_sql}", 
+                    num_rows="dynamic", 
+                    use_container_width=True,
+                    disabled=colunas_travadas
+                )
                 
                 if st.button("💾 Salvar Alterações", type="primary"):
                     if salvar_alteracoes_genericas(nome_sql, df_param, df_editado):
@@ -457,13 +479,3 @@ def app_fator_conferi():
                         time.sleep(1); st.rerun()
             else:
                 st.warning("Tabela vazia ou não encontrada. Verifique se ela foi criada no banco.")
-                # Opção para criar registro inicial se for uma tabela de configuração vazia
-                if st.button("Criar registro inicial em branco"):
-                    conn = get_conn()
-                    if conn:
-                        try:
-                            cur = conn.cursor()
-                            # Tenta inserir um registro vazio dependendo da tabela (pode falhar por constraints not null)
-                            # Isso é um fallback genérico
-                            pass 
-                        except: pass
