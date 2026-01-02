@@ -96,7 +96,8 @@ def buscar_clientes():
 def buscar_produtos():
     conn = get_conn()
     if conn:
-        df = pd.read_sql("SELECT id, codigo, nome, tipo, preco FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
+        # ATUALIZADO: Agora busca também a origem_custo do produto
+        df = pd.read_sql("SELECT id, codigo, nome, tipo, preco, origem_custo FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
         conn.close()
         return df
     return pd.DataFrame()
@@ -215,13 +216,20 @@ def fechar_modal():
 def dialog_novo_pedido():
     df_c = buscar_clientes()
     df_p = buscar_produtos()
-    if df_c.empty or df_p.empty: st.warning("Cadastre clientes e produtos."); return
+    if df_c.empty or df_p.empty: 
+        st.warning("Cadastre clientes e produtos.")
+        return
 
     c1, c2 = st.columns(2)
     ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
     ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
-    cli, prod = df_c.iloc[ic], df_p.iloc[ip]
     
+    cli = df_c.iloc[ic]
+    prod = df_p.iloc[ip]
+    
+    # IDENTIFICAÇÃO DA ORIGEM DO PRODUTO
+    origem_produto = prod.get('origem_custo') if prod.get('origem_custo') else "Não definida"
+
     c3, c4 = st.columns(2)
     qtd = c3.number_input("Qtd", 1, value=1)
     val = c4.number_input("Valor", 0.0, value=float(prod['preco'] or 0.0))
@@ -229,6 +237,10 @@ def dialog_novo_pedido():
     
     st.divider()
     st.markdown("📂 **Lista de Carteira (Opcional)**")
+    
+    # EXIBIÇÃO DA ORIGEM (Conforme solicitado)
+    st.info(f"📍 **Origem Vinculada ao Item:** {origem_produto}")
+    
     add_cart = st.checkbox("Incluir na Lista?", value=False)
     n_cart = ""; c_cart = 0.0
     if add_cart:
@@ -341,7 +353,6 @@ def app_pedidos():
                     st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
                     c1, c2, c3, c4, c5, c6 = st.columns(6)
                     
-                    # Gera uma chave única usando ID + Timestamp para evitar conflito de renderização
                     ts = int(time.time())
                     c1.button("👤", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row))
                     c2.button("✏️", key=f"e_{row['id']}_{ts}", on_click=abrir_modal, args=('editar', row))
@@ -359,7 +370,7 @@ def app_pedidos():
     if m == 'novo': dialog_novo_pedido()
     elif m == 'cliente' and p is not None: 
         st.dialog("👤 Cliente")(lambda: st.write(f"Nome: {p['nome_cliente']}\nCPF: {p['cpf_cliente']}\nTel: {p['telefone_cliente']}"))()
-        fechar_modal() # Fecha logo após renderizar pois é apenas visualização simples
+        fechar_modal()
     elif m == 'editar' and p is not None: dialog_editar(p)
     elif m == 'status' and p is not None: dialog_status(p)
     elif m == 'historico' and p is not None: dialog_historico(p['id'], p['codigo'])
