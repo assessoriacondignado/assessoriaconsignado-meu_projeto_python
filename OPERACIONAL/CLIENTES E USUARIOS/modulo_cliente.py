@@ -153,7 +153,6 @@ def excluir_relacao_pedido_carteira(id_reg):
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        # ATUALIZADO: Busca também cpf_usuario e nome_usuario
         df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
@@ -163,31 +162,28 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
     try:
         cur = conn.cursor()
         
-        # --- LÓGICA DE IDENTIFICAÇÃO DO USUÁRIO VINCULADO ---
+        # --- LÓGICA MELHORADA: Busca usuário vinculado ---
         cpf_user = None
         nome_user = None
         
-        # Tenta buscar o vínculo no cadastro de clientes
-        # Normaliza o CPF do cliente para busca (remove não numéricos)
+        # Limpa o CPF para busca (apenas números)
         cpf_limpo = re.sub(r'\D', '', str(cpf))
         
-        # Query que cruza Clientes com Usuários para achar o vínculo
+        # Query que busca pelo CPF limpo OU pelo CPF formatado (com pontos)
         query_vinculo = """
             SELECT u.cpf, u.nome 
             FROM admin.clientes c
             JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
-            WHERE c.cpf = %s OR c.cpf = %s
+            WHERE regexp_replace(c.cpf, '[^0-9]', '', 'g') = %s
             LIMIT 1
         """
-        # Tenta com o CPF limpo e com o CPF original (caso tenha pontuação no banco)
-        cur.execute(query_vinculo, (cpf_limpo, cpf))
+        cur.execute(query_vinculo, (cpf_limpo,))
         res_vinculo = cur.fetchone()
         
         if res_vinculo:
             cpf_user = res_vinculo[0]
             nome_user = res_vinculo[1]
         
-        # Insere na lista com os dados do usuário identificado
         cur.execute("""
             INSERT INTO cliente.cliente_carteira_lista 
             (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario) 
@@ -200,15 +196,15 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
         if conn: conn.close()
         return False
 
-def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo):
+def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_user, nome_user):
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("""
             UPDATE cliente.cliente_carteira_lista 
-            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s 
+            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s 
             WHERE id=%s
-        """, (cpf, nome, carteira, custo, id_reg))
+        """, (cpf, nome, carteira, custo, cpf_user, nome_user, id_reg))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
 
@@ -219,6 +215,15 @@ def excluir_cliente_carteira_lista(id_reg):
         cur.execute("DELETE FROM cliente.cliente_carteira_lista WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
+
+def listar_usuarios_para_selecao():
+    """Retorna lista de usuários cadastrados para o dropdown"""
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, nome, cpf FROM clientes_usuarios WHERE ativo = TRUE ORDER BY nome", conn)
+        conn.close(); return df
+    except: 
+        conn.close(); return pd.DataFrame()
 
 # =============================================================================
 # --- FUNÇÕES: CARTEIRA CLIENTE (CONFIG E EXTRATO) ---
@@ -245,7 +250,6 @@ def garantir_tabela_config_carteiras():
         except: conn.close()
 
 def listar_origens_para_selecao():
-    """Busca as origens cadastradas na tabela de conexões para o selectbox"""
     conn = get_conn()
     lista = []
     if conn:
@@ -373,13 +377,10 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
     if not conn: return False, "Erro conexão"
     try:
         cur = conn.cursor()
-        
-        # 1. Busca saldo atual
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res = cur.fetchone()
         saldo_anterior = float(res[0]) if res else 0.0
         
-        # 2. Calcula novo saldo
         valor = float(valor)
         if tipo_lanc == "DEBITO": saldo_novo = saldo_anterior - valor
         else: saldo_novo = saldo_anterior + valor
@@ -519,14 +520,39 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
 
 @st.dialog("✏️ Editar Carteira Cliente")
 def dialog_editar_cart_lista(dados):
-    st.caption(f"Editando: {dados['nome_cliente']}")
+    st.write(f"Editando: **{dados['nome_cliente']}**")
+    
+    # 1. Carrega usuários disponíveis para o Selectbox
+    df_users = listar_usuarios_para_selecao()
+    opcoes_usuarios = [""] + df_users.apply(lambda x: f"{x['nome']} | CPF: {x['cpf']}", axis=1).tolist()
+    
+    # 2. Encontra o índice atual (se já tiver vínculo)
+    idx_atual = 0
+    if dados['nome_usuario']:
+        match = [i for i, s in enumerate(opcoes_usuarios) if dados['nome_usuario'] in s]
+        if match: idx_atual = match[0]
+
     with st.form("form_edit_cart_li"):
         n_cpf = st.text_input("CPF Cliente", value=dados['cpf_cliente'])
         n_nome = st.text_input("Nome Cliente", value=dados['nome_cliente'])
         n_cart = st.text_input("Nome Carteira", value=dados['nome_carteira'])
         n_custo = st.number_input("Custo Carteira (R$)", value=float(dados['custo_carteira'] or 0.0), step=0.01)
+        
+        # 3. Selectbox de Usuários
+        sel_user = st.selectbox("Usuário Vinculado", options=opcoes_usuarios, index=idx_atual)
+        
         if st.form_submit_button("💾 Salvar"):
-            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo):
+            # Extrai Nome e CPF do selecionado
+            cpf_u_final = None
+            nome_u_final = None
+            
+            if sel_user:
+                # Formato: "Nome | CPF: 123"
+                partes = sel_user.split(" | CPF: ")
+                nome_u_final = partes[0]
+                cpf_u_final = partes[1] if len(partes) > 1 else None
+
+            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo, cpf_u_final, nome_u_final):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
 
@@ -702,7 +728,7 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                # Cabeçalho Fixo
+                # Cabeçalho Fixo (Layout similar ao Fator Conferi)
                 st.markdown("""
                 <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                     <div style="flex:3;">Nome</div>
@@ -741,7 +767,7 @@ def app_clientes():
                             if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
                                 dialog_gestao_usuario_vinculo(row)
                                 
-                            # Botão Excluir
+                            # Botão Excluir (Opcional, se quiser manter no grid)
                             if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
                                 dialog_excluir_cliente(row['id'], row['nome'])
                         
