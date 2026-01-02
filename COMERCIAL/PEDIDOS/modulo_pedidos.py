@@ -132,7 +132,7 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
             # 2. Insere no Histórico do Pedido
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
             
-            # 3. (NOVO) Insere na Lista de Carteira se solicitado
+            # 3. Insere na Lista de Carteira se solicitado
             if add_lista and nome_lista:
                 try:
                     cur.execute("""
@@ -141,7 +141,6 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
                     """, (cliente['cpf'], cliente['nome'], nome_lista, float(custo_lista)))
                 except Exception as e_lista:
                     print(f"Erro ao inserir na lista de carteira: {e_lista}")
-                    # Não bloqueia o pedido se falhar a lista, mas registra log no terminal
             
             conn.commit()
             conn.close()
@@ -226,50 +225,64 @@ def editar_dados_pedido(id_pedido, nova_qtd, novo_valor, novo_cli, novo_prod):
         except: return False
     return False
 
+# --- FUNÇÕES DE CONTROLE DE ESTADO (CALLBACKS) ---
+def abrir_modal(tipo, pedido=None):
+    st.session_state['modal_ativo'] = tipo
+    st.session_state['pedido_ativo'] = pedido
+
+def fechar_modal():
+    st.session_state['modal_ativo'] = None
+    st.session_state['pedido_ativo'] = None
+
 # --- DIALOGS ---
 @st.dialog("➕ Novo Pedido")
 def dialog_novo_pedido():
+    # REMOVIDO st.form PARA PERMITIR INTERATIVIDADE
     df_c = buscar_clientes()
     df_p = buscar_produtos()
-    if df_c.empty or df_p.empty: st.warning("Cadastre clientes e produtos."); return
+    if df_c.empty or df_p.empty: 
+        st.warning("Cadastre clientes e produtos.")
+        return
 
-    with st.form("form_new"):
-        c1, c2 = st.columns(2)
-        ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
-        ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
-        cli, prod = df_c.iloc[ic], df_p.iloc[ip]
-        
-        c3, c4 = st.columns(2)
-        qtd = c3.number_input("Qtd", 1, value=1)
-        val = c4.number_input("Valor Un.", 0.0, value=float(prod['preco'] or 0.0))
-        st.write(f"Total: R$ {qtd*val:.2f}")
-        
-        # --- SEÇÃO: LISTA DE CARTEIRA (NOVO) ---
-        st.divider()
-        st.markdown("📂 **Lista de Carteira (Opcional)**")
-        add_cart = st.checkbox("Incluir cliente em Lista de Carteira?", value=False)
-        
-        n_cart = ""
-        c_cart = 0.0
-        
-        if add_cart:
-            col_l1, col_l2 = st.columns(2)
-            n_cart = col_l1.text_input("Nome da Carteira", placeholder="Ex: Mensalistas 2024")
-            c_cart = col_l2.number_input("Custo da Carteira (R$)", min_value=0.0, step=0.01)
-        # ---------------------------------------
+    c1, c2 = st.columns(2)
+    ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'], key="sel_cli_novo")
+    ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'], key="sel_prod_novo")
+    cli, prod = df_c.iloc[ic], df_p.iloc[ip]
+    
+    c3, c4 = st.columns(2)
+    qtd = c3.number_input("Qtd", 1, value=1, key="num_qtd_novo")
+    val = c4.number_input("Valor Un.", 0.0, value=float(prod['preco'] or 0.0), key="num_val_novo")
+    st.markdown(f"### Total: R$ {qtd*val:.2f}")
+    
+    # --- SEÇÃO INTERATIVA: LISTA DE CARTEIRA ---
+    st.divider()
+    st.markdown("📂 **Lista de Carteira (Opcional)**")
+    # Agora este checkbox atualiza a tela instantaneamente
+    add_cart = st.checkbox("Incluir cliente em Lista de Carteira?", value=False, key="chk_lista_novo")
+    
+    n_cart = ""
+    c_cart = 0.0
+    
+    if add_cart:
+        col_l1, col_l2 = st.columns(2)
+        n_cart = col_l1.text_input("Nome da Carteira", placeholder="Ex: Mensalistas 2024", key="txt_nome_lista")
+        c_cart = col_l2.number_input("Custo da Carteira (R$)", min_value=0.0, step=0.01, key="num_custo_lista")
+    # -------------------------------------------
 
-        st.divider()
-        avisar = st.checkbox("Avisar WhatsApp?", value=True)
-        
-        if st.form_submit_button("Criar Pedido"):
-            # Chama a função de criação passando os novos parâmetros
+    st.divider()
+    avisar = st.checkbox("Avisar WhatsApp?", value=True, key="chk_aviso_novo")
+    
+    # Botão comum (fora de form)
+    if st.button("Criar Pedido", type="primary", use_container_width=True):
+        if add_cart and not n_cart:
+            st.error("Digite o nome da carteira.")
+        else:
             ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar, add_cart, n_cart, c_cart)
-            
             if ok: 
                 st.success("Criado com sucesso!")
-                if add_cart:
-                    st.info(f"Cliente incluído na lista '{n_cart}'.")
+                if add_cart: st.info(f"Cliente incluído na lista '{n_cart}'.")
                 time.sleep(1.5)
+                fechar_modal()
                 st.rerun()
             else: st.error(res)
 
@@ -287,7 +300,11 @@ def dialog_editar(ped):
         nq = st.number_input("Qtd", 1, value=int(ped['quantidade']))
         nv = st.number_input("Valor", 0.0, value=float(ped['valor_unitario']))
         if st.form_submit_button("Salvar"):
-            if editar_dados_pedido(ped['id'], nq, nv, df_c.iloc[ic], df_p.iloc[ip]): st.success("Salvo!"); st.rerun()
+            if editar_dados_pedido(ped['id'], nq, nv, df_c.iloc[ic], df_p.iloc[ip]): 
+                st.success("Salvo!")
+                time.sleep(1)
+                fechar_modal()
+                st.rerun()
 
 @st.dialog("🔄 Status")
 def dialog_status(ped):
@@ -308,7 +325,11 @@ def dialog_status(ped):
             st.warning("⚠️ Será lançado um DÉBITO (estorno) na carteira do cliente.")
 
         if st.form_submit_button("Atualizar"):
-            if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod): st.success("Atualizado!"); st.rerun()
+            if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod): 
+                st.success("Atualizado!")
+                time.sleep(1)
+                fechar_modal()
+                st.rerun()
             
     st.divider(); st.caption("Histórico")
     st.dataframe(buscar_historico_pedido(ped['id']), hide_index=True)
@@ -317,7 +338,11 @@ def dialog_status(ped):
 def dialog_excluir(pid):
     st.warning("Confirmar exclusão?")
     if st.button("Sim", type="primary"):
-        if excluir_pedido_db(pid): st.success("Excluído!"); st.rerun()
+        if excluir_pedido_db(pid): 
+            st.success("Excluído!")
+            time.sleep(1)
+            fechar_modal()
+            st.rerun()
 
 @st.dialog("📝 Nova Tarefa")
 def dialog_tarefa(ped):
@@ -328,7 +353,10 @@ def dialog_tarefa(ped):
             conn = get_conn(); cur = conn.cursor()
             cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) VALUES (%s,%s,%s,%s,%s,'Solicitado')", (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
             conn.commit(); conn.close()
-            st.success("Tarefa Criada!"); st.rerun()
+            st.success("Tarefa Criada!")
+            time.sleep(1)
+            fechar_modal()
+            st.rerun()
 
 # --- COMPONENTE ISOLADO (@st.fragment) ---
 @st.fragment
@@ -345,20 +373,23 @@ def cartao_pedido(row):
         st.write(f"**Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
         
         c1, c2, c3, c4, c5, c6 = st.columns(6)
-        if c1.button("👤", key=f"c_{row['id']}", help="Cliente"): 
-            st.info(f"Cliente: {row['nome_cliente']}\nCPF: {row['cpf_cliente']}\nTel: {row['telefone_cliente']}")
-        if c2.button("✏️", key=f"e_{row['id']}", help="Editar"): dialog_editar(row)
-        if c3.button("🔄", key=f"s_{row['id']}", help="Status"): dialog_status(row)
-        if c4.button("📜", key=f"h_{row['id']}", help="Histórico"): 
-            st.dataframe(buscar_historico_pedido(row['id']), hide_index=True)
-        if c5.button("🗑️", key=f"d_{row['id']}", help="Excluir"): dialog_excluir(row['id'])
-        if c6.button("📝", key=f"t_{row['id']}", help="Tarefa"): dialog_tarefa(row)
+        # Botões com on_click para evitar erro de removeChild
+        c1.button("👤", key=f"c_{row['id']}", help="Cliente", on_click=abrir_modal, args=('cliente', row))
+        c2.button("✏️", key=f"e_{row['id']}", help="Editar", on_click=abrir_modal, args=('editar', row))
+        c3.button("🔄", key=f"s_{row['id']}", help="Status", on_click=abrir_modal, args=('status', row))
+        c4.button("📜", key=f"h_{row['id']}", help="Histórico", on_click=abrir_modal, args=('historico', row))
+        c5.button("🗑️", key=f"d_{row['id']}", help="Excluir", on_click=abrir_modal, args=('excluir', row))
+        c6.button("📝", key=f"t_{row['id']}", help="Tarefa", on_click=abrir_modal, args=('tarefa', row))
 
 # --- APP PRINCIPAL ---
 def app_pedidos():
+    # Inicializa estado
+    if 'modal_ativo' not in st.session_state: st.session_state['modal_ativo'] = None
+    if 'pedido_ativo' not in st.session_state: st.session_state['pedido_ativo'] = None
+
     c_t, c_b = st.columns([5, 1])
     c_t.markdown("## 🛒 Pedidos")
-    if c_b.button("➕ Novo", type="primary"): dialog_novo_pedido()
+    c_b.button("➕ Novo", type="primary", on_click=abrir_modal, args=('novo', None))
 
     conn = get_conn()
     if conn:
@@ -390,5 +421,25 @@ def app_pedidos():
         else:
             st.info("Nenhum pedido.")
 
+    # --- ROTEADOR DE MODAIS ---
+    modal = st.session_state['modal_ativo']
+    pedido = st.session_state['pedido_ativo']
+
+    if modal == 'novo':
+        dialog_novo_pedido()
+    elif modal == 'cliente' and pedido is not None:
+        ver_cliente(pedido['nome_cliente'], pedido['cpf_cliente'], pedido['telefone_cliente'])
+    elif modal == 'editar' and pedido is not None:
+        dialog_editar(pedido)
+    elif modal == 'status' and pedido is not None:
+        dialog_status(pedido)
+    elif modal == 'historico' and pedido is not None:
+        dialog_historico(pedido['id'], pedido['codigo'])
+    elif modal == 'excluir' and pedido is not None:
+        dialog_excluir(pedido['id'])
+    elif modal == 'tarefa' and pedido is not None:
+        dialog_tarefa(pedido)
+
 if __name__ == "__main__":
     app_pedidos()
+    
