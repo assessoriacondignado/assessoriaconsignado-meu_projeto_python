@@ -33,6 +33,19 @@ def listar_modelos_mensagens():
         except: conn.close()
     return []
 
+def listar_carteiras_ativas():
+    """Busca as carteiras ativas para o selectbox"""
+    conn = get_conn()
+    if conn:
+        try:
+            query = "SELECT nome_carteira FROM cliente.carteiras_config WHERE status = 'ATIVO' ORDER BY nome_carteira"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df['nome_carteira'].tolist()
+        except:
+            conn.close()
+    return []
+
 # --- NOVA FUNÇÃO: MOVIMENTAÇÃO AUTOMÁTICA (CRÉDITO/DÉBITO) ---
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     """
@@ -254,10 +267,9 @@ def dialog_novo_pedido():
     val = c4.number_input("Valor Un.", 0.0, value=float(prod['preco'] or 0.0), key="num_val_novo")
     st.markdown(f"### Total: R$ {qtd*val:.2f}")
     
-    # --- SEÇÃO INTERATIVA: LISTA DE CARTEIRA ---
+    # --- SEÇÃO INTERATIVA: LISTA DE CARTEIRA (ATUALIZADA) ---
     st.divider()
     st.markdown("📂 **Lista de Carteira (Opcional)**")
-    # Agora este checkbox atualiza a tela instantaneamente
     add_cart = st.checkbox("Incluir cliente em Lista de Carteira?", value=False, key="chk_lista_novo")
     
     n_cart = ""
@@ -265,17 +277,20 @@ def dialog_novo_pedido():
     
     if add_cart:
         col_l1, col_l2 = st.columns(2)
-        n_cart = col_l1.text_input("Nome da Carteira", placeholder="Ex: Mensalistas 2024", key="txt_nome_lista")
+        
+        # ATUALIZAÇÃO: Busca carteiras ativas para o selectbox
+        lista_carteiras = listar_carteiras_ativas()
+        n_cart = col_l1.selectbox("Nome da Carteira", options=[""] + lista_carteiras, key="sel_nome_lista")
+        
         c_cart = col_l2.number_input("Custo da Carteira (R$)", min_value=0.0, step=0.01, key="num_custo_lista")
     # -------------------------------------------
 
     st.divider()
     avisar = st.checkbox("Avisar WhatsApp?", value=True, key="chk_aviso_novo")
     
-    # Botão comum (fora de form)
     if st.button("Criar Pedido", type="primary", use_container_width=True):
         if add_cart and not n_cart:
-            st.error("Digite o nome da carteira.")
+            st.error("Selecione uma carteira.")
         else:
             ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar, add_cart, n_cart, c_cart)
             if ok: 
@@ -373,7 +388,6 @@ def cartao_pedido(row):
         st.write(f"**Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
         
         c1, c2, c3, c4, c5, c6 = st.columns(6)
-        # Botões com on_click para evitar erro de removeChild
         c1.button("👤", key=f"c_{row['id']}", help="Cliente", on_click=abrir_modal, args=('cliente', row))
         c2.button("✏️", key=f"e_{row['id']}", help="Editar", on_click=abrir_modal, args=('editar', row))
         c3.button("🔄", key=f"s_{row['id']}", help="Status", on_click=abrir_modal, args=('status', row))
@@ -383,7 +397,6 @@ def cartao_pedido(row):
 
 # --- APP PRINCIPAL ---
 def app_pedidos():
-    # Inicializa estado
     if 'modal_ativo' not in st.session_state: st.session_state['modal_ativo'] = None
     if 'pedido_ativo' not in st.session_state: st.session_state['pedido_ativo'] = None
 
@@ -442,4 +455,3 @@ def app_pedidos():
 
 if __name__ == "__main__":
     app_pedidos()
-    
