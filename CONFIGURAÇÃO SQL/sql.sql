@@ -1,2 +1,2 @@
 ALTER TABLE admin.produtos_servicos 
-ADD COLUMN IF NOT EXISTS carteira TEXT;
+DROP COLUMN IF EXISTS carteira;
