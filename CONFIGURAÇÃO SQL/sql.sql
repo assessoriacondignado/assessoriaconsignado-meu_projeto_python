@@ -1,3 +1,2 @@
-UPDATE cliente.carteiras_config 
-SET origem_custo = 'WEB USUÁRIO' 
-WHERE origem_custo = 'USUÁRIO WEB';
+ALTER TABLE cliente.cliente_carteira_lista
+ADD COLUMN IF NOT EXISTS origem_custo VARCHAR(100);

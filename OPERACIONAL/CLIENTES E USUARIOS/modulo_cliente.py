@@ -153,23 +153,22 @@ def excluir_relacao_pedido_carteira(id_reg):
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
+        # ATUALIZADO: Incluindo origem_custo na busca
+        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
 
-def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
+def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
     conn = get_conn()
     try:
         cur = conn.cursor()
         
-        # --- LÓGICA MELHORADA: Busca usuário vinculado ---
+        # --- LÓGICA DE IDENTIFICAÇÃO DO USUÁRIO VINCULADO ---
         cpf_user = None
         nome_user = None
         
-        # Limpa o CPF para busca (apenas números)
         cpf_limpo = re.sub(r'\D', '', str(cpf))
         
-        # Query que busca pelo CPF limpo OU pelo CPF formatado (com pontos)
         query_vinculo = """
             SELECT u.cpf, u.nome 
             FROM admin.clientes c
@@ -184,11 +183,12 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
             cpf_user = res_vinculo[0]
             nome_user = res_vinculo[1]
         
+        # ATUALIZADO: Inserindo origem_custo
         cur.execute("""
             INSERT INTO cliente.cliente_carteira_lista 
-            (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario) 
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (cpf, nome, carteira, custo, cpf_user, nome_user))
+            (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (cpf, nome, carteira, custo, cpf_user, nome_user, origem_custo))
         
         conn.commit(); conn.close(); return True
     except Exception as e: 
@@ -196,15 +196,16 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
         if conn: conn.close()
         return False
 
-def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_user, nome_user):
+def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_user, nome_user, origem_custo):
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # ATUALIZADO: Atualizando origem_custo
         cur.execute("""
             UPDATE cliente.cliente_carteira_lista 
-            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s 
+            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
             WHERE id=%s
-        """, (cpf, nome, carteira, custo, cpf_user, nome_user, id_reg))
+        """, (cpf, nome, carteira, custo, cpf_user, nome_user, origem_custo, id_reg))
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
 
@@ -217,7 +218,6 @@ def excluir_cliente_carteira_lista(id_reg):
     except: conn.close(); return False
 
 def listar_usuarios_para_selecao():
-    """Retorna lista de usuários cadastrados para o dropdown"""
     conn = get_conn()
     try:
         df = pd.read_sql("SELECT id, nome, cpf FROM clientes_usuarios WHERE ativo = TRUE ORDER BY nome", conn)
@@ -351,7 +351,6 @@ def atualizar_carteira_config(id_conf, status, nome_carteira=None, origem_custo=
 
 # --- FUNÇÃO ATUALIZADA: BUSCAR COM ID ---
 def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, data_fim):
-    """Busca o extrato na tabela dinâmica específica da carteira com filtro de data"""
     conn = get_conn()
     if not conn: return pd.DataFrame()
     try:
@@ -531,14 +530,26 @@ def dialog_editar_cart_lista(dados):
     if dados['nome_usuario']:
         match = [i for i, s in enumerate(opcoes_usuarios) if dados['nome_usuario'] in s]
         if match: idx_atual = match[0]
+        
+    # 3. Busca lista de Origens para o novo campo
+    lista_origens = listar_origens_para_selecao()
+    idx_origem = 0
+    valor_atual_origem = dados.get('origem_custo')
+    if valor_atual_origem and valor_atual_origem in lista_origens:
+        idx_origem = lista_origens.index(valor_atual_origem)
+    opcoes_origem = [""] + lista_origens
 
     with st.form("form_edit_cart_li"):
         n_cpf = st.text_input("CPF Cliente", value=dados['cpf_cliente'])
         n_nome = st.text_input("Nome Cliente", value=dados['nome_cliente'])
         n_cart = st.text_input("Nome Carteira", value=dados['nome_carteira'])
+        
+        # 4. Campo de Origem do Custo (Selectbox)
+        n_origem_custo = st.selectbox("Origem do Custo", options=opcoes_origem, index=idx_origem + 1 if valor_atual_origem else 0)
+        
         n_custo = st.number_input("Custo Carteira (R$)", value=float(dados['custo_carteira'] or 0.0), step=0.01)
         
-        # 3. Selectbox de Usuários
+        # 5. Selectbox de Usuários
         sel_user = st.selectbox("Usuário Vinculado", options=opcoes_usuarios, index=idx_atual)
         
         if st.form_submit_button("💾 Salvar"):
@@ -547,12 +558,12 @@ def dialog_editar_cart_lista(dados):
             nome_u_final = None
             
             if sel_user:
-                # Formato: "Nome | CPF: 123"
                 partes = sel_user.split(" | CPF: ")
                 nome_u_final = partes[0]
                 cpf_u_final = partes[1] if len(partes) > 1 else None
 
-            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo, cpf_u_final, nome_u_final):
+            # ATUALIZADO: Passando origem_custo também
+            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo, cpf_u_final, nome_u_final, n_origem_custo):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
 
@@ -728,7 +739,7 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                # Cabeçalho Fixo (Layout similar ao Fator Conferi)
+                # Cabeçalho Fixo
                 st.markdown("""
                 <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                     <div style="flex:3;">Nome</div>
@@ -767,7 +778,7 @@ def app_clientes():
                             if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
                                 dialog_gestao_usuario_vinculo(row)
                                 
-                            # Botão Excluir (Opcional, se quiser manter no grid)
+                            # Botão Excluir
                             if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
                                 dialog_excluir_cliente(row['id'], row['nome'])
                         
@@ -1049,10 +1060,17 @@ def app_clientes():
                 
                 n_custo = c_lc4.number_input("Custo (R$)", key="n_custo_l", step=0.01, label_visibility="visible")
                 
+                # --- NOVO: Campo Origem Custo ---
+                lista_origens = listar_origens_para_selecao()
+                opcoes_origem = [""] + lista_origens
+                c_origem = st.selectbox("Origem Custo (Tabela Fator)", options=opcoes_origem, key="n_orig_l")
+                # ---------------------------------
+                
                 c_bt.write(""); c_bt.write("") 
                 if c_bt.button("➕", key="add_cart_l", use_container_width=True):
                     if n_cpf and n_nome and n_carteira: 
-                        salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo); st.rerun()
+                        salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo, c_origem)
+                        st.rerun()
                     else:
                         st.warning("Preencha CPF, Nome e Selecione a Carteira.")
             
@@ -1066,24 +1084,29 @@ def app_clientes():
                     <div style="flex: 2;">Cliente</div>
                     <div style="flex: 2;">Carteira</div>
                     <div style="flex: 1;">Custo</div>
+                    <div style="flex: 2;">Origem Custo</div>
                     <div style="flex: 2;">Usuário Vinculado</div>
                     <div style="flex: 1; text-align: center;">Ações</div>
                 </div>""", unsafe_allow_html=True)
 
                 for _, r in df_cart_l.iterrows():
-                    cc1, cc2, cc3, cc4, cc5 = st.columns([2, 2, 1, 2, 1])
+                    cc1, cc2, cc3, cc4, cc5, cc6 = st.columns([2, 2, 1, 2, 2, 1])
                     
                     cc1.write(f"{r['nome_cliente']}")
                     cc2.write(f"{r['nome_carteira']}")
                     cc3.write(f"R$ {float(r['custo_carteira'] or 0):.2f}")
                     
+                    # Exibe Origem Custo
+                    origem_info = r.get('origem_custo', '-') if r.get('origem_custo') else '-'
+                    cc4.write(origem_info)
+                    
                     # Exibe usuário vinculado se existir
                     user_info = "-"
                     if r['nome_usuario']:
                         user_info = f"{r['nome_usuario']}"
-                    cc4.write(user_info)
+                    cc5.write(user_info)
                     
-                    with cc5:
+                    with cc6:
                         b_ed, b_del = st.columns(2)
                         if b_ed.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
                         if b_del.button("🗑️", key=f"del_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
