@@ -1,18 +1,16 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-import os
-import re
 import time
 from datetime import datetime
-import modulo_wapi  # Integração centralizada
+import modulo_wapi
 
 try:
     import conexao
 except ImportError:
     st.error("Erro crítico: Arquivo conexao.py não localizado.")
 
-# --- CONEXÃO COM BANCO ---
+# --- CONEXÃO ---
 def get_conn():
     try:
         return psycopg2.connect(
@@ -23,50 +21,40 @@ def get_conn():
         st.error(f"Erro ao conectar ao banco: {e}")
         return None
 
-# --- FUNÇÕES DE CONTROLE DE ESTADO (CALLBACKS) ---
-def abrir_modal(tipo, pedido=None):
-    """Callback para definir qual modal deve ser aberto"""
-    st.session_state['modal_ativo'] = tipo
-    st.session_state['pedido_ativo'] = pedido
-
-def fechar_modal():
-    """Limpa o estado do modal antes de recarregar a página"""
-    st.session_state['modal_ativo'] = None
-    st.session_state['pedido_ativo'] = None
-
 # --- FUNÇÕES AUXILIARES ---
 def listar_modelos_mensagens():
-    """Busca os modelos de mensagem cadastrados no W-API para este módulo"""
     conn = get_conn()
     if conn:
         try:
-            # Filtra apenas modelos do módulo PEDIDOS
             query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'PEDIDOS' ORDER BY chave_status ASC"
             df = pd.read_sql(query, conn)
             conn.close()
             return df['chave_status'].tolist()
-        except:
-            conn.close()
+        except: conn.close()
     return []
 
-# --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
+# --- FUNÇÕES DE CRUD ---
 def buscar_clientes():
     conn = get_conn()
     if conn:
-        try:
-            query = "SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df
-        except Exception as e:
-            st.error(f"Erro ao buscar clientes: {e}")
-            if conn: conn.close()
+        df = pd.read_sql("SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome", conn)
+        conn.close()
+        return df
     return pd.DataFrame()
 
 def buscar_produtos():
     conn = get_conn()
     if conn:
         df = pd.read_sql("SELECT id, codigo, nome, tipo, preco FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
+        conn.close()
+        return df
+    return pd.DataFrame()
+
+def buscar_historico_pedido(id_pedido):
+    conn = get_conn()
+    if conn:
+        query = "SELECT data_mudanca, status_novo, observacao FROM pedidos_historico WHERE id_pedido = %s ORDER BY data_mudanca DESC"
+        df = pd.read_sql(query, conn, params=(int(id_pedido),))
         conn.close()
         return df
     return pd.DataFrame()
@@ -84,86 +72,40 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
             """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
                   int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total)))
             
-            id_novo_pedido = cur.fetchone()[0]
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", 
-                        (id_novo_pedido, 'Solicitado', 'Pedido criado no sistema.'))
-            conn.commit()
-            conn.close()
+            id_novo = cur.fetchone()[0]
+            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
+            conn.commit(); conn.close()
             
-            # --- NOTIFICAÇÕES VIA W-API CENTRALIZADO ---
-            instancia = modulo_wapi.buscar_instancia_ativa()
-            if instancia and avisar_cliente and cliente['telefone']:
-                inst_id, inst_token = instancia
-                template = modulo_wapi.buscar_template("PEDIDOS", "criacao")
-                if template:
-                    msg_final = template.replace("{nome}", str(cliente['nome']).split()[0]) \
-                                        .replace("{pedido}", codigo) \
-                                        .replace("{produto}", str(produto['nome']))
-                    modulo_wapi.enviar_msg_api(inst_id, inst_token, cliente['telefone'], msg_final)
-            
+            if avisar_cliente and cliente['telefone']:
+                inst = modulo_wapi.buscar_instancia_ativa()
+                if inst:
+                    tpl = modulo_wapi.buscar_template("PEDIDOS", "criacao")
+                    if tpl:
+                        msg = tpl.replace("{nome}", str(cliente['nome']).split()[0]).replace("{pedido}", codigo).replace("{produto}", str(produto['nome']))
+                        modulo_wapi.enviar_msg_api(inst[0], inst[1], cliente['telefone'], msg)
             return True, codigo
-        except Exception as e:
-            return False, str(e)
+        except Exception as e: return False, str(e)
     return False, "Erro conexão"
 
-def editar_dados_pedido(id_pedido, nova_qtd, novo_valor_unit, novo_cliente, novo_produto):
-    novo_total = nova_qtd * novo_valor_unit
+def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, modelo_msg):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("""
-                UPDATE pedidos 
-                SET id_cliente = %s, nome_cliente = %s, cpf_cliente = %s, telefone_cliente = %s,
-                    id_produto = %s, nome_produto = %s, categoria_produto = %s,
-                    quantidade = %s, valor_unitario = %s, valor_total = %s, 
-                    data_atualizacao = NOW()
-                WHERE id = %s
-            """, (int(novo_cliente['id']), novo_cliente['nome'], novo_cliente['cpf'], novo_cliente['telefone'],
-                  int(novo_produto['id']), novo_produto['nome'], novo_produto['tipo'],
-                  int(nova_qtd), float(novo_valor_unit), float(novo_total), int(id_pedido)))
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            st.error(f"Erro ao atualizar dados: {e}")
-            return False
-    return False
-
-def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar_cliente, obs_status_texto, modelo_msg_escolhido="Automático (Padrão)"):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("UPDATE pedidos SET status = %s, observacao = %s, data_atualizacao = NOW() WHERE id = %s", 
-                        (novo_status, obs_status_texto, int(id_pedido)))
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao, data_mudanca) VALUES (%s, %s, %s, NOW())", 
-                        (int(id_pedido), novo_status, obs_status_texto))
-            conn.commit()
-            conn.close()
+            cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
+            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs))
+            conn.commit(); conn.close()
             
-            if avisar_cliente and dados_pedido['telefone_cliente']:
-                instancia = modulo_wapi.buscar_instancia_ativa()
-                if instancia:
-                    # Lógica de seleção do modelo
-                    if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
-                        chave_msg = modelo_msg_escolhido
-                    else:
-                        chave_msg = novo_status.lower().replace(" ", "_")
-                    
-                    template = modulo_wapi.buscar_template("PEDIDOS", chave_msg)
-                    
-                    if template:
-                        msg_final = template.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
-                                            .replace("{pedido}", str(dados_pedido['codigo'])) \
-                                            .replace("{status}", novo_status) \
-                                            .replace("{obs_status}", obs_status_texto) \
-                                            .replace("{produto}", str(dados_pedido['nome_produto']))
-                        modulo_wapi.enviar_msg_api(instancia[0], instancia[1], dados_pedido['telefone_cliente'], msg_final)
+            if avisar and dados_pedido['telefone_cliente']:
+                inst = modulo_wapi.buscar_instancia_ativa()
+                if inst:
+                    chave = modelo_msg if modelo_msg != "Automático (Padrão)" else novo_status.lower().replace(" ", "_")
+                    tpl = modulo_wapi.buscar_template("PEDIDOS", chave)
+                    if tpl:
+                        msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
+                        modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
             return True
-        except Exception as e:
-            st.error(f"Erro ao atualizar status: {e}")
-            return False
+        except: return False
     return False
 
 def excluir_pedido_db(id_pedido):
@@ -171,317 +113,159 @@ def excluir_pedido_db(id_pedido):
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM pedidos WHERE id = %s", (id_pedido,))
-            conn.commit()
-            conn.close()
+            cur.execute("DELETE FROM pedidos WHERE id=%s", (id_pedido,))
+            conn.commit(); conn.close()
             return True
-        except Exception as e:
-            st.error(f"Erro ao excluir: {e}")
-            return False
+        except: return False
     return False
 
-def buscar_historico_pedido(id_pedido):
+def editar_dados_pedido(id_pedido, nova_qtd, novo_valor, novo_cli, novo_prod):
+    total = nova_qtd * novo_valor
     conn = get_conn()
     if conn:
-        query = "SELECT data_mudanca, status_novo, observacao FROM pedidos_historico WHERE id_pedido = %s ORDER BY data_mudanca DESC"
-        df = pd.read_sql(query, conn, params=(int(id_pedido),))
-        conn.close()
-        return df
-    return pd.DataFrame()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE pedidos SET id_cliente=%s, nome_cliente=%s, cpf_cliente=%s, telefone_cliente=%s,
+                id_produto=%s, nome_produto=%s, categoria_produto=%s, quantidade=%s, valor_unitario=%s, valor_total=%s, data_atualizacao=NOW()
+                WHERE id=%s
+            """, (novo_cli['id'], novo_cli['nome'], novo_cli['cpf'], novo_cli['telefone'], novo_prod['id'], novo_prod['nome'], novo_prod['tipo'], nova_qtd, novo_valor, total, id_pedido))
+            conn.commit(); conn.close()
+            return True
+        except: return False
+    return False
 
-# --- POP-UPS (DIALOGS) ---
-@st.dialog("➕ Novo Pedido", width="large")
+# --- DIALOGS ---
+@st.dialog("➕ Novo Pedido")
 def dialog_novo_pedido():
     df_c = buscar_clientes()
     df_p = buscar_produtos()
-    
-    if df_c.empty or df_p.empty:
-        st.warning("É necessário ter Clientes e Produtos cadastrados.")
-        return
+    if df_c.empty or df_p.empty: st.warning("Cadastre clientes e produtos."); return
 
-    with st.form("form_novo_pedido"):
-        st.write("Preencha os dados do pedido:")
+    with st.form("form_new"):
         c1, c2 = st.columns(2)
-        idx_cli = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
-        idx_prod = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
-        
-        cli_selecionado = df_c.iloc[idx_cli]
-        prod_selecionado = df_p.iloc[idx_prod]
+        ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
+        ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
+        cli, prod = df_c.iloc[ic], df_p.iloc[ip]
         
         c3, c4 = st.columns(2)
-        qtd = c3.number_input("Quantidade", min_value=1, value=1, step=1)
-        valor_unit = c4.number_input("Valor Unitário (R$)", min_value=0.0, value=float(prod_selecionado['preco'] or 0.0), step=0.5, format="%.2f")
+        qtd = c3.number_input("Qtd", 1, value=1)
+        val = c4.number_input("Valor Un.", 0.0, value=float(prod['preco'] or 0.0))
+        st.write(f"Total: R$ {qtd*val:.2f}")
+        avisar = st.checkbox("Avisar WhatsApp?", value=True)
         
-        total = qtd * valor_unit
-        st.markdown(f"### 💰 Total: R$ {total:.2f}")
-        
-        avisar = st.checkbox("Enviar confirmação no WhatsApp?", value=True)
+        if st.form_submit_button("Criar"):
+            ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar)
+            if ok: st.success("Criado!"); time.sleep(1); st.rerun()
+            else: st.error(res)
 
-        if st.form_submit_button("✅ Confirmar Pedido"):
-            ok, res = criar_pedido(cli_selecionado, prod_selecionado, qtd, valor_unit, total, avisar)
-            if ok:
-                st.success(f"Pedido {res} criado com sucesso!")
-                time.sleep(1)
-                fechar_modal()
-                st.rerun()
-            else:
-                st.error(f"Erro: {res}")
+@st.dialog("✏️ Editar")
+def dialog_editar(ped):
+    df_c = buscar_clientes(); df_p = buscar_produtos()
+    with st.form("form_edit"):
+        ic = st.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
+        ip = st.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
+        nq = st.number_input("Qtd", 1, value=int(ped['quantidade']))
+        nv = st.number_input("Valor", 0.0, value=float(ped['valor_unitario']))
+        if st.form_submit_button("Salvar"):
+            if editar_dados_pedido(ped['id'], nq, nv, df_c.iloc[ic], df_p.iloc[ip]): st.success("Salvo!"); st.rerun()
 
-@st.dialog("👤 Detalhes do Cliente")
-def ver_cliente(nome, cpf, tel):
-    st.write(f"**Nome:** {nome}")
-    st.write(f"**CPF:** {cpf}")
-    st.write(f"**Telefone:** {tel}")
-
-@st.dialog("✏️ Editar Pedido")
-def dialog_editar_dados(pedido):
-    df_clientes = buscar_clientes()
-    df_produtos = buscar_produtos()
-    if df_clientes.empty or df_produtos.empty: return
+@st.dialog("🔄 Status")
+def dialog_status(ped):
+    lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
+    idx = lst.index(ped['status']) if ped['status'] in lst else 0
+    mods = ["Automático (Padrão)"] + listar_modelos_mensagens()
     
-    with st.form("form_editar_dados"):
-        # Tenta encontrar o índice atual
-        try:
-            # Busca simples pelo nome pode não ser perfeita se houver homônimos, mas serve para UI
-            idx_cli_atual = df_clientes[df_clientes['nome'] == pedido['nome_cliente']].index[0]
-        except:
-            idx_cli_atual = 0
-            
-        try:
-            idx_prod_atual = df_produtos[df_produtos['nome'] == pedido['nome_produto']].index[0]
-        except:
-            idx_prod_atual = 0
-
-        idx_cli = st.selectbox("Cliente", range(len(df_clientes)), index=int(idx_cli_atual), format_func=lambda x: df_clientes.iloc[x]['nome'])
-        idx_prod = st.selectbox("Produto", range(len(df_produtos)), index=int(idx_prod_atual), format_func=lambda x: df_produtos.iloc[x]['nome'])
-        
-        nova_qtd = st.number_input("Quantidade", min_value=1, value=int(pedido['quantidade']))
-        novo_preco = st.number_input("Valor Unitário", min_value=0.0, value=float(pedido['valor_unitario']))
-        
-        novo_total = nova_qtd * novo_preco
-        st.write(f"Novo Total: R$ {novo_total:.2f}")
-
-        if st.form_submit_button("💾 Salvar"):
-            if editar_dados_pedido(pedido['id'], nova_qtd, novo_preco, df_clientes.iloc[idx_cli], df_produtos.iloc[idx_prod]):
-                st.success("Atualizado!")
-                time.sleep(1)
-                fechar_modal()
-                st.rerun()
-
-@st.dialog("🔄 Atualizar Status")
-def dialog_status_pedido(pedido):
-    status_opcoes = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
-    
-    try:
-        idx_atual = status_opcoes.index(pedido['status'])
-    except:
-        idx_atual = 0
-
-    lista_modelos = listar_modelos_mensagens()
-    opcoes_msg = ["Automático (Padrão)"] + lista_modelos
-    
-    with st.form("form_status_update"):
-        novo = st.selectbox("Novo Status", status_opcoes, index=idx_atual)
-        modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
-        obs = st.text_area("Observação")
-        avisar = st.checkbox("Avisar cliente?", value=True)
-        
+    with st.form("form_st"):
+        ns = st.selectbox("Status", lst, index=idx)
+        mod = st.selectbox("Modelo Msg", mods)
+        obs = st.text_area("Obs")
+        av = st.checkbox("Avisar?", value=True)
         if st.form_submit_button("Atualizar"):
-            if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs, modelo_escolhido):
-                st.success("Status Alterado!")
-                time.sleep(1.5)
-                fechar_modal()
-                st.rerun()
+            if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod): st.success("Atualizado!"); st.rerun()
+            
+    st.divider(); st.caption("Histórico")
+    st.dataframe(buscar_historico_pedido(ped['id']), hide_index=True)
 
-    st.markdown("---")
-    st.caption("📜 Histórico de Tramitação")
+@st.dialog("🗑️ Excluir")
+def dialog_excluir(pid):
+    st.warning("Confirmar exclusão?")
+    if st.button("Sim", type="primary"):
+        if excluir_pedido_db(pid): st.success("Excluído!"); st.rerun()
+
+@st.dialog("📝 Nova Tarefa")
+def dialog_tarefa(ped):
+    with st.form("form_task"):
+        dt = st.date_input("Previsão", datetime.now())
+        obs = st.text_area("Descrição")
+        if st.form_submit_button("Criar"):
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) VALUES (%s,%s,%s,%s,%s,'Solicitado')", (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
+            conn.commit(); conn.close()
+            st.success("Tarefa Criada!"); st.rerun()
+
+# --- COMPONENTE ISOLADO (O SEGREDO DA SOLUÇÃO) ---
+# Esta função renderiza UM pedido e isola o rerun apenas a ele
+@st.fragment
+def cartao_pedido(row):
+    cor = "🔴"
+    if row['status'] == 'Pago': cor = "🟢"
+    elif row['status'] == 'Pendente': cor = "🟠"
+    elif row['status'] == 'Solicitado': cor = "🔵"
     
-    df_hist = buscar_historico_pedido(pedido['id'])
-    if not df_hist.empty:
-        df_hist['data_mudanca'] = pd.to_datetime(df_hist['data_mudanca']).dt.strftime('%d/%m/%Y %H:%M')
-        df_hist.columns = ["Data", "Status", "Observação"]
-        st.dataframe(df_hist, use_container_width=True, hide_index=True)
-    else:
-        st.info("Sem histórico registrado.")
-
-@st.dialog("📜 Histórico")
-def dialog_historico(id_pedido, codigo_pedido):
-    st.write(f"Histórico de: **{codigo_pedido}**")
-    df_hist = buscar_historico_pedido(id_pedido)
-    if not df_hist.empty:
-        df_hist.columns = ["Data/Hora", "Status", "Obs"]
-        st.dataframe(df_hist, use_container_width=True, hide_index=True)
-    else: st.info("Sem registros.")
-
-@st.dialog("⚠️ Excluir Pedido")
-def dialog_excluir(id_pedido):
-    st.error("Tem certeza que deseja excluir este pedido?")
-    st.warning("Esta ação não pode ser desfeita.")
-    if st.button("Confirmar Exclusão", type="primary"):
-        if excluir_pedido_db(id_pedido):
-            st.success("Pedido excluído!")
-            time.sleep(1)
-            fechar_modal()
-            st.rerun()
-
-@st.dialog("📝 Criar Tarefa para Pedido")
-def dialog_criar_tarefa_rapida(pedido):
-    with st.form("form_tarefa_rapida_ped"):
-        st.write(f"Vinculando tarefa ao Pedido: **{pedido['codigo']}**")
-        st.write(f"Cliente: **{pedido['nome_cliente']}**")
+    label = f"{cor} [{row['status'].upper()}] {row['codigo']} - {row['nome_cliente']} | R$ {row['valor_total']:.2f}"
+    
+    with st.expander(label):
+        st.write(f"**Produto:** {row['nome_produto']}")
+        st.write(f"**Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
         
-        data_prev = st.date_input("Data Previsão", value=datetime.now())
-        obs = st.text_area("Descrição da Tarefa")
-        
-        if st.form_submit_button("🚀 Criar Tarefa"):
-            conn = get_conn()
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute("""
-                        INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) 
-                        VALUES (%s, %s, %s, %s, %s, 'Solicitado') RETURNING id
-                    """, (pedido['id'], pedido['id_cliente'], pedido['id_produto'], data_prev, obs))
-                    
-                    new_id = cur.fetchone()[0]
-                    
-                    cur.execute("""
-                        INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) 
-                        VALUES (%s, 'Solicitado', 'Tarefa criada via Módulo de Pedidos')
-                    """, (new_id,))
-                    
-                    conn.commit()
-                    conn.close()
-                    st.success("Tarefa criada com sucesso! Verifique no módulo de Tarefas.")
-                    time.sleep(1.5)
-                    fechar_modal()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao criar tarefa: {e}")
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        if c1.button("👤", key=f"c_{row['id']}", help="Cliente"): 
+            st.info(f"Cliente: {row['nome_cliente']}\nCPF: {row['cpf_cliente']}\nTel: {row['telefone_cliente']}")
+        if c2.button("✏️", key=f"e_{row['id']}", help="Editar"): dialog_editar(row)
+        if c3.button("🔄", key=f"s_{row['id']}", help="Status"): dialog_status(row)
+        if c4.button("📜", key=f"h_{row['id']}", help="Histórico"): 
+            st.dataframe(buscar_historico_pedido(row['id']), hide_index=True)
+        if c5.button("🗑️", key=f"d_{row['id']}", help="Excluir"): dialog_excluir(row['id'])
+        if c6.button("📝", key=f"t_{row['id']}", help="Tarefa"): dialog_tarefa(row)
 
 # --- APP PRINCIPAL ---
 def app_pedidos():
-    # Inicialização do Estado
-    if 'modal_ativo' not in st.session_state: st.session_state['modal_ativo'] = None
-    if 'pedido_ativo' not in st.session_state: st.session_state['pedido_ativo'] = None
-
-    # Cabeçalho
-    c_title, c_btn = st.columns([5, 1])
-    c_title.markdown("## 🛒 Módulo de Pedidos") 
-    
-    # Botão Novo com Callback
-    c_btn.button("➕ Novo Pedido", type="primary", use_container_width=False, 
-                 on_click=abrir_modal, args=('novo', None))
+    c_t, c_b = st.columns([5, 1])
+    c_t.markdown("## 🛒 Pedidos")
+    if c_b.button("➕ Novo", type="primary"): dialog_novo_pedido()
 
     conn = get_conn()
     if conn:
-        try:
-            query = """
-                SELECT p.*, c.email as email_cliente 
-                FROM pedidos p
-                LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id
-                ORDER BY p.data_criacao DESC
-            """
-            df = pd.read_sql(query, conn)
-        except Exception as e:
-            st.error(f"Erro na query: {e}")
-            df = pd.DataFrame()
-        finally:
-            conn.close()
+        df = pd.read_sql("SELECT p.*, c.email as email_cliente FROM pedidos p LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id ORDER BY p.data_criacao DESC", conn)
+        conn.close()
 
-        # --- FILTROS ---
-        with st.expander("🔍 Filtros de Pesquisa", expanded=True):
-            cf1, cf2, cf3 = st.columns([3, 1.5, 1.5])
-            busca_geral = cf1.text_input("🔍 Buscar (Nome, Email, Telefone, Produto)", placeholder="Comece a digitar...")
+        with st.expander("🔍 Filtros", expanded=True):
+            c1, c2, c3 = st.columns([3, 1.5, 1.5])
+            busca = c1.text_input("Buscar")
+            status = c2.multiselect("Status", df['status'].unique() if not df.empty else [])
             
-            opcoes_status = df['status'].unique().tolist() if not df.empty else []
-            padrao_status = ["Solicitado"] if "Solicitado" in opcoes_status else None
-            f_status = cf2.multiselect("Status", options=opcoes_status, default=padrao_status, placeholder="Filtrar Status")
-            
-            opcoes_cats = df['categoria_produto'].unique() if not df.empty else []
-            f_cats = cf3.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categorias")
-            
-            cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
-            op_data = cd1.selectbox("Filtro de Data", ["Todo o período", "Igual a", "Antes de", "Depois de"])
-            data_ref = cd2.date_input("Data Referência", value=datetime.today(), format="DD/MM/YYYY")
-
             if not df.empty:
-                if busca_geral:
-                    mask = (
-                        df['nome_cliente'].str.contains(busca_geral, case=False, na=False) |
-                        df['nome_produto'].str.contains(busca_geral, case=False, na=False) |
-                        df['telefone_cliente'].str.contains(busca_geral, case=False, na=False) |
-                        df['email_cliente'].str.contains(busca_geral, case=False, na=False)
-                    )
-                    df = df[mask]
-                if f_status: df = df[df['status'].isin(f_status)]
-                if f_cats: df = df[df['categoria_produto'].isin(f_cats)]
-                if op_data != "Todo o período":
-                    df_data = pd.to_datetime(df['data_criacao']).dt.date
-                    if op_data == "Igual a": df = df[df_data == data_ref]
-                    elif op_data == "Antes de": df = df[df_data < data_ref]
-                    elif op_data == "Depois de": df = df[df_data > data_ref]
+                if busca: df = df[df['nome_cliente'].str.contains(busca, case=False) | df['nome_produto'].str.contains(busca, case=False)]
+                if status: df = df[df['status'].isin(status)]
 
-        # --- PAGINAÇÃO ---
-        st.markdown("---")
-        col_res, col_pag = st.columns([4, 1])
-        with col_pag:
-            qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0)
+        st.divider()
         
-        df_exibir = df.copy()
-        if qtd_view != "Todos":
-            df_exibir = df.head(int(qtd_view))
+        # Paginação simples
+        pag_size = 10
+        total_pags = (len(df) // pag_size) + 1
+        pag = st.selectbox("Página", range(1, total_pags + 1)) if total_pags > 1 else 1
         
-        with col_res:
-            st.caption(f"Exibindo {len(df_exibir)} de {len(df)} pedidos encontrados.")
+        start = (pag - 1) * pag_size
+        end = start + pag_size
+        subset = df.iloc[start:end]
 
-        # --- LISTAGEM COM CALLBACKS ---
-        if not df_exibir.empty:
-            for i, row in df_exibir.iterrows():
-                cor_status = "🔴"
-                if row['status'] == 'Pago': cor_status = "🟢"
-                elif row['status'] == 'Pendente': cor_status = "🟠"
-                elif row['status'] == 'Solicitado': cor_status = "🔵"
-                
-                titulo_card = f"{cor_status} [{row['status'].upper()}] {row['codigo']} - {row['nome_cliente']} | R$ {row['valor_total']:.2f}"
-                
-                with st.expander(titulo_card):
-                    st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
-                    data_fmt = pd.to_datetime(row['data_criacao']).strftime('%d/%m/%Y %H:%M')
-                    st.write(f"**Data:** {data_fmt}")
-                    
-                    c1, c2, c3, c4, c5, c6 = st.columns(6)
-                    # Todos os botões agora usam on_click para evitar o erro de removeChild
-                    c1.button("👤 Cliente", key=f"c_{row['id']}", on_click=abrir_modal, args=('cliente', row))
-                    c2.button("✏️ Dados", key=f"e_{row['id']}", on_click=abrir_modal, args=('editar', row))
-                    c3.button("🔄 Status", key=f"s_{row['id']}", on_click=abrir_modal, args=('status', row))
-                    c4.button("📜 Hist.", key=f"h_{row['id']}", on_click=abrir_modal, args=('historico', row))
-                    c5.button("🗑️ Excluir", key=f"del_{row['id']}", on_click=abrir_modal, args=('excluir', row))
-                    c6.button("📝 Nova Tarefa", key=f"nt_{row['id']}", on_click=abrir_modal, args=('tarefa', row))
+        if not subset.empty:
+            for _, row in subset.iterrows():
+                # AQUI ESTÁ A MÁGICA: Chamamos a função decorada
+                cartao_pedido(row)
         else:
-            st.info("Nenhum pedido encontrado com os filtros atuais.")
-    else:
-        st.info("Sem conexão com o banco.")
-
-    # --- ROTEADOR DE MODAIS (Fora do Loop) ---
-    # Verifica o estado e abre o dialog correspondente
-    modal = st.session_state['modal_ativo']
-    pedido = st.session_state['pedido_ativo']
-
-    if modal == 'novo':
-        dialog_novo_pedido()
-    elif modal == 'cliente' and pedido is not None:
-        ver_cliente(pedido['nome_cliente'], pedido['cpf_cliente'], pedido['telefone_cliente'])
-    elif modal == 'editar' and pedido is not None:
-        dialog_editar_dados(pedido)
-    elif modal == 'status' and pedido is not None:
-        dialog_status_pedido(pedido)
-    elif modal == 'historico' and pedido is not None:
-        dialog_historico(pedido['id'], pedido['codigo'])
-    elif modal == 'excluir' and pedido is not None:
-        dialog_excluir(pedido['id'])
-    elif modal == 'tarefa' and pedido is not None:
-        dialog_criar_tarefa_rapida(pedido)
+            st.info("Nenhum pedido.")
 
 if __name__ == "__main__":
     app_pedidos()
