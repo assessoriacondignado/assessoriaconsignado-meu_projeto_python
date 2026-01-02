@@ -1,2 +1,2 @@
-ALTER TABLE produtos_servicos
-ADD COLUMN IF NOT EXISTS origem_custo VARCHAR(100);
+-- Exclui a tabela de configuração antiga que está sem a coluna nova
+DROP TABLE IF EXISTS cliente.carteiras_config;
