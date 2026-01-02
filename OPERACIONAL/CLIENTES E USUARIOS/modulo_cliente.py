@@ -153,7 +153,8 @@ def excluir_relacao_pedido_carteira(id_reg):
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
+        # ATUALIZADO: Busca também cpf_usuario e nome_usuario
+        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
 
@@ -161,12 +162,43 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo):
     conn = get_conn()
     try:
         cur = conn.cursor()
+        
+        # --- LÓGICA DE IDENTIFICAÇÃO DO USUÁRIO VINCULADO ---
+        cpf_user = None
+        nome_user = None
+        
+        # Tenta buscar o vínculo no cadastro de clientes
+        # Normaliza o CPF do cliente para busca (remove não numéricos)
+        cpf_limpo = re.sub(r'\D', '', str(cpf))
+        
+        # Query que cruza Clientes com Usuários para achar o vínculo
+        query_vinculo = """
+            SELECT u.cpf, u.nome 
+            FROM admin.clientes c
+            JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
+            WHERE c.cpf = %s OR c.cpf = %s
+            LIMIT 1
+        """
+        # Tenta com o CPF limpo e com o CPF original (caso tenha pontuação no banco)
+        cur.execute(query_vinculo, (cpf_limpo, cpf))
+        res_vinculo = cur.fetchone()
+        
+        if res_vinculo:
+            cpf_user = res_vinculo[0]
+            nome_user = res_vinculo[1]
+        
+        # Insere na lista com os dados do usuário identificado
         cur.execute("""
-            INSERT INTO cliente.cliente_carteira_lista (cpf_cliente, nome_cliente, nome_carteira, custo_carteira) 
-            VALUES (%s, %s, %s, %s)
-        """, (cpf, nome, carteira, custo))
+            INSERT INTO cliente.cliente_carteira_lista 
+            (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario) 
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (cpf, nome, carteira, custo, cpf_user, nome_user))
+        
         conn.commit(); conn.close(); return True
-    except: conn.close(); return False
+    except Exception as e: 
+        print(e)
+        if conn: conn.close()
+        return False
 
 def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo):
     conn = get_conn()
@@ -206,7 +238,7 @@ def garantir_tabela_config_carteiras():
                     nome_tabela_transacoes VARCHAR(255),
                     status VARCHAR(50) DEFAULT 'ATIVO',
                     data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    origem_custo VARCHAR(100) -- Nova coluna adicionada
+                    origem_custo VARCHAR(100)
                 );
             """)
             conn.commit(); conn.close()
@@ -301,7 +333,6 @@ def atualizar_carteira_config(id_conf, status, nome_carteira=None, origem_custo=
     if conn:
         try:
             cur = conn.cursor()
-            # Atualiza Status, Nome e Origem Custo
             cur.execute("""
                 UPDATE cliente.carteiras_config 
                 SET status = %s, nome_carteira = %s, origem_custo = %s 
@@ -401,20 +432,16 @@ def buscar_usuarios_disponiveis():
         df = pd.read_sql(query, conn); conn.close(); return df
     except: conn.close(); return pd.DataFrame()
 
-# =============================================================================
-# [ATUALIZADO] FUNÇÃO DE VÍNCULO COM TRATAMENTO DE ERRO
-# =============================================================================
 def vincular_usuario_cliente(id_cliente, id_usuario):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # Força cast para inteiro
         cur.execute("UPDATE admin.clientes SET id_usuario_vinculo = %s WHERE id = %s", (int(id_usuario), int(id_cliente)))
         conn.commit(); conn.close()
         return True, "Vinculado com sucesso!"
     except Exception as e: 
         conn.close()
-        return False, str(e) # Retorna a mensagem de erro original
+        return False, str(e)
 
 def desvincular_usuario_cliente(id_cliente):
     conn = get_conn()
@@ -506,28 +533,22 @@ def dialog_editar_cart_lista(dados):
 @st.dialog("✏️ Editar Configuração da Carteira")
 def dialog_editar_carteira_config(dados):
     st.write(f"Editando: **{dados['nome_carteira']}**")
-    
-    # 1. Busca lista de origens no banco
     lista_origens = listar_origens_para_selecao()
     
     with st.form("form_edit_cart_conf"):
         n_nome = st.text_input("Nome da Carteira", value=dados['nome_carteira'])
         n_status = st.selectbox("Status", ["ATIVO", "INATIVO"], index=0 if dados['status'] == "ATIVO" else 1)
         
-        # 2. Selectbox para Origem Custo
         idx_origem = 0
         valor_atual_origem = dados.get('origem_custo')
         if valor_atual_origem and valor_atual_origem in lista_origens:
             idx_origem = lista_origens.index(valor_atual_origem)
-            
-        # Adiciona opção vazia no início caso não tenha nada selecionado ou para limpar
         opcoes_origem = [""] + lista_origens
         n_origem = st.selectbox("Origem Custo (Tabela Fator)", options=opcoes_origem, index=idx_origem + 1 if valor_atual_origem else 0)
         
         st.info("⚠️ Alterar o nome da carteira aqui não renomeia a tabela do banco, apenas o rótulo.")
         
         if st.form_submit_button("Salvar Alterações"):
-            # Atualiza passando o novo campo origem_custo
             if atualizar_carteira_config(dados['id'], n_status, n_nome, n_origem):
                 st.success("Atualizado com sucesso!"); time.sleep(1); st.rerun()
             else:
@@ -562,7 +583,6 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 if st.form_submit_button("Criar e Vincular"):
                     novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente', True)
                     if novo_id: 
-                        # Agora usa a função com retorno de mensagem
                         ok, msg = vincular_usuario_cliente(dados_cliente['id'], novo_id)
                         if ok: st.success("Criado e vinculado!"); time.sleep(1); st.rerun()
                         else: st.error(f"Erro ao vincular: {msg}")
@@ -573,7 +593,6 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 opcoes = df_livres.apply(lambda x: f"{x['nome']} ({x['email']})", axis=1)
                 idx_sel = st.selectbox("Selecione o Usuário", range(len(df_livres)), format_func=lambda x: opcoes[x])
                 if st.button("Vincular Selecionado"):
-                    # [CORREÇÃO APLICADA AQUI] - Exibe a mensagem real de erro
                     ok, msg = vincular_usuario_cliente(dados_cliente['id'], df_livres.iloc[idx_sel]['id'])
                     if ok:
                         st.success("Vinculado com sucesso!")
@@ -1013,13 +1032,37 @@ def app_clientes():
             
             st.divider()
             df_cart_l = listar_cliente_carteira_lista()
+            
+            # [MUDANÇA VISUAL]: Adicionado cabeçalho e novas colunas
             if not df_cart_l.empty:
+                st.markdown("""
+                <div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;">
+                    <div style="flex: 2;">Cliente</div>
+                    <div style="flex: 2;">Carteira</div>
+                    <div style="flex: 1;">Custo</div>
+                    <div style="flex: 2;">Usuário Vinculado</div>
+                    <div style="flex: 1; text-align: center;">Ações</div>
+                </div>""", unsafe_allow_html=True)
+
                 for _, r in df_cart_l.iterrows():
-                    cc1, cc2, cc3 = st.columns([8, 1, 1])
-                    cc1.markdown(f"**{r['nome_cliente']}** | {r['nome_carteira']} (R$ {float(r['custo_carteira'] or 0):.2f})")
-                    if cc2.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
-                    if cc3.button("🗑️", key=f"del_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
-                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+                    cc1, cc2, cc3, cc4, cc5 = st.columns([2, 2, 1, 2, 1])
+                    
+                    cc1.write(f"{r['nome_cliente']}")
+                    cc2.write(f"{r['nome_carteira']}")
+                    cc3.write(f"R$ {float(r['custo_carteira'] or 0):.2f}")
+                    
+                    # Exibe usuário vinculado se existir
+                    user_info = "-"
+                    if r['nome_usuario']:
+                        user_info = f"{r['nome_usuario']}"
+                    cc4.write(user_info)
+                    
+                    with cc5:
+                        b_ed, b_del = st.columns(2)
+                        if b_ed.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
+                        if b_del.button("🗑️", key=f"del_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
+                    
+                    st.markdown("<hr style='margin: 2px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
         # 6. CONFIGURAÇÃO DE CARTEIRAS (NOVO BLOCO)
