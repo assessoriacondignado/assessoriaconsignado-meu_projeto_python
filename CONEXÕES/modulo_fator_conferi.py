@@ -76,13 +76,10 @@ def converter_data_banco(data_str):
 def get_tag_text(element, tag_name):
     """Busca o texto de uma tag de forma insensível a maiúsculas/minúsculas"""
     if element is None: return None
-    # Procura exato
     res = element.find(tag_name)
     if res is not None: return res.text
-    # Procura variação UPPER
     res = element.find(tag_name.upper())
     if res is not None: return res.text
-    # Procura variação Lower
     res = element.find(tag_name.lower())
     if res is not None: return res.text
     return None
@@ -100,7 +97,6 @@ def find_tag(element, tag_name):
 
 def parse_xml_to_dict(xml_string):
     try:
-        # Limpeza de encoding forçada
         xml_string = xml_string.replace('ISO-8859-1', 'UTF-8') 
         root = ET.fromstring(xml_string)
         dados = {}
@@ -118,11 +114,8 @@ def parse_xml_to_dict(xml_string):
         
         # 2. TELEFONES
         telefones = []
-        
-        # Móveis
         tm = find_tag(root, 'telefones_movel')
         if tm is not None:
-            # Itera sobre filhos diretos para pegar todos os <TELEFONE> independente do case
             for child in tm:
                 if 'telefone' in child.tag.lower():
                     telefones.append({
@@ -131,7 +124,6 @@ def parse_xml_to_dict(xml_string):
                         'prioridade': get_tag_text(child, 'prioridade')
                     })
         
-        # Fixos
         tf = find_tag(root, 'telefones_fixo')
         if tf is not None:
             for child in tf:
@@ -176,7 +168,6 @@ def parse_xml_to_dict(xml_string):
     except Exception as e:
         return {"erro": f"Falha ao processar XML: {e}", "raw": xml_string}
 
-# --- FUNÇÃO RESTAURADA: CONSULTAR SALDO API ---
 def consultar_saldo_api():
     cred = buscar_credenciais()
     if not cred['token']: return False, 0.0
@@ -191,7 +182,6 @@ def consultar_saldo_api():
             except: pass
         saldo = float(valor_texto.replace(',', '.')) if valor_texto else 0.0
         
-        # Registra histórico
         conn = get_conn()
         if conn:
             cur = conn.cursor()
@@ -201,6 +191,24 @@ def consultar_saldo_api():
         return True, saldo
     except Exception as e:
         return False, 0.0
+
+# --- NOVA FUNÇÃO PARA VALIDAR ORIGEM NA TABELA ---
+def obter_origem_padronizada(nome_origem):
+    """Busca o nome correto na tabela de origens para garantir integridade"""
+    conn = get_conn()
+    origem_final = nome_origem # Fallback caso o banco falhe
+    if conn:
+        try:
+            cur = conn.cursor()
+            # Aponta para a tabela correta 'fatorconferi_origem_consulta_fator'
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator WHERE origem = %s", (nome_origem,))
+            res = cur.fetchone()
+            if res:
+                origem_final = res[0]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return origem_final
 
 # =============================================================================
 # 2. FUNÇÃO DE SALVAMENTO INTELIGENTE
@@ -217,7 +225,6 @@ def salvar_dados_fator_no_banco(dados_api):
         if not cpf_limpo or len(cpf_limpo) != 11:
             return False, "CPF inválido."
 
-        # UPSERT DADOS
         campos = {
             'nome': dados_api.get('nome'),
             'data_nascimento': converter_data_banco(dados_api.get('nascimento')),
@@ -236,7 +243,6 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
         
-        # INSERT SATÉLITES
         count_tel = 0
         for tel in dados_api.get('telefones', []):
             num_limpo = re.sub(r'\D', '', str(tel['numero']))
@@ -294,7 +300,6 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
                 try:
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
-                        # Só retorna cache se o dado for válido (tem nome ou cpf)
                         if dados.get('nome') or dados.get('cpf'):
                             conn.close()
                             return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
@@ -314,17 +319,14 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         
         dados = parse_xml_to_dict(xml)
         
-        # Só salva se o parsing foi útil
         if not dados.get('nome') and not dados.get('cpf'):
              conn.close()
              return {"sucesso": False, "msg": "Retorno vazio da API (Estrutura inválida).", "raw": xml, "dados": dados}
 
-        # Salva JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, ensure_ascii=False, indent=4)
         
-        # Log Banco
         custo = buscar_valor_consulta_atual()
         usr = st.session_state.get('usuario_nome', 'Sistema')
         id_usr = st.session_state.get('usuario_id', 0)
@@ -342,7 +344,6 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         if conn: conn.close()
         return {"sucesso": False, "msg": str(e)}
 
-# --- FUNÇÕES DE INTERFACE FALTANTES ---
 def listar_clientes_carteira():
     conn = get_conn()
     if conn:
@@ -370,13 +371,14 @@ def app_fator_conferi():
         c1, c2, c3 = st.columns([3, 1.5, 1.5])
         cpf_in = c1.text_input("CPF")
         
-        # CHECKBOX PARA FORÇAR NOVA CONSULTA (IMPORTANTE)
         forcar = c2.checkbox("Ignorar Histórico", value=False, help="Marque se a consulta anterior veio vazia ou com erro.")
         
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    res = realizar_consulta_cpf(cpf_in, "WEB ADMIN", forcar)
+                    # MUDANÇA APLICADA: Busca origem na tabela
+                    origem_padrao = obter_origem_padronizada("WEB USUÁRIO")
+                    res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
                     st.session_state['resultado_fator'] = res
         
         if 'resultado_fator' in st.session_state:
@@ -396,7 +398,6 @@ def app_fator_conferi():
 
                 dados = res['dados']
                 
-                # Debug do XML se vazio
                 if not dados.get('nome'):
                     with st.expander("⚠️ Dados Vazios (Debug)", expanded=False):
                         st.write("Verifique se o XML bruto contém dados:")
