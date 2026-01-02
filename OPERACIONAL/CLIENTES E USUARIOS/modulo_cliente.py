@@ -153,7 +153,6 @@ def excluir_relacao_pedido_carteira(id_reg):
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        # ATUALIZADO: Incluindo origem_custo na busca
         df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
@@ -163,7 +162,6 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
     try:
         cur = conn.cursor()
         
-        # --- LÓGICA DE IDENTIFICAÇÃO DO USUÁRIO VINCULADO ---
         cpf_user = None
         nome_user = None
         
@@ -183,7 +181,6 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
             cpf_user = res_vinculo[0]
             nome_user = res_vinculo[1]
         
-        # ATUALIZADO: Inserindo origem_custo
         cur.execute("""
             INSERT INTO cliente.cliente_carteira_lista 
             (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
@@ -200,7 +197,6 @@ def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_use
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO: Atualizando origem_custo
         cur.execute("""
             UPDATE cliente.cliente_carteira_lista 
             SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
@@ -225,8 +221,16 @@ def listar_usuarios_para_selecao():
     except: 
         conn.close(); return pd.DataFrame()
 
+def listar_clientes_para_selecao():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
+        conn.close(); return df
+    except: 
+        conn.close(); return pd.DataFrame()
+
 # =============================================================================
-# --- FUNÇÕES: CARTEIRA CLIENTE (CONFIG E EXTRATO) ---
+# 2. GESTÃO DE CARTEIRAS E TRANSAÇÕES (DINÂMICO)
 # =============================================================================
 
 def garantir_tabela_config_carteiras():
@@ -349,7 +353,6 @@ def atualizar_carteira_config(id_conf, status, nome_carteira=None, origem_custo=
             conn.close(); return False
     return False
 
-# --- FUNÇÃO ATUALIZADA: BUSCAR COM ID ---
 def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, data_fim):
     conn = get_conn()
     if not conn: return pd.DataFrame()
@@ -370,7 +373,6 @@ def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, 
     except Exception as e:
         conn.close(); return pd.DataFrame()
 
-# --- FUNÇÃO PARA LANÇAMENTO MANUAL (CRÉDITO/DÉBITO) ---
 def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc, valor, motivo):
     conn = get_conn()
     if not conn: return False, "Erro conexão"
@@ -395,7 +397,65 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
     except Exception as e:
         conn.close(); return False, str(e)
 
-# --- NOVAS FUNÇÕES: EDITAR E EXCLUIR TRANSAÇÃO ---
+# --- NOVAS FUNÇÕES PARA GESTÃO DINÂMICA DE TABELAS ---
+
+def listar_tabelas_transacao_reais():
+    """Busca no banco de dados todas as tabelas que começam com 'transacoes_' no schema 'cliente'"""
+    conn = get_conn()
+    tabelas = []
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'cliente' 
+                AND table_name LIKE 'transacoes_%%'
+                ORDER BY table_name
+            """)
+            tabelas = [row[0] for row in cur.fetchall()]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return tabelas
+
+def carregar_dados_tabela_dinamica(nome_tabela):
+    """Carrega os dados de uma tabela específica para edição"""
+    conn = get_conn()
+    if conn:
+        try:
+            df = pd.read_sql(f"SELECT * FROM cliente.{nome_tabela} ORDER BY id DESC", conn)
+            conn.close()
+            return df
+        except:
+            if conn: conn.close()
+    return pd.DataFrame()
+
+def salvar_alteracoes_tabela_dinamica(nome_tabela, df_original, df_editado):
+    """Compara o DataFrame original com o editado e aplica os UPDATES no banco"""
+    conn = get_conn()
+    if not conn: return False
+    
+    try:
+        cur = conn.cursor()
+        for index, row in df_editado.iterrows():
+            colunas = row.index.tolist()
+            if 'id' in colunas: colunas.remove('id')
+            
+            set_clause = ", ".join([f"{col} = %s" for col in colunas])
+            valores = [row[col] for col in colunas]
+            valores.append(row['id'])
+            
+            cur.execute(f"UPDATE cliente.{nome_tabela} SET {set_clause} WHERE id = %s", valores)
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar: {e}")
+        if conn: conn.close()
+        return False
+
 def atualizar_transacao_dinamica(nome_tabela, id_transacao, novo_motivo, novo_valor, novo_tipo):
     conn = get_conn()
     if not conn: return False
@@ -418,7 +478,13 @@ def excluir_transacao_dinamica(nome_tabela, id_transacao):
         return True
     except: conn.close(); return False
 
-# --- USUÁRIOS E CLIENTES (VINCULOS) ---
+# =============================================================================
+# 3. USUÁRIOS E CLIENTES (VINCULOS E SEGURANÇA)
+# =============================================================================
+
+def hash_senha(senha):
+    if senha.startswith('$2b$'): return senha
+    return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def buscar_usuarios_disponiveis():
     conn = get_conn()
@@ -459,14 +525,6 @@ def excluir_cliente_db(id_cliente):
         conn.commit(); conn.close(); return True
     except: conn.close(); return False
 
-# =============================================================================
-# 2. FUNÇÕES DE USUÁRIO
-# =============================================================================
-
-def hash_senha(senha):
-    if senha.startswith('$2b$'): return senha
-    return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
 def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
     conn = get_conn()
     try:
@@ -481,7 +539,7 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
     except Exception as e: conn.close(); return None
 
 # =============================================================================
-# 3. DIALOGS (POP-UPS PADRONIZADOS)
+# 4. DIALOGS
 # =============================================================================
 
 @st.dialog("✏️ Editar")
@@ -521,17 +579,14 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
 def dialog_editar_cart_lista(dados):
     st.write(f"Editando: **{dados['nome_cliente']}**")
     
-    # 1. Carrega usuários disponíveis para o Selectbox
     df_users = listar_usuarios_para_selecao()
     opcoes_usuarios = [""] + df_users.apply(lambda x: f"{x['nome']} | CPF: {x['cpf']}", axis=1).tolist()
     
-    # 2. Encontra o índice atual (se já tiver vínculo)
     idx_atual = 0
     if dados['nome_usuario']:
         match = [i for i, s in enumerate(opcoes_usuarios) if dados['nome_usuario'] in s]
         if match: idx_atual = match[0]
         
-    # 3. Busca lista de Origens para o novo campo
     lista_origens = listar_origens_para_selecao()
     idx_origem = 0
     valor_atual_origem = dados.get('origem_custo')
@@ -544,16 +599,12 @@ def dialog_editar_cart_lista(dados):
         n_nome = st.text_input("Nome Cliente", value=dados['nome_cliente'])
         n_cart = st.text_input("Nome Carteira", value=dados['nome_carteira'])
         
-        # 4. Campo de Origem do Custo (Selectbox)
         n_origem_custo = st.selectbox("Origem do Custo", options=opcoes_origem, index=idx_origem + 1 if valor_atual_origem else 0)
-        
         n_custo = st.number_input("Custo Carteira (R$)", value=float(dados['custo_carteira'] or 0.0), step=0.01)
         
-        # 5. Selectbox de Usuários
         sel_user = st.selectbox("Usuário Vinculado", options=opcoes_usuarios, index=idx_atual)
         
         if st.form_submit_button("💾 Salvar"):
-            # Extrai Nome e CPF do selecionado
             cpf_u_final = None
             nome_u_final = None
             
@@ -562,7 +613,6 @@ def dialog_editar_cart_lista(dados):
                 nome_u_final = partes[0]
                 cpf_u_final = partes[1] if len(partes) > 1 else None
 
-            # ATUALIZADO: Passando origem_custo também
             if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo, cpf_u_final, nome_u_final, n_origem_custo):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
@@ -582,8 +632,6 @@ def dialog_editar_carteira_config(dados):
             idx_origem = lista_origens.index(valor_atual_origem)
         opcoes_origem = [""] + lista_origens
         n_origem = st.selectbox("Origem Custo (Tabela Fator)", options=opcoes_origem, index=idx_origem + 1 if valor_atual_origem else 0)
-        
-        st.info("⚠️ Alterar o nome da carteira aqui não renomeia a tabela do banco, apenas o rótulo.")
         
         if st.form_submit_button("Salvar Alterações"):
             if atualizar_carteira_config(dados['id'], n_status, n_nome, n_origem):
@@ -659,7 +707,6 @@ def dialog_historico_consultas(cpf_cliente):
     except: pass
     finally: conn.close()
 
-# --- NOVO DIALOG: LANÇAMENTO MANUAL ---
 @st.dialog("💰 Lançamento Manual")
 def dialog_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc):
     titulo = "Crédito (Aporte)" if tipo_lanc == "CREDITO" else "Débito (Cobrança)"
@@ -679,7 +726,6 @@ def dialog_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc):
             else:
                 st.error(f"Erro: {msg}")
 
-# --- NOVOS DIALOGS: EDIÇÃO E EXCLUSÃO DE EXTRATO ---
 @st.dialog("✏️ Editar Lançamento")
 def dialog_editar_lancamento_extrato(tabela_sql, transacao):
     st.write(f"Editando ID: {transacao['id']}")
@@ -716,14 +762,13 @@ def dialog_excluir_lancamento_extrato(tabela_sql, id_transacao):
         st.rerun()
 
 # =============================================================================
-# 4. INTERFACE PRINCIPAL
+# 5. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_clientes():
+    garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
-    
-    # Atualizado: Aba 3 renomeada para "Parâmetros"
-    tab_cli, tab_user, tab_param, tab_carteira, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
+    tabs = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
 
     # --- ABA CLIENTES ---
     with tab_cli:
@@ -739,7 +784,6 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                # Cabeçalho Fixo
                 st.markdown("""
                 <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                     <div style="flex:3;">Nome</div>
@@ -761,11 +805,8 @@ def app_clientes():
                         
                         with c5:
                             b1, b2, b3, b4 = st.columns(4)
-                            # Botão Ver/Editar
                             if b1.button("✏️", key=f"e_{row['id']}", help="Editar Cadastro"): 
                                 st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
-                            
-                            # Botão Extrato
                             if b2.button("📜", key=f"ext_{row['id']}", help="Ver Extrato"):
                                 if st.session_state.get('extrato_expandido') == row['id']:
                                     st.session_state['extrato_expandido'] = None
@@ -773,46 +814,35 @@ def app_clientes():
                                     st.session_state['extrato_expandido'] = row['id']
                                     st.session_state['pag_hist'] = 1 
                                 st.rerun()
-                                
-                            # Botão Vínculo Usuário
                             if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
                                 dialog_gestao_usuario_vinculo(row)
-                                
-                            # Botão Excluir
                             if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
                                 dialog_excluir_cliente(row['id'], row['nome'])
                         
                         st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
 
-                        # --- ÁREA EXPANSÍVEL DO EXTRATO ---
                         if st.session_state.get('extrato_expandido') == row['id']:
                             with st.container(border=True):
                                 st.markdown(f"#### 📜 Extrato Financeiro: {row['nome']}")
                                 st.caption(f"CPF: {row.get('cpf', '-')}")
                                 
-                                # Busca Carteiras Ativas
                                 df_carteiras = listar_todas_carteiras_ativas()
                                 
                                 if not df_carteiras.empty:
                                     col_sel, col_btn_c, col_btn_d, col_vazio = st.columns([4, 1.5, 1.5, 3])
-                                    
                                     opcoes_cart = df_carteiras.apply(lambda x: f"{x['nome_carteira']}", axis=1)
                                     idx_sel = col_sel.selectbox("Selecione a Carteira", range(len(df_carteiras)), format_func=lambda x: opcoes_cart[x], key=f"sel_cart_{row['id']}", label_visibility="visible")
-                                    
-                                    # Carrega dados da carteira selecionada
                                     carteira_sel = df_carteiras.iloc[idx_sel]
                                     tabela_sql = carteira_sel['nome_tabela_transacoes']
                                     cpf_limpo = str(row.get('cpf', '')).strip()
                                     
-                                    # --- BOTÕES DE LANÇAMENTO ---
                                     if col_btn_c.button("➕ Crédito", key=f"cred_{row['id']}"):
                                         dialog_lancamento_manual(tabela_sql, cpf_limpo, row['nome'], "CREDITO")
                                     
                                     if col_btn_d.button("➖ Débito", key=f"deb_{row['id']}"):
                                         dialog_lancamento_manual(tabela_sql, cpf_limpo, row['nome'], "DEBITO")
                                     
-                                    # --- FILTROS E EXTRATO ---
-                                    st.write("") # Espaço
+                                    st.write("") 
                                     fd1, fd2 = st.columns(2)
                                     data_ini = fd1.date_input("Data Inicial", value=date.today() - timedelta(days=30), key=f"ini_{row['id']}")
                                     data_fim = fd2.date_input("Data Final", value=date.today(), key=f"fim_{row['id']}")
@@ -820,7 +850,6 @@ def app_clientes():
                                     df_extrato = buscar_transacoes_carteira_filtrada(tabela_sql, cpf_limpo, data_ini, data_fim)
                                     
                                     if not df_extrato.empty:
-                                        # Cabeçalho Visual
                                         st.markdown("""
                                         <div style="display: flex; font-weight: bold; background-color: #e9ecef; padding: 5px; border-radius: 4px; font-size:0.9em; margin-top:10px;">
                                             <div style="flex: 2;">Data</div>
@@ -833,57 +862,47 @@ def app_clientes():
                                         """, unsafe_allow_html=True)
                                         
                                         for _, tr in df_extrato.iterrows():
-                                            # ATUALIZADO: Incluindo coluna de Ações
                                             tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1.5, 1.5, 1])
                                             tc1.write(pd.to_datetime(tr['data_transacao']).strftime('%d/%m/%y %H:%M'))
                                             tc2.write(tr['motivo'])
-                                            
                                             cor_t = "green" if tr['tipo_lancamento'] == 'CREDITO' else "red"
                                             tc3.markdown(f":{cor_t}[{tr['tipo_lancamento']}]")
                                             tc4.write(f"R$ {float(tr['valor']):.2f}")
                                             tc5.write(f"R$ {float(tr['saldo_novo']):.2f}")
-                                            
                                             with tc6:
                                                 bc1, bc2 = st.columns(2)
                                                 if bc1.button("✏️", key=f"ed_tr_{tr['id']}", help="Editar Lançamento"):
                                                     dialog_editar_lancamento_extrato(tabela_sql, tr)
                                                 if bc2.button("🗑️", key=f"del_tr_{tr['id']}", help="Excluir Lançamento"):
                                                     dialog_excluir_lancamento_extrato(tabela_sql, tr['id'])
-                                            
                                             st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                                     else:
                                         st.warning("Nenhuma movimentação encontrada no período.")
                                 else:
                                     st.info("Nenhuma carteira configurada no sistema.")
-
             else: st.info("Nenhum cliente encontrado.")
 
         elif st.session_state['view_cliente'] in ['novo', 'editar']:
             st.markdown(f"### {'📝 Novo' if st.session_state['view_cliente']=='novo' else '✏️ Editar'}")
-            
-            # --- CARREGA DADOS PRÉVIOS (EDITAR) ---
             dados = {}
             if st.session_state['view_cliente'] == 'editar':
                 conn = get_conn(); df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}", conn); conn.close()
                 if not df.empty: dados = df.iloc[0]
 
-            # --- CARREGA LISTAS PARA OS SELETORES ---
-            df_empresas = listar_cliente_cnpj() # Tabela: admin.cliente_cnpj
+            df_empresas = listar_cliente_cnpj()
             df_ag_cli = listar_agrupamentos("cliente")
             df_ag_emp = listar_agrupamentos("empresa")
 
             with st.form("form_cliente"):
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome Completo *", value=limpar_formatacao_texto(dados.get('nome', '')))
-                
                 lista_empresas = df_empresas['nome_empresa'].unique().tolist()
                 idx_emp = 0
                 val_emp_atual = dados.get('nome_empresa', '')
                 if val_emp_atual in lista_empresas: idx_emp = lista_empresas.index(val_emp_atual)
-                
-                nome_emp = c2.selectbox("Empresa (Selecionar)", options=[""] + lista_empresas, index=idx_emp + 1 if val_emp_atual else 0, help="Ao selecionar, o CNPJ será preenchido automaticamente ao salvar.")
+                nome_emp = c2.selectbox("Empresa (Selecionar)", options=[""] + lista_empresas, index=idx_emp + 1 if val_emp_atual else 0)
                 cnpj_display = dados.get('cnpj_empresa', '')
-                c3.text_input("CNPJ (Vinculado)", value=cnpj_display, disabled=True, help="Este campo é atualizado automaticamente com base na Empresa selecionada.")
+                c3.text_input("CNPJ (Vinculado)", value=cnpj_display, disabled=True)
 
                 c4, c5, c6, c7 = st.columns(4)
                 email = c4.text_input("E-mail *", value=dados.get('email', ''))
@@ -939,7 +958,7 @@ def app_clientes():
     with tab_user:
         st.markdown("### Gestão de Acesso")
         busca_user = st.text_input("Buscar Usuário", placeholder="Nome ou Email")
-        conn = get_conn(); sql_u = "SELECT id, nome, email, hierarquia, ativo FROM clientes_usuarios WHERE 1=1"
+        conn = get_conn(); sql_u = "SELECT id, nome, email, hierarquia, ativo, telefone, id_grupo_whats FROM clientes_usuarios WHERE 1=1"
         if busca_user: sql_u += f" AND (nome ILIKE '%{busca_user}%' OR email ILIKE '%{busca_user}%')"
         sql_u += " ORDER BY id DESC"
         df_users = pd.read_sql(sql_u, conn); conn.close()
@@ -953,6 +972,14 @@ def app_clientes():
                         if n_senha: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, senha=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, hash_senha(n_senha), n_ativo, u['id']))
                         else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, n_ativo, u['id']))
                         conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
+                st.markdown("""
+                <div style="display: flex; font-weight: bold; color: #555; margin-bottom: 5px; padding-left: 10px; font-size: 0.9em;">
+                    <div style="flex: 3;">Nome</div>
+                    <div style="flex: 3;">E-mail</div>
+                    <div style="flex: 3;">Telefone / Grupo</div>
+                    <div style="flex: 1;">Ações</div>
+                </div>
+                """, unsafe_allow_html=True)
 
     # --- ABA PARÂMETROS ---
     with tab_param:
@@ -1050,7 +1077,22 @@ def app_clientes():
                 st.caption("Nova Carteira")
                 c_lc1, c_lc2, c_lc3, c_lc4, c_bt = st.columns([1.5, 2, 1.5, 1, 1])
                 n_cpf = c_lc1.text_input("CPF Cliente", key="n_cpf_l", label_visibility="visible")
-                n_nome = c_lc2.text_input("Nome Cliente", key="n_nome_l", label_visibility="visible")
+                
+                # [MUDANÇA AQUI] - Buscando lista de clientes para filtrar
+                df_clientes_disp = listar_clientes_para_selecao()
+                opcoes_clientes = [""] + df_clientes_disp.apply(lambda x: f"{x['nome']} | CPF: {x['cpf']}", axis=1).tolist()
+                
+                # Selectbox do Nome do Cliente
+                n_nome_sel = c_lc2.selectbox("Nome do Cliente", options=opcoes_clientes, key="n_nome_sel")
+                
+                # Auto-preenchimento do CPF se um cliente for selecionado
+                if n_nome_sel:
+                    # Extrai o CPF do texto selecionado "NOME | CPF: 123"
+                    try:
+                        cpf_extraido = n_nome_sel.split(" | CPF: ")[1]
+                        n_cpf = cpf_extraido # Preenche o campo CPF
+                        st.session_state['temp_cpf_auto'] = cpf_extraido # Opcional: para uso futuro
+                    except: pass
                 
                 # --- MUDANÇA AQUI: SELECTBOX COM CARTEIRAS ATIVAS ---
                 df_cart_ativas = listar_todas_carteiras_ativas()
@@ -1068,8 +1110,11 @@ def app_clientes():
                 
                 c_bt.write(""); c_bt.write("") 
                 if c_bt.button("➕", key="add_cart_l", use_container_width=True):
-                    if n_cpf and n_nome and n_carteira: 
-                        salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo, c_origem)
+                    # Extrai apenas o nome limpo para salvar
+                    nome_final_salvar = n_nome_sel.split(" | ")[0] if n_nome_sel else ""
+                    
+                    if n_cpf and nome_final_salvar and n_carteira: 
+                        salvar_cliente_carteira_lista(n_cpf, nome_final_salvar, n_carteira, n_custo, c_origem)
                         st.rerun()
                     else:
                         st.warning("Preencha CPF, Nome e Selecione a Carteira.")
@@ -1189,6 +1234,44 @@ def app_clientes():
                             st.warning("Preencha o nome da carteira.")
             else:
                 st.warning("Nenhum produto cadastrado no sistema (Módulo Comercial).")
+
+        st.divider()
+        st.markdown("#### 📑 Edição de Conteúdo das Tabelas")
+        st.caption("Selecione uma tabela física para editar os lançamentos diretamente.")
+        
+        lista_tabelas_fisicas = listar_tabelas_transacao_reais()
+        
+        if lista_tabelas_fisicas:
+            tabela_sel_edit = st.selectbox("Escolha a Tabela de Transações", options=lista_tabelas_fisicas, key="sel_tab_edit")
+            
+            if tabela_sel_edit:
+                # Carrega dados
+                df_para_editar = carregar_dados_tabela_dinamica(tabela_sel_edit)
+                
+                if not df_para_editar.empty:
+                    st.info(f"Editando: `cliente.{tabela_sel_edit}`")
+                    
+                    # Componente de Edição
+                    # num_rows="dynamic" permite deletar ou adicionar linhas se necessário
+                    df_resultado = st.data_editor(
+                        df_para_editar, 
+                        key=f"editor_{tabela_sel_edit}",
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=["id", "data_transacao"] # Protege colunas que não devem ser editadas manualmente
+                    )
+                    
+                    c_salv1, c_salv2 = st.columns([1, 4])
+                    if c_salv1.button("💾 Salvar Planilha", type="primary"):
+                        with st.spinner("Atualizando banco de dados..."):
+                            if salvar_alteracoes_tabela_dinamica(tabela_sel_edit, df_para_editar, df_resultado):
+                                st.success("Conteúdo atualizado com sucesso!")
+                                time.sleep(1)
+                                st.rerun()
+                else:
+                    st.warning("Esta tabela ainda não possui lançamentos.")
+        else:
+            st.info("Nenhuma tabela de transação encontrada no banco de dados.")
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
