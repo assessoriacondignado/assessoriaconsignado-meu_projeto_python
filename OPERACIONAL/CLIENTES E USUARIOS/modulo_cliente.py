@@ -31,7 +31,6 @@ def limpar_formatacao_texto(texto):
     if not texto: return ""
     return str(texto).replace('*', '').strip()
 
-# --- FUNÇÃO AUXILIAR: SANITIZAR NOME DE TABELA ---
 def sanitizar_nome_tabela(nome):
     s = str(nome).lower().strip()
     s = re.sub(r'[^a-z0-9]', '_', s)
@@ -224,6 +223,7 @@ def listar_carteiras_config():
     garantir_tabela_config_carteiras()
     conn = get_conn()
     try:
+        # ATUALIZADO: Busca todas as configurações de carteiras para a aba Parâmetros
         df = pd.read_sql("SELECT * FROM cliente.carteiras_config ORDER BY id DESC", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
@@ -282,12 +282,15 @@ def excluir_carteira_config(id_conf, nome_tabela):
         except: conn.close(); return False
     return False
 
-def atualizar_carteira_config(id_conf, status):
+def atualizar_carteira_config(id_conf, status, nome_carteira=None):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE cliente.carteiras_config SET status = %s WHERE id = %s", (status, id_conf))
+            if nome_carteira:
+                cur.execute("UPDATE cliente.carteiras_config SET status = %s, nome_carteira = %s WHERE id = %s", (status, nome_carteira, id_conf))
+            else:
+                cur.execute("UPDATE cliente.carteiras_config SET status = %s WHERE id = %s", (status, id_conf))
             conn.commit(); conn.close()
             return True
         except: conn.close(); return False
@@ -302,7 +305,6 @@ def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, 
         dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
         dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
 
-        # SELECT INCLUI 'id'
         query = f"""
             SELECT id, data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento 
             FROM {nome_tabela_sql} 
@@ -322,27 +324,20 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
     if not conn: return False, "Erro conexão"
     try:
         cur = conn.cursor()
-        
-        # 1. Busca saldo atual
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res = cur.fetchone()
         saldo_anterior = float(res[0]) if res else 0.0
         
-        # 2. Calcula novo saldo
         valor = float(valor)
-        if tipo_lanc == "DEBITO":
-            saldo_novo = saldo_anterior - valor
-        else:
-            saldo_novo = saldo_anterior + valor
+        if tipo_lanc == "DEBITO": saldo_novo = saldo_anterior - valor
+        else: saldo_novo = saldo_anterior + valor
             
-        # 3. Insere registro
         query = f"""
             INSERT INTO {tabela_sql} 
             (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
             VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())
         """
         cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
-        
         conn.commit(); conn.close()
         return True, "Lançamento realizado com sucesso!"
     except Exception as e:
@@ -354,12 +349,7 @@ def atualizar_transacao_dinamica(nome_tabela, id_transacao, novo_motivo, novo_va
     if not conn: return False
     try:
         cur = conn.cursor()
-        # Nota: Alteração de valor histórico não recalcula saldos futuros automaticamente
-        query = f"""
-            UPDATE {nome_tabela} 
-            SET motivo = %s, valor = %s, tipo_lancamento = %s
-            WHERE id = %s
-        """
+        query = f"UPDATE {nome_tabela} SET motivo = %s, valor = %s, tipo_lancamento = %s WHERE id = %s"
         cur.execute(query, (novo_motivo, float(novo_valor), novo_tipo, id_transacao))
         conn.commit(); conn.close()
         return True
@@ -485,15 +475,20 @@ def dialog_editar_cart_lista(dados):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
 
-@st.dialog("✏️ Editar Config Carteira")
+@st.dialog("✏️ Editar Configuração da Carteira")
 def dialog_editar_carteira_config(dados):
-    st.write(f"Carteira: **{dados['nome_carteira']}**")
-    st.caption(f"Tabela: {dados['nome_tabela_transacoes']}")
+    st.write(f"Editando: **{dados['nome_carteira']}**")
     with st.form("form_edit_cart_conf"):
+        n_nome = st.text_input("Nome da Carteira", value=dados['nome_carteira'])
         n_status = st.selectbox("Status", ["ATIVO", "INATIVO"], index=0 if dados['status'] == "ATIVO" else 1)
-        if st.form_submit_button("Salvar"):
-            if atualizar_carteira_config(dados['id'], n_status):
-                st.success("Status Atualizado!"); st.rerun()
+        
+        st.info("⚠️ Alterar o nome da carteira aqui não renomeia a tabela do banco, apenas o rótulo.")
+        
+        if st.form_submit_button("Salvar Alterações"):
+            if atualizar_carteira_config(dados['id'], n_status, n_nome):
+                st.success("Atualizado com sucesso!"); time.sleep(1); st.rerun()
+            else:
+                st.error("Erro ao atualizar.")
 
 @st.dialog("🔗 Gestão de Acesso do Cliente")
 def dialog_gestao_usuario_vinculo(dados_cliente):
@@ -635,7 +630,7 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                # Cabeçalho Fixo (Layout similar ao Fator Conferi)
+                # Cabeçalho Fixo
                 st.markdown("""
                 <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                     <div style="flex:3;">Nome</div>
@@ -674,7 +669,7 @@ def app_clientes():
                             if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
                                 dialog_gestao_usuario_vinculo(row)
                                 
-                            # Botão Excluir (Opcional, se quiser manter no grid)
+                            # Botão Excluir
                             if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
                                 dialog_excluir_cliente(row['id'], row['nome'])
                         
@@ -974,12 +969,48 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
+        # 6. CONFIGURAÇÃO DE CARTEIRAS (NOVO BLOCO)
+        with st.expander("⚙️ Configurações de Carteiras", expanded=False):
+            st.info("Aqui você pode visualizar e editar as configurações de carteiras (tabela: cliente.carteiras_config).")
+            
+            df_configs = listar_carteiras_config()
+            
+            if not df_configs.empty:
+                # Cabeçalho da tabela
+                st.markdown("""
+                <div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;">
+                    <div style="flex: 2;">Produto</div>
+                    <div style="flex: 2;">Carteira</div>
+                    <div style="flex: 2;">Tabela SQL</div>
+                    <div style="flex: 1;">Status</div>
+                    <div style="flex: 1; text-align: center;">Ações</div>
+                </div>""", unsafe_allow_html=True)
+                
+                for _, row in df_configs.iterrows():
+                    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
+                    c1.write(row['nome_produto'])
+                    c2.write(row['nome_carteira'])
+                    c3.code(row['nome_tabela_transacoes'])
+                    c4.write(row['status'])
+                    
+                    with c5:
+                        b_ed, b_del = st.columns(2)
+                        if b_ed.button("✏️", key=f"ed_cc_{row['id']}", help="Editar"):
+                            dialog_editar_carteira_config(row)
+                        if b_del.button("🗑️", key=f"del_cc_{row['id']}", help="Excluir"):
+                            if excluir_carteira_config(row['id'], row['nome_tabela_transacoes']):
+                                st.warning("Configuração removida.")
+                                st.rerun()
+                    st.markdown("<hr style='margin: 2px 0'>", unsafe_allow_html=True)
+            else:
+                st.info("Nenhuma carteira configurada no sistema.")
+
     # --- ABA CARTEIRA (NOVO: EM DESENVOLVIMENTO) ---
     with tab_carteira:
         st.markdown("### 💼 Gestão de Carteira")
         
         # 6. CONFIGURAÇÃO DE CARTEIRAS (PRODUTOS)
-        with st.expander("📂 Configuração de Carteiras (Produtos)", expanded=False):
+        with st.expander("📂 Nova Carteira (Produtos)", expanded=False):
             st.info("Cria carteiras e suas tabelas de transação automaticamente.")
             
             df_prods = listar_produtos_para_selecao()
@@ -1010,29 +1041,6 @@ def app_clientes():
                             st.warning("Preencha o nome da carteira.")
             else:
                 st.warning("Nenhum produto cadastrado no sistema (Módulo Comercial).")
-
-            st.divider()
-            
-            # Listagem das carteiras configuradas
-            df_confs = listar_carteiras_config()
-            if not df_confs.empty:
-                st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;">
-                <div style="flex: 2;">Produto</div><div style="flex: 2;">Carteira</div><div style="flex: 2;">Tabela SQL</div><div style="flex: 1;">Status</div><div style="flex: 1;">Ações</div></div>""", unsafe_allow_html=True)
-                
-                for _, row in df_confs.iterrows():
-                    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
-                    c1.write(row['nome_produto'])
-                    c2.write(row['nome_carteira'])
-                    c3.code(row['nome_tabela_transacoes'])
-                    c4.write(row['status'])
-                    with c5:
-                        b_ed, b_del = st.columns(2)
-                        if b_ed.button("✏️", key=f"e_cf_{row['id']}"): dialog_editar_carteira_config(row)
-                        if b_del.button("🗑️", key=f"d_cf_{row['id']}"): 
-                            if excluir_carteira_config(row['id'], row['nome_tabela_transacoes']): st.success("Apagado!"); st.rerun()
-                    st.markdown("<hr style='margin: 2px 0'>", unsafe_allow_html=True)
-            else:
-                st.info("Nenhuma carteira configurada.")
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
