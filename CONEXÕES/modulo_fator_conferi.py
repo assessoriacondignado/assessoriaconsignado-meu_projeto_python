@@ -192,7 +192,6 @@ def consultar_saldo_api():
     except Exception as e:
         return False, 0.0
 
-# --- NOVA FUNÇÃO PARA VALIDAR ORIGEM NA TABELA ---
 def obter_origem_padronizada(nome_origem):
     """Busca o nome correto na tabela de origens para garantir integridade"""
     conn = get_conn()
@@ -200,7 +199,6 @@ def obter_origem_padronizada(nome_origem):
     if conn:
         try:
             cur = conn.cursor()
-            # Aponta para a tabela correta 'fatorconferi_origem_consulta_fator'
             cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator WHERE origem = %s", (nome_origem,))
             res = cur.fetchone()
             if res:
@@ -292,7 +290,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
     try:
         cur = conn.cursor()
         
-        # Cache (Se não forçado)
+        # --- LÓGICA DE CACHE (COM LOG) ---
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -301,11 +299,22 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
+                            # [CORREÇÃO] Grava o log de uso do CACHE para aparecer no histórico
+                            usr = st.session_state.get('usuario_nome', 'Sistema')
+                            id_usr = st.session_state.get('usuario_id', 0)
+                            
+                            cur.execute("""
+                                INSERT INTO conexoes.fatorconferi_registo_consulta 
+                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
+                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())
+                            """, (tipo_registro, cpf_padrao, id_usr, usr, res[0], res[0], origem))
+                            conn.commit()
+                            
                             conn.close()
                             return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
                 except: pass
         
-        # API Call
+        # --- NOVA CONSULTA API ---
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
         
@@ -331,6 +340,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         usr = st.session_state.get('usuario_nome', 'Sistema')
         id_usr = st.session_state.get('usuario_id', 0)
         
+        # LOG DA NOVA CONSULTA
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
             (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora)
@@ -376,7 +386,6 @@ def app_fator_conferi():
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    # MUDANÇA APLICADA: Busca origem na tabela
                     origem_padrao = obter_origem_padronizada("WEB USUÁRIO")
                     res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
                     st.session_state['resultado_fator'] = res
