@@ -209,7 +209,87 @@ def obter_origem_padronizada(nome_origem):
     return origem_final
 
 # =============================================================================
-# 2. FUNÇÃO DE SALVAMENTO INTELIGENTE
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO (NOVA)
+# =============================================================================
+
+def processar_debito_automatico(origem, valor_cobranca, dados_consulta):
+    """
+    1. Identifica a carteira baseada na origem (WEB, API, LOTE).
+    2. Identifica o cliente pagador (baseado no usuário logado).
+    3. Lança o débito na tabela dinâmica correta.
+    """
+    if valor_cobranca <= 0: return True, "Valor zero, sem cobrança."
+    
+    conn = get_conn()
+    if not conn: return False, "Erro conexão DB."
+    
+    try:
+        cur = conn.cursor()
+        
+        # 1. IDENTIFICAR A CARTEIRA/TABELA PELA ORIGEM
+        # Busca qual configuração de carteira atende a essa origem de custo
+        cur.execute("""
+            SELECT nome_tabela_transacoes, nome_carteira 
+            FROM cliente.carteiras_config 
+            WHERE origem_custo = %s AND status = 'ATIVO' 
+            LIMIT 1
+        """, (origem,))
+        res_config = cur.fetchone()
+        
+        if not res_config:
+            conn.close()
+            return False, f"Nenhuma carteira configurada para a origem: {origem}"
+            
+        tabela_transacoes = res_config[0]
+        nome_carteira_log = res_config[1]
+        
+        # 2. IDENTIFICAR O PAGADOR (CLIENTE VINCULADO AO USUÁRIO LOGADO)
+        id_usuario_logado = st.session_state.get('usuario_id')
+        if not id_usuario_logado:
+            conn.close(); return False, "Usuário não logado."
+            
+        # Busca o CPF do cliente (empresa) que tem este usuário vinculado
+        cur.execute("SELECT cpf, nome FROM admin.clientes WHERE id_usuario_vinculo = %s LIMIT 1", (id_usuario_logado,))
+        res_pagador = cur.fetchone()
+        
+        if not res_pagador:
+            conn.close()
+            return False, "Usuário logado não possui vínculo com Cliente Financeiro (admin.clientes)."
+            
+        cpf_pagador = res_pagador[0]
+        nome_pagador = res_pagador[1]
+        
+        # 3. REALIZAR O LANÇAMENTO
+        # Busca saldo anterior
+        cur.execute(f"SELECT saldo_novo FROM {tabela_transacoes} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_pagador,))
+        res_saldo = cur.fetchone()
+        saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
+        
+        # Calcula novo saldo
+        novo_saldo = saldo_anterior - float(valor_cobranca)
+        
+        # Monta motivo
+        cpf_consultado = dados_consulta.get('cpf', 'Desconhecido')
+        motivo = f"Consulta {origem}: {cpf_consultado}"
+        
+        # Insere Transação
+        sql_insert = f"""
+            INSERT INTO {tabela_transacoes}
+            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
+            VALUES (%s, %s, %s, %s, 'DEBITO', %s, %s, %s, NOW())
+        """
+        cur.execute(sql_insert, (cpf_pagador, nome_pagador, motivo, origem, float(valor_cobranca), saldo_anterior, novo_saldo))
+        
+        conn.commit()
+        conn.close()
+        return True, f"Débito de R$ {valor_cobranca:.2f} realizado na carteira '{nome_carteira_log}'."
+
+    except Exception as e:
+        conn.close()
+        return False, f"Erro financeiro: {str(e)}"
+
+# =============================================================================
+# 3. FUNÇÃO DE SALVAMENTO DE DADOS (BASE PF)
 # =============================================================================
 
 def salvar_dados_fator_no_banco(dados_api):
@@ -276,7 +356,7 @@ def salvar_dados_fator_no_banco(dados_api):
         conn.close(); return False, f"Erro DB: {e}"
 
 # =============================================================================
-# 3. FLUXO DE CONSULTA
+# 4. FLUXO DE CONSULTA (INTEGRADO COM FINANCEIRO)
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
@@ -299,7 +379,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
-                            # [CORREÇÃO] Grava o log de uso do CACHE para aparecer no histórico
+                            # Log de Cache (Custo Zero)
                             usr = st.session_state.get('usuario_nome', 'Sistema')
                             id_usr = st.session_state.get('usuario_id', 0)
                             
@@ -332,6 +412,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
              conn.close()
              return {"sucesso": False, "msg": "Retorno vazio da API (Estrutura inválida).", "raw": xml, "dados": dados}
 
+        # Salva Arquivo JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, ensure_ascii=False, indent=4)
@@ -339,6 +420,17 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         custo = buscar_valor_consulta_atual()
         usr = st.session_state.get('usuario_nome', 'Sistema')
         id_usr = st.session_state.get('usuario_id', 0)
+        
+        # --- NOVO BLOCO: PROCESSAR DÉBITO FINANCEIRO AUTOMÁTICO ---
+        msg_financeira = ""
+        # Só debita se tiver custo maior que zero
+        if custo > 0:
+            ok_fin, txt_fin = processar_debito_automatico(origem, custo, dados)
+            if ok_fin:
+                msg_financeira = f" | {txt_fin}"
+            else:
+                msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
+        # -----------------------------------------------------------
         
         # LOG DA NOVA CONSULTA
         cur.execute("""
@@ -348,7 +440,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         """, (tipo_registro, cpf_padrao, id_usr, usr, custo, path, path, origem))
         conn.commit(); conn.close()
         
-        return {"sucesso": True, "dados": dados}
+        return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_financeira}
         
     except Exception as e:
         if conn: conn.close()
@@ -386,7 +478,9 @@ def app_fator_conferi():
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
+                    # Define a origem padronizada
                     origem_padrao = obter_origem_padronizada("WEB USUÁRIO")
+                    # Realiza a consulta e o débito automático
                     res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
                     st.session_state['resultado_fator'] = res
         
