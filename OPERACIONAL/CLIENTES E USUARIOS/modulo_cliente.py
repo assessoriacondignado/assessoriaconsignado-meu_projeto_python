@@ -205,11 +205,27 @@ def garantir_tabela_config_carteiras():
                     nome_carteira VARCHAR(255),
                     nome_tabela_transacoes VARCHAR(255),
                     status VARCHAR(50) DEFAULT 'ATIVO',
-                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    origem_custo VARCHAR(100) -- Nova coluna adicionada
                 );
             """)
             conn.commit(); conn.close()
         except: conn.close()
+
+def listar_origens_para_selecao():
+    """Busca as origens cadastradas na tabela de conexões para o selectbox"""
+    conn = get_conn()
+    lista = []
+    if conn:
+        try:
+            # Busca da tabela fatorconferi_origem_consulta_fator
+            cur = conn.cursor()
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator ORDER BY origem ASC")
+            lista = [row[0] for row in cur.fetchall()]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return lista
 
 def listar_produtos_para_selecao():
     conn = get_conn()
@@ -223,7 +239,6 @@ def listar_carteiras_config():
     garantir_tabela_config_carteiras()
     conn = get_conn()
     try:
-        # ATUALIZADO: Busca todas as configurações de carteiras para a aba Parâmetros
         df = pd.read_sql("SELECT * FROM cliente.carteiras_config ORDER BY id DESC", conn)
         conn.close(); return df
     except: conn.close(); return pd.DataFrame()
@@ -282,18 +297,22 @@ def excluir_carteira_config(id_conf, nome_tabela):
         except: conn.close(); return False
     return False
 
-def atualizar_carteira_config(id_conf, status, nome_carteira=None):
+def atualizar_carteira_config(id_conf, status, nome_carteira=None, origem_custo=None):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            if nome_carteira:
-                cur.execute("UPDATE cliente.carteiras_config SET status = %s, nome_carteira = %s WHERE id = %s", (status, nome_carteira, id_conf))
-            else:
-                cur.execute("UPDATE cliente.carteiras_config SET status = %s WHERE id = %s", (status, id_conf))
+            # Atualiza Status, Nome e Origem Custo
+            cur.execute("""
+                UPDATE cliente.carteiras_config 
+                SET status = %s, nome_carteira = %s, origem_custo = %s 
+                WHERE id = %s
+            """, (status, nome_carteira, origem_custo, id_conf))
             conn.commit(); conn.close()
             return True
-        except: conn.close(); return False
+        except Exception as e: 
+            print(e)
+            conn.close(); return False
     return False
 
 # --- FUNÇÃO ATUALIZADA: BUSCAR COM ID ---
@@ -324,10 +343,13 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
     if not conn: return False, "Erro conexão"
     try:
         cur = conn.cursor()
+        
+        # 1. Busca saldo atual
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res = cur.fetchone()
         saldo_anterior = float(res[0]) if res else 0.0
         
+        # 2. Calcula novo saldo
         valor = float(valor)
         if tipo_lanc == "DEBITO": saldo_novo = saldo_anterior - valor
         else: saldo_novo = saldo_anterior + valor
@@ -478,14 +500,29 @@ def dialog_editar_cart_lista(dados):
 @st.dialog("✏️ Editar Configuração da Carteira")
 def dialog_editar_carteira_config(dados):
     st.write(f"Editando: **{dados['nome_carteira']}**")
+    
+    # 1. Busca lista de origens no banco
+    lista_origens = listar_origens_para_selecao()
+    
     with st.form("form_edit_cart_conf"):
         n_nome = st.text_input("Nome da Carteira", value=dados['nome_carteira'])
         n_status = st.selectbox("Status", ["ATIVO", "INATIVO"], index=0 if dados['status'] == "ATIVO" else 1)
         
+        # 2. Selectbox para Origem Custo
+        idx_origem = 0
+        valor_atual_origem = dados.get('origem_custo')
+        if valor_atual_origem and valor_atual_origem in lista_origens:
+            idx_origem = lista_origens.index(valor_atual_origem)
+            
+        # Adiciona opção vazia no início caso não tenha nada selecionado ou para limpar
+        opcoes_origem = [""] + lista_origens
+        n_origem = st.selectbox("Origem Custo (Tabela Fator)", options=opcoes_origem, index=idx_origem + 1 if valor_atual_origem else 0)
+        
         st.info("⚠️ Alterar o nome da carteira aqui não renomeia a tabela do banco, apenas o rótulo.")
         
         if st.form_submit_button("Salvar Alterações"):
-            if atualizar_carteira_config(dados['id'], n_status, n_nome):
+            # Atualiza passando o novo campo origem_custo
+            if atualizar_carteira_config(dados['id'], n_status, n_nome, n_origem):
                 st.success("Atualizado com sucesso!"); time.sleep(1); st.rerun()
             else:
                 st.error("Erro ao atualizar.")
@@ -630,7 +667,7 @@ def app_clientes():
             df_cli = pd.read_sql(sql, conn); conn.close()
 
             if not df_cli.empty:
-                # Cabeçalho Fixo
+                # Cabeçalho Fixo (Layout similar ao Fator Conferi)
                 st.markdown("""
                 <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                     <div style="flex:3;">Nome</div>
@@ -982,18 +1019,21 @@ def app_clientes():
                     <div style="flex: 2;">Produto</div>
                     <div style="flex: 2;">Carteira</div>
                     <div style="flex: 2;">Tabela SQL</div>
+                    <div style="flex: 2;">Origem Custo</div>
                     <div style="flex: 1;">Status</div>
                     <div style="flex: 1; text-align: center;">Ações</div>
                 </div>""", unsafe_allow_html=True)
                 
                 for _, row in df_configs.iterrows():
-                    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
+                    c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 2, 2, 1, 1])
                     c1.write(row['nome_produto'])
                     c2.write(row['nome_carteira'])
                     c3.code(row['nome_tabela_transacoes'])
-                    c4.write(row['status'])
+                    # Exibe a origem custo, se existir
+                    c4.write(row.get('origem_custo', '-'))
+                    c5.write(row['status'])
                     
-                    with c5:
+                    with c6:
                         b_ed, b_del = st.columns(2)
                         if b_ed.button("✏️", key=f"ed_cc_{row['id']}", help="Editar"):
                             dialog_editar_carteira_config(row)
