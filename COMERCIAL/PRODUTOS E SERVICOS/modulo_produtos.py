@@ -112,6 +112,8 @@ def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
     if not conn: return False, "Erro de conexão"
     try:
         cur = conn.cursor()
+        
+        # 1. Garante que a tabela existe
         cur.execute("""
             CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
                 id SERIAL PRIMARY KEY,
@@ -124,13 +126,14 @@ def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
                 origem_custo VARCHAR(100)
             );
         """)
-        # Garante coluna na tabela de carteiras também
+        
         try:
             cur.execute("ALTER TABLE cliente.carteiras_config ADD COLUMN IF NOT EXISTS origem_custo VARCHAR(100)")
             conn.commit()
         except:
             conn.rollback()
 
+        # 3. Cria a carteira
         nome_carteira = nome_prod
         sufixo = sanitizar_nome_tabela(nome_carteira)
         nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
@@ -157,7 +160,6 @@ def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
             VALUES (%s, %s, %s, %s, %s, %s)
         """
         cur.execute(sql_insert, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, 'ATIVO', origem_custo))
-        
         conn.commit()
         conn.close()
         return True, nome_tabela_dinamica
@@ -255,8 +257,8 @@ def dialog_editar_produto(dados_atuais):
     if valor_atual_origem and valor_atual_origem in lista_origens:
         idx_origem = lista_origens.index(valor_atual_origem) + 1
         
-    # Busca carteira vinculada (somente visualização)
-    carteira_vinculada = "Nenhuma"
+    # Busca carteira vinculada
+    carteira_vinculada = None
     conn = get_conn()
     if conn:
         try:
@@ -278,17 +280,33 @@ def dialog_editar_produto(dados_atuais):
         c3, c4, c5 = st.columns(3)
         novo_preco = c3.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
         
-        # Campo editável
+        # Campo de Origem
         novo_origem = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, index=idx_origem)
         
-        # Campo somente visualização
-        c5.text_input("Carteira Vinculada", value=carteira_vinculada, disabled=True)
+        # [MUDANÇA AQUI] - Exibe carteira ou opção de criar
+        criar_carteira_check = False
+        if carteira_vinculada:
+            c5.text_input("Carteira Vinculada", value=carteira_vinculada, disabled=True)
+        else:
+            c5.warning("Sem Carteira")
+            criar_carteira_check = st.checkbox("➕ Criar Carteira Financeira?", help="Cria a tabela de saldo para este produto ao salvar.")
         
         novo_resumo = st.text_area("Resumo", value=dados_atuais['resumo'], height=100)
         
         if st.form_submit_button("💾 Salvar Alterações"):
-            if atualizar_produto_db(dados_atuais['id'], novo_nome, novo_tipo, novo_resumo, novo_preco, novo_origem):
-                st.success("Atualizado com sucesso!")
+            # 1. Atualiza o produto
+            atualizou = atualizar_produto_db(dados_atuais['id'], novo_nome, novo_tipo, novo_resumo, novo_preco, novo_origem)
+            
+            # 2. Cria a carteira se foi marcado e se a atualização deu certo
+            msg_extra = ""
+            if atualizou and criar_carteira_check:
+                ok_c, msg_c = criar_carteira_automatica(dados_atuais['id'], novo_nome, novo_origem)
+                if ok_c: msg_extra = " | Carteira Criada!"
+                else: st.error(f"Erro ao criar carteira: {msg_c}")
+            
+            if atualizou:
+                st.success(f"Atualizado com sucesso!{msg_extra}")
+                time.sleep(1.5)
                 st.rerun()
 
 @st.dialog("📝 Novo Cadastro", width="large")
