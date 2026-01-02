@@ -30,7 +30,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES (API, XML, CREDENCIAIS, FORMATAÇÃO)
+# 1. FUNÇÕES AUXILIARES
 # =============================================================================
 
 def buscar_credenciais():
@@ -73,68 +73,103 @@ def converter_data_banco(data_str):
         return datetime.strptime(data_str, '%d/%m/%Y').strftime('%Y-%m-%d')
     except: return None
 
+def get_tag_text(element, tag_name):
+    """Busca o texto de uma tag de forma insensível a maiúsculas/minúsculas"""
+    if element is None: return None
+    # Procura exato
+    res = element.find(tag_name)
+    if res is not None: return res.text
+    # Procura variação UPPER
+    res = element.find(tag_name.upper())
+    if res is not None: return res.text
+    # Procura variação Lower
+    res = element.find(tag_name.lower())
+    if res is not None: return res.text
+    return None
+
+def find_tag(element, tag_name):
+    """Encontra um elemento filho de forma insensível a maiúsculas/minúsculas"""
+    if element is None: return None
+    res = element.find(tag_name)
+    if res is not None: return res
+    res = element.find(tag_name.upper())
+    if res is not None: return res
+    res = element.find(tag_name.lower())
+    if res is not None: return res
+    return None
+
 def parse_xml_to_dict(xml_string):
     try:
+        # Limpeza de encoding forçada
         xml_string = xml_string.replace('ISO-8859-1', 'UTF-8') 
         root = ET.fromstring(xml_string)
         dados = {}
         
         # 1. DADOS CADASTRAIS
-        cad = root.find('cadastrais')
+        cad = find_tag(root, 'cadastrais')
         if cad is not None:
-            dados['nome'] = cad.findtext('nome')
-            dados['cpf'] = cad.findtext('cpf')
-            dados['nascimento'] = cad.findtext('nascto')
-            dados['mae'] = cad.findtext('nome_mae')
-            dados['rg'] = cad.findtext('rg')
-            dados['titulo'] = cad.findtext('titulo_eleitor')
-            dados['sexo'] = cad.findtext('sexo')
+            dados['nome'] = get_tag_text(cad, 'nome')
+            dados['cpf'] = get_tag_text(cad, 'cpf')
+            dados['nascimento'] = get_tag_text(cad, 'nascto')
+            dados['mae'] = get_tag_text(cad, 'nome_mae')
+            dados['rg'] = get_tag_text(cad, 'rg')
+            dados['titulo'] = get_tag_text(cad, 'titulo_eleitor')
+            dados['sexo'] = get_tag_text(cad, 'sexo')
         
         # 2. TELEFONES
         telefones = []
-        tm = root.find('telefones_movel')
+        
+        # Móveis
+        tm = find_tag(root, 'telefones_movel')
         if tm is not None:
-            for fone in tm.findall('telefone'):
-                telefones.append({
-                    'numero': fone.findtext('numero'),
-                    'tipo': 'MOVEL',
-                    'prioridade': fone.findtext('prioridade')
-                })
-        tf = root.find('telefones_fixo')
+            # Itera sobre filhos diretos para pegar todos os <TELEFONE> independente do case
+            for child in tm:
+                if 'telefone' in child.tag.lower():
+                    telefones.append({
+                        'numero': get_tag_text(child, 'numero'),
+                        'tipo': 'MOVEL',
+                        'prioridade': get_tag_text(child, 'prioridade')
+                    })
+        
+        # Fixos
+        tf = find_tag(root, 'telefones_fixo')
         if tf is not None:
-            for fone in tf.findall('telefone'):
-                telefones.append({
-                    'numero': fone.findtext('numero'),
-                    'tipo': 'FIXO',
-                    'prioridade': fone.findtext('prioridade')
-                })
+            for child in tf:
+                if 'telefone' in child.tag.lower():
+                    telefones.append({
+                        'numero': get_tag_text(child, 'numero'),
+                        'tipo': 'FIXO',
+                        'prioridade': get_tag_text(child, 'prioridade')
+                    })
         dados['telefones'] = telefones
 
         # 3. EMAILS
         emails = []
-        em_root = root.find('emails')
+        em_root = find_tag(root, 'emails')
         if em_root is not None:
-            for em in em_root.findall('email'):
-                if em.text: emails.append(em.text)
+            for em in em_root:
+                if 'email' in em.tag.lower() and em.text:
+                    emails.append(em.text)
         dados['emails'] = emails
 
         # 4. ENDEREÇOS
         enderecos = []
-        end_root = root.find('enderecos')
+        end_root = find_tag(root, 'enderecos')
         if end_root is not None:
-            for end in end_root.findall('endereco'):
-                logr = end.findtext('logradouro') or ""
-                num = end.findtext('numero') or ""
-                comp = end.findtext('complemento') or ""
-                rua_full = f"{logr}, {num} {comp}".strip().strip(',')
-                
-                enderecos.append({
-                    'rua': rua_full,
-                    'bairro': end.findtext('bairro'),
-                    'cidade': end.findtext('cidade'),
-                    'uf': end.findtext('estado'),
-                    'cep': end.findtext('cep')
-                })
+            for end in end_root:
+                if 'endereco' in end.tag.lower():
+                    logr = get_tag_text(end, 'logradouro') or ""
+                    num = get_tag_text(end, 'numero') or ""
+                    comp = get_tag_text(end, 'complemento') or ""
+                    rua_full = f"{logr}, {num} {comp}".strip().strip(',')
+                    
+                    enderecos.append({
+                        'rua': rua_full,
+                        'bairro': get_tag_text(end, 'bairro'),
+                        'cidade': get_tag_text(end, 'cidade'),
+                        'uf': get_tag_text(end, 'estado'),
+                        'cep': get_tag_text(end, 'cep')
+                    })
         dados['enderecos'] = enderecos
         
         return dados
@@ -251,18 +286,21 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
     try:
         cur = conn.cursor()
         
-        # Cache
+        # Cache (Se não forçado)
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
             if res and res[0] and os.path.exists(res[0]):
                 try:
-                    with open(res[0], 'r', encoding='utf-8') as f: dados = json.load(f)
-                    conn.close()
-                    return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
+                    with open(res[0], 'r', encoding='utf-8') as f: 
+                        dados = json.load(f)
+                        # Só retorna cache se o dado for válido (tem nome ou cpf)
+                        if dados.get('nome') or dados.get('cpf'):
+                            conn.close()
+                            return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
                 except: pass
         
-        # API
+        # API Call
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
         
@@ -276,12 +314,17 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         
         dados = parse_xml_to_dict(xml)
         
-        # Salva
+        # Só salva se o parsing foi útil
+        if not dados.get('nome') and not dados.get('cpf'):
+             conn.close()
+             return {"sucesso": False, "msg": "Retorno vazio da API (Estrutura inválida).", "raw": xml, "dados": dados}
+
+        # Salva JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, ensure_ascii=False, indent=4)
         
-        # Log
+        # Log Banco
         custo = buscar_valor_consulta_atual()
         usr = st.session_state.get('usuario_nome', 'Sistema')
         id_usr = st.session_state.get('usuario_id', 0)
@@ -299,7 +342,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         if conn: conn.close()
         return {"sucesso": False, "msg": str(e)}
 
-# --- FUNÇÕES DE INTERFACE FALTANTES (RESTAURADAS) ---
+# --- FUNÇÕES DE INTERFACE FALTANTES ---
 def listar_clientes_carteira():
     conn = get_conn()
     if conn:
@@ -326,7 +369,9 @@ def app_fator_conferi():
         st.markdown("#### 1.1 Consulta e Importação")
         c1, c2, c3 = st.columns([3, 1.5, 1.5])
         cpf_in = c1.text_input("CPF")
-        forcar = c2.checkbox("Ignorar Histórico", value=False)
+        
+        # CHECKBOX PARA FORÇAR NOVA CONSULTA (IMPORTANTE)
+        forcar = c2.checkbox("Ignorar Histórico", value=False, help="Marque se a consulta anterior veio vazia ou com erro.")
         
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
@@ -350,12 +395,19 @@ def app_fator_conferi():
                 with col_info: st.caption("Atualiza cadastro e adiciona novos telefones/endereços.")
 
                 dados = res['dados']
+                
+                # Debug do XML se vazio
+                if not dados.get('nome'):
+                    with st.expander("⚠️ Dados Vazios (Debug)", expanded=False):
+                        st.write("Verifique se o XML bruto contém dados:")
+                        st.code(res.get('raw', 'XML não disponível'))
+
                 with st.expander("👤 Dados Pessoais", expanded=True):
                     dc1, dc2 = st.columns(2)
-                    dc1.write(f"**Nome:** {dados.get('nome')}")
-                    dc1.write(f"**CPF:** {dados.get('cpf')}")
-                    dc2.write(f"**Mãe:** {dados.get('mae')}")
-                    dc2.write(f"**Nasc:** {dados.get('nascimento')}")
+                    dc1.write(f"**Nome:** {dados.get('nome', '-')}")
+                    dc1.write(f"**CPF:** {dados.get('cpf', '-')}")
+                    dc2.write(f"**Mãe:** {dados.get('mae', '-')}")
+                    dc2.write(f"**Nasc:** {dados.get('nascimento', '-')}")
 
                 with st.expander(f"📞 Telefones ({len(dados.get('telefones', []))})", expanded=False):
                     st.table(pd.DataFrame(dados.get('telefones', [])))
@@ -369,7 +421,7 @@ def app_fator_conferi():
 
             else: st.error(res.get('msg', 'Erro'))
 
-    with tabs[2]: # ABA SALDO API
+    with tabs[2]: 
         if st.button("🔄 Atualizar"): 
             ok, v = consultar_saldo_api()
             if ok: st.metric("Saldo Atual", f"R$ {v:.2f}")
