@@ -23,6 +23,17 @@ def get_conn():
         st.error(f"Erro ao conectar ao banco: {e}")
         return None
 
+# --- FUNÇÕES DE CONTROLE DE ESTADO (CALLBACKS) ---
+def abrir_modal(tipo, pedido=None):
+    """Callback para definir qual modal deve ser aberto"""
+    st.session_state['modal_ativo'] = tipo
+    st.session_state['pedido_ativo'] = pedido
+
+def fechar_modal():
+    """Limpa o estado do modal antes de recarregar a página"""
+    st.session_state['modal_ativo'] = None
+    st.session_state['pedido_ativo'] = None
+
 # --- FUNÇÕES AUXILIARES ---
 def listar_modelos_mensagens():
     """Busca os modelos de mensagem cadastrados no W-API para este módulo"""
@@ -40,13 +51,9 @@ def listar_modelos_mensagens():
 
 # --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
 def buscar_clientes():
-    """
-    Busca a lista de clientes na tabela administrativa para preencher o selectbox.
-    """
     conn = get_conn()
     if conn:
         try:
-            # Busca na tabela 'admin.clientes'
             query = "SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome"
             df = pd.read_sql(query, conn)
             conn.close()
@@ -203,10 +210,8 @@ def dialog_novo_pedido():
         
         c3, c4 = st.columns(2)
         qtd = c3.number_input("Quantidade", min_value=1, value=1, step=1)
-        # Permite editar o valor unitário, puxando o padrão do produto
         valor_unit = c4.number_input("Valor Unitário (R$)", min_value=0.0, value=float(prod_selecionado['preco'] or 0.0), step=0.5, format="%.2f")
         
-        # Cálculo do total
         total = qtd * valor_unit
         st.markdown(f"### 💰 Total: R$ {total:.2f}")
         
@@ -216,7 +221,8 @@ def dialog_novo_pedido():
             ok, res = criar_pedido(cli_selecionado, prod_selecionado, qtd, valor_unit, total, avisar)
             if ok:
                 st.success(f"Pedido {res} criado com sucesso!")
-                time.sleep(1) # Delay para evitar erro de renderização do Streamlit
+                time.sleep(1)
+                fechar_modal()
                 st.rerun()
             else:
                 st.error(f"Erro: {res}")
@@ -234,8 +240,21 @@ def dialog_editar_dados(pedido):
     if df_clientes.empty or df_produtos.empty: return
     
     with st.form("form_editar_dados"):
-        idx_cli = st.selectbox("Cliente", range(len(df_clientes)), format_func=lambda x: df_clientes.iloc[x]['nome'])
-        idx_prod = st.selectbox("Produto", range(len(df_produtos)), format_func=lambda x: df_produtos.iloc[x]['nome'])
+        # Tenta encontrar o índice atual
+        try:
+            # Busca simples pelo nome pode não ser perfeita se houver homônimos, mas serve para UI
+            idx_cli_atual = df_clientes[df_clientes['nome'] == pedido['nome_cliente']].index[0]
+        except:
+            idx_cli_atual = 0
+            
+        try:
+            idx_prod_atual = df_produtos[df_produtos['nome'] == pedido['nome_produto']].index[0]
+        except:
+            idx_prod_atual = 0
+
+        idx_cli = st.selectbox("Cliente", range(len(df_clientes)), index=int(idx_cli_atual), format_func=lambda x: df_clientes.iloc[x]['nome'])
+        idx_prod = st.selectbox("Produto", range(len(df_produtos)), index=int(idx_prod_atual), format_func=lambda x: df_produtos.iloc[x]['nome'])
+        
         nova_qtd = st.number_input("Quantidade", min_value=1, value=int(pedido['quantidade']))
         novo_preco = st.number_input("Valor Unitário", min_value=0.0, value=float(pedido['valor_unitario']))
         
@@ -245,19 +264,24 @@ def dialog_editar_dados(pedido):
         if st.form_submit_button("💾 Salvar"):
             if editar_dados_pedido(pedido['id'], nova_qtd, novo_preco, df_clientes.iloc[idx_cli], df_produtos.iloc[idx_prod]):
                 st.success("Atualizado!")
-                time.sleep(1) # Correção do erro NotFoundError
+                time.sleep(1)
+                fechar_modal()
                 st.rerun()
 
 @st.dialog("🔄 Atualizar Status")
 def dialog_status_pedido(pedido):
     status_opcoes = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
     
-    # Carrega opções de modelos do W-API
+    try:
+        idx_atual = status_opcoes.index(pedido['status'])
+    except:
+        idx_atual = 0
+
     lista_modelos = listar_modelos_mensagens()
     opcoes_msg = ["Automático (Padrão)"] + lista_modelos
     
     with st.form("form_status_update"):
-        novo = st.selectbox("Novo Status", status_opcoes)
+        novo = st.selectbox("Novo Status", status_opcoes, index=idx_atual)
         modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
         obs = st.text_area("Observação")
         avisar = st.checkbox("Avisar cliente?", value=True)
@@ -266,17 +290,15 @@ def dialog_status_pedido(pedido):
             if atualizar_status_pedido(pedido['id'], novo, pedido, avisar, obs, modelo_escolhido):
                 st.success("Status Alterado!")
                 time.sleep(1.5)
+                fechar_modal()
                 st.rerun()
 
-    # --- NOVA SEÇÃO: HISTÓRICO VISUAL ABAIXO DO STATUS ---
     st.markdown("---")
     st.caption("📜 Histórico de Tramitação")
     
     df_hist = buscar_historico_pedido(pedido['id'])
     if not df_hist.empty:
-        # Formata a data para ficar amigável
         df_hist['data_mudanca'] = pd.to_datetime(df_hist['data_mudanca']).dt.strftime('%d/%m/%Y %H:%M')
-        # Renomeia colunas para exibição
         df_hist.columns = ["Data", "Status", "Observação"]
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
     else:
@@ -298,10 +320,10 @@ def dialog_excluir(id_pedido):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pedido_db(id_pedido):
             st.success("Pedido excluído!")
-            time.sleep(1) # Correção do erro NotFoundError
+            time.sleep(1)
+            fechar_modal()
             st.rerun()
 
-# --- NOVO DIALOG: CRIAR TAREFA A PARTIR DO PEDIDO ---
 @st.dialog("📝 Criar Tarefa para Pedido")
 def dialog_criar_tarefa_rapida(pedido):
     with st.form("form_tarefa_rapida_ped"):
@@ -316,15 +338,13 @@ def dialog_criar_tarefa_rapida(pedido):
             if conn:
                 try:
                     cur = conn.cursor()
-                    # Insere na tabela tarefas
                     cur.execute("""
-                        INSERT INTO tarefas (id_pedido, data_previsao, observacao_tarefa, status) 
-                        VALUES (%s, %s, %s, 'Solicitado') RETURNING id
-                    """, (pedido['id'], data_prev, obs))
+                        INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) 
+                        VALUES (%s, %s, %s, %s, %s, 'Solicitado') RETURNING id
+                    """, (pedido['id'], pedido['id_cliente'], pedido['id_produto'], data_prev, obs))
                     
                     new_id = cur.fetchone()[0]
                     
-                    # Cria histórico inicial
                     cur.execute("""
                         INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) 
                         VALUES (%s, 'Solicitado', 'Tarefa criada via Módulo de Pedidos')
@@ -333,24 +353,29 @@ def dialog_criar_tarefa_rapida(pedido):
                     conn.commit()
                     conn.close()
                     st.success("Tarefa criada com sucesso! Verifique no módulo de Tarefas.")
-                    time.sleep(1.5) # Correção do erro NotFoundError
+                    time.sleep(1.5)
+                    fechar_modal()
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao criar tarefa: {e}")
 
 # --- APP PRINCIPAL ---
 def app_pedidos():
-    # Cabeçalho com Botão Novo no Topo (Ajustado)
+    # Inicialização do Estado
+    if 'modal_ativo' not in st.session_state: st.session_state['modal_ativo'] = None
+    if 'pedido_ativo' not in st.session_state: st.session_state['pedido_ativo'] = None
+
+    # Cabeçalho
     c_title, c_btn = st.columns([5, 1])
     c_title.markdown("## 🛒 Módulo de Pedidos") 
-    # use_container_width=False para o botão ficar da largura do texto
-    if c_btn.button("➕ Novo Pedido", type="primary", use_container_width=False):
-        dialog_novo_pedido()
+    
+    # Botão Novo com Callback
+    c_btn.button("➕ Novo Pedido", type="primary", use_container_width=False, 
+                 on_click=abrir_modal, args=('novo', None))
 
     conn = get_conn()
     if conn:
         try:
-            # Query com JOIN para trazer o e-mail do cliente para pesquisa
             query = """
                 SELECT p.*, c.email as email_cliente 
                 FROM pedidos p
@@ -364,13 +389,11 @@ def app_pedidos():
         finally:
             conn.close()
 
-        # --- FILTROS DE PESQUISA (Unificado e Melhorado) ---
+        # --- FILTROS ---
         with st.expander("🔍 Filtros de Pesquisa", expanded=True):
-            # Linha 1: Busca Geral, Status e Categorias
             cf1, cf2, cf3 = st.columns([3, 1.5, 1.5])
             busca_geral = cf1.text_input("🔍 Buscar (Nome, Email, Telefone, Produto)", placeholder="Comece a digitar...")
             
-            # Filtro de Status com Padrão "Solicitado"
             opcoes_status = df['status'].unique().tolist() if not df.empty else []
             padrao_status = ["Solicitado"] if "Solicitado" in opcoes_status else None
             f_status = cf2.multiselect("Status", options=opcoes_status, default=padrao_status, placeholder="Filtrar Status")
@@ -378,16 +401,11 @@ def app_pedidos():
             opcoes_cats = df['categoria_produto'].unique() if not df.empty else []
             f_cats = cf3.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categorias")
             
-            # Linha 2: Filtro de Data
             cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
             op_data = cd1.selectbox("Filtro de Data", ["Todo o período", "Igual a", "Antes de", "Depois de"])
-            
-            # Formato brasileiro no date_input
             data_ref = cd2.date_input("Data Referência", value=datetime.today(), format="DD/MM/YYYY")
 
-            # --- APLICAÇÃO DOS FILTROS ---
             if not df.empty:
-                # 1. Filtro Texto Geral (Unificado)
                 if busca_geral:
                     mask = (
                         df['nome_cliente'].str.contains(busca_geral, case=False, na=False) |
@@ -396,32 +414,20 @@ def app_pedidos():
                         df['email_cliente'].str.contains(busca_geral, case=False, na=False)
                     )
                     df = df[mask]
-                
-                # 2. Filtro de Status
-                if f_status:
-                    df = df[df['status'].isin(f_status)]
-
-                # 3. Filtro de Categoria
-                if f_cats:
-                    df = df[df['categoria_produto'].isin(f_cats)]
-                
-                # 4. Filtro de Data
+                if f_status: df = df[df['status'].isin(f_status)]
+                if f_cats: df = df[df['categoria_produto'].isin(f_cats)]
                 if op_data != "Todo o período":
                     df_data = pd.to_datetime(df['data_criacao']).dt.date
-                    if op_data == "Igual a":
-                        df = df[df_data == data_ref]
-                    elif op_data == "Antes de":
-                        df = df[df_data < data_ref]
-                    elif op_data == "Depois de":
-                        df = df[df_data > data_ref]
+                    if op_data == "Igual a": df = df[df_data == data_ref]
+                    elif op_data == "Antes de": df = df[df_data < data_ref]
+                    elif op_data == "Depois de": df = df[df_data > data_ref]
 
-        # --- PAGINAÇÃO / LIMITE DE VISUALIZAÇÃO ---
+        # --- PAGINAÇÃO ---
         st.markdown("---")
         col_res, col_pag = st.columns([4, 1])
         with col_pag:
             qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0)
         
-        # Fatia o Dataframe conforme a seleção
         df_exibir = df.copy()
         if qtd_view != "Todos":
             df_exibir = df.head(int(qtd_view))
@@ -429,39 +435,53 @@ def app_pedidos():
         with col_res:
             st.caption(f"Exibindo {len(df_exibir)} de {len(df)} pedidos encontrados.")
 
-        # --- LISTAGEM DOS PEDIDOS ---
+        # --- LISTAGEM COM CALLBACKS ---
         if not df_exibir.empty:
             for i, row in df_exibir.iterrows():
-                # Cor do status
                 cor_status = "🔴"
                 if row['status'] == 'Pago': cor_status = "🟢"
                 elif row['status'] == 'Pendente': cor_status = "🟠"
                 elif row['status'] == 'Solicitado': cor_status = "🔵"
                 
-                # Visualização na lista atualizada
                 titulo_card = f"{cor_status} [{row['status'].upper()}] {row['codigo']} - {row['nome_cliente']} | R$ {row['valor_total']:.2f}"
                 
                 with st.expander(titulo_card):
                     st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
-                    # Formata data visualmente
                     data_fmt = pd.to_datetime(row['data_criacao']).strftime('%d/%m/%Y %H:%M')
                     st.write(f"**Data:** {data_fmt}")
                     
-                    # DIVIDIDO EM 6 COLUNAS PARA CABER O NOVO BOTÃO
                     c1, c2, c3, c4, c5, c6 = st.columns(6)
-                    if c1.button("👤 Cliente", key=f"c_{row['id']}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'])
-                    if c2.button("✏️ Dados", key=f"e_{row['id']}"): dialog_editar_dados(row)
-                    if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status_pedido(row)
-                    if c4.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'], row['codigo'])
-                    if c5.button("🗑️ Excluir", key=f"del_{row['id']}"): dialog_excluir(row['id'])
-                    
-                    # NOVO BOTÃO: CRIAR TAREFA
-                    if c6.button("📝 Nova Tarefa", key=f"nt_{row['id']}"): dialog_criar_tarefa_rapida(row)
+                    # Todos os botões agora usam on_click para evitar o erro de removeChild
+                    c1.button("👤 Cliente", key=f"c_{row['id']}", on_click=abrir_modal, args=('cliente', row))
+                    c2.button("✏️ Dados", key=f"e_{row['id']}", on_click=abrir_modal, args=('editar', row))
+                    c3.button("🔄 Status", key=f"s_{row['id']}", on_click=abrir_modal, args=('status', row))
+                    c4.button("📜 Hist.", key=f"h_{row['id']}", on_click=abrir_modal, args=('historico', row))
+                    c5.button("🗑️ Excluir", key=f"del_{row['id']}", on_click=abrir_modal, args=('excluir', row))
+                    c6.button("📝 Nova Tarefa", key=f"nt_{row['id']}", on_click=abrir_modal, args=('tarefa', row))
         else:
             st.info("Nenhum pedido encontrado com os filtros atuais.")
     else:
         st.info("Sem conexão com o banco.")
 
+    # --- ROTEADOR DE MODAIS (Fora do Loop) ---
+    # Verifica o estado e abre o dialog correspondente
+    modal = st.session_state['modal_ativo']
+    pedido = st.session_state['pedido_ativo']
+
+    if modal == 'novo':
+        dialog_novo_pedido()
+    elif modal == 'cliente' and pedido is not None:
+        ver_cliente(pedido['nome_cliente'], pedido['cpf_cliente'], pedido['telefone_cliente'])
+    elif modal == 'editar' and pedido is not None:
+        dialog_editar_dados(pedido)
+    elif modal == 'status' and pedido is not None:
+        dialog_status_pedido(pedido)
+    elif modal == 'historico' and pedido is not None:
+        dialog_historico(pedido['id'], pedido['codigo'])
+    elif modal == 'excluir' and pedido is not None:
+        dialog_excluir(pedido['id'])
+    elif modal == 'tarefa' and pedido is not None:
+        dialog_criar_tarefa_rapida(pedido)
+
 if __name__ == "__main__":
     app_pedidos()
-    
