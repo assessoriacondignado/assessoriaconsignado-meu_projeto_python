@@ -33,6 +33,58 @@ def listar_modelos_mensagens():
         except: conn.close()
     return []
 
+# --- NOVA FUNÇÃO: LANÇAMENTO AUTOMÁTICO DE CRÉDITO ---
+def processar_credito_automatico(conn, dados_pedido):
+    """
+    Verifica se o produto do pedido está vinculado a uma carteira e lança o crédito.
+    """
+    try:
+        cur = conn.cursor()
+        
+        # 1. Verifica se existe carteira configurada para este produto (Regra do (...) )
+        # Busca na tabela de configuração criada pelo modulo_produtos ou modulo_cliente
+        cur.execute("""
+            SELECT nome_tabela_transacoes, nome_carteira 
+            FROM cliente.carteiras_config 
+            WHERE id_produto = %s AND status = 'ATIVO'
+        """, (int(dados_pedido['id_produto']),))
+        
+        config = cur.fetchone()
+        
+        if config:
+            tabela_carteira = config[0] # Ex: cliente.transacoes_consulta_cpf
+            nome_carteira = config[1]
+            
+            cpf = dados_pedido['cpf_cliente']
+            valor = float(dados_pedido['valor_total'])
+            
+            # 2. Busca o saldo anterior do cliente nessa carteira específica
+            # Sanitizamos a query mas o nome da tabela vem do banco confiável
+            cur.execute(f"SELECT saldo_novo FROM {tabela_carteira} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf,))
+            res_saldo = cur.fetchone()
+            saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
+            
+            saldo_novo = saldo_anterior + valor
+            
+            # 3. Prepara o histórico
+            motivo = f"Compra Pedido #{dados_pedido['codigo']} - {dados_pedido['nome_produto']}"
+            
+            # 4. Insere o Crédito
+            sql_insert = f"""
+                INSERT INTO {tabela_carteira} 
+                (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
+                VALUES (%s, %s, %s, 'PEDIDO', 'CREDITO', %s, %s, %s, NOW())
+            """
+            cur.execute(sql_insert, (cpf, dados_pedido['nome_cliente'], motivo, valor, saldo_anterior, saldo_novo))
+            
+            return True, f"R$ {valor:.2f} creditados em '{nome_carteira}'"
+            
+    except Exception as e:
+        print(f"Erro crédito auto: {e}") # Log no terminal
+        return False, str(e)
+        
+    return False, None # Não é produto de carteira
+
 # --- FUNÇÕES DE CRUD ---
 def buscar_clientes():
     conn = get_conn()
@@ -92,10 +144,25 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
     if conn:
         try:
             cur = conn.cursor()
+            
+            # Atualiza o pedido
             cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs))
+            
+            obs_historico = obs
+            
+            # --- INTEGRAÇÃO: LANÇAR CRÉDITO SE PAGO ---
+            if novo_status == "Pago":
+                ok_cred, msg_cred = processar_credito_automatico(conn, dados_pedido)
+                if ok_cred:
+                    obs_historico += f" | {msg_cred}" # Adiciona no histórico que o crédito caiu
+            # ------------------------------------------
+
+            # Grava histórico
+            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_historico))
+            
             conn.commit(); conn.close()
             
+            # Envio de WhatsApp
             if avisar and dados_pedido['telefone_cliente']:
                 inst = modulo_wapi.buscar_instancia_ativa()
                 if inst:
@@ -105,7 +172,9 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                         msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
             return True
-        except: return False
+        except Exception as e: 
+            print(f"Erro ao atualizar: {e}")
+            return False
     return False
 
 def excluir_pedido_db(id_pedido):
@@ -163,8 +232,14 @@ def dialog_novo_pedido():
 def dialog_editar(ped):
     df_c = buscar_clientes(); df_p = buscar_produtos()
     with st.form("form_edit"):
-        ic = st.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
-        ip = st.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
+        # Tenta achar index atual
+        try: ic_ini = df_c[df_c['nome'] == ped['nome_cliente']].index[0]
+        except: ic_ini = 0
+        try: ip_ini = df_p[df_p['nome'] == ped['nome_produto']].index[0]
+        except: ip_ini = 0
+
+        ic = st.selectbox("Cliente", range(len(df_c)), index=int(ic_ini), format_func=lambda x: df_c.iloc[x]['nome'])
+        ip = st.selectbox("Produto", range(len(df_p)), index=int(ip_ini), format_func=lambda x: df_p.iloc[x]['nome'])
         nq = st.number_input("Qtd", 1, value=int(ped['quantidade']))
         nv = st.number_input("Valor", 0.0, value=float(ped['valor_unitario']))
         if st.form_submit_button("Salvar"):
@@ -173,7 +248,8 @@ def dialog_editar(ped):
 @st.dialog("🔄 Status")
 def dialog_status(ped):
     lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
-    idx = lst.index(ped['status']) if ped['status'] in lst else 0
+    try: idx = lst.index(ped['status']) 
+    except: idx = 0
     mods = ["Automático (Padrão)"] + listar_modelos_mensagens()
     
     with st.form("form_st"):
@@ -181,6 +257,10 @@ def dialog_status(ped):
         mod = st.selectbox("Modelo Msg", mods)
         obs = st.text_area("Obs")
         av = st.checkbox("Avisar?", value=True)
+        
+        if ns == "Pago":
+            st.info("ℹ️ Ao salvar como 'Pago', o sistema tentará lançar o crédito na carteira automaticamente.")
+
         if st.form_submit_button("Atualizar"):
             if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod): st.success("Atualizado!"); st.rerun()
             
@@ -204,8 +284,7 @@ def dialog_tarefa(ped):
             conn.commit(); conn.close()
             st.success("Tarefa Criada!"); st.rerun()
 
-# --- COMPONENTE ISOLADO (O SEGREDO DA SOLUÇÃO) ---
-# Esta função renderiza UM pedido e isola o rerun apenas a ele
+# --- COMPONENTE ISOLADO (@st.fragment) ---
 @st.fragment
 def cartao_pedido(row):
     cor = "🔴"
@@ -237,6 +316,7 @@ def app_pedidos():
 
     conn = get_conn()
     if conn:
+        # Traz dados completos, incluindo id_produto para a lógica de crédito
         df = pd.read_sql("SELECT p.*, c.email as email_cliente FROM pedidos p LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id ORDER BY p.data_criacao DESC", conn)
         conn.close()
 
@@ -251,7 +331,6 @@ def app_pedidos():
 
         st.divider()
         
-        # Paginação simples
         pag_size = 10
         total_pags = (len(df) // pag_size) + 1
         pag = st.selectbox("Página", range(1, total_pags + 1)) if total_pags > 1 else 1
@@ -262,7 +341,6 @@ def app_pedidos():
 
         if not subset.empty:
             for _, row in subset.iterrows():
-                # AQUI ESTÁ A MÁGICA: Chamamos a função decorada
                 cartao_pedido(row)
         else:
             st.info("Nenhum pedido.")
