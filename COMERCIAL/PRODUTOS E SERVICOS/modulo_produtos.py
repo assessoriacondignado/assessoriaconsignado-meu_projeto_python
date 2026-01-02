@@ -43,6 +43,21 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
+def listar_origens_custo():
+    """Busca as origens de consulta cadastradas para usar como origem de custo"""
+    conn = get_conn()
+    lista = []
+    if conn:
+        try:
+            cur = conn.cursor()
+            # Busca da tabela de origens do Fator Conferi
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator ORDER BY origem ASC")
+            lista = [row[0] for row in cur.fetchall()]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return lista
+
 # --- FUNÇÕES DE ARQUIVO E PASTA ---
 def criar_pasta_produto(codigo, nome):
     data_str = datetime.now().strftime("%Y-%m-%d")
@@ -66,18 +81,18 @@ def salvar_arquivos(uploaded_files, caminho_destino):
                 f.write(file.getbuffer())
 
 # --- FUNÇÕES DE CRUD (BANCO) ---
-def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
+def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, origem_custo):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            # ATUALIZADO: Retorna o ID do produto criado
+            # ATUALIZADO: Incluindo origem_custo
             query = """
-                INSERT INTO produtos_servicos (codigo, nome, tipo, resumo, preco, caminho_pasta, data_criacao, ativo)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW(), TRUE)
+                INSERT INTO produtos_servicos (codigo, nome, tipo, resumo, preco, caminho_pasta, origem_custo, data_criacao, ativo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), TRUE)
                 RETURNING id
             """
-            cur.execute(query, (codigo, nome, tipo, resumo, preco, caminho_pasta))
+            cur.execute(query, (codigo, nome, tipo, resumo, preco, caminho_pasta, origem_custo))
             novo_id = cur.fetchone()[0]
             conn.commit()
             conn.close()
@@ -87,7 +102,7 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta):
             return None
     return None
 
-def criar_carteira_automatica(id_prod, nome_prod):
+def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
     """
     Cria automaticamente a estrutura de carteira para o novo produto.
     Réplica da lógica do modulo_cliente.py
@@ -98,7 +113,7 @@ def criar_carteira_automatica(id_prod, nome_prod):
     try:
         cur = conn.cursor()
         
-        # 1. Garante que a tabela de configuração existe (caso seja o primeiro uso)
+        # 1. Garante que a tabela de configuração existe
         cur.execute("""
             CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
                 id SERIAL PRIMARY KEY,
@@ -107,12 +122,12 @@ def criar_carteira_automatica(id_prod, nome_prod):
                 nome_carteira VARCHAR(255),
                 nome_tabela_transacoes VARCHAR(255),
                 status VARCHAR(50) DEFAULT 'ATIVO',
-                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                origem_custo VARCHAR(100)
             );
         """)
 
         # 2. Gera nome da tabela dinâmica
-        # Usa o nome do produto como base para o nome da carteira e tabela
         nome_carteira = nome_prod
         sufixo = sanitizar_nome_tabela(nome_carteira)
         nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
@@ -134,13 +149,13 @@ def criar_carteira_automatica(id_prod, nome_prod):
         """
         cur.execute(sql_create)
         
-        # 4. Registra na tabela de configuração
+        # 4. Registra na tabela de configuração (Incluindo a origem_custo)
         sql_insert = """
             INSERT INTO cliente.carteiras_config 
-            (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status)
-            VALUES (%s, %s, %s, %s, %s)
+            (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status, origem_custo)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """
-        cur.execute(sql_insert, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, 'ATIVO'))
+        cur.execute(sql_insert, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, 'ATIVO', origem_custo))
         
         conn.commit()
         conn.close()
@@ -149,17 +164,18 @@ def criar_carteira_automatica(id_prod, nome_prod):
         if conn: conn.close()
         return False, str(e)
 
-def atualizar_produto_db(id_prod, nome, tipo, resumo, preco):
+def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
+            # ATUALIZADO: Incluindo origem_custo
             query = """
                 UPDATE produtos_servicos 
-                SET nome=%s, tipo=%s, resumo=%s, preco=%s, data_atualizacao=NOW() 
+                SET nome=%s, tipo=%s, resumo=%s, preco=%s, origem_custo=%s, data_atualizacao=NOW() 
                 WHERE id=%s
             """
-            cur.execute(query, (nome, tipo, resumo, preco, id_prod))
+            cur.execute(query, (nome, tipo, resumo, preco, origem_custo, id_prod))
             conn.commit()
             conn.close()
             return True
@@ -172,7 +188,8 @@ def listar_produtos():
     conn = get_conn()
     if conn:
         try:
-            query = "SELECT id, codigo, nome, tipo, preco, data_criacao, caminho_pasta, ativo, resumo FROM produtos_servicos ORDER BY data_criacao DESC"
+            # ATUALIZADO: Incluindo origem_custo na busca
+            query = "SELECT id, codigo, nome, tipo, preco, data_criacao, caminho_pasta, ativo, resumo, origem_custo FROM produtos_servicos ORDER BY data_criacao DESC"
             df = pd.read_sql(query, conn)
             conn.close()
             return df
@@ -239,54 +256,77 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
 @st.dialog("✏️ Editar Item")
 def dialog_editar_produto(dados_atuais):
     st.write(f"Editando: **{dados_atuais['codigo']}**")
+    
+    # Lista de Origens
+    lista_origens = listar_origens_custo()
+    opcoes_origem = [""] + lista_origens
+    
+    # Encontra índice atual
+    idx_origem = 0
+    valor_atual_origem = dados_atuais.get('origem_custo')
+    if valor_atual_origem and valor_atual_origem in lista_origens:
+        idx_origem = lista_origens.index(valor_atual_origem) + 1
+
     with st.form("form_editar", clear_on_submit=False):
         novo_nome = st.text_input("Nome", value=dados_atuais['nome'])
         opcoes_tipo = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
         idx_tipo = opcoes_tipo.index(dados_atuais['tipo']) if dados_atuais['tipo'] in opcoes_tipo else 0
         novo_tipo = st.selectbox("Categoria", opcoes_tipo, index=idx_tipo)
         novo_preco = st.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
+        
+        # Novo campo de Origem Custo
+        novo_origem = st.selectbox("Origem de Custo (Fator)", options=opcoes_origem, index=idx_origem, help="Define qual regra de custo será aplicada a este produto.")
+        
         novo_resumo = st.text_area("Resumo", value=dados_atuais['resumo'], height=100)
         
         if st.form_submit_button("💾 Salvar Alterações"):
-            if atualizar_produto_db(dados_atuais['id'], novo_nome, novo_tipo, novo_resumo, novo_preco):
+            if atualizar_produto_db(dados_atuais['id'], novo_nome, novo_tipo, novo_resumo, novo_preco, novo_origem):
                 st.success("Atualizado com sucesso!")
                 st.rerun()
 
 @st.dialog("📝 Novo Cadastro")
 def dialog_novo_cadastro():
     st.write("Novo item")
+    
+    # Carrega origens
+    lista_origens = listar_origens_custo()
+    opcoes_origem = [""] + lista_origens
+
     with st.form("form_cadastro_popup", clear_on_submit=True):
         nome = st.text_input("Nome")
         tipo = st.selectbox("Categoria", ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"])
         preco = st.number_input("Preço (R$) (Opcional)", min_value=0.0, format="%.2f")
+        
+        # Campo de Origem
+        origem_sel = st.selectbox("Origem de Custo (Fator)", options=opcoes_origem, help="Vincula este produto a uma regra de cobrança de consulta.")
+        
         arquivos = st.file_uploader("Arquivos", accept_multiple_files=True)
         resumo = st.text_area("Resumo", height=100)
         
         st.divider()
         st.markdown("##### ⚙️ Configurações Automáticas")
-        # Regra 2.5: Aviso em tela para confirmar criação
         criar_cart = st.checkbox("✅ Criar Carteira Financeira Automaticamente?", value=True, 
                                  help="Se marcado, cria automaticamente a tabela de saldo para este produto.")
         if criar_cart:
-            st.caption("ℹ️ Uma nova carteira será criada com o mesmo nome do produto.")
+            st.caption("ℹ️ Uma nova carteira será criada com o mesmo nome do produto e vinculada à origem selecionada.")
         
         if st.form_submit_button("💾 Salvar"):
             if nome:
                 codigo_auto = gerar_codigo_automatico()
                 caminho = criar_pasta_produto(codigo_auto, nome)
                 
-                # Salva arquivos antes de registrar no banco
+                # Salva arquivos
                 if arquivos: salvar_arquivos(arquivos, caminho)
                 
-                # Cadastra e recupera ID
-                novo_id = cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho)
+                # Cadastra com origem
+                novo_id = cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho, origem_sel)
                 
                 if novo_id:
                     msg_sucesso = f"Produto criado: {codigo_auto}"
                     
-                    # Criação automática de carteira (Regra 2.1)
+                    # Criação automática de carteira (Passando a origem também)
                     if criar_cart:
-                        ok_cart, msg_cart = criar_carteira_automatica(novo_id, nome)
+                        ok_cart, msg_cart = criar_carteira_automatica(novo_id, nome, origem_sel)
                         if ok_cart:
                             msg_sucesso += f"\n\n + Carteira Financeira criada com sucesso!"
                         else:
@@ -323,7 +363,14 @@ def app_produtos():
         for index, row in df.iterrows():
             status_cor = "🟢" if row['ativo'] else "🔴"
             with st.expander(f"{status_cor} {row['nome']} ({row['codigo']})"):
-                st.markdown(f"**Categoria:** {row['tipo']} | **Preço:** R$ {row['preco']:.2f}")
+                c1, c2 = st.columns(2)
+                c1.markdown(f"**Categoria:** {row['tipo']}")
+                c1.markdown(f"**Preço:** R$ {row['preco']:.2f}")
+                
+                # Exibe a origem se existir
+                origem_display = row.get('origem_custo') if row.get('origem_custo') else "-"
+                c2.markdown(f"**Origem Custo:** {origem_display}")
+                
                 st.markdown(f"**Resumo:** {row['resumo']}")
                 st.markdown("---")
                 
