@@ -68,7 +68,6 @@ def formatar_cpf_cnpj_visual(valor):
     return valor
 
 def converter_data_banco(data_str):
-    """Converte DD/MM/AAAA para AAAA-MM-DD"""
     if not data_str: return None
     try:
         return datetime.strptime(data_str, '%d/%m/%Y').strftime('%Y-%m-%d')
@@ -93,8 +92,6 @@ def parse_xml_to_dict(xml_string):
         
         # 2. TELEFONES
         telefones = []
-        
-        # Móveis
         tm = root.find('telefones_movel')
         if tm is not None:
             for fone in tm.findall('telefone'):
@@ -103,8 +100,6 @@ def parse_xml_to_dict(xml_string):
                     'tipo': 'MOVEL',
                     'prioridade': fone.findtext('prioridade')
                 })
-        
-        # Fixos
         tf = root.find('telefones_fixo')
         if tf is not None:
             for fone in tf.findall('telefone'):
@@ -115,7 +110,7 @@ def parse_xml_to_dict(xml_string):
                 })
         dados['telefones'] = telefones
 
-        # 3. EMAILS (Novo)
+        # 3. EMAILS
         emails = []
         em_root = root.find('emails')
         if em_root is not None:
@@ -123,7 +118,7 @@ def parse_xml_to_dict(xml_string):
                 if em.text: emails.append(em.text)
         dados['emails'] = emails
 
-        # 4. ENDEREÇOS (Novo)
+        # 4. ENDEREÇOS
         enderecos = []
         end_root = root.find('enderecos')
         if end_root is not None:
@@ -146,8 +141,34 @@ def parse_xml_to_dict(xml_string):
     except Exception as e:
         return {"erro": f"Falha ao processar XML: {e}", "raw": xml_string}
 
+# --- FUNÇÃO RESTAURADA: CONSULTAR SALDO API ---
+def consultar_saldo_api():
+    cred = buscar_credenciais()
+    if not cred['token']: return False, 0.0
+    url = f"{cred['url']}?acao=VER_SALDO&TK={cred['token']}"
+    try:
+        response = requests.get(url, timeout=10)
+        valor_texto = response.text.strip()
+        if '<' in valor_texto:
+            try:
+                root = ET.fromstring(valor_texto)
+                valor_texto = root.text 
+            except: pass
+        saldo = float(valor_texto.replace(',', '.')) if valor_texto else 0.0
+        
+        # Registra histórico
+        conn = get_conn()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO conexoes.fatorconferi_registro_de_saldo (valor_saldo) VALUES (%s)", (saldo,))
+            conn.commit(); conn.close()
+            
+        return True, saldo
+    except Exception as e:
+        return False, 0.0
+
 # =============================================================================
-# 2. FUNÇÃO DE SALVAMENTO INTELIGENTE (REGRAS 1, 2 e 3)
+# 2. FUNÇÃO DE SALVAMENTO INTELIGENTE
 # =============================================================================
 
 def salvar_dados_fator_no_banco(dados_api):
@@ -156,25 +177,19 @@ def salvar_dados_fator_no_banco(dados_api):
     
     try:
         cur = conn.cursor()
-        
-        # Limpeza do CPF
-        cpf_raw = dados_api.get('cpf', '')
-        cpf_limpo = re.sub(r'\D', '', str(cpf_raw))
+        cpf_limpo = re.sub(r'\D', '', str(dados_api.get('cpf', '')))
         
         if not cpf_limpo or len(cpf_limpo) != 11:
-            return False, "CPF inválido ou não encontrado na consulta."
+            return False, "CPF inválido."
 
-        # --- REGRA 2: DADOS PESSOAIS (ATUALIZAR SE EXISTIR) ---
-        # Mapeamento API -> Banco PF
+        # UPSERT DADOS
         campos = {
             'nome': dados_api.get('nome'),
             'data_nascimento': converter_data_banco(dados_api.get('nascimento')),
             'rg': dados_api.get('rg'),
-            'nome_mae': dados_api.get('mae'),
-            # Campos não retornados pela API ficam como None para não apagar o que já tem
+            'nome_mae': dados_api.get('mae')
         }
         
-        # Query de UPSERT (Insert ou Update on Conflict)
         query_dados = """
             INSERT INTO banco_pf.pf_dados (cpf, nome, data_nascimento, rg, nome_mae, data_criacao)
             VALUES (%s, %s, %s, %s, %s, NOW())
@@ -186,24 +201,17 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
         
-        # --- REGRA 3: DADOS COMPLEMENTARES (INSERIR SE NÃO EXISTIR) ---
-        
-        # 3.1 Telefones
+        # INSERT SATÉLITES
         count_tel = 0
         for tel in dados_api.get('telefones', []):
             num_limpo = re.sub(r'\D', '', str(tel['numero']))
             if num_limpo:
-                # Verifica se já existe para este CPF
                 cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = %s AND numero = %s", (cpf_limpo, num_limpo))
                 if not cur.fetchone():
                     qualif = tel.get('prioridade', '').capitalize()
-                    cur.execute("""
-                        INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_qualificacao, data_atualizacao)
-                        VALUES (%s, %s, %s, CURRENT_DATE)
-                    """, (cpf_limpo, num_limpo, qualif))
+                    cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, CURRENT_DATE)", (cpf_limpo, num_limpo, qualif))
                     count_tel += 1
 
-        # 3.2 E-mails
         count_email = 0
         for email in dados_api.get('emails', []):
             email_val = str(email).strip().lower()
@@ -213,53 +221,37 @@ def salvar_dados_fator_no_banco(dados_api):
                     cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_limpo, email_val))
                     count_email += 1
 
-        # 3.3 Endereços (Validação pelo CEP para evitar duplicidade exata)
         count_end = 0
         for end in dados_api.get('enderecos', []):
             cep_limpo = re.sub(r'\D', '', str(end['cep']))
             if cep_limpo:
                 cur.execute("SELECT 1 FROM banco_pf.pf_enderecos WHERE cpf_ref = %s AND cep = %s", (cpf_limpo, cep_limpo))
                 if not cur.fetchone():
-                    cur.execute("""
-                        INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (cpf_limpo, end['rua'], end['bairro'], end['cidade'], end['uf'], cep_limpo))
+                    cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_limpo, end['rua'], end['bairro'], end['cidade'], end['uf'], cep_limpo))
                     count_end += 1
 
-        conn.commit()
-        conn.close()
-        
-        msg_sucesso = f"""
-        ✅ Dados salvos com sucesso!
-        - Cadastro: Atualizado/Verificado
-        - Novos Telefones: {count_tel}
-        - Novos E-mails: {count_email}
-        - Novos Endereços: {count_end}
-        """
-        return True, msg_sucesso
+        conn.commit(); conn.close()
+        return True, f"Salvo! +{count_tel} Tels, +{count_email} Emails, +{count_end} End."
 
     except Exception as e:
-        conn.close()
-        return False, f"Erro ao salvar no banco: {e}"
+        conn.close(); return False, f"Erro DB: {e}"
 
 # =============================================================================
-# 3. FLUXO DE CONSULTA (COM LOGICA DE SALVAMENTO INTEGRADA)
+# 3. FLUXO DE CONSULTA
 # =============================================================================
 
 def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
     cpf_limpo_raw = ''.join(filter(str.isdigit, str(cpf)))
-    if len(cpf_limpo_raw) <= 11: 
-        cpf_padrao = cpf_limpo_raw.zfill(11); tipo_registro = "CPF SIMPLES"
-    else: 
-        cpf_padrao = cpf_limpo_raw.zfill(14); tipo_registro = "CNPJ SIMPLES"
+    if len(cpf_limpo_raw) <= 11: cpf_padrao = cpf_limpo_raw.zfill(11); tipo_registro = "CPF SIMPLES"
+    else: cpf_padrao = cpf_limpo_raw.zfill(14); tipo_registro = "CNPJ SIMPLES"
     
     conn = get_conn()
-    if not conn: return {"sucesso": False, "msg": "Erro de conexão DB."}
+    if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
     try:
         cur = conn.cursor()
         
-        # Cache Check
+        # Cache
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -267,10 +259,10 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
                 try:
                     with open(res[0], 'r', encoding='utf-8') as f: dados = json.load(f)
                     conn.close()
-                    return {"sucesso": True, "dados": dados, "msg": "Dados recuperados do histórico (R$ 0,00)."}
+                    return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
                 except: pass
         
-        # API Call
+        # API
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
         
@@ -284,12 +276,12 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         
         dados = parse_xml_to_dict(xml)
         
-        # Salva JSON
+        # Salva
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, ensure_ascii=False, indent=4)
         
-        # Log Banco
+        # Log
         custo = buscar_valor_consulta_atual()
         usr = st.session_state.get('usuario_nome', 'Sistema')
         id_usr = st.session_state.get('usuario_id', 0)
@@ -307,10 +299,7 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         if conn: conn.close()
         return {"sucesso": False, "msg": str(e)}
 
-# --- FUNÇÕES DE INTERFACE E PARAMETROS MANTIDAS IGUAIS (OMITIDAS PARA BREVIDADE, MAS DEVEM ESTAR NO ARQUIVO) ---
-# ... (listar_clientes_carteira, movimentar_saldo, etc...) ...
-# Vou replicar apenas as essenciais para o app funcionar sem erro de importação
-
+# --- FUNÇÕES DE INTERFACE FALTANTES (RESTAURADAS) ---
 def listar_clientes_carteira():
     conn = get_conn()
     if conn:
@@ -320,12 +309,8 @@ def listar_clientes_carteira():
         except: conn.close()
     return pd.DataFrame()
 
-def consultar_saldo_api_btn():
-    ok, v = consultar_saldo_api()
-    if ok: st.metric("Saldo Atual", f"R$ {v:.2f}")
-
 # =============================================================================
-# 5. INTERFACE PRINCIPAL (ATUALIZADA)
+# 5. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_fator_conferi():
@@ -354,20 +339,16 @@ def app_fator_conferi():
             if res['sucesso']:
                 if "msg" in res: st.success(res['msg'])
                 
-                # --- BOTÃO DE IMPORTAÇÃO ---
                 st.divider()
                 col_save, col_info = st.columns([1, 3])
-                
                 if col_save.button("💾 Salvar na Base PF", type="primary"):
-                    with st.spinner("Processando importação inteligente..."):
+                    with st.spinner("Processando..."):
                         ok_save, msg_save = salvar_dados_fator_no_banco(res['dados'])
                         if ok_save: st.success(msg_save)
                         else: st.error(msg_save)
                 
-                with col_info:
-                    st.caption("Esta ação atualiza o cadastro do cliente e adiciona apenas novos telefones/endereços.")
+                with col_info: st.caption("Atualiza cadastro e adiciona novos telefones/endereços.")
 
-                # Exibição dos Dados
                 dados = res['dados']
                 with st.expander("👤 Dados Pessoais", expanded=True):
                     dc1, dc2 = st.columns(2)
@@ -388,7 +369,12 @@ def app_fator_conferi():
 
             else: st.error(res.get('msg', 'Erro'))
 
-    with tabs[2]: consultar_saldo_api_btn()
+    with tabs[2]: # ABA SALDO API
+        if st.button("🔄 Atualizar"): 
+            ok, v = consultar_saldo_api()
+            if ok: st.metric("Saldo Atual", f"R$ {v:.2f}")
+            else: st.error("Erro ao consultar saldo.")
+        
     with tabs[3]: 
         conn = get_conn()
         if conn: st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)); conn.close()
