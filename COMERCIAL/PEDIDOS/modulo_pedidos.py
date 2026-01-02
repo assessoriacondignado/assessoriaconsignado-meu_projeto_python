@@ -33,16 +33,15 @@ def listar_modelos_mensagens():
         except: conn.close()
     return []
 
-# --- NOVA FUNÇÃO: LANÇAMENTO AUTOMÁTICO DE CRÉDITO ---
-def processar_credito_automatico(conn, dados_pedido):
+# --- NOVA FUNÇÃO: MOVIMENTAÇÃO AUTOMÁTICA (CRÉDITO/DÉBITO) ---
+def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     """
-    Verifica se o produto do pedido está vinculado a uma carteira e lança o crédito.
+    Lança CRÉDITO ou DÉBITO na carteira do cliente dependendo do status do pedido.
     """
     try:
         cur = conn.cursor()
         
-        # 1. Verifica se existe carteira configurada para este produto (Regra do (...) )
-        # Busca na tabela de configuração criada pelo modulo_produtos ou modulo_cliente
+        # 1. Verifica se existe carteira configurada para este produto
         cur.execute("""
             SELECT nome_tabela_transacoes, nome_carteira 
             FROM cliente.carteiras_config 
@@ -52,38 +51,40 @@ def processar_credito_automatico(conn, dados_pedido):
         config = cur.fetchone()
         
         if config:
-            tabela_carteira = config[0] # Ex: cliente.transacoes_consulta_cpf
+            tabela_carteira = config[0]
             nome_carteira = config[1]
             
             cpf = dados_pedido['cpf_cliente']
             valor = float(dados_pedido['valor_total'])
             
-            # 2. Busca o saldo anterior do cliente nessa carteira específica
-            # Sanitizamos a query mas o nome da tabela vem do banco confiável
+            # 2. Busca o saldo anterior
             cur.execute(f"SELECT saldo_novo FROM {tabela_carteira} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf,))
             res_saldo = cur.fetchone()
             saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
             
-            saldo_novo = saldo_anterior + valor
+            # 3. Define Operação (Crédito ou Débito)
+            if tipo_lancamento == 'DEBITO':
+                saldo_novo = saldo_anterior - valor
+                motivo = f"Cancelamento Pedido #{dados_pedido['codigo']} - Estorno"
+            else: # CREDITO
+                saldo_novo = saldo_anterior + valor
+                motivo = f"Compra Pedido #{dados_pedido['codigo']} - {dados_pedido['nome_produto']}"
             
-            # 3. Prepara o histórico
-            motivo = f"Compra Pedido #{dados_pedido['codigo']} - {dados_pedido['nome_produto']}"
-            
-            # 4. Insere o Crédito
+            # 4. Insere o Lançamento
             sql_insert = f"""
                 INSERT INTO {tabela_carteira} 
                 (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
-                VALUES (%s, %s, %s, 'PEDIDO', 'CREDITO', %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, 'PEDIDO', %s, %s, %s, %s, NOW())
             """
-            cur.execute(sql_insert, (cpf, dados_pedido['nome_cliente'], motivo, valor, saldo_anterior, saldo_novo))
+            cur.execute(sql_insert, (cpf, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
             
-            return True, f"R$ {valor:.2f} creditados em '{nome_carteira}'"
+            return True, f"{tipo_lancamento} de R$ {valor:.2f} em '{nome_carteira}'"
             
     except Exception as e:
-        print(f"Erro crédito auto: {e}") # Log no terminal
+        print(f"Erro movimentacao auto: {e}")
         return False, str(e)
         
-    return False, None # Não é produto de carteira
+    return False, None # Produto sem carteira vinculada
 
 # --- FUNÇÕES DE CRUD ---
 def buscar_clientes():
@@ -145,17 +146,20 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
         try:
             cur = conn.cursor()
             
-            # Atualiza o pedido
+            # Atualiza o status do pedido
             cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
             
             obs_historico = obs
             
-            # --- INTEGRAÇÃO: LANÇAR CRÉDITO SE PAGO ---
+            # --- INTEGRAÇÃO FINANCEIRA (NOVO) ---
             if novo_status == "Pago":
-                ok_cred, msg_cred = processar_credito_automatico(conn, dados_pedido)
-                if ok_cred:
-                    obs_historico += f" | {msg_cred}" # Adiciona no histórico que o crédito caiu
-            # ------------------------------------------
+                ok_mov, msg_mov = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
+                if ok_mov: obs_historico += f" | {msg_mov}"
+            
+            elif novo_status == "Cancelado":
+                ok_mov, msg_mov = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
+                if ok_mov: obs_historico += f" | {msg_mov}"
+            # ------------------------------------
 
             # Grava histórico
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_historico))
@@ -232,7 +236,6 @@ def dialog_novo_pedido():
 def dialog_editar(ped):
     df_c = buscar_clientes(); df_p = buscar_produtos()
     with st.form("form_edit"):
-        # Tenta achar index atual
         try: ic_ini = df_c[df_c['nome'] == ped['nome_cliente']].index[0]
         except: ic_ini = 0
         try: ip_ini = df_p[df_p['nome'] == ped['nome_produto']].index[0]
@@ -259,7 +262,9 @@ def dialog_status(ped):
         av = st.checkbox("Avisar?", value=True)
         
         if ns == "Pago":
-            st.info("ℹ️ Ao salvar como 'Pago', o sistema tentará lançar o crédito na carteira automaticamente.")
+            st.info("ℹ️ Será lançado um CRÉDITO na carteira do cliente.")
+        if ns == "Cancelado":
+            st.warning("⚠️ Será lançado um DÉBITO (estorno) na carteira do cliente.")
 
         if st.form_submit_button("Atualizar"):
             if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod): st.success("Atualizado!"); st.rerun()
@@ -316,7 +321,6 @@ def app_pedidos():
 
     conn = get_conn()
     if conn:
-        # Traz dados completos, incluindo id_produto para a lógica de crédito
         df = pd.read_sql("SELECT p.*, c.email as email_cliente FROM pedidos p LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id ORDER BY p.data_criacao DESC", conn)
         conn.close()
 
