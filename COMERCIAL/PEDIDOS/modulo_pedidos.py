@@ -112,12 +112,14 @@ def buscar_historico_pedido(id_pedido):
         return df
     return pd.DataFrame()
 
-def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_cliente):
+def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_cliente, add_lista=False, nome_lista="", custo_lista=0.0):
     codigo = f"PEDIDO-{datetime.now().strftime('%y%m%d%H%M')}"
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
+            
+            # 1. Cria o Pedido
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total)
@@ -126,9 +128,25 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
                   int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total)))
             
             id_novo = cur.fetchone()[0]
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
-            conn.commit(); conn.close()
             
+            # 2. Insere no Histórico do Pedido
+            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
+            
+            # 3. (NOVO) Insere na Lista de Carteira se solicitado
+            if add_lista and nome_lista:
+                try:
+                    cur.execute("""
+                        INSERT INTO cliente.cliente_carteira_lista (cpf_cliente, nome_cliente, nome_carteira, custo_carteira) 
+                        VALUES (%s, %s, %s, %s)
+                    """, (cliente['cpf'], cliente['nome'], nome_lista, float(custo_lista)))
+                except Exception as e_lista:
+                    print(f"Erro ao inserir na lista de carteira: {e_lista}")
+                    # Não bloqueia o pedido se falhar a lista, mas registra log no terminal
+            
+            conn.commit()
+            conn.close()
+            
+            # 4. Envia WhatsApp
             if avisar_cliente and cliente['telefone']:
                 inst = modulo_wapi.buscar_instancia_ativa()
                 if inst:
@@ -151,7 +169,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             
             obs_historico = obs
             
-            # --- INTEGRAÇÃO FINANCEIRA (NOVO) ---
+            # --- INTEGRAÇÃO FINANCEIRA ---
             if novo_status == "Pago":
                 ok_mov, msg_mov = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
                 if ok_mov: obs_historico += f" | {msg_mov}"
@@ -159,7 +177,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             elif novo_status == "Cancelado":
                 ok_mov, msg_mov = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
                 if ok_mov: obs_historico += f" | {msg_mov}"
-            # ------------------------------------
+            # -----------------------------
 
             # Grava histórico
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_historico))
@@ -225,11 +243,34 @@ def dialog_novo_pedido():
         qtd = c3.number_input("Qtd", 1, value=1)
         val = c4.number_input("Valor Un.", 0.0, value=float(prod['preco'] or 0.0))
         st.write(f"Total: R$ {qtd*val:.2f}")
+        
+        # --- SEÇÃO: LISTA DE CARTEIRA (NOVO) ---
+        st.divider()
+        st.markdown("📂 **Lista de Carteira (Opcional)**")
+        add_cart = st.checkbox("Incluir cliente em Lista de Carteira?", value=False)
+        
+        n_cart = ""
+        c_cart = 0.0
+        
+        if add_cart:
+            col_l1, col_l2 = st.columns(2)
+            n_cart = col_l1.text_input("Nome da Carteira", placeholder="Ex: Mensalistas 2024")
+            c_cart = col_l2.number_input("Custo da Carteira (R$)", min_value=0.0, step=0.01)
+        # ---------------------------------------
+
+        st.divider()
         avisar = st.checkbox("Avisar WhatsApp?", value=True)
         
-        if st.form_submit_button("Criar"):
-            ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar)
-            if ok: st.success("Criado!"); time.sleep(1); st.rerun()
+        if st.form_submit_button("Criar Pedido"):
+            # Chama a função de criação passando os novos parâmetros
+            ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar, add_cart, n_cart, c_cart)
+            
+            if ok: 
+                st.success("Criado com sucesso!")
+                if add_cart:
+                    st.info(f"Cliente incluído na lista '{n_cart}'.")
+                time.sleep(1.5)
+                st.rerun()
             else: st.error(res)
 
 @st.dialog("✏️ Editar")
