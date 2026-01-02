@@ -293,6 +293,7 @@ def atualizar_carteira_config(id_conf, status):
         except: conn.close(); return False
     return False
 
+# --- FUNÇÃO ATUALIZADA: BUSCAR COM ID ---
 def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, data_fim):
     """Busca o extrato na tabela dinâmica específica da carteira com filtro de data"""
     conn = get_conn()
@@ -301,8 +302,9 @@ def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, 
         dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
         dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
 
+        # SELECT INCLUI 'id'
         query = f"""
-            SELECT data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento 
+            SELECT id, data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento 
             FROM {nome_tabela_sql} 
             WHERE cpf_cliente = %s 
               AND data_transacao BETWEEN %s AND %s
@@ -345,6 +347,34 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         return True, "Lançamento realizado com sucesso!"
     except Exception as e:
         conn.close(); return False, str(e)
+
+# --- NOVAS FUNÇÕES: EDITAR E EXCLUIR TRANSAÇÃO ---
+def atualizar_transacao_dinamica(nome_tabela, id_transacao, novo_motivo, novo_valor, novo_tipo):
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        # Nota: Alteração de valor histórico não recalcula saldos futuros automaticamente
+        query = f"""
+            UPDATE {nome_tabela} 
+            SET motivo = %s, valor = %s, tipo_lancamento = %s
+            WHERE id = %s
+        """
+        cur.execute(query, (novo_motivo, float(novo_valor), novo_tipo, id_transacao))
+        conn.commit(); conn.close()
+        return True
+    except: conn.close(); return False
+
+def excluir_transacao_dinamica(nome_tabela, id_transacao):
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        query = f"DELETE FROM {nome_tabela} WHERE id = %s"
+        cur.execute(query, (id_transacao,))
+        conn.commit(); conn.close()
+        return True
+    except: conn.close(); return False
 
 # --- USUÁRIOS E CLIENTES (VINCULOS) ---
 
@@ -545,6 +575,42 @@ def dialog_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc):
             else:
                 st.error(f"Erro: {msg}")
 
+# --- NOVOS DIALOGS: EDIÇÃO E EXCLUSÃO DE EXTRATO ---
+@st.dialog("✏️ Editar Lançamento")
+def dialog_editar_lancamento_extrato(tabela_sql, transacao):
+    st.write(f"Editando ID: {transacao['id']}")
+    
+    with st.form("form_edit_lanc"):
+        n_motivo = st.text_input("Motivo", value=transacao['motivo'])
+        c1, c2 = st.columns(2)
+        n_tipo = c1.selectbox("Tipo", ["CREDITO", "DEBITO"], index=0 if transacao['tipo_lancamento'] == "CREDITO" else 1)
+        n_valor = c2.number_input("Valor (R$)", value=float(transacao['valor']), step=0.01)
+        
+        if st.form_submit_button("💾 Salvar Alterações"):
+            if atualizar_transacao_dinamica(tabela_sql, transacao['id'], n_motivo, n_valor, n_tipo):
+                st.success("Atualizado com sucesso!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Erro ao atualizar.")
+
+@st.dialog("🗑️ Excluir Lançamento")
+def dialog_excluir_lancamento_extrato(tabela_sql, id_transacao):
+    st.warning("Tem certeza que deseja excluir este lançamento?")
+    st.caption("Essa ação não recalcula o saldo das transações seguintes automaticamente.")
+    
+    col_sim, col_nao = st.columns(2)
+    if col_sim.button("🚨 Sim, Excluir", use_container_width=True):
+        if excluir_transacao_dinamica(tabela_sql, id_transacao):
+            st.success("Excluído!")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("Erro ao excluir.")
+            
+    if col_nao.button("Cancelar", use_container_width=True):
+        st.rerun()
+
 # =============================================================================
 # 4. INTERFACE PRINCIPAL
 # =============================================================================
@@ -658,11 +724,13 @@ def app_clientes():
                                             <div style="flex: 1;">Tipo</div>
                                             <div style="flex: 1.5;">Valor</div>
                                             <div style="flex: 1.5;">Saldo</div>
+                                            <div style="flex: 1; text-align: center;">Ações</div>
                                         </div>
                                         """, unsafe_allow_html=True)
                                         
                                         for _, tr in df_extrato.iterrows():
-                                            tc1, tc2, tc3, tc4, tc5 = st.columns([2, 3, 1, 1.5, 1.5])
+                                            # ATUALIZADO: Incluindo coluna de Ações
+                                            tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1.5, 1.5, 1])
                                             tc1.write(pd.to_datetime(tr['data_transacao']).strftime('%d/%m/%y %H:%M'))
                                             tc2.write(tr['motivo'])
                                             
@@ -670,6 +738,14 @@ def app_clientes():
                                             tc3.markdown(f":{cor_t}[{tr['tipo_lancamento']}]")
                                             tc4.write(f"R$ {float(tr['valor']):.2f}")
                                             tc5.write(f"R$ {float(tr['saldo_novo']):.2f}")
+                                            
+                                            with tc6:
+                                                bc1, bc2 = st.columns(2)
+                                                if bc1.button("✏️", key=f"ed_tr_{tr['id']}", help="Editar Lançamento"):
+                                                    dialog_editar_lancamento_extrato(tabela_sql, tr)
+                                                if bc2.button("🗑️", key=f"del_tr_{tr['id']}", help="Excluir Lançamento"):
+                                                    dialog_excluir_lancamento_extrato(tabela_sql, tr['id'])
+                                            
                                             st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                                     else:
                                         st.warning("Nenhuma movimentação encontrada no período.")
