@@ -124,6 +124,13 @@ def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
                 origem_custo VARCHAR(100)
             );
         """)
+        # Garante coluna na tabela de carteiras também
+        try:
+            cur.execute("ALTER TABLE cliente.carteiras_config ADD COLUMN IF NOT EXISTS origem_custo VARCHAR(100)")
+            conn.commit()
+        except:
+            conn.rollback()
+
         nome_carteira = nome_prod
         sufixo = sanitizar_nome_tabela(nome_carteira)
         nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
@@ -143,13 +150,16 @@ def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
             );
         """
         cur.execute(sql_create)
+        
         sql_insert = """
             INSERT INTO cliente.carteiras_config 
             (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status, origem_custo)
             VALUES (%s, %s, %s, %s, %s, %s)
         """
         cur.execute(sql_insert, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, 'ATIVO', origem_custo))
-        conn.commit(); conn.close()
+        
+        conn.commit()
+        conn.close()
         return True, nome_tabela_dinamica
     except Exception as e:
         if conn: conn.close()
@@ -166,7 +176,9 @@ def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo):
                 WHERE id=%s
             """
             cur.execute(query, (nome, tipo, resumo, preco, origem_custo, id_prod))
-            conn.commit(); conn.close(); return True
+            conn.commit()
+            conn.close()
+            return True
         except Exception as e:
             st.error(f"Erro ao atualizar: {e}"); return False
     return False
@@ -199,12 +211,14 @@ def excluir_produto(id_prod, caminho_pasta):
             cur = conn.cursor()
             cur.execute("DELETE FROM produtos_servicos WHERE id = %s", (id_prod,))
             conn.commit(); conn.close()
-            if caminho_pasta and os.path.exists(caminho_pasta): shutil.rmtree(caminho_pasta)
+            if caminho_pasta and os.path.exists(caminho_pasta):
+                shutil.rmtree(caminho_pasta)
             return True
         except: return False
     return False
 
-# --- POP-UPS ---
+# --- POP-UPS (DIALOGS) ---
+
 @st.dialog("📂 Arquivos do Item")
 def dialog_visualizar_arquivos(caminho_pasta, nome_item):
     st.write(f"Arquivos de: **{nome_item}**")
@@ -221,57 +235,93 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
                     try:
                         with open(caminho_completo, "rb") as f:
                             st.download_button("⬇️ Baixar", data=f, file_name=arquivo, key=f"d_{arquivo}_{uuid.uuid4().hex}")
-                    except: st.write("Indisponível")
-        else: st.warning("Pasta vazia.")
-    else: st.error("Pasta de arquivos não localizada no servidor.")
+                    except:
+                        st.write("Indisponível")
+        else:
+            st.warning("Pasta vazia.")
+    else:
+        st.error("Pasta de arquivos não localizada no servidor.")
 
-@st.dialog("✏️ Editar Item")
+@st.dialog("✏️ Editar Item", width="large")
 def dialog_editar_produto(dados_atuais):
     st.write(f"Editando: **{dados_atuais['codigo']}**")
+    
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
+    
+    # Define índice atual da origem
     idx_origem = 0
     valor_atual_origem = dados_atuais.get('origem_custo')
     if valor_atual_origem and valor_atual_origem in lista_origens:
         idx_origem = lista_origens.index(valor_atual_origem) + 1
+        
+    # Busca carteira vinculada (somente visualização)
+    carteira_vinculada = "Nenhuma"
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = %s", (dados_atuais['id'],))
+            res = cur.fetchone()
+            if res: carteira_vinculada = res[0]
+            conn.close()
+        except: conn.close()
 
     with st.form("form_editar", clear_on_submit=False):
-        novo_nome = st.text_input("Nome", value=dados_atuais['nome'])
+        c1, c2 = st.columns(2)
+        novo_nome = c1.text_input("Nome", value=dados_atuais['nome'])
+        
         opcoes_tipo = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
         idx_tipo = opcoes_tipo.index(dados_atuais['tipo']) if dados_atuais['tipo'] in opcoes_tipo else 0
-        novo_tipo = st.selectbox("Categoria", opcoes_tipo, index=idx_tipo)
-        novo_preco = st.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
-        novo_origem = st.selectbox("Origem de Custo (Fator)", options=opcoes_origem, index=idx_origem)
+        novo_tipo = c2.selectbox("Categoria", opcoes_tipo, index=idx_tipo)
+        
+        c3, c4, c5 = st.columns(3)
+        novo_preco = c3.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
+        
+        # Campo editável
+        novo_origem = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, index=idx_origem)
+        
+        # Campo somente visualização
+        c5.text_input("Carteira Vinculada", value=carteira_vinculada, disabled=True)
+        
         novo_resumo = st.text_area("Resumo", value=dados_atuais['resumo'], height=100)
         
         if st.form_submit_button("💾 Salvar Alterações"):
             if atualizar_produto_db(dados_atuais['id'], novo_nome, novo_tipo, novo_resumo, novo_preco, novo_origem):
-                st.success("Atualizado com sucesso!"); st.rerun()
+                st.success("Atualizado com sucesso!")
+                st.rerun()
 
-@st.dialog("📝 Novo Cadastro")
+@st.dialog("📝 Novo Cadastro", width="large")
 def dialog_novo_cadastro():
     st.write("Novo item")
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
 
     with st.form("form_cadastro_popup", clear_on_submit=True):
-        nome = st.text_input("Nome")
-        tipo = st.selectbox("Categoria", ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"])
-        preco = st.number_input("Preço (R$) (Opcional)", min_value=0.0, format="%.2f")
-        origem_sel = st.selectbox("Origem de Custo (Fator)", options=opcoes_origem)
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome")
+        tipo = c2.selectbox("Categoria", ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"])
+        
+        c3, c4 = st.columns(2)
+        preco = c3.number_input("Preço (R$) (Opcional)", min_value=0.0, format="%.2f")
+        origem_sel = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, help="Vincula este produto a uma regra de cobrança.")
+        
         arquivos = st.file_uploader("Arquivos", accept_multiple_files=True)
         resumo = st.text_area("Resumo", height=100)
         
         st.divider()
         st.markdown("##### ⚙️ Configurações Automáticas")
         criar_cart = st.checkbox("✅ Criar Carteira Financeira Automaticamente?", value=True)
-        if criar_cart: st.caption("ℹ️ Uma nova carteira será criada vinculada à origem selecionada.")
+        if criar_cart:
+            st.caption("ℹ️ Uma nova carteira será criada vinculada à origem selecionada.")
         
         if st.form_submit_button("💾 Salvar"):
             if nome:
                 codigo_auto = gerar_codigo_automatico()
                 caminho = criar_pasta_produto(codigo_auto, nome)
+                
                 if arquivos: salvar_arquivos(arquivos, caminho)
+                
                 novo_id = cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho, origem_sel)
                 
                 if novo_id:
@@ -280,47 +330,69 @@ def dialog_novo_cadastro():
                         ok_cart, msg_cart = criar_carteira_automatica(novo_id, nome, origem_sel)
                         if ok_cart: msg_sucesso += f"\n\n + Carteira criada com sucesso!"
                         else: st.error(f"Erro ao criar carteira: {msg_cart}")
-                    st.success(msg_sucesso); time.sleep(2); st.rerun()
+                    
+                    st.success(msg_sucesso)
+                    time.sleep(2)
+                    st.rerun()
                 else: st.error("Erro ao salvar no banco.")
             else: st.warning("Nome obrigatório.")
 
 # --- INTERFACE PRINCIPAL ---
 def app_produtos():
     st.markdown("## 📦 Módulo Produtos e Serviços")
+    
     col_head1, col_head2 = st.columns([6, 1])
     with col_head2:
-        if st.button("➕ Novo", help="Cadastrar novo item"): dialog_novo_cadastro()
+        if st.button("➕ Novo", help="Cadastrar novo item"):
+            dialog_novo_cadastro()
+
     st.markdown("---")
+    
     df = listar_produtos()
     if not df.empty:
         col_f1, col_f2 = st.columns(2)
         with col_f1: filtro_nome = st.text_input("🔎 Pesquisar")
         with col_f2: filtro_tipo = st.multiselect("Filtrar Categoria", df['tipo'].unique())
-        if filtro_nome: df = df[df['nome'].str.contains(filtro_nome, case=False) | df['codigo'].str.contains(filtro_nome, case=False)]
-        if filtro_tipo: df = df[df['tipo'].isin(filtro_tipo)]
+
+        if filtro_nome:
+            df = df[df['nome'].str.contains(filtro_nome, case=False) | df['codigo'].str.contains(filtro_nome, case=False)]
+        if filtro_tipo:
+            df = df[df['tipo'].isin(filtro_tipo)]
 
         for index, row in df.iterrows():
             status_cor = "🟢" if row['ativo'] else "🔴"
             with st.expander(f"{status_cor} {row['nome']} ({row['codigo']})"):
                 c1, c2 = st.columns(2)
-                c1.markdown(f"**Categoria:** {row['tipo']}\n**Preço:** R$ {row['preco']:.2f}")
+                c1.markdown(f"**Categoria:** {row['tipo']}")
+                c1.markdown(f"**Preço:** R$ {row['preco']:.2f}")
+                
                 origem_display = row.get('origem_custo') if row.get('origem_custo') else "-"
                 c2.markdown(f"**Origem Custo:** {origem_display}")
+                
                 st.markdown(f"**Resumo:** {row['resumo']}")
                 st.markdown("---")
+                
                 col_folder, col_actions = st.columns([1, 1])
                 with col_folder:
-                     if st.button(f"📂 Arquivos", key=f"f_{row['id']}"): dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
+                     if st.button(f"📂 Arquivos", key=f"f_{row['id']}"):
+                        dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
+
                 with col_actions:
                     b1, b2, b3 = st.columns(3)
                     with b1:
-                        if st.button("✏️", key=f"ed_{row['id']}"): dialog_editar_produto(row)
+                        if st.button("✏️", key=f"ed_{row['id']}", help="Editar"):
+                            dialog_editar_produto(row)
                     with b2:
-                        if st.button("🔄", key=f"st_{row['id']}"): 
-                            if alternar_status(row['id'], row['ativo']): st.rerun()
+                        if st.button("🔄", key=f"st_{row['id']}", help="Alterar Status"):
+                            if alternar_status(row['id'], row['ativo']):
+                                st.rerun()
                     with b3:
-                        if st.button("🗑️", key=f"del_{row['id']}"):
-                            if excluir_produto(row['id'], row['caminho_pasta']): st.warning("Item removido."); st.rerun()
-    else: st.info("Nenhum item encontrado no banco de dados.")
+                        if st.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
+                            if excluir_produto(row['id'], row['caminho_pasta']):
+                                st.warning("Item removido.")
+                                st.rerun()
+    else:
+        st.info("Nenhum item encontrado no banco de dados.")
 
-if __name__ == "__main__": app_produtos()
+if __name__ == "__main__":
+    app_produtos()
