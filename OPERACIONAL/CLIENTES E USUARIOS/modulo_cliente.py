@@ -940,19 +940,28 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 5. LISTA DE CARTEIRAS
+        # 5. LISTA DE CARTEIRAS (ATUALIZADO)
         with st.expander("📂 Lista de Carteiras", expanded=False):
             with st.container(border=True):
                 st.caption("Nova Carteira")
                 c_lc1, c_lc2, c_lc3, c_lc4, c_bt = st.columns([1.5, 2, 1.5, 1, 1])
                 n_cpf = c_lc1.text_input("CPF Cliente", key="n_cpf_l", label_visibility="visible")
                 n_nome = c_lc2.text_input("Nome Cliente", key="n_nome_l", label_visibility="visible")
-                n_carteira = c_lc3.text_input("Nome Carteira", key="n_cart_l", label_visibility="visible")
+                
+                # --- MUDANÇA AQUI: SELECTBOX COM CARTEIRAS ATIVAS ---
+                df_cart_ativas = listar_todas_carteiras_ativas()
+                opcoes_cart_ativas = df_cart_ativas['nome_carteira'].tolist() if not df_cart_ativas.empty else []
+                n_carteira = c_lc3.selectbox("Nome Carteira", options=[""] + opcoes_cart_ativas, key="n_cart_l", label_visibility="visible")
+                # ----------------------------------------------------
+                
                 n_custo = c_lc4.number_input("Custo (R$)", key="n_custo_l", step=0.01, label_visibility="visible")
                 
                 c_bt.write(""); c_bt.write("") 
                 if c_bt.button("➕", key="add_cart_l", use_container_width=True):
-                    if n_cpf and n_nome: salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo); st.rerun()
+                    if n_cpf and n_nome and n_carteira: 
+                        salvar_cliente_carteira_lista(n_cpf, n_nome, n_carteira, n_custo); st.rerun()
+                    else:
+                        st.warning("Preencha CPF, Nome e Selecione a Carteira.")
             
             st.divider()
             df_cart_l = listar_cliente_carteira_lista()
