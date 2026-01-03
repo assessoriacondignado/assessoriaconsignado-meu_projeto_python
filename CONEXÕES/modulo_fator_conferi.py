@@ -1,626 +1,539 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+import requests
+import json
+import os
 import time
 import re
-from datetime import datetime
-import modulo_wapi
+import base64
+import xml.etree.ElementTree as ET
+from datetime import datetime, date, timedelta
+import conexao
+
+# --- CONFIGURAÇÕES DE DIRETÓRIO ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PASTA_JSON = os.path.join(BASE_DIR, "JSON")
 
 try:
-    import conexao
-except ImportError:
-    st.error("Erro crítico: Arquivo conexao.py não localizado.")
+    if not os.path.exists(PASTA_JSON):
+        os.makedirs(PASTA_JSON, exist_ok=True)
+except Exception as e:
+    st.error(f"Erro crítico de permissão ao criar pasta JSON: {e}")
 
-# --- CONEXÃO COM AUTO-CORREÇÃO ---
 def get_conn():
     try:
-        conn = psycopg2.connect(
+        return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database,
             user=conexao.user, password=conexao.password
         )
-        # 🛠️ CORREÇÃO AUTOMÁTICA: Cria colunas se não existirem
+    except: return None
+
+# =============================================================================
+# 1. FUNÇÕES AUXILIARES
+# =============================================================================
+
+def buscar_credenciais():
+    conn = get_conn()
+    cred = {"url": "https://fator.confere.link/api/", "token": ""}
+    if conn:
         try:
             cur = conn.cursor()
-            cur.execute("""
-                ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS custo_carteira NUMERIC(10, 2) DEFAULT 0.0;
-                ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS nome_carteira VARCHAR(255);
-                ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS origem_custo VARCHAR(100);
-            """)
-            conn.commit()
-            cur.close()
-        except:
-            conn.rollback() # Ignora erro se já existirem ou erro de permissão leve
-            
-        return conn
+            cur.execute("SELECT key_conexao FROM conexoes.relacao WHERE nome_conexao ILIKE '%FATOR%' LIMIT 1")
+            res = cur.fetchone()
+            if res: cred["token"] = res[0]
+        except: pass
+        finally: conn.close()
+    return cred
+
+def buscar_valor_consulta_atual():
+    conn = get_conn()
+    valor = 0.50
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT valor_da_consulta FROM conexoes.fatorconferi_valor_da_consulta ORDER BY id DESC LIMIT 1")
+            res = cur.fetchone()
+            if res: valor = float(res[0])
+        except: pass
+        finally: conn.close()
+    return valor
+
+def formatar_cpf_cnpj_visual(valor):
+    dado = re.sub(r'\D', '', str(valor))
+    if len(dado) == 11:
+        return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
+    elif len(dado) == 14:
+        return f"{dado[:2]}.{dado[2:5]}.{dado[5:8]}/{dado[8:12]}-{dado[12:]}"
+    return valor
+
+def converter_data_banco(data_str):
+    if not data_str: return None
+    try:
+        return datetime.strptime(data_str, '%d/%m/%Y').strftime('%Y-%m-%d')
+    except: return None
+
+def get_tag_text(element, tag_name):
+    if element is None: return None
+    res = element.find(tag_name)
+    if res is not None: return res.text
+    res = element.find(tag_name.upper())
+    if res is not None: return res.text
+    res = element.find(tag_name.lower())
+    if res is not None: return res.text
+    return None
+
+def find_tag(element, tag_name):
+    if element is None: return None
+    res = element.find(tag_name)
+    if res is not None: return res
+    res = element.find(tag_name.upper())
+    if res is not None: return res
+    res = element.find(tag_name.lower())
+    if res is not None: return res
+    return None
+
+def parse_xml_to_dict(xml_string):
+    try:
+        xml_string = xml_string.replace('ISO-8859-1', 'UTF-8') 
+        root = ET.fromstring(xml_string)
+        dados = {}
+        
+        cad = find_tag(root, 'cadastrais')
+        if cad is not None:
+            dados['nome'] = get_tag_text(cad, 'nome')
+            dados['cpf'] = get_tag_text(cad, 'cpf')
+            dados['nascimento'] = get_tag_text(cad, 'nascto')
+            dados['mae'] = get_tag_text(cad, 'nome_mae')
+            dados['rg'] = get_tag_text(cad, 'rg')
+            dados['titulo'] = get_tag_text(cad, 'titulo_eleitor')
+            dados['sexo'] = get_tag_text(cad, 'sexo')
+        
+        telefones = []
+        tm = find_tag(root, 'telefones_movel')
+        if tm is not None:
+            for child in tm:
+                if 'telefone' in child.tag.lower():
+                    telefones.append({'numero': get_tag_text(child, 'numero'), 'tipo': 'MOVEL', 'prioridade': get_tag_text(child, 'prioridade')})
+        
+        tf = find_tag(root, 'telefones_fixo')
+        if tf is not None:
+            for child in tf:
+                if 'telefone' in child.tag.lower():
+                    telefones.append({'numero': get_tag_text(child, 'numero'), 'tipo': 'FIXO', 'prioridade': get_tag_text(child, 'prioridade')})
+        dados['telefones'] = telefones
+
+        emails = []
+        em_root = find_tag(root, 'emails')
+        if em_root is not None:
+            for em in em_root:
+                if 'email' in em.tag.lower() and em.text: emails.append(em.text)
+        dados['emails'] = emails
+
+        enderecos = []
+        end_root = find_tag(root, 'enderecos')
+        if end_root is not None:
+            for end in end_root:
+                if 'endereco' in end.tag.lower():
+                    logr = get_tag_text(end, 'logradouro') or ""
+                    num = get_tag_text(end, 'numero') or ""
+                    comp = get_tag_text(end, 'complemento') or ""
+                    rua_full = f"{logr}, {num} {comp}".strip().strip(',')
+                    enderecos.append({'rua': rua_full, 'bairro': get_tag_text(end, 'bairro'), 'cidade': get_tag_text(end, 'cidade'), 'uf': get_tag_text(end, 'estado'), 'cep': get_tag_text(end, 'cep')})
+        dados['enderecos'] = enderecos
+        return dados
     except Exception as e:
-        st.error(f"Erro ao conectar ao banco: {e}")
-        return None
+        return {"erro": f"Falha ao processar XML: {e}", "raw": xml_string}
 
-# --- FUNÇÕES AUXILIARES ---
-def listar_modelos_mensagens():
+def consultar_saldo_api():
+    cred = buscar_credenciais()
+    if not cred['token']: return False, 0.0
+    url = f"{cred['url']}?acao=VER_SALDO&TK={cred['token']}"
+    try:
+        response = requests.get(url, timeout=10)
+        valor_texto = response.text.strip()
+        if '<' in valor_texto:
+            try: root = ET.fromstring(valor_texto); valor_texto = root.text 
+            except: pass
+        saldo = float(valor_texto.replace(',', '.')) if valor_texto else 0.0
+        
+        conn = get_conn()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO conexoes.fatorconferi_registro_de_saldo (valor_saldo) VALUES (%s)", (saldo,))
+            conn.commit(); conn.close()
+        return True, saldo
+    except Exception as e: return False, 0.0
+
+def obter_origem_padronizada(nome_origem):
     conn = get_conn()
+    origem_final = nome_origem 
     if conn:
         try:
-            query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'PEDIDOS' ORDER BY chave_status ASC"
-            df = pd.read_sql(query, conn)
+            cur = conn.cursor()
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator WHERE origem = %s", (nome_origem,))
+            res = cur.fetchone()
+            if res: origem_final = res[0]
             conn.close()
-            return df['chave_status'].tolist()
-        except: conn.close()
-    return []
+        except:
+            if conn: conn.close()
+    return origem_final
 
-def listar_carteiras_ativas():
+# [NOVA FUNÇÃO] Busca origem baseada no ambiente
+def buscar_origem_por_ambiente(nome_ambiente):
     conn = get_conn()
+    origem_padrao = "WEB USUÁRIO" # Fallback
     if conn:
         try:
-            query = "SELECT nome_carteira FROM cliente.carteiras_config WHERE status = 'ATIVO' ORDER BY nome_carteira"
-            df = pd.read_sql(query, conn)
+            cur = conn.cursor()
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente,))
+            res = cur.fetchone()
+            if res: origem_padrao = res[0]
             conn.close()
-            return df['nome_carteira'].tolist()
-        except: conn.close()
-    return []
+        except:
+            if conn: conn.close()
+    return origem_padrao
 
-# --- LÓGICA FINANCEIRA ---
-def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
+# =============================================================================
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO (ATUALIZADA)
+# =============================================================================
+
+def processar_debito_automatico(origem_da_consulta, dados_consulta):
+    """
+    Nova Regra de Débito:
+    1. Identifica o USUÁRIO logado.
+    2. Cruza USUÁRIO + ORIGEM na lista de carteiras (cliente.cliente_carteira_lista).
+    3. Identifica CLIENTE PAGADOR, CARTEIRA e VALOR.
+    4. Busca TABELA SQL na config.
+    5. Lança o débito.
+    """
+    nome_usuario_logado = st.session_state.get('usuario_nome') # Usa nome para bater com a lista
+    # Se preferir usar CPF do usuário, mude para: st.session_state.get('usuario_cpf') e ajuste a query
+    
+    if not nome_usuario_logado: return False, "Usuário não identificado na sessão."
+
+    conn = get_conn()
+    if not conn: return False, "Erro conexão DB."
+    
     try:
         cur = conn.cursor()
         
-        # 1. Identificar a Origem de Custo do Produto
-        cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
-        res_prod = cur.fetchone()
-        if not res_prod or not res_prod[0]:
-            return False, "Produto sem 'Origem de Custo' definida."
-        
-        origem = res_prod[0]
-        cpf_cliente = dados_pedido['cpf_cliente']
-
-        # 2. Localizar a Carteira na Lista do Cliente
+        # 1. Busca na Lista de Carteiras conciliando USUÁRIO + ORIGEM
+        # Isso localiza quem é o cliente (pagador), qual a carteira e o valor
         cur.execute("""
-            SELECT nome_carteira 
+            SELECT cpf_cliente, nome_cliente, nome_carteira, custo_carteira, nome_produto
             FROM cliente.cliente_carteira_lista 
-            WHERE cpf_cliente = %s AND origem_custo = %s
+            WHERE nome_usuario = %s AND origem_custo = %s 
             LIMIT 1
-        """, (cpf_cliente, origem))
+        """, (nome_usuario_logado, origem_da_consulta))
+        
         res_lista = cur.fetchone()
-        
-        if not res_lista:
-            return False, f"O cliente não possui carteira vinculada para a origem '{origem}'."
-        
-        nome_carteira = res_lista[0]
 
-        # 3. Identificar a Tabela SQL da Carteira
+        if not res_lista:
+            conn.close()
+            return False, f"Usuário '{nome_usuario_logado}' não tem carteira vinculada para origem '{origem_da_consulta}'."
+        
+        cpf_pagador = res_lista[0]
+        nome_pagador = res_lista[1]
+        nome_carteira_vinculada = res_lista[2]
+        valor_cobranca = float(res_lista[3])
+        # nome_produto = res_lista[4] (Se precisar usar no histórico)
+
+        # 2. Busca a TABELA SQL na 'cliente.carteiras_config' usando o nome da carteira
         cur.execute("""
             SELECT nome_tabela_transacoes 
             FROM cliente.carteiras_config 
-            WHERE nome_carteira = %s AND status = 'ATIVO'
+            WHERE nome_carteira = %s AND status = 'ATIVO' 
             LIMIT 1
-        """, (nome_carteira,))
+        """, (nome_carteira_vinculada,))
         res_config = cur.fetchone()
-        
+
         if not res_config:
-            return False, f"Configuração técnica da carteira '{nome_carteira}' não encontrada."
+            conn.close()
+            return False, f"Configuração da tabela para '{nome_carteira_vinculada}' não encontrada."
             
         tabela_sql = res_config[0]
 
-        # 4. Calcular Valores e Motivo
-        valor = float(dados_pedido['valor_total'])
-        codigo_pedido = dados_pedido['codigo']
-        
-        # Busca saldo anterior
-        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
+        # 3. Realizar o Lançamento de Débito
+        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_pagador,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
-        if tipo_lancamento == 'CREDITO':
-            saldo_novo = saldo_anterior + valor
-            motivo = f"Compra Pedido {codigo_pedido}"
-        else: # DEBITO
-            saldo_novo = saldo_anterior - valor
-            motivo = f"Cancelada Pedido {codigo_pedido}"
-
-        # 5. Inserir Transação
-        sql_insert = f"""
-            INSERT INTO {tabela_sql} 
-            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
-            VALUES (%s, %s, %s, 'PEDIDO', %s, %s, %s, %s, NOW())
-        """
-        cur.execute(sql_insert, (cpf_cliente, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
+        novo_saldo = saldo_anterior - valor_cobranca
+        cpf_consultado = dados_consulta.get('cpf', 'Desconhecido')
+        motivo = f"Consulta Fator ({origem_da_consulta}): {cpf_consultado}"
         
-        return True, f"{tipo_lancamento} de R$ {valor:.2f} na carteira '{nome_carteira}'"
+        sql_insert = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, %s, 'DEBITO', %s, %s, %s, NOW())"
+        cur.execute(sql_insert, (cpf_pagador, nome_pagador, motivo, origem_da_consulta, valor_cobranca, saldo_anterior, novo_saldo))
+        
+        conn.commit()
+        conn.close()
+        return True, f"Débito de R$ {valor_cobranca:.2f} na tabela {tabela_sql} (Pagador: {nome_pagador})."
 
     except Exception as e:
+        if conn: conn.close()
         return False, f"Erro financeiro: {str(e)}"
 
-# --- CRUD PEDIDOS ---
-def buscar_clientes():
-    conn = get_conn()
-    if conn:
-        df = pd.read_sql("SELECT id, nome, cpf, telefone, email FROM admin.clientes ORDER BY nome", conn)
-        conn.close()
-        return df
-    return pd.DataFrame()
+# =============================================================================
+# 3. FUNÇÕES GESTÃO DE PARÂMETROS
+# =============================================================================
 
-def buscar_produtos():
-    conn = get_conn()
-    if conn:
-        df = pd.read_sql("SELECT id, codigo, nome, tipo, preco, origem_custo FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
-        conn.close()
-        return df
-    return pd.DataFrame()
-
-def buscar_historico_pedido(id_pedido):
-    conn = get_conn()
-    if conn:
-        query = "SELECT data_mudanca, status_novo, observacao FROM pedidos_historico WHERE id_pedido = %s ORDER BY data_mudanca DESC"
-        df = pd.read_sql(query, conn, params=(int(id_pedido),))
-        conn.close()
-        return df
-    return pd.DataFrame()
-
-def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_cliente, add_lista=False, nome_lista="", custo_lista=0.0, origem_custo=""):
-    codigo = f"PEDIDO-{datetime.now().strftime('%y%m%d%H%M')}"
+def carregar_dados_genericos(nome_tabela):
     conn = get_conn()
     if conn:
         try:
-            cur = conn.cursor()
-            
-            # Grava no banco com as novas colunas
-            cur.execute("""
-                INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
-                                     id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
-                                     nome_carteira, custo_carteira, origem_custo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
-                  int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total),
-                  nome_lista, float(custo_lista), origem_custo))
-            
-            id_novo = cur.fetchone()[0]
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
-            
-            msg_lista = ""
-            if add_lista and nome_lista:
-                cpf_limpo_cli = re.sub(r'\D', '', str(cliente['cpf']))
-                
-                cur.execute("""
-                    SELECT u.cpf, u.nome FROM admin.clientes c
-                    JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
-                    WHERE regexp_replace(c.cpf, '[^0-9]', '', 'g') = %s LIMIT 1
-                """, (cpf_limpo_cli,))
-                res_u = cur.fetchone()
-                cpf_u = res_u[0] if res_u else None
-                nome_u = res_u[1] if res_u else None
+            df = pd.read_sql(f"SELECT * FROM {nome_tabela} ORDER BY id DESC", conn)
+            conn.close(); return df
+        except: 
+            if conn: conn.close()
+            return None
+    return None
 
-                cur.execute("""
-                    SELECT id FROM cliente.cliente_carteira_lista 
-                    WHERE cpf_cliente = %s AND nome_carteira = %s AND origem_custo = %s
-                """, (cliente['cpf'], nome_lista, origem_custo))
-                existe = cur.fetchone()
-
-                if existe:
-                    cur.execute("""
-                        UPDATE cliente.cliente_carteira_lista 
-                        SET custo_carteira = %s, cpf_usuario = %s, nome_usuario = %s
-                        WHERE id = %s
-                    """, (float(custo_lista), cpf_u, nome_u, existe[0]))
-                    msg_lista = " (Custo atualizado na lista)"
-                else:
-                    cur.execute("""
-                        INSERT INTO cliente.cliente_carteira_lista 
-                        (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, origem_custo, cpf_usuario, nome_usuario, nome_produto) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (cliente['cpf'], cliente['nome'], nome_lista, float(custo_lista), origem_custo, cpf_u, nome_u, produto['nome']))
-                    msg_lista = " (Adicionado à lista)"
-            
-            conn.commit(); conn.close()
-            
-            if avisar_cliente and cliente['telefone']:
-                inst = modulo_wapi.buscar_instancia_ativa()
-                if inst:
-                    tpl = modulo_wapi.buscar_template("PEDIDOS", "criacao")
-                    if tpl:
-                        msg = tpl.replace("{nome}", str(cliente['nome']).split()[0]).replace("{pedido}", codigo).replace("{produto}", str(produto['nome']))
-                        modulo_wapi.enviar_msg_api(inst[0], inst[1], cliente['telefone'], msg)
-            
-            return True, f"Pedido {codigo} criado!{msg_lista}"
-        except Exception as e: return False, str(e)
-    return False, "Erro conexão"
-
-def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, modelo_msg):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            obs_hist = obs
-            msg_fin = ""
-            
-            if novo_status == "Pago":
-                ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
-                if ok: obs_hist += f" | {msg_fin}"
-                else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
-                
-            elif novo_status == "Cancelado":
-                ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
-                if ok: obs_hist += f" | {msg_fin}"
-                else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
-
-            cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
-            
-            conn.commit(); conn.close()
-            
-            if avisar and dados_pedido['telefone_cliente']:
-                inst = modulo_wapi.buscar_instancia_ativa()
-                if inst:
-                    chave = modelo_msg if modelo_msg != "Automático (Padrão)" else novo_status.lower().replace(" ", "_")
-                    tpl = modulo_wapi.buscar_template("PEDIDOS", chave)
-                    if tpl:
-                        msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
-                        modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
-            return True
-        except Exception as e:
-            print(e); return False
-    return False
-
-def excluir_pedido_db(id_pedido):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM pedidos WHERE id=%s", (id_pedido,))
-            conn.commit(); conn.close()
-            return True
-        except: return False
-    return False
-
-def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos, novo_custo_carteira, carteira_vinculada, origem_custo):
-    total = nova_qtd * novo_valor
+def criar_tabela_ambiente():
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("""
-                UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
-                WHERE id=%s
-            """, (nova_qtd, novo_valor, total, float(novo_custo_carteira), id_pedido))
-            
-            msg_extra = ""
-            if carteira_vinculada and carteira_vinculada != "N/A" and origem_custo and origem_custo != "N/A":
-                cur.execute("""
-                    UPDATE cliente.cliente_carteira_lista 
-                    SET custo_carteira = %s 
-                    WHERE cpf_cliente = %s AND nome_carteira = %s AND origem_custo = %s
-                """, (novo_custo_carteira, dados_antigos['cpf_cliente'], carteira_vinculada, origem_custo))
-                if cur.rowcount > 0:
-                    msg_extra = " (Custo atualizado na Carteira)"
-
+                CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_ambiente_consulta (
+                    id SERIAL PRIMARY KEY,
+                    ambiente VARCHAR(255),
+                    origem VARCHAR(255)
+                );
+            """)
             conn.commit(); conn.close()
-            return True, msg_extra
-        except Exception as e: return False, str(e)
-    return False, "Erro BD"
-
-# --- FUNÇÕES PARA ABA PARÂMETROS (EDIÇÃO DIRETA) ---
-def carregar_tabela_pedidos_completa():
-    conn = get_conn()
-    if conn:
-        try:
-            df = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC", conn)
+            return True
+        except:
             conn.close()
-            return df
-        except: conn.close()
-    return pd.DataFrame()
+            return False
+    return False
 
-def salvar_alteracoes_pedidos_geral(df_original, df_editado):
+def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
     conn = get_conn()
     if not conn: return False
     try:
         cur = conn.cursor()
-        ids_originais = set(df_original['id'].dropna().astype(int).tolist())
+        
+        ids_orig = set(df_original['id'].dropna().astype(int).tolist())
         
         ids_editados_atuais = set()
         for _, row in df_editado.iterrows():
             if pd.notna(row.get('id')) and row.get('id') != '':
                 try: ids_editados_atuais.add(int(row['id']))
                 except: pass
-        
-        ids_del = ids_originais - ids_editados_atuais
+
+        ids_del = ids_orig - ids_editados_atuais
         if ids_del:
             ids_str = ",".join(map(str, ids_del))
-            cur.execute(f"DELETE FROM pedidos WHERE id IN ({ids_str})")
+            cur.execute(f"DELETE FROM {nome_tabela} WHERE id IN ({ids_str})")
 
         for index, row in df_editado.iterrows():
-            colunas_db = [c for c in row.index if c not in ['id', 'data_criacao']] 
-            valores = [row[c] for c in colunas_db]
+            cols_db = [c for c in row.index if c not in ['id', 'data_hora', 'data_criacao', 'data_registro']]
+            vals = [row[c] for c in cols_db]
             row_id = row.get('id')
-            
             eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
             
             if eh_novo:
-                cols_str = ", ".join(colunas_db)
-                placeholders = ", ".join(["%s"] * len(colunas_db))
-                cur.execute(f"INSERT INTO pedidos ({cols_str}) VALUES ({placeholders})", valores)
-            elif int(row_id) in ids_originais:
-                set_clause = ", ".join([f"{c} = %s" for c in colunas_db])
-                valores_update = valores + [int(row_id)]
-                cur.execute(f"UPDATE pedidos SET {set_clause} WHERE id = %s", valores_update)
-
-        conn.commit(); conn.close()
-        return True
+                placeholders = ", ".join(["%s"] * len(cols_db))
+                col_names = ", ".join(cols_db)
+                cur.execute(f"INSERT INTO {nome_tabela} ({col_names}) VALUES ({placeholders})", vals)
+            elif int(row_id) in ids_orig:
+                set_clause = ", ".join([f"{c} = %s" for c in cols_db])
+                vals_update = vals + [int(row_id)]
+                cur.execute(f"UPDATE {nome_tabela} SET {set_clause} WHERE id = %s", vals_update)
+                
+        conn.commit(); conn.close(); return True
     except Exception as e:
-        st.error(f"Erro ao salvar tabela: {e}")
+        st.error(f"Erro ao salvar: {e}"); 
         if conn: conn.close()
         return False
 
-# --- FUNÇÕES DE ESTADO ---
-def abrir_modal(tipo, pedido=None):
-    st.session_state['modal_ativo'] = tipo
-    st.session_state['pedido_ativo'] = pedido
+# =============================================================================
+# 4. SALVAR BASE PF E CONSULTA
+# =============================================================================
 
-def fechar_modal():
-    st.session_state['modal_ativo'] = None
-    st.session_state['pedido_ativo'] = None
+def salvar_dados_fator_no_banco(dados_api):
+    conn = get_conn()
+    if not conn: return False, "Erro de conexão."
+    try:
+        cur = conn.cursor()
+        cpf_limpo = re.sub(r'\D', '', str(dados_api.get('cpf', '')))
+        if not cpf_limpo or len(cpf_limpo) != 11: return False, "CPF inválido."
 
-# --- DIALOGS ---
-@st.dialog("➕ Novo Pedido", width="large")
-def dialog_novo_pedido():
-    df_c = buscar_clientes()
-    df_p = buscar_produtos()
-    if df_c.empty or df_p.empty: 
-        st.warning("Cadastre clientes e produtos.")
-        return
+        campos = {
+            'nome': dados_api.get('nome'),
+            'data_nascimento': converter_data_banco(dados_api.get('nascimento')),
+            'rg': dados_api.get('rg'),
+            'nome_mae': dados_api.get('mae')
+        }
+        
+        query_dados = """
+            INSERT INTO banco_pf.pf_dados (cpf, nome, data_nascimento, rg, nome_mae, data_criacao)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (cpf) DO UPDATE SET
+                nome = COALESCE(EXCLUDED.nome, banco_pf.pf_dados.nome),
+                data_nascimento = COALESCE(EXCLUDED.data_nascimento, banco_pf.pf_dados.data_nascimento),
+                rg = COALESCE(EXCLUDED.rg, banco_pf.pf_dados.rg),
+                nome_mae = COALESCE(EXCLUDED.nome_mae, banco_pf.pf_dados.nome_mae);
+        """
+        cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
+        
+        for t in dados_api.get('telefones', []):
+            n = re.sub(r'\D', '', str(t['numero']))
+            if n: cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING", (cpf_limpo, n, t.get('prioridade', '')))
+        
+        for e in dados_api.get('emails', []):
+            if e: cur.execute("INSERT INTO banco_pf.pf_emails (cpf, email) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, str(e).lower()))
+            
+        for d in dados_api.get('enderecos', []):
+            cp = re.sub(r'\D', '', str(d['cep']))
+            if cp: cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
 
-    c1, c2 = st.columns(2)
-    ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
-    ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
-    
-    cli = df_c.iloc[ic]
-    prod = df_p.iloc[ip]
-    
-    origem_produto = prod.get('origem_custo') if prod.get('origem_custo') else "Não definida"
-    
-    carteira_vinculada = None
+        conn.commit(); conn.close()
+        return True, "Dados salvos na Base PF."
+    except Exception as e:
+        if conn: conn.close()
+        return False, f"Erro DB: {e}"
+
+def realizar_consulta_cpf(cpf, origem, forcar_nova=False):
+    cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
+    conn = get_conn()
+    if not conn: return {"sucesso": False, "msg": "Erro DB."}
+    try:
+        cur = conn.cursor()
+        if not forcar_nova:
+            cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
+            res = cur.fetchone()
+            if res and res[0] and os.path.exists(res[0]):
+                try:
+                    with open(res[0], 'r', encoding='utf-8') as f: 
+                        dados = json.load(f)
+                        if dados.get('nome') or dados.get('cpf'):
+                            usr = st.session_state.get('usuario_nome', 'Sistema')
+                            id_usr = st.session_state.get('usuario_id', 0)
+                            cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora) VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())", ("CPF SIMPLES", cpf_padrao, id_usr, usr, res[0], res[0], origem))
+                            conn.commit(); conn.close()
+                            return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
+                except: pass
+        
+        cred = buscar_credenciais()
+        if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
+        resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
+        resp.encoding = 'ISO-8859-1'
+        
+        dados = parse_xml_to_dict(resp.text)
+        if not dados.get('nome') and not dados.get('cpf'): conn.close(); return {"sucesso": False, "msg": "Retorno vazio ou erro.", "raw": resp.text, "dados": dados}
+
+        nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
+        path = os.path.join(PASTA_JSON, nome_arq)
+        with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
+        
+        # --- DÉBITO FINANCEIRO COM NOVA REGRA ---
+        msg_financeira = ""
+        ok_fin, txt_fin = processar_debito_automatico(origem, dados)
+        if ok_fin: msg_financeira = f" | {txt_fin}"
+        else: msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
+        
+        custo = buscar_valor_consulta_atual()
+        usr = st.session_state.get('usuario_nome', 'Sistema')
+        id_usr = st.session_state.get('usuario_id', 0)
+        cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora) VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())", ("CPF SIMPLES", cpf_padrao, id_usr, usr, custo, path, path, origem))
+        conn.commit(); conn.close()
+        return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_financeira}
+        
+    except Exception as e:
+        if conn: conn.close()
+        return {"sucesso": False, "msg": str(e)}
+
+def listar_clientes_carteira():
     conn = get_conn()
     if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = %s AND status = 'ATIVO' LIMIT 1", (int(prod['id']),))
-            res = cur.fetchone()
-            if res: carteira_vinculada = res[0]
-            conn.close()
+        try: df = pd.read_sql("SELECT * FROM conexoes.fator_cliente_carteira ORDER BY id", conn); conn.close(); return df
         except: conn.close()
+    return pd.DataFrame()
 
-    cart_display = carteira_vinculada if carteira_vinculada else "Não localizada"
-    st.info(f"📦 **Item:** {prod['nome']}\n📍 **Origem:** {origem_produto}\n💼 **Carteira:** {cart_display}")
+# =============================================================================
+# 5. INTERFACE PRINCIPAL
+# =============================================================================
 
-    c3, c4 = st.columns(2)
-    qtd = c3.number_input("Qtd", 1, value=1)
-    val = c4.number_input("Valor Unitário (Valentia)", 0.0, value=float(prod['preco'] or 0.0))
-    st.markdown(f"### Total: R$ {qtd*val:.2f}")
-    
-    st.divider()
-    
-    check_default = True if carteira_vinculada else False
-    add_cart = st.checkbox("Incluir/Atualizar na Lista de Carteira?", value=check_default)
-    
-    n_cart = ""; c_cart = 0.0
-    if add_cart:
-        if carteira_vinculada:
-            n_cart = carteira_vinculada
-            st.text_input("Carteira Destino", value=n_cart, disabled=True)
-            custo_atual = 0.0
-            if conn:
-                try:
-                    conn = get_conn()
-                    cur = conn.cursor()
-                    cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente=%s AND nome_carteira=%s AND origem_custo=%s", (cli['cpf'], n_cart, origem_produto))
-                    r_cus = cur.fetchone()
-                    if r_cus: 
-                        custo_atual = float(r_cus[0])
-                        st.caption("ℹ️ Cliente com lista vinculada. Atualize o custo abaixo.")
-                    else:
-                        st.caption("ℹ️ Cliente sem lista. Será criado um novo vínculo.")
-                    conn.close()
-                except: pass
-            
-            c_cart = st.number_input("Custo do Desconto (Carteira)", 0.0, value=custo_atual, step=0.01)
-        else:
-            st.warning("Este produto não tem carteira vinculada.")
-            l_carts = listar_carteiras_ativas()
-            n_cart = st.selectbox("Selecione Manualmente", [""] + l_carts)
-            c_cart = st.number_input("Custo", 0.0, step=0.01)
+def app_fator_conferi():
+    st.markdown("### ⚡ Painel Fator Conferi")
+    tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros"])
 
-    st.divider()
-    avisar = st.checkbox("Avisar WhatsApp?", value=True)
-    
-    if st.button("Criar Pedido", type="primary", use_container_width=True):
-        if add_cart and not n_cart: 
-            st.error("Selecione a carteira.")
-        else:
-            ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar, add_cart, n_cart, c_cart, origem_produto)
-            if ok: 
-                st.success(res)
-                time.sleep(1.5)
-                fechar_modal()
-                st.rerun()
-            else: st.error(res)
+    with tabs[0]: 
+        st.info("Gestão de Carteiras (Use o Módulo Clientes para criar novas)")
+        df = listar_clientes_carteira()
+        if not df.empty: st.dataframe(df, use_container_width=True)
 
-@st.dialog("✏️ Editar", width="large")
-def dialog_editar(ped):
-    origem_atual = ped.get('origem_custo')
-    carteira_atual = ped.get('nome_carteira')
-    custo_atual = float(ped.get('custo_carteira') or 0.0)
-    
-    if not origem_atual or not carteira_atual:
-        conn = get_conn()
-        if conn:
-            try:
-                if not origem_atual:
-                    df_prod = pd.read_sql(f"SELECT origem_custo FROM produtos_servicos WHERE id = {ped['id_produto']}", conn)
-                    if not df_prod.empty: origem_atual = df_prod.iloc[0]['origem_custo']
+    with tabs[1]:
+        st.markdown("#### 1.1 Consulta e Importação")
+        c1, c2, c3 = st.columns([3, 1.5, 1.5])
+        cpf_in = c1.text_input("CPF")
+        forcar = c2.checkbox("Ignorar Histórico", value=False)
+        
+        if c3.button("🔍 Consultar", type="primary"):
+            if cpf_in:
+                with st.spinner("Buscando..."):
+                    # 1. Identifica ORIGEM pelo AMBIENTE
+                    nome_ambiente = "Painel Fator Conferi / Teste de Consulta" # Nome fixo deste ambiente
+                    origem_padrao = buscar_origem_por_ambiente(nome_ambiente)
+                    
+                    st.toast(f"Ambiente: {nome_ambiente} -> Origem: {origem_padrao}")
+                    
+                    res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
+                    st.session_state['resultado_fator'] = res
+        
+        if 'resultado_fator' in st.session_state:
+            res = st.session_state['resultado_fator']
+            if res['sucesso']:
+                if "msg" in res: st.success(res['msg'])
+                st.divider()
+                if st.button("💾 Salvar na Base PF", type="primary"):
+                    ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
+                    if ok_s: st.success(msg_s)
+                    else: st.error(msg_s)
                 
-                if not carteira_atual:
-                    df_cart = pd.read_sql(f"SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = {ped['id_produto']}", conn)
-                    if not df_cart.empty: carteira_atual = df_cart.iloc[0]['nome_carteira']
-                    
-                conn.close()
-            except: conn.close()
+                dados = res['dados']
+                with st.expander("Dados", expanded=True):
+                    st.json(dados)
+            else: st.error(res.get('msg', 'Erro'))
 
-    with st.form("fe"):
-        st.markdown(f"#### Editando: {ped['codigo']}")
-        c_i1, c_i2 = st.columns(2)
-        c_i1.text_input("Cliente", value=ped['nome_cliente'], disabled=True)
-        c_i2.text_input("Produto", value=ped['nome_produto'], disabled=True)
-
-        st.divider()
-        st.markdown("##### Dados Financeiros")
-        c_f1, c_f2, c_f3 = st.columns(3)
-        c_f1.text_input("Carteira (Bloqueado)", value=carteira_atual if carteira_atual else "N/A", disabled=True)
-        c_f2.text_input("Origem (Bloqueado)", value=origem_atual if origem_atual else "N/A", disabled=True)
-        novo_custo = c_f3.number_input("Custo Carteira (R$)", value=custo_atual, step=0.01)
-
-        st.markdown("##### Detalhes do Pedido")
-        c_d1, c_d2 = st.columns(2)
-        nq = c_d1.number_input("Quantidade", 1, value=int(ped['quantidade']))
-        nv = c_d2.number_input("Valor Unitário (Valentia)", 0.0, value=float(ped['valor_unitario']))
-        st.info(f"Novo Total: R$ {nq*nv:.2f}")
-
-        if st.form_submit_button("💾 Salvar Alterações"):
-            ok, msg = editar_dados_pedido_completo(ped['id'], nq, nv, ped, novo_custo, carteira_atual, origem_atual)
-            if ok: st.success(f"Salvo!{msg}"); time.sleep(1); fechar_modal(); st.rerun()
-            else: st.error(f"Erro: {msg}")
-
-@st.dialog("🔄 Status")
-def dialog_status(ped):
-    st.write(f"🏢 **Empresa:** {ped.get('nome_empresa', '-')}")
-    st.write(f"👤 **Cliente:** {ped['nome_cliente']} | **CPF:** {ped['cpf_cliente']}")
-    st.divider()
-    lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
-    try: idx = lst.index(ped['status']) 
-    except: idx = 0
-    mods = ["Automático (Padrão)"] + listar_modelos_mensagens()
-    with st.form("fs"):
-        ns = st.selectbox("Status", lst, index=idx)
-        mod = st.selectbox("Msg", mods)
-        obs = st.text_area("Obs")
-        av = st.checkbox("Avisar?", value=True)
-        if st.form_submit_button("Atualizar"):
-            if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod):
-                st.success("Atualizado!"); time.sleep(1); fechar_modal(); st.rerun()
-    st.divider(); st.caption("Histórico")
-    st.dataframe(buscar_historico_pedido(ped['id']), hide_index=True)
-
-@st.dialog("🗑️ Excluir")
-def dialog_excluir(pid):
-    st.warning("Confirmar?")
-    if st.button("Sim", type="primary"):
-        if excluir_pedido_db(pid): st.success("Apagado!"); time.sleep(1); fechar_modal(); st.rerun()
-
-@st.dialog("📝 Tarefa")
-def dialog_tarefa(ped):
-    with st.form("ft"):
-        dt = st.date_input("Previsão", datetime.now())
-        obs = st.text_area("Obs")
-        if st.form_submit_button("Criar"):
-            conn = get_conn(); cur = conn.cursor()
-            cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) VALUES (%s,%s,%s,%s,%s,'Solicitado')", (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
-            conn.commit(); conn.close()
-            st.success("Criada!"); time.sleep(1); fechar_modal(); st.rerun()
-
-# --- APP ---
-def app_pedidos():
-    st.markdown("## 🛒 Módulo de Pedidos")
-    
-    # NOVAS ABAS DE NAVEGAÇÃO
-    tab_lista, tab_param = st.tabs(["📋 Lista de Pedidos", "⚙️ Parâmetros"])
-
-    # ABA 1: LISTA (ORIGINAL)
-    with tab_lista:
-        if 'modal_ativo' not in st.session_state: st.session_state.update({'modal_ativo': None, 'pedido_ativo': None})
+    with tabs[2]: 
+        if st.button("🔄 Atualizar"): 
+            ok, v = consultar_saldo_api()
+            if ok: st.metric("Saldo Atual", f"R$ {v:.2f}")
+            else: st.error("Erro ao consultar saldo.")
         
-        c_t, c_b = st.columns([5, 1])
-        c_b.button("➕ Novo Pedido", type="primary", on_click=abrir_modal, args=('novo', None), use_container_width=True)
-        
+    with tabs[3]: 
         conn = get_conn()
-        if conn:
-            df = pd.read_sql("""
-                SELECT p.*, c.nome_empresa, c.email as email_cliente 
-                FROM pedidos p 
-                LEFT JOIN admin.clientes c ON p.id_cliente = c.id 
-                ORDER BY p.data_criacao DESC
-            """, conn)
-            conn.close()
-            
-            with st.expander("🔍 Filtros de Pesquisa", expanded=True):
-                c1, c2, c3 = st.columns([3, 1.5, 1.5])
-                busca = c1.text_input("Buscar")
-                status = c2.multiselect("Status", df['status'].unique() if not df.empty else [])
-                if not df.empty:
-                    if busca: df = df[df['nome_cliente'].str.contains(busca, case=False) | df['nome_produto'].str.contains(busca, case=False)]
-                    if status: df = df[df['status'].isin(status)]
-            st.divider()
-            
-            pag_size = 10
-            total_pags = (len(df) // pag_size) + 1
-            pag = st.selectbox("Página", range(1, total_pags + 1)) if total_pags > 1 else 1
-            subset = df.iloc[(pag-1)*pag_size : pag*pag_size]
-            
-            if not subset.empty:
-                for _, row in subset.iterrows():
-                    cor = "🔴"; 
-                    if row['status'] == 'Pago': cor = "🟢"
-                    elif row['status'] == 'Pendente': cor = "🟠"
-                    elif row['status'] == 'Solicitado': cor = "🔵"
-                    
-                    empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
-                    custo_show = f" | Custo: R$ {float(row['custo_carteira'] or 0):.2f}" if row.get('custo_carteira') else ""
-                    
-                    with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}{custo_show}"):
-                        st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
-                        if row.get('nome_carteira'):
-                            st.caption(f"Carteira: {row['nome_carteira']} | Origem: {row.get('origem_custo', '-')}")
-                            
-                        c1, c2, c3, c4, c5, c6 = st.columns(6)
-                        ts = int(time.time())
-                        c1.button("👤", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row))
-                        c2.button("✏️", key=f"e_{row['id']}_{ts}", on_click=abrir_modal, args=('editar', row))
-                        c3.button("🔄", key=f"s_{row['id']}_{ts}", on_click=abrir_modal, args=('status', row))
-                        c4.button("📜", key=f"h_{row['id']}_{ts}", on_click=abrir_modal, args=('historico', row))
-                        c5.button("🗑️", key=f"d_{row['id']}_{ts}", on_click=abrir_modal, args=('excluir', row))
-                        c6.button("📝", key=f"t_{row['id']}_{ts}", on_click=abrir_modal, args=('tarefa', row))
-            else: st.info("Nenhum pedido.")
+        if conn: st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)); conn.close()
     
-    # ABA 2: PARÂMETROS (EDIÇÃO DIRETA)
-    with tab_param:
-        st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
-        st.caption("Use com cautela. Permite editar dados brutos do sistema.")
+    with tabs[4]: 
+        st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
+        opcoes_tabelas = {
+            "1. Carteiras de Clientes": "conexoes.fator_cliente_carteira",
+            "2. Origens de Consulta": "conexoes.fatorconferi_origem_consulta_fator",
+            "3. Parâmetros Gerais": "conexoes.fatorconferi_parametros",
+            "4. Registros de Consulta": "conexoes.fatorconferi_registo_consulta",
+            "5. Tipos de Consulta": "conexoes.fatorconferi_tipo_consulta_fator",
+            "6. Valores da Consulta": "conexoes.fatorconferi_valor_da_consulta",
+            "7. Relação de Conexões": "conexoes.relacao",
+            "8. Ambiente de Consulta": "conexoes.fatorconferi_ambiente_consulta"
+        }
         
-        df_pedidos_raw = carregar_tabela_pedidos_completa()
-        if not df_pedidos_raw.empty:
-            df_editado = st.data_editor(
-                df_pedidos_raw,
-                key="editor_pedidos",
-                use_container_width=True,
-                num_rows="dynamic",
-                disabled=["id", "data_criacao", "data_atualizacao"]
-            )
-            
-            if st.button("💾 Salvar Alterações na Tabela", type="primary"):
-                with st.spinner("Salvando..."):
-                    if salvar_alteracoes_pedidos_geral(df_pedidos_raw, df_editado):
-                        st.success("Dados atualizados com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
-        else:
-            st.info("A tabela de pedidos está vazia.")
-
-    m = st.session_state['modal_ativo']; p = st.session_state['pedido_ativo']
-    if m == 'novo': dialog_novo_pedido()
-    elif m == 'cliente' and p is not None: 
-        st.dialog("👤 Cliente")(lambda: st.write(f"Nome: {p['nome_cliente']}\nCPF: {p['cpf_cliente']}\nTel: {p['telefone_cliente']}"))()
-        fechar_modal()
-    elif m == 'editar' and p is not None: dialog_editar(p)
-    elif m == 'status' and p is not None: dialog_status(p)
-    elif m == 'historico' and p is not None: dialog_historico(p['id'], p['codigo'])
-    elif m == 'excluir' and p is not None: dialog_excluir(p['id'])
-    elif m == 'tarefa' and p is not None: dialog_tarefa(p)
-
-if __name__ == "__main__":
-    app_pedidos()
+        tabela_escolhida = st.selectbox("Selecione a Tabela:", list(opcoes_tabelas.keys()))
+        nome_sql = opcoes_tabelas[tabela_escolhida]
+        
+        if nome_sql:
+            df_param = carregar_dados_genericos(nome_sql)
+            if df_param is None:
+                st.warning(f"A tabela `{nome_sql}` não foi encontrada.")
+                if nome_sql == "conexoes.fatorconferi_ambiente_consulta":
+                    if st.button("🛠️ Criar Tabela Ambiente Agora", type="primary"):
+                        if criar_tabela_ambiente(): st.success("Criada!"); st.rerun()
+            else:
+                st.info(f"Editando: `{nome_sql}`")
+                cols_travadas = ["id", "data_hora", "data_criacao", "data_registro"]
+                df_editado = st.data_editor(df_param, key=f"editor_{nome_sql}", num_rows="dynamic", use_container_width=True, disabled=cols_travadas)
+                if st.button("💾 Salvar Alterações", type="primary"):
+                    if salvar_alteracoes_genericas(nome_sql, df_param, df_editado): st.success("Salvo!"); time.sleep(1); st.rerun()
