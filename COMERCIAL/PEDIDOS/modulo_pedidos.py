@@ -91,7 +91,6 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         valor = float(dados_pedido['valor_total'])
         codigo_pedido = dados_pedido['codigo']
         
-        # Busca saldo anterior
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
@@ -116,7 +115,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     except Exception as e:
         return False, f"Erro financeiro: {str(e)}"
 
-# --- CRUD PEDIDOS ---
+# --- CRUD PEDIDOS (FUNCIONALIDADES ORIGINAIS) ---
 def buscar_clientes():
     conn = get_conn()
     if conn:
@@ -148,8 +147,6 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
     if conn:
         try:
             cur = conn.cursor()
-            
-            # ATUALIZADO: Insere nome_carteira, custo_carteira e origem_custo na tabela PEDIDOS
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
@@ -162,7 +159,6 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
             
-            # 2. Gestão da Lista de Carteira (Sincronização com cliente.cliente_carteira_lista)
             msg_lista = ""
             if add_lista and nome_lista:
                 cpf_limpo_cli = re.sub(r'\D', '', str(cliente['cpf']))
@@ -264,8 +260,6 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
     if conn:
         try:
             cur = conn.cursor()
-            
-            # ATUALIZADO: Atualiza também o custo_carteira na tabela pedidos
             cur.execute("""
                 UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
                 WHERE id=%s
@@ -286,6 +280,62 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
         except Exception as e: return False, str(e)
     return False, "Erro BD"
 
+# --- FUNÇÕES PARA ABA PARÂMETROS (EDIÇÃO DIRETA) ---
+def carregar_tabela_pedidos_completa():
+    conn = get_conn()
+    if conn:
+        try:
+            df = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC", conn)
+            conn.close()
+            return df
+        except: conn.close()
+    return pd.DataFrame()
+
+def salvar_alteracoes_pedidos_geral(df_original, df_editado):
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        ids_originais = set(df_original['id'].dropna().astype(int).tolist())
+        
+        # 1. Detectar Deletes
+        ids_editados_atuais = set()
+        for _, row in df_editado.iterrows():
+            if pd.notna(row.get('id')) and row.get('id') != '':
+                try: ids_editados_atuais.add(int(row['id']))
+                except: pass
+        
+        ids_del = ids_originais - ids_editados_atuais
+        if ids_del:
+            ids_str = ",".join(map(str, ids_del))
+            cur.execute(f"DELETE FROM pedidos WHERE id IN ({ids_str})")
+
+        # 2. Upsert (Update/Insert)
+        for index, row in df_editado.iterrows():
+            # Protege campos automáticos de edição manual direta se necessário
+            # Aqui permitimos edição de quase tudo para correção, exceto id
+            colunas_db = [c for c in row.index if c not in ['id', 'data_criacao']] 
+            valores = [row[c] for c in colunas_db]
+            row_id = row.get('id')
+            
+            eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
+            
+            if eh_novo:
+                cols_str = ", ".join(colunas_db)
+                placeholders = ", ".join(["%s"] * len(colunas_db))
+                cur.execute(f"INSERT INTO pedidos ({cols_str}) VALUES ({placeholders})", valores)
+            elif int(row_id) in ids_originais:
+                set_clause = ", ".join([f"{c} = %s" for c in colunas_db])
+                valores_update = valores + [int(row_id)]
+                cur.execute(f"UPDATE pedidos SET {set_clause} WHERE id = %s", valores_update)
+
+        conn.commit(); conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar tabela: {e}")
+        if conn: conn.close()
+        return False
+
 # --- FUNÇÕES DE ESTADO ---
 def abrir_modal(tipo, pedido=None):
     st.session_state['modal_ativo'] = tipo
@@ -295,8 +345,7 @@ def fechar_modal():
     st.session_state['modal_ativo'] = None
     st.session_state['pedido_ativo'] = None
 
-# --- DIALOGS (ATUALIZADOS) ---
-
+# --- DIALOGS ---
 @st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
     df_c = buscar_clientes()
@@ -323,8 +372,7 @@ def dialog_novo_pedido():
             res = cur.fetchone()
             if res: carteira_vinculada = res[0]
             conn.close()
-        except: 
-            conn.close()
+        except: conn.close()
 
     cart_display = carteira_vinculada if carteira_vinculada else "Não localizada"
     st.info(f"📦 **Item:** {prod['nome']}\n📍 **Origem:** {origem_produto}\n💼 **Carteira:** {cart_display}")
@@ -370,8 +418,7 @@ def dialog_novo_pedido():
     avisar = st.checkbox("Avisar WhatsApp?", value=True)
     
     if st.button("Criar Pedido", type="primary", use_container_width=True):
-        if add_cart and not n_cart: 
-            st.error("Selecione a carteira.")
+        if add_cart and not n_cart: st.error("Selecione a carteira.")
         else:
             ok, res = criar_pedido(cli, prod, qtd, val, qtd*val, avisar, add_cart, n_cart, c_cart, origem_produto)
             if ok: 
@@ -383,26 +430,23 @@ def dialog_novo_pedido():
 
 @st.dialog("✏️ Editar", width="large")
 def dialog_editar(ped):
-    # Carrega dados salvos no pedido (se existirem, senão busca do produto)
-    origem_atual = ped.get('origem_custo')
-    carteira_atual = ped.get('nome_carteira')
-    custo_atual = float(ped.get('custo_carteira') or 0.0)
-    
-    # Se não tiver salvo no pedido (pedidos antigos), tenta buscar do cadastro
-    if not origem_atual or not carteira_atual:
-        conn = get_conn()
-        if conn:
-            try:
-                if not origem_atual:
-                    df_prod = pd.read_sql(f"SELECT origem_custo FROM produtos_servicos WHERE id = {ped['id_produto']}", conn)
-                    if not df_prod.empty: origem_atual = df_prod.iloc[0]['origem_custo']
-                
-                if not carteira_atual:
-                    df_cart = pd.read_sql(f"SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = {ped['id_produto']}", conn)
-                    if not df_cart.empty: carteira_atual = df_cart.iloc[0]['nome_carteira']
-                    
-                conn.close()
-            except: conn.close()
+    origem_atual = "N/A"
+    carteira_atual = "N/A"
+    custo_atual_lista = 0.0
+    conn = get_conn()
+    if conn:
+        try:
+            df_prod_info = pd.read_sql(f"SELECT origem_custo FROM produtos_servicos WHERE id = {ped['id_produto']}", conn)
+            if not df_prod_info.empty: origem_atual = df_prod_info.iloc[0]['origem_custo']
+            df_cart_info = pd.read_sql(f"SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = {ped['id_produto']}", conn)
+            if not df_cart_info.empty: carteira_atual = df_cart_info.iloc[0]['nome_carteira']
+            if carteira_atual != "N/A":
+                cur = conn.cursor()
+                cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente = %s AND nome_carteira = %s AND origem_custo = %s", (ped['cpf_cliente'], carteira_atual, origem_atual))
+                res_c = cur.fetchone()
+                if res_c: custo_atual_lista = float(res_c[0])
+            conn.close()
+        except: conn.close()
 
     with st.form("fe"):
         st.markdown(f"#### Editando: {ped['codigo']}")
@@ -412,38 +456,27 @@ def dialog_editar(ped):
 
         st.divider()
         st.markdown("##### Dados Financeiros")
-        
         c_f1, c_f2, c_f3 = st.columns(3)
         c_f1.text_input("Carteira (Bloqueado)", value=carteira_atual if carteira_atual else "N/A", disabled=True)
         c_f2.text_input("Origem (Bloqueado)", value=origem_atual if origem_atual else "N/A", disabled=True)
-        
-        # Campo Custo Editável
-        novo_custo = c_f3.number_input("Custo Carteira (R$)", value=custo_atual, step=0.01)
+        novo_custo = c_f3.number_input("Custo Carteira (R$)", value=custo_atual_lista, step=0.01)
 
         st.markdown("##### Detalhes do Pedido")
         c_d1, c_d2 = st.columns(2)
         nq = c_d1.number_input("Quantidade", 1, value=int(ped['quantidade']))
         nv = c_d2.number_input("Valor Unitário (Valentia)", 0.0, value=float(ped['valor_unitario']))
-        
         st.info(f"Novo Total: R$ {nq*nv:.2f}")
 
         if st.form_submit_button("💾 Salvar Alterações"):
             ok, msg = editar_dados_pedido_completo(ped['id'], nq, nv, ped, novo_custo, carteira_atual, origem_atual)
-            if ok:
-                st.success(f"Salvo!{msg}")
-                time.sleep(1)
-                fechar_modal()
-                st.rerun()
-            else:
-                st.error(f"Erro: {msg}")
+            if ok: st.success(f"Salvo!{msg}"); time.sleep(1); fechar_modal(); st.rerun()
+            else: st.error(f"Erro: {msg}")
 
 @st.dialog("🔄 Status")
 def dialog_status(ped):
-    # Mostra empresa e CPF
     st.write(f"🏢 **Empresa:** {ped.get('nome_empresa', '-')}")
     st.write(f"👤 **Cliente:** {ped['nome_cliente']} | **CPF:** {ped['cpf_cliente']}")
     st.divider()
-
     lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
     try: idx = lst.index(ped['status']) 
     except: idx = 0
@@ -478,58 +511,93 @@ def dialog_tarefa(ped):
 
 # --- APP ---
 def app_pedidos():
-    if 'modal_ativo' not in st.session_state: st.session_state.update({'modal_ativo': None, 'pedido_ativo': None})
-    c_t, c_b = st.columns([5, 1])
-    c_t.markdown("## 🛒 Pedidos")
-    c_b.button("➕ Novo", type="primary", on_click=abrir_modal, args=('novo', None))
-    conn = get_conn()
-    if conn:
-        # ATUALIZADO: Busca também custo_carteira, nome_carteira, origem_custo da tabela pedidos
-        df = pd.read_sql("""
-            SELECT p.*, c.nome_empresa, c.email as email_cliente 
-            FROM pedidos p 
-            LEFT JOIN admin.clientes c ON p.id_cliente = c.id 
-            ORDER BY p.data_criacao DESC
-        """, conn)
-        conn.close()
+    st.markdown("## 🛒 Módulo de Pedidos")
+    
+    # NOVAS ABAS DE NAVEGAÇÃO
+    tab_lista, tab_param = st.tabs(["📋 Lista de Pedidos", "⚙️ Parâmetros"])
+
+    # ABA 1: LISTA (ORIGINAL)
+    with tab_lista:
+        if 'modal_ativo' not in st.session_state: st.session_state.update({'modal_ativo': None, 'pedido_ativo': None})
         
-        with st.expander("🔍 Filtros", expanded=True):
-            c1, c2, c3 = st.columns([3, 1.5, 1.5])
-            busca = c1.text_input("Buscar")
-            status = c2.multiselect("Status", df['status'].unique() if not df.empty else [])
-            if not df.empty:
-                if busca: df = df[df['nome_cliente'].str.contains(busca, case=False) | df['nome_produto'].str.contains(busca, case=False)]
-                if status: df = df[df['status'].isin(status)]
-        st.divider()
-        pag_size = 10
-        total_pags = (len(df) // pag_size) + 1
-        pag = st.selectbox("Página", range(1, total_pags + 1)) if total_pags > 1 else 1
-        subset = df.iloc[(pag-1)*pag_size : pag*pag_size]
-        if not subset.empty:
-            for _, row in subset.iterrows():
-                cor = "🔴"; 
-                if row['status'] == 'Pago': cor = "🟢"
-                elif row['status'] == 'Pendente': cor = "🟠"
-                elif row['status'] == 'Solicitado': cor = "🔵"
-                
-                empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
-                custo_show = f" | Custo: R$ {float(row['custo_carteira'] or 0):.2f}" if row.get('custo_carteira') else ""
-                
-                with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}{custo_show}"):
-                    st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
+        c_t, c_b = st.columns([5, 1])
+        c_b.button("➕ Novo Pedido", type="primary", on_click=abrir_modal, args=('novo', None), use_container_width=True)
+        
+        conn = get_conn()
+        if conn:
+            df = pd.read_sql("""
+                SELECT p.*, c.nome_empresa, c.email as email_cliente 
+                FROM pedidos p 
+                LEFT JOIN admin.clientes c ON p.id_cliente = c.id 
+                ORDER BY p.data_criacao DESC
+            """, conn)
+            conn.close()
+            
+            with st.expander("🔍 Filtros de Pesquisa", expanded=True):
+                c1, c2, c3 = st.columns([3, 1.5, 1.5])
+                busca = c1.text_input("Buscar")
+                status = c2.multiselect("Status", df['status'].unique() if not df.empty else [])
+                if not df.empty:
+                    if busca: df = df[df['nome_cliente'].str.contains(busca, case=False) | df['nome_produto'].str.contains(busca, case=False)]
+                    if status: df = df[df['status'].isin(status)]
+            st.divider()
+            
+            pag_size = 10
+            total_pags = (len(df) // pag_size) + 1
+            pag = st.selectbox("Página", range(1, total_pags + 1)) if total_pags > 1 else 1
+            subset = df.iloc[(pag-1)*pag_size : pag*pag_size]
+            
+            if not subset.empty:
+                for _, row in subset.iterrows():
+                    cor = "🔴"; 
+                    if row['status'] == 'Pago': cor = "🟢"
+                    elif row['status'] == 'Pendente': cor = "🟠"
+                    elif row['status'] == 'Solicitado': cor = "🔵"
                     
-                    if row.get('nome_carteira'):
-                        st.caption(f"Carteira: {row['nome_carteira']} | Origem: {row.get('origem_custo', '-')}")
-                        
-                    c1, c2, c3, c4, c5, c6 = st.columns(6)
-                    ts = int(time.time())
-                    c1.button("👤", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row))
-                    c2.button("✏️", key=f"e_{row['id']}_{ts}", on_click=abrir_modal, args=('editar', row))
-                    c3.button("🔄", key=f"s_{row['id']}_{ts}", on_click=abrir_modal, args=('status', row))
-                    c4.button("📜", key=f"h_{row['id']}_{ts}", on_click=abrir_modal, args=('historico', row))
-                    c5.button("🗑️", key=f"d_{row['id']}_{ts}", on_click=abrir_modal, args=('excluir', row))
-                    c6.button("📝", key=f"t_{row['id']}_{ts}", on_click=abrir_modal, args=('tarefa', row))
-        else: st.info("Nenhum pedido.")
+                    empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
+                    custo_show = f" | Custo: R$ {float(row['custo_carteira'] or 0):.2f}" if row.get('custo_carteira') else ""
+                    
+                    with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}{custo_show}"):
+                        st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
+                        if row.get('nome_carteira'):
+                            st.caption(f"Carteira: {row['nome_carteira']} | Origem: {row.get('origem_custo', '-')}")
+                            
+                        c1, c2, c3, c4, c5, c6 = st.columns(6)
+                        ts = int(time.time())
+                        c1.button("👤", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row))
+                        c2.button("✏️", key=f"e_{row['id']}_{ts}", on_click=abrir_modal, args=('editar', row))
+                        c3.button("🔄", key=f"s_{row['id']}_{ts}", on_click=abrir_modal, args=('status', row))
+                        c4.button("📜", key=f"h_{row['id']}_{ts}", on_click=abrir_modal, args=('historico', row))
+                        c5.button("🗑️", key=f"d_{row['id']}_{ts}", on_click=abrir_modal, args=('excluir', row))
+                        c6.button("📝", key=f"t_{row['id']}_{ts}", on_click=abrir_modal, args=('tarefa', row))
+            else: st.info("Nenhum pedido.")
+    
+    # ABA 2: PARÂMETROS (EDIÇÃO DIRETA)
+    with tab_param:
+        st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
+        st.caption("Use com cautela. Permite editar dados brutos do sistema.")
+        
+        df_pedidos_raw = carregar_tabela_pedidos_completa()
+        if not df_pedidos_raw.empty:
+            # Configuração do Editor
+            df_editado = st.data_editor(
+                df_pedidos_raw,
+                key="editor_pedidos",
+                use_container_width=True,
+                num_rows="dynamic",
+                disabled=["id", "data_criacao", "data_atualizacao"] # Protege campos de sistema
+            )
+            
+            if st.button("💾 Salvar Alterações na Tabela", type="primary"):
+                with st.spinner("Salvando..."):
+                    if salvar_alteracoes_pedidos_geral(df_pedidos_raw, df_editado):
+                        st.success("Dados atualizados com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+        else:
+            st.info("A tabela de pedidos está vazia.")
+
+    # Roteador de Modais (Mantido fora das abas para funcionar globalmente)
     m = st.session_state['modal_ativo']; p = st.session_state['pedido_ativo']
     if m == 'novo': dialog_novo_pedido()
     elif m == 'cliente' and p is not None: 
