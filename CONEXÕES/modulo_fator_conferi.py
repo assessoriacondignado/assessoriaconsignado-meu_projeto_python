@@ -416,6 +416,13 @@ def realizar_consulta_cpf(cpf, ambiente_origem, forcar_nova=False, id_cliente_pa
     try:
         cur = conn.cursor()
         
+        # 1. Busca Nome do Cliente Pagador (para salvar no log)
+        nome_cliente_pagador = None
+        if id_cliente_pagador:
+            cur.execute("SELECT nome FROM admin.clientes WHERE id = %s", (id_cliente_pagador,))
+            res_n = cur.fetchone()
+            if res_n: nome_cliente_pagador = res_n[0]
+
         # --- CENÁRIO 1: CACHE (SEM DÉBITO) ---
         if not forcar_nova:
             cur.execute("SELECT caminho_json, id_cliente FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
@@ -425,12 +432,13 @@ def realizar_consulta_cpf(cpf, ambiente_origem, forcar_nova=False, id_cliente_pa
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
-                            # Registra o uso do Cache (tipo_cobranca = CACHE, valor = 0)
+                            # Registra o uso do Cache
+                            # Campo 'origem_consulta' recebe 'ambiente_origem'
                             cur.execute("""
                                 INSERT INTO conexoes.fatorconferi_registo_consulta 
-                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente) 
-                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', %s, %s, 'CACHE', NOW(), %s)
-                            """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, res[0], res[0], ambiente_origem, id_cliente_pagador))
+                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente) 
+                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', %s, %s, 'CACHE', NOW(), %s, %s)
+                            """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, res[0], res[0], ambiente_origem, id_cliente_pagador, nome_cliente_pagador))
                             conn.commit(); conn.close()
                             return {"sucesso": True, "dados": dados, "msg": "Cache recuperado (Sem Débito)."}
                 except: pass
@@ -452,14 +460,15 @@ def realizar_consulta_cpf(cpf, ambiente_origem, forcar_nova=False, id_cliente_pa
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
-        # Inserir no Registro de Consulta (Com ID Cliente)
-        custo_ref = buscar_valor_consulta_atual() # Valor de referência, o débito real pega da carteira
+        # Inserir no Registro de Consulta (Com ID e Nome Cliente)
+        custo_ref = buscar_valor_consulta_atual()
         
+        # CORREÇÃO: Inclusão de nome_cliente e ambiente_origem no campo origem_consulta
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
-            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente) 
-            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW(), %s)
-        """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, path, ambiente_origem, id_cliente_pagador))
+            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente) 
+            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW(), %s, %s)
+        """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, path, ambiente_origem, id_cliente_pagador, nome_cliente_pagador))
         conn.commit()
         
         # --- CHAMADA DO DÉBITO AUTOMÁTICO ---
@@ -503,7 +512,6 @@ def app_fator_conferi():
     with tabs[1]:
         st.markdown("#### 1.1 Consulta e Importação")
         
-        # ATUALIZAÇÃO: Adicionado seletor de cliente (pagador) para teste correto do débito
         col_cli, col_cpf = st.columns([2, 2])
         
         # Carrega lista de clientes com carteira para teste
