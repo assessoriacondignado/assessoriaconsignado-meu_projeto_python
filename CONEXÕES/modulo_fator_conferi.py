@@ -229,14 +229,40 @@ def processar_debito_automatico(origem_da_consulta, dados_consulta):
 # =============================================================================
 
 def carregar_dados_genericos(nome_tabela):
+    """
+    Carrega dados da tabela. Retorna None se a tabela não existir.
+    Retorna DataFrame vazio se a tabela existir mas não tiver dados.
+    """
     conn = get_conn()
     if conn:
         try:
             df = pd.read_sql(f"SELECT * FROM {nome_tabela} ORDER BY id DESC", conn)
-            conn.close(); return df
-        except: 
+            conn.close()
+            return df
+        except Exception as e:
             if conn: conn.close()
-    return pd.DataFrame()
+            return None # Erro = tabela não existe
+    return None
+
+def criar_tabela_ambiente():
+    """Cria a tabela fatorconferi_ambiente_consulta se não existir"""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_ambiente_consulta (
+                    id SERIAL PRIMARY KEY,
+                    ambiente VARCHAR(255),
+                    origem VARCHAR(255)
+                );
+            """)
+            conn.commit(); conn.close()
+            return True
+        except:
+            conn.close()
+            return False
+    return False
 
 def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
     conn = get_conn()
@@ -419,7 +445,7 @@ def app_fator_conferi():
             if res['sucesso']:
                 if "msg" in res: st.success(res['msg'])
                 st.divider()
-                if st.button("💾 Salvar na Base PF"):
+                if st.button("💾 Salvar na Base PF", type="primary"):
                     ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
                     if ok_s: st.success(msg_s)
                     else: st.error(msg_s)
@@ -443,7 +469,6 @@ def app_fator_conferi():
         st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
         st.caption("Selecione uma tabela para visualizar e editar os parâmetros.")
         
-        # ATUALIZADO: Incluindo a nova tabela
         opcoes_tabelas = {
             "1. Carteiras de Clientes": "conexoes.fator_cliente_carteira",
             "2. Origens de Consulta": "conexoes.fatorconferi_origem_consulta_fator",
@@ -459,13 +484,28 @@ def app_fator_conferi():
         nome_sql = opcoes_tabelas[tabela_escolhida]
         
         if nome_sql:
+            # Carrega dados
             df_param = carregar_dados_genericos(nome_sql)
-            if not df_param.empty:
+            
+            # --- CASO 1: TABELA NÃO EXISTE (Retornou None) ---
+            if df_param is None:
+                st.warning(f"A tabela `{nome_sql}` não foi encontrada no banco.")
+                # Se for a tabela nova de ambiente, oferece botão para criar
+                if nome_sql == "conexoes.fatorconferi_ambiente_consulta":
+                    if st.button("🛠️ Criar Tabela Ambiente Agora", type="primary"):
+                        if criar_tabela_ambiente():
+                            st.success("Tabela criada com sucesso! Recarregue a página.")
+                            time.sleep(1); st.rerun()
+                        else: st.error("Erro ao criar tabela.")
+            
+            # --- CASO 2: TABELA EXISTE (Vazia ou com Dados) ---
+            else:
                 st.info(f"Editando: `{nome_sql}`")
                 
                 # Desabilita edição de colunas automáticas para evitar erros
                 colunas_travadas = ["id", "data_hora", "data_criacao", "data_registro"]
                 
+                # Exibe o editor (num_rows="dynamic" permite adicionar linhas se vazia)
                 df_editado = st.data_editor(
                     df_param, 
                     key=f"editor_{nome_sql}", 
@@ -478,19 +518,3 @@ def app_fator_conferi():
                     if salvar_alteracoes_genericas(nome_sql, df_param, df_editado):
                         st.success("Tabela atualizada com sucesso!")
                         time.sleep(1); st.rerun()
-            else:
-                st.warning("Tabela vazia ou não encontrada. Verifique se ela foi criada no banco.")
-                # Opção para criar registro inicial se for uma tabela de configuração vazia
-                if st.button("Criar registro inicial em branco"):
-                    conn = get_conn()
-                    if conn:
-                        try:
-                            cur = conn.cursor()
-                            # Tenta inserir um registro vazio dependendo da tabela
-                            # Isso é um fallback genérico, pode falhar se houver constraints NOT NULL
-                            # Mas ajuda a inicializar tabelas simples
-                            cur.execute(f"INSERT INTO {nome_sql} DEFAULT VALUES")
-                            conn.commit()
-                            st.rerun()
-                        except: 
-                            st.error("Não foi possível criar registro vazio automaticamente.")
