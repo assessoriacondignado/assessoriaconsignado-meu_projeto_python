@@ -179,34 +179,82 @@ def obter_origem_padronizada(nome_origem):
             if conn: conn.close()
     return origem_final
 
+# [NOVA FUNÇÃO] Busca origem baseada no ambiente
+def buscar_origem_por_ambiente(nome_ambiente):
+    conn = get_conn()
+    origem_padrao = "WEB USUÁRIO" # Fallback
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente,))
+            res = cur.fetchone()
+            if res: origem_padrao = res[0]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return origem_padrao
+
 # =============================================================================
-# 2. FUNÇÃO DE DÉBITO FINANCEIRO
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO (ATUALIZADA)
 # =============================================================================
 
 def processar_debito_automatico(origem_da_consulta, dados_consulta):
-    id_usuario_logado = st.session_state.get('usuario_id')
-    if not id_usuario_logado: return False, "Usuário não logado."
+    """
+    Nova Regra de Débito:
+    1. Identifica o USUÁRIO logado.
+    2. Cruza USUÁRIO + ORIGEM na lista de carteiras (cliente.cliente_carteira_lista).
+    3. Identifica CLIENTE PAGADOR, CARTEIRA e VALOR.
+    4. Busca TABELA SQL na config.
+    5. Lança o débito.
+    """
+    nome_usuario_logado = st.session_state.get('usuario_nome') # Usa nome para bater com a lista
+    # Se preferir usar CPF do usuário, mude para: st.session_state.get('usuario_cpf') e ajuste a query
+    
+    if not nome_usuario_logado: return False, "Usuário não identificado na sessão."
 
     conn = get_conn()
     if not conn: return False, "Erro conexão DB."
     
     try:
         cur = conn.cursor()
-        cur.execute("SELECT cpf, nome FROM admin.clientes WHERE id_usuario_vinculo = %s LIMIT 1", (id_usuario_logado,))
-        res_pagador = cur.fetchone()
-        if not res_pagador: conn.close(); return False, "Usuário sem cliente vinculado em admin.clientes."
-        cpf_pagador, nome_pagador = res_pagador[0], res_pagador[1]
-
-        cur.execute("SELECT nome_carteira, custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente = %s AND origem_custo = %s LIMIT 1", (cpf_pagador, origem_da_consulta))
+        
+        # 1. Busca na Lista de Carteiras conciliando USUÁRIO + ORIGEM
+        # Isso localiza quem é o cliente (pagador), qual a carteira e o valor
+        cur.execute("""
+            SELECT cpf_cliente, nome_cliente, nome_carteira, custo_carteira, nome_produto
+            FROM cliente.cliente_carteira_lista 
+            WHERE nome_usuario = %s AND origem_custo = %s 
+            LIMIT 1
+        """, (nome_usuario_logado, origem_da_consulta))
+        
         res_lista = cur.fetchone()
-        if not res_lista: conn.close(); return False, f"Cliente não possui a carteira '{origem_da_consulta}' na lista."
-        nome_carteira_vinculada, valor_cobranca = res_lista[0], float(res_lista[1])
 
-        cur.execute("SELECT nome_tabela_transacoes FROM cliente.carteiras_config WHERE nome_carteira = %s AND status = 'ATIVO' LIMIT 1", (nome_carteira_vinculada,))
+        if not res_lista:
+            conn.close()
+            return False, f"Usuário '{nome_usuario_logado}' não tem carteira vinculada para origem '{origem_da_consulta}'."
+        
+        cpf_pagador = res_lista[0]
+        nome_pagador = res_lista[1]
+        nome_carteira_vinculada = res_lista[2]
+        valor_cobranca = float(res_lista[3])
+        # nome_produto = res_lista[4] (Se precisar usar no histórico)
+
+        # 2. Busca a TABELA SQL na 'cliente.carteiras_config' usando o nome da carteira
+        cur.execute("""
+            SELECT nome_tabela_transacoes 
+            FROM cliente.carteiras_config 
+            WHERE nome_carteira = %s AND status = 'ATIVO' 
+            LIMIT 1
+        """, (nome_carteira_vinculada,))
         res_config = cur.fetchone()
-        if not res_config: conn.close(); return False, f"Configuração da tabela para '{nome_carteira_vinculada}' não encontrada."
+
+        if not res_config:
+            conn.close()
+            return False, f"Configuração da tabela para '{nome_carteira_vinculada}' não encontrada."
+            
         tabela_sql = res_config[0]
 
+        # 3. Realizar o Lançamento de Débito
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_pagador,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
@@ -217,35 +265,31 @@ def processar_debito_automatico(origem_da_consulta, dados_consulta):
         
         sql_insert = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, %s, 'DEBITO', %s, %s, %s, NOW())"
         cur.execute(sql_insert, (cpf_pagador, nome_pagador, motivo, origem_da_consulta, valor_cobranca, saldo_anterior, novo_saldo))
-        conn.commit(); conn.close()
-        return True, f"Débito de R$ {valor_cobranca:.2f} na tabela {tabela_sql}."
+        
+        conn.commit()
+        conn.close()
+        return True, f"Débito de R$ {valor_cobranca:.2f} na tabela {tabela_sql} (Pagador: {nome_pagador})."
 
     except Exception as e:
         if conn: conn.close()
         return False, f"Erro financeiro: {str(e)}"
 
 # =============================================================================
-# 3. FUNÇÕES GESTÃO DE PARÂMETROS (CRUD TABELAS)
+# 3. FUNÇÕES GESTÃO DE PARÂMETROS
 # =============================================================================
 
 def carregar_dados_genericos(nome_tabela):
-    """
-    Carrega dados da tabela. Retorna None se a tabela não existir.
-    Retorna DataFrame vazio se a tabela existir mas não tiver dados.
-    """
     conn = get_conn()
     if conn:
         try:
             df = pd.read_sql(f"SELECT * FROM {nome_tabela} ORDER BY id DESC", conn)
-            conn.close()
-            return df
-        except Exception as e:
+            conn.close(); return df
+        except: 
             if conn: conn.close()
-            return None # Erro = tabela não existe
+            return None
     return None
 
 def criar_tabela_ambiente():
-    """Cria a tabela fatorconferi_ambiente_consulta se não existir"""
     conn = get_conn()
     if conn:
         try:
@@ -270,7 +314,6 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
     try:
         cur = conn.cursor()
         
-        # 1. DELETE: IDs que existiam e não existem mais
         ids_orig = set(df_original['id'].dropna().astype(int).tolist())
         
         ids_editados_atuais = set()
@@ -284,23 +327,17 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
             ids_str = ",".join(map(str, ids_del))
             cur.execute(f"DELETE FROM {nome_tabela} WHERE id IN ({ids_str})")
 
-        # 2. UPSERT: Insere ou Atualiza
         for index, row in df_editado.iterrows():
-            # Remove colunas que não devem ser escritas manualmente (ID e Datas Automáticas)
             cols_db = [c for c in row.index if c not in ['id', 'data_hora', 'data_criacao', 'data_registro']]
             vals = [row[c] for c in cols_db]
-            
             row_id = row.get('id')
             eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
             
             if eh_novo:
-                # INSERT (Não passa o ID, deixa o banco gerar)
                 placeholders = ", ".join(["%s"] * len(cols_db))
                 col_names = ", ".join(cols_db)
                 cur.execute(f"INSERT INTO {nome_tabela} ({col_names}) VALUES ({placeholders})", vals)
-            
             elif int(row_id) in ids_orig:
-                # UPDATE
                 set_clause = ", ".join([f"{c} = %s" for c in cols_db])
                 vals_update = vals + [int(row_id)]
                 cur.execute(f"UPDATE {nome_tabela} SET {set_clause} WHERE id = %s", vals_update)
@@ -341,7 +378,6 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
         
-        # Telefones, Emails, Endereços (Lógica Simplificada para caber)
         for t in dados_api.get('telefones', []):
             n = re.sub(r'\D', '', str(t['numero']))
             if n: cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING", (cpf_limpo, n, t.get('prioridade', '')))
@@ -359,7 +395,7 @@ def salvar_dados_fator_no_banco(dados_api):
         if conn: conn.close()
         return False, f"Erro DB: {e}"
 
-def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
+def realizar_consulta_cpf(cpf, origem, forcar_nova=False):
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
@@ -392,10 +428,11 @@ def realizar_consulta_cpf(cpf, origem="Teste Manual", forcar_nova=False):
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
+        # --- DÉBITO FINANCEIRO COM NOVA REGRA ---
         msg_financeira = ""
         ok_fin, txt_fin = processar_debito_automatico(origem, dados)
         if ok_fin: msg_financeira = f" | {txt_fin}"
-        else: msg_financeira = f" | ⚠️ {txt_fin}"
+        else: msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
         
         custo = buscar_valor_consulta_atual()
         usr = st.session_state.get('usuario_nome', 'Sistema')
@@ -433,10 +470,16 @@ def app_fator_conferi():
         c1, c2, c3 = st.columns([3, 1.5, 1.5])
         cpf_in = c1.text_input("CPF")
         forcar = c2.checkbox("Ignorar Histórico", value=False)
+        
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    origem_padrao = obter_origem_padronizada("WEB USUÁRIO")
+                    # 1. Identifica ORIGEM pelo AMBIENTE
+                    nome_ambiente = "Painel Fator Conferi / Teste de Consulta" # Nome fixo deste ambiente
+                    origem_padrao = buscar_origem_por_ambiente(nome_ambiente)
+                    
+                    st.toast(f"Ambiente: {nome_ambiente} -> Origem: {origem_padrao}")
+                    
                     res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
                     st.session_state['resultado_fator'] = res
         
@@ -467,8 +510,6 @@ def app_fator_conferi():
     
     with tabs[4]: 
         st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
-        st.caption("Selecione uma tabela para visualizar e editar os parâmetros.")
-        
         opcoes_tabelas = {
             "1. Carteiras de Clientes": "conexoes.fator_cliente_carteira",
             "2. Origens de Consulta": "conexoes.fatorconferi_origem_consulta_fator",
@@ -484,37 +525,15 @@ def app_fator_conferi():
         nome_sql = opcoes_tabelas[tabela_escolhida]
         
         if nome_sql:
-            # Carrega dados
             df_param = carregar_dados_genericos(nome_sql)
-            
-            # --- CASO 1: TABELA NÃO EXISTE (Retornou None) ---
             if df_param is None:
-                st.warning(f"A tabela `{nome_sql}` não foi encontrada no banco.")
-                # Se for a tabela nova de ambiente, oferece botão para criar
+                st.warning(f"A tabela `{nome_sql}` não foi encontrada.")
                 if nome_sql == "conexoes.fatorconferi_ambiente_consulta":
                     if st.button("🛠️ Criar Tabela Ambiente Agora", type="primary"):
-                        if criar_tabela_ambiente():
-                            st.success("Tabela criada com sucesso! Recarregue a página.")
-                            time.sleep(1); st.rerun()
-                        else: st.error("Erro ao criar tabela.")
-            
-            # --- CASO 2: TABELA EXISTE (Vazia ou com Dados) ---
+                        if criar_tabela_ambiente(): st.success("Criada!"); st.rerun()
             else:
                 st.info(f"Editando: `{nome_sql}`")
-                
-                # Desabilita edição de colunas automáticas para evitar erros
-                colunas_travadas = ["id", "data_hora", "data_criacao", "data_registro"]
-                
-                # Exibe o editor (num_rows="dynamic" permite adicionar linhas se vazia)
-                df_editado = st.data_editor(
-                    df_param, 
-                    key=f"editor_{nome_sql}", 
-                    num_rows="dynamic", 
-                    use_container_width=True,
-                    disabled=colunas_travadas
-                )
-                
+                cols_travadas = ["id", "data_hora", "data_criacao", "data_registro"]
+                df_editado = st.data_editor(df_param, key=f"editor_{nome_sql}", num_rows="dynamic", use_container_width=True, disabled=cols_travadas)
                 if st.button("💾 Salvar Alterações", type="primary"):
-                    if salvar_alteracoes_genericas(nome_sql, df_param, df_editado):
-                        st.success("Tabela atualizada com sucesso!")
-                        time.sleep(1); st.rerun()
+                    if salvar_alteracoes_genericas(nome_sql, df_param, df_editado): st.success("Salvo!"); time.sleep(1); st.rerun()
