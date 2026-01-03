@@ -165,7 +165,6 @@ def excluir_relacao_pedido_carteira(id_reg):
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        # ATUALIZADO: JOIN para pegar o nome da tabela
         query = """
             SELECT 
                 l.id, l.cpf_cliente, l.nome_cliente, l.nome_carteira, 
@@ -522,7 +521,7 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
         return None
 
 # =============================================================================
-# 4. DIALOGS (ATUALIZADOS)
+# 4. DIALOGS
 # =============================================================================
 
 @st.dialog("✏️ Editar Carteira Cliente")
@@ -740,14 +739,99 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
             if atualizar_relacao_pedido_carteira(id_reg, n_p, n_c): st.success("Ok!"); st.rerun()
 
 # =============================================================================
-# 5. INTERFACE PRINCIPAL
+# NOVA SEÇÃO: FUNÇÕES PARA O SUBMENU PLANILHAS
+# =============================================================================
+
+def listar_tabelas_planilhas():
+    """
+    Lista tabelas do schema 'admin' que começam com 'cliente'
+    E todas as tabelas do schema 'cliente'.
+    """
+    conn = get_conn()
+    if not conn: return []
+    try:
+        cur = conn.cursor()
+        query = """
+            SELECT table_schema || '.' || table_name 
+            FROM information_schema.tables 
+            WHERE 
+                (table_schema = 'admin' AND table_name LIKE 'cliente%')
+                OR 
+                (table_schema = 'cliente')
+            ORDER BY table_schema, table_name;
+        """
+        cur.execute(query)
+        res = [row[0] for row in cur.fetchall()]
+        conn.close()
+        return res
+    except:
+        if conn: conn.close()
+        return []
+
+def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_editado):
+    """
+    Salva edições genéricas para tabelas completas (ex: admin.clientes)
+    """
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        
+        # Identifica IDs originais para saber o que foi excluído
+        ids_originais = set()
+        if 'id' in df_original.columns:
+            ids_originais = set(df_original['id'].dropna().astype(int).tolist())
+        
+        ids_editados_atuais = set()
+        for _, row in df_editado.iterrows():
+            if 'id' in row and pd.notna(row['id']) and row['id'] != '':
+                try: ids_editados_atuais.add(int(row['id']))
+                except: pass
+
+        # 1. DELETE (IDs que estavam no original mas não estão no editado)
+        ids_del = ids_originais - ids_editados_atuais
+        if ids_del:
+            ids_str = ",".join(map(str, ids_del))
+            cur.execute(f"DELETE FROM {nome_tabela_completo} WHERE id IN ({ids_str})")
+
+        # 2. UPDATE e INSERT
+        for index, row in df_editado.iterrows():
+            colunas_db = [c for c in row.index if c not in ['data_criacao', 'data_registro']]
+            
+            row_id = row.get('id')
+            eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
+            
+            valores = [row[c] for c in colunas_db if c != 'id']
+            
+            if eh_novo:
+                cols_str = ", ".join([c for c in colunas_db if c != 'id'])
+                placeholders = ", ".join(["%s"] * len(valores))
+                if cols_str:
+                    cur.execute(f"INSERT INTO {nome_tabela_completo} ({cols_str}) VALUES ({placeholders})", valores)
+            elif int(row_id) in ids_originais:
+                set_clause = ", ".join([f"{c} = %s" for c in colunas_db if c != 'id'])
+                valores_update = valores + [int(row_id)]
+                if set_clause:
+                    cur.execute(f"UPDATE {nome_tabela_completo} SET {set_clause} WHERE id = %s", valores_update)
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar tabela {nome_tabela_completo}: {e}")
+        if conn: conn.close()
+        return False
+
+# =============================================================================
+# 5. INTERFACE PRINCIPAL (ATUALIZADA)
 # =============================================================================
 
 def app_clientes():
     garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    tab_cli, tab_user, tab_param, tab_carteira, tab_rel = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios"])
+    # Adicionada a aba "Planilhas" ao final
+    tab_cli, tab_user, tab_param, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
 
     # --- ABA CLIENTES ---
     with tab_cli:
@@ -1197,6 +1281,63 @@ def app_clientes():
             with c2:
                 st.info("🔎 Consultas"); 
                 if st.button("Ver Histórico"): dialog_historico_consultas(row['cpf'])
+
+    # =========================================================================
+    # --- NOVA ABA: PLANILHAS ---
+    # =========================================================================
+    with tab_plan:
+        st.markdown("### 📅 Gestão de Planilhas do Banco")
+        st.caption("Visualização e edição direta de tabelas (Admin: 'cliente...' e Schema: 'cliente')")
+        
+        # 1. Carregar lista de tabelas disponíveis
+        lista_tabelas = listar_tabelas_planilhas()
+        
+        if lista_tabelas:
+            col_sel, col_info = st.columns([1, 2])
+            tabela_selecionada = col_sel.selectbox("Selecione a Tabela", lista_tabelas)
+            
+            if tabela_selecionada:
+                conn = get_conn()
+                if conn:
+                    try:
+                        # Carregar dados
+                        st.markdown(f"**Editando:** `{tabela_selecionada}`")
+                        # Limite de segurança ou paginação pode ser adicionado se as tabelas forem gigantes
+                        df_tabela = pd.read_sql(f"SELECT * FROM {tabela_selecionada} ORDER BY id DESC LIMIT 1000", conn)
+                        conn.close()
+                        
+                        # Definir colunas travadas (normalmente ID não se edita)
+                        cols_travadas = ["data_criacao", "data_registro"]
+                        if 'id' in df_tabela.columns:
+                            # Se quiser travar o ID: cols_travadas.append("id")
+                            # Se quiser permitir criar linhas novas, o ID deve ser gerado pelo banco (SERIAL), 
+                            # então deixamos o ID visível mas inativo para inserção manual geralmente, 
+                            # ou ocultamos. O data_editor lida bem com IDs se configurado.
+                            pass
+
+                        # Editor
+                        df_editado = st.data_editor(
+                            df_tabela,
+                            key=f"editor_planilha_{tabela_selecionada}",
+                            num_rows="dynamic",
+                            use_container_width=True,
+                            disabled=cols_travadas
+                        )
+                        
+                        # Botão Salvar
+                        if st.button("💾 Salvar Alterações na Planilha", type="primary"):
+                            with st.spinner("Salvando..."):
+                                if salvar_alteracoes_planilha_generica(tabela_selecionada, df_tabela, df_editado):
+                                    st.success("Tabela atualizada com sucesso!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("Erro ao salvar alterações. Verifique os logs.")
+                    except Exception as e:
+                        st.error(f"Erro ao ler tabela: {e}")
+                        if conn: conn.close()
+        else:
+            st.warning("Nenhuma tabela encontrada com os critérios (Admin 'cliente...' ou schema 'Cliente').")
 
 if __name__ == "__main__":
     app_clientes()
