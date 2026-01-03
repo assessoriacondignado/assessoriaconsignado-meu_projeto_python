@@ -38,7 +38,6 @@ def sanitizar_nome_tabela(nome):
     return s.strip('_')
 
 # --- AGRUPAMENTOS ---
-
 def listar_agrupamentos(tipo):
     conn = get_conn()
     tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
@@ -83,7 +82,6 @@ def atualizar_agrupamento(tipo, id_agrup, novo_nome):
         return False
 
 # --- CLIENTE CNPJ ---
-
 def listar_cliente_cnpj():
     conn = get_conn()
     try:
@@ -124,7 +122,6 @@ def atualizar_cliente_cnpj(id_reg, cnpj, nome):
         return False
 
 # --- RELAÇÃO PEDIDO CARTEIRA ---
-
 def listar_relacao_pedido_carteira():
     conn = get_conn()
     try:
@@ -165,26 +162,21 @@ def excluir_relacao_pedido_carteira(id_reg):
         return False
 
 # --- CLIENTE CARTEIRA LISTA ---
-
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
+        # ATUALIZADO: Incluindo nome_produto
+        df = pd.read_sql("SELECT id, cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo, nome_produto FROM cliente.cliente_carteira_lista ORDER BY nome_cliente", conn)
         conn.close(); return df
     except: 
         if conn: conn.close()
         return pd.DataFrame()
 
-def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
+def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo, nome_produto):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        
-        cpf_user = None
-        nome_user = None
         cpf_limpo = re.sub(r'\D', '', str(cpf))
-        
-        # Tenta buscar vinculo por CPF limpo (formato DB)
         query_vinculo = """
             SELECT u.cpf, u.nome FROM admin.clientes c
             JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
@@ -192,45 +184,41 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
         """
         cur.execute(query_vinculo, (cpf_limpo,))
         res_v = cur.fetchone()
+        cpf_u, nome_u = (res_v[0], res_v[1]) if res_v else (None, None)
         
-        if res_v:
-            cpf_user, nome_user = res_v[0], res_v[1]
-        
+        # ATUALIZADO: Incluindo nome_produto
         cur.execute("""
-            INSERT INTO cliente.cliente_carteira_lista 
-            (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (cpf, nome, carteira, custo, cpf_user, nome_user, origem_custo))
+            INSERT INTO cliente.cliente_carteira_lista (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo, nome_produto) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo, nome_produto))
         conn.commit(); conn.close(); return True
-    except Exception as e:
+    except:
         if conn: conn.close()
         return False
 
-def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_user, nome_user, origem_custo):
+def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo, nome_produto):
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # ATUALIZADO: Incluindo nome_produto
         cur.execute("""
             UPDATE cliente.cliente_carteira_lista 
-            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
+            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s, nome_produto=%s
             WHERE id=%s
-        """, (cpf, nome, carteira, custo, cpf_user, nome_user, origem_custo, id_reg))
+        """, (cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo, nome_produto, id_reg))
         conn.commit(); conn.close(); return True
-    except: 
+    except:
         if conn: conn.close()
         return False
 
 def excluir_cliente_carteira_lista(id_reg):
     conn = get_conn()
     try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM cliente.cliente_carteira_lista WHERE id=%s", (id_reg,))
+        cur = conn.cursor(); cur.execute("DELETE FROM cliente.cliente_carteira_lista WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
-    except: 
+    except:
         if conn: conn.close()
         return False
-
-# --- FUNÇÕES DE LISTAGEM PARA SELECTBOX ---
 
 def listar_origens_para_selecao():
     conn = get_conn()
@@ -286,6 +274,11 @@ def garantir_tabela_config_carteiras():
                 cur.execute("ALTER TABLE cliente.carteiras_config ADD COLUMN IF NOT EXISTS origem_custo VARCHAR(100)")
             except: pass
             
+            # Tenta adicionar a coluna nome_produto na lista de carteiras se não existir
+            try:
+                cur.execute("ALTER TABLE cliente.cliente_carteira_lista ADD COLUMN IF NOT EXISTS nome_produto VARCHAR(255)")
+            except: pass
+
             conn.commit(); conn.close()
         except: 
             if conn: conn.close()
@@ -310,57 +303,42 @@ def carregar_dados_tabela_dinamica(nome_tabela):
         if conn: conn.close()
         return pd.DataFrame()
 
-# [CORREÇÃO AQUI] - Função de salvamento inteligente (INSERT/UPDATE/DELETE)
 def salvar_alteracoes_tabela_dinamica(nome_tabela, df_original, df_editado):
     conn = get_conn()
     if not conn: return False
-    
     try:
         cur = conn.cursor()
-        
-        # Converte IDs para set para facilitar comparação (tratando NaNs)
         ids_originais = set(df_original['id'].dropna().astype(int).tolist())
         
-        # 1. DELETAR (Ids que estavam no original e não estão no editado)
         ids_editados_atuais = set()
         for _, row in df_editado.iterrows():
             if pd.notna(row.get('id')) and row.get('id') != '':
-                ids_editados_atuais.add(int(row['id']))
+                try: ids_editados_atuais.add(int(row['id']))
+                except: pass
 
-        ids_para_deletar = ids_originais - ids_editados_atuais
-        if ids_para_deletar:
-            ids_str = ",".join(map(str, ids_para_deletar))
+        ids_del = ids_originais - ids_editados_atuais
+        if ids_del:
+            ids_str = ",".join(map(str, ids_del))
             cur.execute(f"DELETE FROM cliente.{nome_tabela} WHERE id IN ({ids_str})")
 
-        # 2. ITERAR SOBRE O DATAFRAME EDITADO (UPSERT)
         for index, row in df_editado.iterrows():
-            row_id = row.get('id')
-            
-            # Lista de colunas para gravar (exclui id e data_transacao se for automático)
             colunas_db = [c for c in row.index if c not in ['id', 'data_transacao']]
             valores = [row[c] for c in colunas_db]
-            
-            # Verifica se é NOVO REGISTRO (ID vazio ou NaN)
+            row_id = row.get('id')
             eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
             
             if eh_novo:
-                # INSERT
                 cols_str = ", ".join(colunas_db)
                 placeholders = ", ".join(["%s"] * len(colunas_db))
-                # Não incluímos 'data_transacao' no insert para que o banco use o DEFAULT NOW()
                 cur.execute(f"INSERT INTO cliente.{nome_tabela} ({cols_str}) VALUES ({placeholders})", valores)
-            
             elif int(row_id) in ids_originais:
-                # UPDATE
                 set_clause = ", ".join([f"{c} = %s" for c in colunas_db])
                 valores_update = valores + [int(row_id)]
                 cur.execute(f"UPDATE cliente.{nome_tabela} SET {set_clause} WHERE id = %s", valores_update)
         
-        conn.commit()
-        conn.close()
-        return True
+        conn.commit(); conn.close(); return True
     except Exception as e:
-        st.error(f"Erro ao salvar tabela: {e}")
+        st.error(f"Erro ao salvar tabela: {e}"); 
         if conn: conn.close()
         return False
 
@@ -441,19 +419,12 @@ def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, 
     try:
         dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
         dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
-
-        query = f"""
-            SELECT id, data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento 
-            FROM {nome_tabela_sql} 
-            WHERE cpf_cliente = %s 
-              AND data_transacao BETWEEN %s AND %s
-            ORDER BY data_transacao DESC
-        """
+        query = f"SELECT id, data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento FROM {nome_tabela_sql} WHERE cpf_cliente = %s AND data_transacao BETWEEN %s AND %s ORDER BY data_transacao DESC"
         df = pd.read_sql(query, conn, params=(str(cpf_cliente), dt_ini_str, dt_fim_str))
-        conn.close()
-        return df
-    except Exception as e:
-        conn.close(); return pd.DataFrame()
+        conn.close(); return df
+    except:
+        if conn: conn.close()
+        return pd.DataFrame()
 
 def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc, valor, motivo):
     conn = get_conn()
@@ -463,21 +434,14 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res = cur.fetchone()
         saldo_anterior = float(res[0]) if res else 0.0
-        
         valor = float(valor)
-        if tipo_lanc == "DEBITO": saldo_novo = saldo_anterior - valor
-        else: saldo_novo = saldo_anterior + valor
-            
-        query = f"""
-            INSERT INTO {tabela_sql} 
-            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
-            VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())
-        """
+        saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
+        query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
         cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
-        conn.commit(); conn.close()
-        return True, "Lançamento realizado com sucesso!"
+        conn.commit(); conn.close(); return True, "Sucesso"
     except Exception as e:
-        conn.close(); return False, str(e)
+        if conn: conn.close()
+        return False, str(e)
 
 def atualizar_transacao_dinamica(nome_tabela, id_transacao, novo_motivo, novo_valor, novo_tipo):
     conn = get_conn()
@@ -512,12 +476,7 @@ def hash_senha(senha):
 def buscar_usuarios_disponiveis():
     conn = get_conn()
     try:
-        query = """
-            SELECT id, nome, email, cpf 
-            FROM clientes_usuarios 
-            WHERE id NOT IN (SELECT id_usuario_vinculo FROM admin.clientes WHERE id_usuario_vinculo IS NOT NULL)
-            ORDER BY nome
-        """
+        query = "SELECT id, nome, email, cpf FROM clientes_usuarios WHERE id NOT IN (SELECT id_usuario_vinculo FROM admin.clientes WHERE id_usuario_vinculo IS NOT NULL) ORDER BY nome"
         df = pd.read_sql(query, conn); conn.close(); return df
     except: 
         if conn: conn.close()
@@ -584,10 +543,20 @@ def dialog_editar_cart_lista(dados):
         idx_origem = lista_origens.index(valor_atual_origem)
     opcoes_origem = [""] + lista_origens
 
+    # --- ATUALIZADO: Lista de Produtos para edição ---
+    df_prods = listar_produtos_para_selecao()
+    opcoes_produtos = [""] + df_prods['nome'].tolist()
+    idx_prod = 0
+    if dados.get('nome_produto') and dados['nome_produto'] in opcoes_produtos:
+        idx_prod = opcoes_produtos.index(dados['nome_produto'])
+
     with st.form("f_ed_cl"):
         n_cpf = st.text_input("CPF Cliente", value=dados['cpf_cliente'])
         n_nome = st.text_input("Nome Cliente", value=dados['nome_cliente'])
         n_cart = st.text_input("Nome Carteira", value=dados['nome_carteira'])
+        
+        # Campo Produto
+        n_prod = st.selectbox("Produto", options=opcoes_produtos, index=idx_prod)
         
         n_origem_custo = st.selectbox("Origem do Custo", options=opcoes_origem, index=idx_origem + 1 if valor_atual_origem else 0)
         n_custo = st.number_input("Custo Carteira (R$)", value=float(dados['custo_carteira'] or 0.0), step=0.01)
@@ -603,7 +572,7 @@ def dialog_editar_cart_lista(dados):
                 nome_u_final = partes[0]
                 cpf_u_final = partes[1] if len(partes) > 1 else None
 
-            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo, cpf_u_final, nome_u_final, n_origem_custo):
+            if atualizar_cliente_carteira_lista(dados['id'], n_cpf, n_nome, n_cart, n_custo, cpf_u_final, nome_u_final, n_origem_custo, n_prod):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
 
@@ -763,10 +732,10 @@ def dialog_editar_agrupamento(tipo, id_agrup, nome_atual):
 def dialog_editar_cliente_cnpj(id_reg, cnpj_atual, nome_atual):
     st.caption(f"Editando: {cnpj_atual}")
     with st.form("form_edit_cnpj"):
-        novo_cnpj = st.text_input("CNPJ", value=cnpj_atual)
-        novo_nome = st.text_input("Nome Empresa", value=nome_atual)
+        n_cnpj = st.text_input("CNPJ", value=cnpj_atual)
+        n_nome = st.text_input("Nome Empresa", value=nome_atual)
         if st.form_submit_button("💾 Salvar", use_container_width=True):
-            if atualizar_cliente_cnpj(id_reg, novo_cnpj, novo_nome):
+            if atualizar_cliente_cnpj(id_reg, n_cnpj, n_nome):
                 st.success("Atualizado!"); time.sleep(0.5); st.rerun()
             else: st.error("Erro ao atualizar.")
 
@@ -890,16 +859,19 @@ def app_clientes():
                                             tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1.5, 1.5, 1])
                                             tc1.write(pd.to_datetime(tr['data_transacao']).strftime('%d/%m/%y %H:%M'))
                                             tc2.write(tr['motivo'])
+                                            
                                             cor_t = "green" if tr['tipo_lancamento'] == 'CREDITO' else "red"
                                             tc3.markdown(f":{cor_t}[{tr['tipo_lancamento']}]")
                                             tc4.write(f"R$ {float(tr['valor']):.2f}")
                                             tc5.write(f"R$ {float(tr['saldo_novo']):.2f}")
+                                            
                                             with tc6:
                                                 bc1, bc2 = st.columns(2)
                                                 if bc1.button("✏️", key=f"ed_tr_{tr['id']}", help="Editar Lançamento"):
                                                     dialog_editar_lancamento_extrato(tabela_sql, tr)
                                                 if bc2.button("🗑️", key=f"del_tr_{tr['id']}", help="Excluir Lançamento"):
                                                     dialog_excluir_lancamento_extrato(tabela_sql, tr['id'])
+                                            
                                             st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                                     else:
                                         st.warning("Nenhuma movimentação encontrada no período.")
@@ -911,14 +883,12 @@ def app_clientes():
         elif st.session_state['view_cliente'] in ['novo', 'editar']:
             st.markdown(f"### {'📝 Novo' if st.session_state['view_cliente']=='novo' else '✏️ Editar'}")
             
-            # --- CARREGA DADOS PRÉVIOS (EDITAR) ---
             dados = {}
             if st.session_state['view_cliente'] == 'editar':
                 conn = get_conn(); df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}", conn); conn.close()
                 if not df.empty: dados = df.iloc[0]
 
-            # --- CARREGA LISTAS PARA OS SELETORES ---
-            df_empresas = listar_cliente_cnpj() # Tabela: admin.cliente_cnpj
+            df_empresas = listar_cliente_cnpj() 
             df_ag_cli = listar_agrupamentos("cliente")
             df_ag_emp = listar_agrupamentos("empresa")
 
@@ -1070,34 +1040,35 @@ def app_clientes():
                     if cc3.button("🗑️", key=f"del_cn_{r['id']}"): excluir_cliente_cnpj(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
-            
+
+        # 4. RELAÇÃO PEDIDO X CARTEIRA
         with st.expander("🔗 Relação Pedido/Carteira", expanded=False):
-             with st.container(border=True):
-                 st.caption("Novo Vínculo")
-                 c_rp1, c_rp2, c_bt = st.columns([2, 2, 1])
-                 n_prod = c_rp1.text_input("Nome Produto", key="n_prod_rel", placeholder="Ex: Produto A", label_visibility="visible")
-                 n_cart = c_rp2.text_input("Nome Carteira", key="n_cart_rel", placeholder="Ex: Carteira 2024", label_visibility="visible")
-                 
-                 c_bt.write(""); c_bt.write("") 
-                 if c_bt.button("➕", key="add_rel_pc", use_container_width=True):
-                     if n_prod and n_cart: salvar_relacao_pedido_carteira(n_prod, n_cart); st.rerun()
-             
-             st.divider()
-             df_rel_pc = listar_relacao_pedido_carteira()
-             if not df_rel_pc.empty:
-                 for _, r in df_rel_pc.iterrows():
-                     cc1, cc2, cc3 = st.columns([8, 1, 1])
-                     cc1.markdown(f"**{r['produto']}** -> {r['nome_carteira']}")
-                     if cc2.button("✏️", key=f"ed_rpc_{r['id']}"): dialog_editar_relacao_ped_cart(r['id'], r['produto'], r['nome_carteira'])
-                     if cc3.button("🗑️", key=f"del_rpc_{r['id']}"): excluir_relacao_pedido_carteira(r['id']); st.rerun()
-                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
-             else: st.info("Vazio.")
+            with st.container(border=True):
+                st.caption("Novo Vínculo")
+                c_rp1, c_rp2, c_bt = st.columns([2, 2, 1])
+                n_prod = c_rp1.text_input("Nome Produto", key="n_prod_rel", placeholder="Ex: Produto A", label_visibility="visible")
+                n_cart = c_rp2.text_input("Nome Carteira", key="n_cart_rel", placeholder="Ex: Carteira 2024", label_visibility="visible")
+                
+                c_bt.write(""); c_bt.write("") 
+                if c_bt.button("➕", key="add_rel_pc", use_container_width=True):
+                    if n_prod and n_cart: salvar_relacao_pedido_carteira(n_prod, n_cart); st.rerun()
+            
+            st.divider()
+            df_rel_pc = listar_relacao_pedido_carteira()
+            if not df_rel_pc.empty:
+                for _, r in df_rel_pc.iterrows():
+                    cc1, cc2, cc3 = st.columns([8, 1, 1])
+                    cc1.markdown(f"**{r['produto']}** -> {r['nome_carteira']}")
+                    if cc2.button("✏️", key=f"ed_rpc_{r['id']}"): dialog_editar_relacao_ped_cart(r['id'], r['produto'], r['nome_carteira'])
+                    if cc3.button("🗑️", key=f"del_rpc_{r['id']}"): excluir_relacao_pedido_carteira(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
 
         # 5. LISTA DE CARTEIRAS (ATUALIZADO COM SELETOR DE CLIENTE E ORIGEM)
         with st.expander("📂 Lista de Carteiras", expanded=False):
             with st.container(border=True):
                 st.caption("Nova Carteira")
-                c1, c2, c3, c4, c5 = st.columns([1.5, 2, 1.5, 1, 1])
+                c1, c2, c3, c4, c5 = st.columns([2, 2, 1.5, 1, 1])
                 
                 # --- MUDANÇA: Seletor de Cliente com CPF ---
                 df_clis = listar_clientes_para_selecao()
@@ -1105,6 +1076,10 @@ def app_clientes():
                 cpf_auto = n_sel.split(" | CPF: ")[1] if n_sel else ""
                 n_cpf = c1.text_input("CPF", value=cpf_auto, key="n_cpf_l")
                 # -------------------------------------------
+                
+                # --- ATUALIZADO: Incluindo Produto na seleção ---
+                df_prods = listar_produtos_para_selecao()
+                n_prod_sel = c3.selectbox("Produto", options=[""] + df_prods['nome'].tolist(), key="n_prod_l")
 
                 df_c_at = listar_todas_carteiras_ativas()
                 n_cart = c3.selectbox("Carteira", options=[""] + df_c_at['nome_carteira'].tolist(), key="n_cart_l")
@@ -1119,22 +1094,23 @@ def app_clientes():
                 if c5.button("➕", key="add_cl_btn"):
                     if n_cpf and n_cart:
                         nome_cli_clean = n_sel.split(" | ")[0] if n_sel else ""
-                        if salvar_cliente_carteira_lista(n_cpf, nome_cli_clean, n_cart, n_val, n_org): st.rerun()
+                        if salvar_cliente_carteira_lista(n_cpf, nome_cli_clean, n_cart, n_val, n_org, n_prod_sel): st.rerun()
                     else:
                         st.warning("Preencha CPF e Carteira.")
 
             df_l = listar_cliente_carteira_lista()
             if not df_l.empty:
-                # ADICIONADA COLUNA CPF NA VISUALIZAÇÃO
-                st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;"><div style="flex: 2;">Cliente</div><div style="flex: 1.5;">CPF</div><div style="flex: 2;">Carteira</div><div style="flex: 1;">Custo</div><div style="flex: 1.5;">Origem</div><div style="flex: 1.5;">Usuário</div><div style="flex: 1; text-align: center;">Ações</div></div>""", unsafe_allow_html=True)
+                # ADICIONADA COLUNA CPF E PRODUTO NA VISUALIZAÇÃO
+                st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;"><div style="flex: 2;">Cliente</div><div style="flex: 1.5;">CPF</div><div style="flex: 2;">Carteira</div><div style="flex: 1.5;">Produto</div><div style="flex: 1;">Custo</div><div style="flex: 1.5;">Origem</div><div style="flex: 1;">Ações</div></div>""", unsafe_allow_html=True)
                 for _, r in df_l.iterrows():
-                    cc1, cc2, cc3, cc4, cc5, cc6, cc7 = st.columns([2, 1.5, 2, 1, 1.5, 1.5, 1])
+                    cc1, cc2, cc3, cc4, cc5, cc6, cc7 = st.columns([2, 1.5, 2, 1.5, 1, 1.5, 1])
                     cc1.write(r['nome_cliente'])
-                    cc2.write(r['cpf_cliente']) # CPF
+                    cc2.write(r['cpf_cliente']) 
                     cc3.write(r['nome_carteira'])
-                    cc4.write(f"R$ {float(r['custo_carteira'] or 0):.2f}")
-                    cc5.write(r.get('origem_custo', '-'))
-                    cc6.write(r.get('nome_usuario', '-'))
+                    cc4.write(r.get('nome_produto', '-'))
+                    cc5.write(f"R$ {float(r['custo_carteira'] or 0):.2f}")
+                    cc6.write(r.get('origem_custo', '-'))
+                    
                     with cc7:
                         if st.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
                         if st.button("🗑️", key=f"de_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
