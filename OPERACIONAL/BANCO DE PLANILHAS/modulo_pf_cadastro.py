@@ -296,14 +296,6 @@ def inserir_dado_staging(campo_config, valor, extras=None):
         st.session_state['dados_staging'][tabela][chave] = valor_final
         st.toast(f"✅ {campo_config['label']} atualizado!")
 
-# --- HELPER DE LAYOUT SIDE-BY-SIDE ---
-def row_input_label(label, col_ratio=[1.2, 2.8]):
-    """Cria colunas para Label | Input"""
-    c1, c2 = st.columns(col_ratio)
-    with c1:
-        st.markdown(f"**{label}:**")
-    return c2
-
 # --- INTERFACE PRINCIPAL ---
 def interface_cadastro_pf():
     is_edit = st.session_state['pf_view'] == 'editar'
@@ -324,7 +316,7 @@ def interface_cadastro_pf():
         st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
         st.session_state['form_loaded'] = True
 
-    # 1. LAYOUT AJUSTADO: Esquerda (Builder) 65% | Direita (Preview) 35%
+    # Layout Ajustado (Esquerda Maior)
     c_builder, c_preview = st.columns([3, 2])
 
     # --- COLUNA DA ESQUERDA (FORMULÁRIOS) ---
@@ -335,16 +327,13 @@ def interface_cadastro_pf():
         with st.expander("Dados Pessoais", expanded=True):
             for campo in CONFIG_CADASTRO["Dados Pessoais"]:
                 if is_edit and campo['key'] == 'cpf':
-                    # Campo CPF fixo na edição
                     c_lab, c_inp = st.columns([1.2, 3.5])
                     c_lab.markdown(f"**{campo['label']}:**")
                     c_inp.text_input("CPF Label", value=st.session_state['dados_staging']['geral'].get('cpf', ''), disabled=True, label_visibility="collapsed")
                     continue
                 
-                # Layout: Label | Input | Botão
                 c_lbl, c_inp, c_btn = st.columns([1.2, 2.5, 0.8])
                 c_lbl.markdown(f"**{campo['label']}:**")
-                
                 with c_inp:
                     if campo['tipo'] == 'data':
                         val = st.date_input("Data", value=None, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}", label_visibility="collapsed")
@@ -356,15 +345,16 @@ def interface_cadastro_pf():
         
         # 2. CONTATOS
         with st.expander("Contatos"):
-            # Telefone
-            c_l1, c_i1 = st.columns([1.2, 3.5])
-            c_l1.markdown("**Número:**")
-            tel = c_i1.text_input("Número", key="in_tel_num", label_visibility="collapsed")
+            # --- LAYOUT HORIZONTAL 3 ITENS ---
+            # Colunas: Numero (maior), WhatsApp (pequeno), Qualificação (medio)
+            c_tel, c_whats, c_qualif = st.columns([2, 1, 1.5])
             
-            # Tags (Whats / Qualificação)
-            c_w, c_q = st.columns(2)
-            whats = c_w.selectbox("WhatsApp", ["Não", "Sim"], key="in_tel_w")
-            qualif = c_q.selectbox("Qualif.", ["NC", "CONFIRMADO"], key="in_tel_q")
+            with c_tel:
+                tel = st.text_input("Número", key="in_tel_num")
+            with c_whats:
+                whats = st.selectbox("WhatsApp", ["Não", "Sim"], key="in_tel_w")
+            with c_qualif:
+                qualif = st.selectbox("Qualif.", ["NC", "CONFIRMADO"], key="in_tel_q")
             
             if st.button("Inserir Telefone", use_container_width=True):
                 cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
@@ -383,29 +373,21 @@ def interface_cadastro_pf():
 
         # 3. ENDEREÇOS
         with st.expander("Endereço"):
-            # CEP
-            c_cep_l, c_cep_i = st.columns([1.2, 3.5])
-            c_cep_l.markdown("**CEP:**")
-            cep = c_cep_i.text_input("CEP", key="in_end_cep", label_visibility="collapsed")
+            # LINHA 1: CEP e Logradouro (Mesmo espaço)
+            c_cep, c_rua = st.columns([1, 1])
+            with c_cep:
+                cep = st.text_input("CEP", key="in_end_cep")
+            with c_rua:
+                rua = st.text_input("Logradouro", key="in_end_rua")
             
-            # Logradouro
-            c_rua_l, c_rua_i = st.columns([1.2, 3.5])
-            c_rua_l.markdown("**Logradouro:**")
-            rua = c_rua_i.text_input("Logradouro", key="in_end_rua", label_visibility="collapsed")
-            
-            # Bairro
-            c_bai_l, c_bai_i = st.columns([1.2, 3.5])
-            c_bai_l.markdown("**Bairro:**")
-            bairro = c_bai_i.text_input("Bairro", key="in_end_bairro", label_visibility="collapsed")
-            
-            # Cidade / UF
-            c_cid_l, c_cid_i = st.columns([1.2, 3.5])
-            c_cid_l.markdown("**Cidade:**")
-            cidade = c_cid_i.text_input("Cidade", key="in_end_cid", label_visibility="collapsed")
-            
-            c_uf_l, c_uf_i = st.columns([1.2, 3.5])
-            c_uf_l.markdown("**UF:**")
-            uf = c_uf_i.text_input("UF", key="in_end_uf", label_visibility="collapsed")
+            # LINHA 2: Bairro, Cidade, UF (Horizontal)
+            c_bai, c_cid, c_uf = st.columns([2, 2, 1])
+            with c_bai:
+                bairro = st.text_input("Bairro", key="in_end_bairro")
+            with c_cid:
+                cidade = st.text_input("Cidade", key="in_end_cid")
+            with c_uf:
+                uf = st.text_input("UF", key="in_end_uf")
 
             if st.button("Inserir Endereço", use_container_width=True):
                 obj_end = {'cep': cep, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf}
@@ -416,15 +398,16 @@ def interface_cadastro_pf():
         with st.expander("Emprego e Renda (Vínculo)"):
             st.caption("Cadastre aqui o vínculo principal.")
             
-            c_cv_l, c_cv_i = st.columns([1.2, 3.5])
-            c_cv_l.markdown("**Convênio:**")
-            conv = c_cv_i.text_input("Convênio (Ex: CLT, INSS)", key="in_emp_conv", label_visibility="collapsed", placeholder="Ex: INSS, SIAPE")
+            # LINHA ÚNICA PARA CONVÊNIO E MATRÍCULA
+            c_conv, c_matr = st.columns([1, 1])
             
-            c_mt_l, c_mt_i = st.columns([1.2, 3.5])
-            c_mt_l.markdown("**Matrícula:**")
-            matr = c_mt_i.text_input("Matrícula", key="in_emp_matr", label_visibility="collapsed")
+            with c_conv:
+                conv = st.text_input("Convênio", key="in_emp_conv", placeholder="Ex: INSS, SIAPE")
+            with c_matr:
+                matr = st.text_input("Matrícula", key="in_emp_matr")
             
-            if st.button("Inserir Vínculo", use_container_width=True):
+            # BOTÃO ESCURO (PRIMARY)
+            if st.button("Inserir Vínculo", type="primary", use_container_width=True):
                 if conv and matr:
                     obj_emp = {'convenio': conv, 'matricula': matr, 'dados_extras': ''}
                     if 'empregos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['empregos'] = []
@@ -447,22 +430,18 @@ def interface_cadastro_pf():
                 idx_vinc = opcoes_matr.index(sel_vinculo)
                 dados_vinc = lista_empregos[idx_vinc]
                 
-                # BUSCA TODAS AS TABELAS DO CONVÊNIO
                 tabelas_destino = listar_tabelas_por_convenio(dados_vinc['convenio'])
                 
                 if not tabelas_destino:
                     st.warning(f"Sem planilhas configuradas para {dados_vinc['convenio']}.")
                 
-                # LOOP PARA CRIAR "CARDS" DINÂMICOS
                 for nome_tabela, tipo_tabela in tabelas_destino:
                     st.markdown("---")
                     st.markdown(f"###### 📝 {tipo_tabela or 'Dados'} ({nome_tabela})")
                     sufixo = f"{nome_tabela}_{idx_vinc}"
                     
-                    # 1. Pega colunas do banco
                     colunas_banco = get_colunas_tabela(nome_tabela)
                     
-                    # 2. Gera Inputs Dinâmicos
                     campos_ignorados = ['id', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha', 'importacao_id', 'data_criacao', 'data_atualizacao']
                     inputs_gerados = {}
                     
@@ -484,7 +463,6 @@ def interface_cadastro_pf():
                         with cols_ui[idx_col % 2]:
                             key_input = f"inp_{col_nome}_{sufixo}"
                             
-                            # CÁLCULO AUTOMÁTICO DE ANOS
                             if col_nome in mapa_calculo_datas:
                                 col_data_ref = mapa_calculo_datas[col_nome]
                                 valor_data = datas_preenchidas.get(col_data_ref)
@@ -502,20 +480,13 @@ def interface_cadastro_pf():
                             
                             inputs_gerados[col_nome] = val
                     
-                    # Botão Salvar Específico
                     if st.button(f"Inserir em {tipo_tabela or nome_tabela}", key=f"btn_save_{sufixo}"):
-                        
-                        # Preenche chaves automaticamente
                         nomes_cols_tabela = [c[0] for c in colunas_banco]
-                        
                         if 'matricula' in nomes_cols_tabela: inputs_gerados['matricula'] = dados_vinc['matricula']
                         elif 'matricula_ref' in nomes_cols_tabela: inputs_gerados['matricula_ref'] = dados_vinc['matricula']
-                        
                         if 'convenio' in nomes_cols_tabela: inputs_gerados['convenio'] = dados_vinc['convenio']
-                        
                         if 'tipo_planilha' in nomes_cols_tabela and tipo_tabela:
                             inputs_gerados['tipo_planilha'] = tipo_tabela
-                        
                         inputs_gerados['origem_tabela'] = nome_tabela
                         inputs_gerados['tipo_origem'] = tipo_tabela
                         
@@ -530,7 +501,7 @@ def interface_cadastro_pf():
         st.info("👤 Dados Pessoais")
         geral = st.session_state['dados_staging'].get('geral', {})
         if geral:
-            cols = st.columns(2) # Ajustado para 2 colunas devido a largura menor
+            cols = st.columns(2)
             idx = 0
             for k, v in geral.items():
                 if v:
@@ -566,7 +537,6 @@ def interface_cadastro_pf():
                 if c2.button("🗑️", key=f"rm_ctr_{i}"):
                     st.session_state['dados_staging']['contratos'].pop(i); st.rerun()
         else:
-            # 1.2 CORREÇÃO: TEXTO FALTANTE ADICIONADO
             st.caption("Nenhum vínculo inserido.")
 
         st.divider()
