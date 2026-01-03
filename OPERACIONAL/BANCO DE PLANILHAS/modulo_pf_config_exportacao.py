@@ -15,7 +15,7 @@ MAPA_TABELAS_BRUTAS = {
     "pf_endereços": "banco_pf.pf_enderecos",
     "pf_convenio": "banco_pf.cpf_convenio",
     "pf_campanhas": "banco_pf.pf_campanhas",
-    "pf_campanhas_exportação": "banco_pf.pf_campanhas", # Redundante, aponta para a mesma
+    "pf_campanhas_exportação": "banco_pf.pf_campanhas", 
     "pf_dados": "banco_pf.pf_dados",
     "pf_contratos": "banco_pf.pf_contratos",
     "pf_emprego_renda": "banco_pf.pf_emprego_renda",
@@ -103,6 +103,49 @@ def excluir_modelo(id_mod):
 # PARTE 2: MOTOR DE EXPORTAÇÃO
 # =============================================================================
 
+# --- HELPER DE FORMATAÇÃO DE DATA (REGRA 4.1 e 4.2) ---
+def formatar_data_exportacao(valor):
+    """
+    Formata datas para DD/MM/YYYY.
+    Se houver componente de hora relevante, usa DD/MM/YYYY HH:MM:SS.
+    """
+    if pd.isna(valor) or valor == "" or str(valor).lower() in ['nat', 'none', 'nan']:
+        return ""
+    try:
+        ts = pd.to_datetime(valor, errors='coerce')
+        if pd.isna(ts): return str(valor)
+        
+        # Se tiver hora (diferente de 00:00:00), inclui hora
+        if ts.time() != datetime.min.time():
+            return ts.strftime("%d/%m/%Y %H:%M:%S")
+        
+        # Caso contrário, apenas data
+        return ts.strftime("%d/%m/%Y")
+    except:
+        return str(valor)
+
+def aplicar_formatacao_geral(df):
+    """
+    Aplica regras globais de exportação:
+    1. CPF com pontuação (Regra 4.1 anterior).
+    2. Datas em DD/MM/YYYY (Regra 4.1 atual).
+    """
+    if df.empty: return df
+    
+    for col in df.columns:
+        col_lower = col.lower()
+        
+        # 1. Regra CPF
+        if 'cpf' in col_lower:
+            df[col] = df[col].apply(pf_core.formatar_cpf_visual)
+            
+        # 2. Regra Data (colunas que tem 'data', 'dt_', 'nascimento', 'criacao', 'atualizacao')
+        # Evita formatar colunas calculadas de "anos" se houver conflito de nome, mas geralmente 'tempo_anos' não tem 'data'
+        elif 'data' in col_lower or 'nascimento' in col_lower or 'criacao' in col_lower or 'atualizacao' in col_lower:
+            df[col] = df[col].apply(formatar_data_exportacao)
+            
+    return df
+
 def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
     conn = pf_core.get_conn()
     if not conn: return pd.DataFrame()
@@ -113,19 +156,30 @@ def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
         res = cur.fetchone()
         codigo_consulta = res[0] if res else ""
         
+        df_result = pd.DataFrame()
+        
         # 1. Roteamento para Exportação CLT Completa (Matrícula)
         if codigo_consulta == 'exportação_clt_matricula':
-            return _motor_clt_matricula(conn, lista_cpfs)
+            df_result = _motor_clt_matricula(conn, lista_cpfs)
 
         # 2. Roteamento para Tabelas Brutas (Dump Simples)
         elif codigo_consulta in MAPA_TABELAS_BRUTAS:
             tabela_sql = MAPA_TABELAS_BRUTAS[codigo_consulta]
-            return _motor_tabela_bruta(conn, tabela_sql, lista_cpfs)
+            df_result = _motor_tabela_bruta(conn, tabela_sql, lista_cpfs)
         
         # 3. Padrão: Layout Fixo Completo (Dados Pessoais + Contatos Pivotados)
         else:
             if not lista_cpfs: return pd.DataFrame()
-            return _motor_layout_fixo_completo(conn, lista_cpfs)
+            df_result = _motor_layout_fixo_completo(conn, lista_cpfs)
+        
+        # Aplica formatação final em todos os DataFrames resultantes
+        df_result = aplicar_formatacao_geral(df_result)
+        
+        # Padronização Upper e limpeza de nulos visuais
+        df_result = df_result.astype(str).apply(lambda x: x.str.upper())
+        df_result = df_result.replace(['NONE', 'NAN', 'NAT', '#N/D', 'NULL', 'None', '<NA>', ''], '')
+        
+        return df_result
             
     except Exception as e:
         st.error(f"Erro no roteamento: {e}")
@@ -134,33 +188,20 @@ def gerar_dataframe_por_modelo(id_modelo, lista_cpfs):
 # --- MOTORES ESPECÍFICOS ---
 
 def _motor_clt_matricula(conn, lista_cpfs):
-    """
-    Motor complexo que cruza Dados Pessoais + Contatos + Emprego + Detalhes CLT
-    """
     try:
         if not lista_cpfs: return pd.DataFrame()
         placeholders = ",".join(["%s"] * len(lista_cpfs))
         params = tuple(lista_cpfs)
 
-        # --- FUNÇÕES HELPERS ---
         def calc_anos(dt_str):
             if not dt_str or pd.isna(dt_str): return ""
             try:
-                # Tenta converter diversos formatos
-                if isinstance(dt_str, str):
-                    d = datetime.strptime(dt_str, '%Y-%m-%d').date()
-                elif isinstance(dt_str, (datetime, date)):
-                    d = dt_str
+                if isinstance(dt_str, str): d = datetime.strptime(dt_str, '%Y-%m-%d').date()
+                elif isinstance(dt_str, (datetime, date)): d = dt_str
                 else: return ""
-                
                 today = date.today()
                 anos = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
                 return anos
-            except: return ""
-
-        def fmt_data(dt):
-            if not dt or pd.isna(dt): return ""
-            try: return pd.to_datetime(dt).strftime('%d/%m/%Y')
             except: return ""
 
         def fmt_cnpj(v):
@@ -168,7 +209,7 @@ def _motor_clt_matricula(conn, lista_cpfs):
             v = re.sub(r'\D', '', str(v)).zfill(14)
             return f"{v[:2]}.{v[2:5]}.{v[5:8]}/{v[8:12]}-{v[12:]}"
 
-        # 1. Busca Dados Pessoais (6.1)
+        # 1. Busca Dados Pessoais
         q_dados = f"""
             SELECT id, cpf, nome, data_nascimento, rg, uf_rg, data_exp_rg, 
                    cnh, pis, ctps_serie, nome_mae, nome_pai, nome_procurador, cpf_procurador
@@ -176,34 +217,25 @@ def _motor_clt_matricula(conn, lista_cpfs):
             WHERE cpf IN ({placeholders})
         """
         df_dados = pd.read_sql(q_dados, conn, params=params)
-        
-        # Formatações Dados
-        df_dados['cpf'] = df_dados['cpf'].apply(pf_core.formatar_cpf_visual)
-        df_dados['cpf_procurador'] = df_dados['cpf_procurador'].apply(pf_core.formatar_cpf_visual)
-        for c in ['data_nascimento', 'data_exp_rg']:
-            df_dados[c] = df_dados[c].apply(fmt_data)
 
-        # 2. Busca e Pivota Satélites (6.2, 6.3, 6.4)
-        # Telefones (10 slots)
-        q_tel = f"SELECT cpf, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf IN ({placeholders})"
+        # 2. Busca e Pivota Satélites
+        q_tel = f"SELECT cpf_ref as cpf, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN ({placeholders})"
         df_tel = pd.read_sql(q_tel, conn, params=params)
         df_tel_p = _pivotar_fixo(df_tel, 'cpf', 10, ['numero', 'tag_whats', 'tag_qualificacao'])
 
-        # Endereços (3 slots)
-        q_end = f"SELECT cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN ({placeholders})"
+        q_end = f"SELECT cpf_ref as cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN ({placeholders})"
         df_end = pd.read_sql(q_end, conn, params=params)
         df_end_p = _pivotar_fixo(df_end, 'cpf', 3, ['rua', 'bairro', 'cidade', 'uf', 'cep'])
 
-        # Emails (3 slots)
-        q_mail = f"SELECT cpf, email FROM banco_pf.pf_emails WHERE cpf IN ({placeholders})"
+        q_mail = f"SELECT cpf_ref as cpf, email FROM banco_pf.pf_emails WHERE cpf_ref IN ({placeholders})"
         df_mail = pd.read_sql(q_mail, conn, params=params)
         df_mail_p = _pivotar_fixo(df_mail, 'cpf', 3, ['email'])
 
-        # 3. Busca Vínculos (6.5) - Matricula e Convenio
-        q_emp = f"SELECT cpf, convenio, matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN ({placeholders})"
+        # 3. Busca Vínculos
+        q_emp = f"SELECT cpf_ref as cpf, convenio, matricula FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN ({placeholders})"
         df_emp = pd.read_sql(q_emp, conn, params=params)
 
-        # 4. Busca Detalhes CLT (6.6) usando as matrículas encontradas
+        # 4. Busca Detalhes CLT
         mats = df_emp['matricula'].dropna().unique().tolist()
         df_clt = pd.DataFrame()
         
@@ -222,7 +254,6 @@ def _motor_clt_matricula(conn, lista_cpfs):
             """
             df_clt = pd.read_sql(q_clt, conn, params=tuple(mats))
             
-            # Cálculos e Formatações CLT
             cols_calc = [
                 ('data_abertura_empresa', 'tempo_abertura_anos'),
                 ('data_admissao', 'tempo_admissao_anos'),
@@ -231,37 +262,24 @@ def _motor_clt_matricula(conn, lista_cpfs):
             
             for col_dt, col_anos in cols_calc:
                 df_clt[col_anos] = df_clt[col_dt].apply(calc_anos)
-                df_clt[col_dt] = df_clt[col_dt].apply(fmt_data)
+                # A formatação de data será feita no final pelo aplicar_formatacao_geral
 
             df_clt['cnpj_numero'] = df_clt['cnpj_numero'].apply(fmt_cnpj)
 
-        # 5. CRUZAMENTO FINAL (MERGES)
-        # Base Principal é a Matricula/Emprego, pois é exportação de CLT
+        # 5. CRUZAMENTO FINAL
         df_full = df_emp.merge(df_clt, on='matricula', how='left', suffixes=('', '_dup'))
-        
-        # Junta com Dados Pessoais (Pode duplicar dados pessoais se tiver 2 matriculas, o que é esperado)
         df_full = df_full.merge(df_dados, on='cpf', how='left')
-        
-        # Junta Satélites
         df_full = df_full.merge(df_tel_p, on='cpf', how='left')\
                          .merge(df_end_p, on='cpf', how='left')\
                          .merge(df_mail_p, on='cpf', how='left')
 
-        # 6. Ordenação e Seleção de Colunas
+        # 6. Ordenação
         colunas_ordenadas = [
-            # 6.1 Dados
             'id', 'cpf', 'nome', 'data_nascimento', 'rg', 'uf_rg', 'data_exp_rg', 'cnh', 'pis', 'ctps_serie', 'nome_mae', 'nome_pai', 'nome_procurador', 'cpf_procurador',
         ]
-        # 6.2 Telefones (1 a 10)
-        for i in range(1, 11):
-            colunas_ordenadas.extend([f'numero_{i}', f'tag_whats_{i}', f'tag_qualificacao_{i}'])
-        # 6.3 Endereços (1 a 3)
-        for i in range(1, 4):
-            colunas_ordenadas.extend([f'rua_{i}', f'bairro_{i}', f'cidade_{i}', f'uf_{i}', f'cep_{i}'])
-        # 6.4 Emails (1 a 3)
-        for i in range(1, 4):
-            colunas_ordenadas.append(f'email_{i}')
-        # 6.5 e 6.6 CLT
+        for i in range(1, 11): colunas_ordenadas.extend([f'numero_{i}', f'tag_whats_{i}', f'tag_qualificacao_{i}'])
+        for i in range(1, 4): colunas_ordenadas.extend([f'rua_{i}', f'bairro_{i}', f'cidade_{i}', f'uf_{i}', f'cep_{i}'])
+        for i in range(1, 4): colunas_ordenadas.append(f'email_{i}')
         colunas_ordenadas.extend([
             'convenio', 'matricula', 
             'cnpj_nome', 'cnpj_numero', 'qtd_funcionarios', 'data_abertura_empresa', 'tempo_abertura_anos',
@@ -269,12 +287,8 @@ def _motor_clt_matricula(conn, lista_cpfs):
             'cbo_codigo', 'cbo_nome', 'data_inicio_emprego', 'tempo_inicio_emprego_anos'
         ])
         
-        # Filtra apenas as que existem no dataframe final
         cols_finais = [c for c in colunas_ordenadas if c in df_full.columns]
-        
-        # Padronização Upper
-        df_final = df_full[cols_finais].astype(str).apply(lambda x: x.str.upper())
-        df_final = df_final.replace(['NONE', 'NAN', 'NAT', '#N/D', 'NULL', 'None', '<NA>'], '')
+        df_final = df_full[cols_finais]
         
         conn.close()
         return df_final
@@ -292,7 +306,6 @@ def _motor_tabela_bruta(conn, tabela_sql, lista_cpfs):
             
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position", (schema, table))
         colunas = [r[0] for r in cur.fetchall()]
-        
         if not colunas: return pd.DataFrame()
 
         cols_str = ", ".join(colunas)
@@ -309,9 +322,8 @@ def _motor_tabela_bruta(conn, tabela_sql, lista_cpfs):
                 query += f" WHERE cpf_ref IN ({placeholders})"
                 params = tuple(lista_cpfs)
             elif 'matricula' in colunas or 'matricula_ref' in colunas:
-                # Busca matrículas dos CPFs
                 ph_cpf = ",".join(["%s"] * len(lista_cpfs))
-                df_mats = pd.read_sql(f"SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf IN ({ph_cpf})", conn, params=tuple(lista_cpfs))
+                df_mats = pd.read_sql(f"SELECT matricula FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN ({ph_cpf})", conn, params=tuple(lista_cpfs))
                 if not df_mats.empty:
                     mats = df_mats['matricula'].dropna().unique().tolist()
                     if mats:
@@ -337,23 +349,19 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
 
         df_dados = pd.read_sql(f"SELECT * FROM banco_pf.pf_dados WHERE cpf IN ({placeholders})", conn, params=params)
         df_dados.drop(columns=['data_criacao', 'importacao_id', 'id_campanha'], inplace=True, errors='ignore')
-        df_dados['cpf'] = df_dados['cpf'].apply(pf_core.formatar_cpf_visual)
 
-        q_tel = f"SELECT cpf, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf IN ({placeholders})"
+        q_tel = f"SELECT cpf_ref as cpf, numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref IN ({placeholders})"
         df_tel_p = _pivotar_fixo(pd.read_sql(q_tel, conn, params=params), 'cpf', 10, ['numero', 'tag_whats', 'tag_qualificacao'])
 
-        q_mail = f"SELECT cpf, email FROM banco_pf.pf_emails WHERE cpf IN ({placeholders})"
+        q_mail = f"SELECT cpf_ref as cpf, email FROM banco_pf.pf_emails WHERE cpf_ref IN ({placeholders})"
         df_mail_p = _pivotar_fixo(pd.read_sql(q_mail, conn, params=params), 'cpf', 3, ['email'])
 
-        q_end = f"SELECT cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN ({placeholders})"
+        q_end = f"SELECT cpf_ref as cpf, rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref IN ({placeholders})"
         df_end_p = _pivotar_fixo(pd.read_sql(q_end, conn, params=params), 'cpf', 3, ['rua', 'bairro', 'cidade', 'uf', 'cep'])
 
         df_final = df_dados.merge(df_tel_p, on='cpf', how='left')\
                            .merge(df_mail_p, on='cpf', how='left')\
                            .merge(df_end_p, on='cpf', how='left')
-
-        df_final = df_final.astype(str).apply(lambda x: x.str.upper())
-        df_final = df_final.replace(['NONE', 'NAN', 'NAT', '#N/D', 'NULL', 'None', '<NA>'], '')
 
         conn.close()
         return df_final
@@ -362,6 +370,11 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
 
 def _pivotar_fixo(df, id_col, limit, value_cols):
     if df.empty: return pd.DataFrame(columns=[id_col])
+    if 'cpf' in id_col.lower():
+         # Garante que a chave de merge esteja visualmente igual se necessário, 
+         # mas aqui o foco é o merge interno, a formatação visual ocorre no final.
+         pass 
+
     df['seq'] = df.groupby(id_col).cumcount() + 1
     df = df[df['seq'] <= limit]
     
@@ -379,7 +392,6 @@ def _pivotar_fixo(df, id_col, limit, value_cols):
 # =============================================================================
 
 def verificar_criar_modelos_padrao():
-    """Cria automaticamente os modelos solicitados se não existirem."""
     conn = pf_core.get_conn()
     if not conn: return
     try:
