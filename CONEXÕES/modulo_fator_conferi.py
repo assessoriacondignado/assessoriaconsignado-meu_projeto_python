@@ -180,7 +180,6 @@ def obter_origem_padronizada(nome_origem):
     return origem_final
 
 def buscar_origem_por_ambiente(nome_ambiente):
-    """Converte o nome do ambiente (código) no nome da origem (financeiro)"""
     conn = get_conn()
     origem_padrao = "WEB USUÁRIO" # Fallback
     if conn:
@@ -195,7 +194,6 @@ def buscar_origem_por_ambiente(nome_ambiente):
     return origem_padrao
 
 def buscar_cliente_vinculado_ao_usuario(id_usuario):
-    """Busca o cliente vinculado ao usuário logado (se houver)"""
     conn = get_conn()
     cliente = {"id": None, "nome": None}
     if conn and id_usuario:
@@ -216,9 +214,6 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
 # =============================================================================
 
 def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
-    """
-    Executa o lançamento de débito financeiro.
-    """
     if not id_cliente_pagador:
         return False, "ID do Cliente não informado para cobrança."
 
@@ -405,27 +400,18 @@ def salvar_dados_fator_no_banco(dados_api):
         return False, f"Erro DB: {e}"
 
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
-    """
-    Função Principal de Consulta:
-    1. Identifica o Cliente (Manual ou Vinculado).
-    2. Identifica a Origem (Converter Ambiente -> Origem).
-    3. Verifica Cache (Cenário 1) ou API (Cenário 2).
-    4. Registra na tabela fatorconferi_registo_consulta.
-    """
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
-    # --- 1. Identificação do Usuário e Cliente ---
+    # 1. Identificação do Usuário e Cliente
     id_usuario_logado = st.session_state.get('usuario_id', 0)
     nome_usuario_logado = st.session_state.get('usuario_nome', 'Sistema')
     
-    # Se veio manual (do selectbox de teste), usa. Senão, busca o vinculado.
     id_cliente_final = None
     nome_cliente_final = None
     
     if id_cliente_pagador_manual:
-        # Busca o nome deste ID manual
         try:
             cur = conn.cursor()
             cur.execute("SELECT nome FROM admin.clientes WHERE id = %s", (id_cliente_pagador_manual,))
@@ -435,12 +421,11 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 nome_cliente_final = res_m[0]
         except: pass
     else:
-        # Busca automático
         dados_vinculo = buscar_cliente_vinculado_ao_usuario(id_usuario_logado)
         id_cliente_final = dados_vinculo['id']
         nome_cliente_final = dados_vinculo['nome']
 
-    # --- 2. Identificação da Origem ---
+    # 2. Identificação da Origem
     origem_real = buscar_origem_por_ambiente(ambiente)
 
     try:
@@ -455,7 +440,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
-                            # Registra Cache
                             cur.execute("""
                                 INSERT INTO conexoes.fatorconferi_registo_consulta 
                                 (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
@@ -477,12 +461,10 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             conn.close()
             return {"sucesso": False, "msg": "Retorno vazio ou erro na API.", "raw": resp.text, "dados": dados}
 
-        # Salvar JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
-        # Registra Nova Consulta
         custo_ref = buscar_valor_consulta_atual()
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
@@ -491,7 +473,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, origem_real, id_cliente_final, nome_cliente_final, ambiente))
         conn.commit()
         
-        # --- DÉBITO AUTOMÁTICO ---
         msg_financeira = ""
         if id_cliente_final:
             ok_fin, txt_fin = processar_debito_automatico(id_cliente_final, ambiente)
@@ -534,14 +515,12 @@ def app_fator_conferi():
         
         col_cli, col_cpf = st.columns([2, 2])
         
-        # Carrega lista de clientes para teste manual (Opcional)
         id_cliente_teste = None
         conn = get_conn()
         if conn:
             try:
                 df_clis = pd.read_sql("SELECT DISTINCT l.id_cliente, l.nome_cliente FROM cliente.cliente_carteira_lista l ORDER BY l.nome_cliente", conn)
                 opcoes_cli = {row['id_cliente']: row['nome_cliente'] for _, row in df_clis.iterrows()}
-                # selectbox com opção vazia para permitir uso do vínculo automático
                 id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste Manual)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Usar Vínculo Automático")
             except: pass
             finally: conn.close()
@@ -552,13 +531,9 @@ def app_fator_conferi():
         if st.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    # --- CORREÇÃO DO NOME DO AMBIENTE ---
-                    # Deve ser IGUAL ao cadastrado na tabela conexoes.fatorconferi_ambiente_consulta
+                    # AMBIENTE
                     nome_ambiente = "teste_de_consulta_fatorconferi.cpf" 
-                    
                     st.toast(f"Ambiente: {nome_ambiente}")
-                    
-                    # Passa o ambiente e o ID manual (se houver)
                     res = realizar_consulta_cpf(cpf_in, nome_ambiente, forcar, id_cliente_teste)
                     st.session_state['resultado_fator'] = res
         
@@ -584,11 +559,45 @@ def app_fator_conferi():
             else: st.error("Erro ao consultar saldo.")
         
     with tabs[3]: 
+        # --- TABELA INTERATIVA COM DOWNLOAD ---
         st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 0px;'>Tabela: conexoes.fatorconferi_registo_consulta</p>", unsafe_allow_html=True)
         conn = get_conn()
         if conn: 
-            st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn))
+            # Lê os dados
+            df_hist = pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)
             conn.close()
+            
+            # Exibe com seleção habilitada
+            event = st.dataframe(
+                df_hist,
+                on_select="rerun",
+                selection_mode="single-row",
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Lógica para mostrar botão de download ao selecionar
+            if len(event.selection.rows) > 0:
+                idx = event.selection.rows[0]
+                linha_selecionada = df_hist.iloc[idx]
+                caminho_arq = linha_selecionada.get("caminho_json")
+                
+                if caminho_arq and os.path.exists(caminho_arq):
+                    try:
+                        with open(caminho_arq, "r", encoding="utf-8") as f:
+                            conteudo_json = f.read()
+                        
+                        nome_download = os.path.basename(caminho_arq)
+                        st.download_button(
+                            label=f"⬇️ Baixar JSON ({nome_download})",
+                            data=conteudo_json,
+                            file_name=nome_download,
+                            mime="application/json"
+                        )
+                    except Exception as e:
+                        st.error(f"Erro ao ler arquivo: {e}")
+                else:
+                    st.warning("⚠️ Arquivo não encontrado no servidor.")
     
     with tabs[4]: 
         st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
