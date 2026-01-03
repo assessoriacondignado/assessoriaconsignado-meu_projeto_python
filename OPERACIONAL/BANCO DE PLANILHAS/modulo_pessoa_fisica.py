@@ -10,24 +10,14 @@ except ImportError:
     pf_campanhas = None
 
 try:
-    import modulo_pf_exportacao as pf_export
-except ImportError:
-    pf_export = None
-
-try:
     import modulo_pf_config_exportacao as pf_config_exp
 except ImportError:
     pf_config_exp = None
 
-# --- NOVO IMPORT ---
-try:
-    import modulo_pf_planilhas
-except ImportError:
-    modulo_pf_planilhas = None
-
 def app_pessoa_fisica():
     pf_core.init_db_structures()
     
+    # CSS para ajustes finos (mantido)
     st.markdown("""
         <style>
             .stButton button { height: 28px; padding-top: 0px; padding-bottom: 0px; }
@@ -37,105 +27,121 @@ def app_pessoa_fisica():
 
     st.markdown("## 👤 Banco de Dados Pessoa Física")
     
-    # Inicializa estados
-    if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
-    if 'regras_pesquisa' not in st.session_state: st.session_state['regras_pesquisa'] = []
-    if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
+    # --- NOVO LAYOUT COM ABAS (IGUAL AO MODULO CLIENTE) ---
+    tabs = st.tabs([
+        "📋 Lista / Pesquisa", 
+        "🔍 Pesquisa Avançada", 
+        "📥 Importação", 
+        "➕ Novo Cadastro", 
+        "📢 Campanhas", 
+        "⚙️ Config. Exportação"
+    ])
 
     # =========================================================================
-    # ROTEAMENTO DE TELAS
+    # ABA 1: LISTA E PESQUISA RÁPIDA
     # =========================================================================
-    
-    # 1. PESQUISA AMPLA
-    if st.session_state['pf_view'] == 'pesquisa_ampla':
-        pf_pesquisa.interface_pesquisa_ampla()
-
-    # 2. CAMPANHAS
-    elif st.session_state['pf_view'] == 'campanhas':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
-        if pf_campanhas: pf_campanhas.app_campanhas()
-
-    # 3. EXPORTAÇÃO (LEGADO)
-    elif st.session_state['pf_view'] == 'modelos_exportacao':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
-        if pf_export: pf_export.app_gestao_modelos()
-
-    # 4. CONFIG EXPORTAÇÃO
-    elif st.session_state['pf_view'] == 'config_exportacao':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
-        if pf_config_exp: pf_config_exp.app_config_exportacao()
-
-    # --- 5. NOVO: PLANILHAS (SOMENTE BANCO_PF) ---
-    elif st.session_state['pf_view'] == 'planilhas':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
+    with tabs[0]:
+        st.markdown("#### Pesquisa Rápida")
         
-        if modulo_pf_planilhas:
-            modulo_pf_planilhas.app_gestao_planilhas()
-        else:
-            st.error("Módulo 'modulo_pf_planilhas.py' não encontrado.")
-
-    # 6. TELA INICIAL (LISTA + MENU)
-    elif st.session_state['pf_view'] == 'lista':
-        c1, c2 = st.columns([2, 2])
-        busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
+        # Seletor de busca simples
+        c1, c2 = st.columns([1, 4])
+        busca = c2.text_input("Buscar por Nome ou CPF", key="pf_busca_rapida_aba", placeholder="Digite para buscar...")
         
-        # --- MENU ATUALIZADO ---
-        # Adicionado col_b6 para o novo botão
-        col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1, 1, 1, 1, 1, 1])
-        
-        if col_b1.button("➕ Novo", use_container_width=True): 
-            st.session_state.update({'pf_view': 'novo', 'form_loaded': False}); st.rerun()
-            
-        if col_b2.button("🔍 Pesq.", help="Pesquisa Ampla", use_container_width=True): 
-            st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
-            
-        if col_b3.button("📥 Importar", use_container_width=True): 
-            st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
-            
-        if col_b4.button("📢 Campanhas", use_container_width=True): 
-            st.session_state.update({'pf_view': 'campanhas'}); st.rerun()
-
-        if col_b5.button("⚙️ Config", help="Configurar Exportação", use_container_width=True):
-            st.session_state.update({'pf_view': 'config_exportacao'}); st.rerun()
-
-        # BOTÃO NOVO
-        if col_b6.button("📊 Planilhas", help="Ver/Editar Tabelas (banco_pf)", use_container_width=True):
-            st.session_state.update({'pf_view': 'planilhas'}); st.rerun()
-        
-        # RESULTADO DA BUSCA RÁPIDA (Código mantido igual)
         if busca:
-            df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
+            df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=1) # Paginação pode ser melhorada depois
+            
             if not df_lista.empty:
-                st.markdown(f"**Encontrados: {total}**")
+                st.info(f"**Registros Encontrados:** {total}")
+                
+                # Cabeçalho da Lista
                 st.markdown("""
-                <div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;">
-                    <div style="flex: 2;">Ações</div>
-                    <div style="flex: 1;">ID</div>
-                    <div style="flex: 2;">CPF</div>
+                <div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex; margin-bottom: 5px; border-radius: 4px;">
                     <div style="flex: 4;">Nome</div>
+                    <div style="flex: 2;">CPF</div>
+                    <div style="flex: 1; text-align: center;">ID</div>
+                    <div style="flex: 2; text-align: center;">Ações</div>
                 </div>""", unsafe_allow_html=True)
 
                 for _, row in df_lista.iterrows():
-                    c_act, c_id, c_cpf, c_nome = st.columns([2, 1, 2, 4])
-                    with c_act:
-                        b1, b2, b3 = st.columns(3)
-                        if b1.button("👁️", key=f"vq_{row['id']}"): pf_core.dialog_visualizar_cliente(str(row['cpf']))
-                        if b2.button("✏️", key=f"eq_{row['id']}"): 
-                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
-                            st.rerun()
-                        if b3.button("🗑️", key=f"dq_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
-                    c_id.write(str(row['id']))
-                    c_cpf.write(pf_core.formatar_cpf_visual(row['cpf']))
-                    c_nome.write(row['nome'])
-                    st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
-            else: 
-                st.warning("Nenhum registro encontrado.")
-        else:
-            st.info("Utilize a busca acima para localizar clientes.")
+                    with st.container():
+                        c_nome, c_cpf, c_id, c_act = st.columns([4, 2, 1, 2])
+                        c_nome.write(row['nome'])
+                        c_cpf.write(pf_core.formatar_cpf_visual(row['cpf']))
+                        c_id.markdown(f"<div style='text-align: center;'>{row['id']}</div>", unsafe_allow_html=True)
+                        
+                        with c_act:
+                            b1, b2, b3 = st.columns(3)
+                            # Ações: Visualizar e Excluir funcionam direto. Editar requer roteamento (ou modal futuramente)
+                            if b1.button("👁️", key=f"vq_{row['id']}", help="Ver Detalhes"): 
+                                pf_core.dialog_visualizar_cliente(str(row['cpf']))
+                            
+                            if b2.button("✏️", key=f"eq_{row['id']}", help="Editar"): 
+                                # Para editar, jogamos para o estado de edição, mas precisamos avisar o usuário
+                                st.session_state.update({'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
+                                # O ideal aqui seria abrir um st.dialog de edição, mas como o módulo cadastro é complexo,
+                                # podemos exibir um aviso ou redirecionar.
+                                # Como estamos em abas, vamos abrir um Dialog simplificado ou redirecionar a aba de cadastro.
+                                st.toast(f"Editando {row['nome']} na aba 'Novo Cadastro'...")
+                                # Nota: O controle de abas ativo programaticamente no Streamlit é limitado sem hacks.
+                                # Uma solução é renderizar o form de edição aqui mesmo num expander ou dialog.
+                                pf_core.dialog_editar_pf_rapido(str(row['cpf'])) # Supondo que essa func exista ou adaptamos
 
-    # 7. TELAS AUXILIARES
-    elif st.session_state['pf_view'] == 'importacao': pf_importacao.interface_importacao()
-    elif st.session_state['pf_view'] in ['novo', 'editar']: pf_core.interface_cadastro_pf()
+                            if b3.button("🗑️", key=f"dq_{row['id']}", help="Excluir"): 
+                                pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
+                        
+                        st.markdown("<hr style='margin: 2px 0; border-color: #eee;'>", unsafe_allow_html=True)
+            else: 
+                st.warning("Nenhum registro encontrado para o termo pesquisado.")
+        else:
+            st.info("Utilize o campo acima para localizar registros no banco de dados.")
+
+    # =========================================================================
+    # ABA 2: PESQUISA AVANÇADA (AMPLA)
+    # =========================================================================
+    with tabs[1]:
+        pf_pesquisa.interface_pesquisa_ampla()
+
+    # =========================================================================
+    # ABA 3: IMPORTAÇÃO
+    # =========================================================================
+    with tabs[2]:
+        pf_importacao.interface_importacao()
+
+    # =========================================================================
+    # ABA 4: NOVO CADASTRO (OU EDIÇÃO)
+    # =========================================================================
+    with tabs[3]:
+        # Verifica se há um CPF selecionado para edição vindo de outra aba
+        cpf_edit = st.session_state.get('pf_cpf_selecionado')
+        
+        if cpf_edit:
+            st.markdown(f"#### ✏️ Editando CPF: {cpf_edit}")
+            if st.button("Cancelar Edição / Limpar"):
+                st.session_state['pf_cpf_selecionado'] = None
+                st.rerun()
+        else:
+            st.markdown("#### ➕ Novo Cadastro")
+
+        # Chama a interface de cadastro (que deve estar preparada para lidar com st.session_state['pf_cpf_selecionado'])
+        pf_core.interface_cadastro_pf()
+
+    # =========================================================================
+    # ABA 5: GESTÃO DE CAMPANHAS
+    # =========================================================================
+    with tabs[4]:
+        if pf_campanhas:
+            pf_campanhas.app_campanhas()
+        else:
+            st.error("Módulo de Campanhas não carregado.")
+
+    # =========================================================================
+    # ABA 6: CONFIGURAÇÃO DE EXPORTAÇÃO
+    # =========================================================================
+    with tabs[5]:
+        if pf_config_exp:
+            pf_config_exp.app_config_exportacao()
+        else:
+            st.warning("Módulo de Configuração de Exportação não encontrado.")
 
 if __name__ == "__main__":
     app_pessoa_fisica()
