@@ -132,13 +132,12 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf IN %s", conn, params=(params_busca,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # PASSO A: Alterado de cpf_ref para cpf nas buscas das tabelas satélites
+            # Tabelas satélites
             dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf IN %s", conn, params=(params_busca,)).fillna("").to_dict('records')
             
-            # PASSO B: Busca Vínculos (Emprego) usando CPF para pegar Matrícula e Convênio
-            # Mantém a busca robusta com TRIM/CAST para garantir match
+            # Busca Vínculos
             query_emp = """
                 SELECT convenio, matricula 
                 FROM banco_pf.pf_emprego_renda 
@@ -158,7 +157,7 @@ def carregar_dados_completos(cpf):
                         'contratos': []
                     }
 
-                    # PASSO C: Roteamento de Planilhas (Mantido Intacto)
+                    # Roteamento de Planilhas
                     query_map = "SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s"
                     cur = conn.cursor()
                     cur.execute(query_map, (conv_nome,))
@@ -297,6 +296,14 @@ def inserir_dado_staging(campo_config, valor, extras=None):
         st.session_state['dados_staging'][tabela][chave] = valor_final
         st.toast(f"✅ {campo_config['label']} atualizado!")
 
+# --- HELPER DE LAYOUT SIDE-BY-SIDE ---
+def row_input_label(label, col_ratio=[1.2, 2.8]):
+    """Cria colunas para Label | Input"""
+    c1, c2 = st.columns(col_ratio)
+    with c1:
+        st.markdown(f"**{label}:**")
+    return c2
+
 # --- INTERFACE PRINCIPAL ---
 def interface_cadastro_pf():
     is_edit = st.session_state['pf_view'] == 'editar'
@@ -317,7 +324,8 @@ def interface_cadastro_pf():
         st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
         st.session_state['form_loaded'] = True
 
-    c_builder, c_preview = st.columns([1.5, 3.5])
+    # 1. LAYOUT AJUSTADO: Esquerda (Builder) 65% | Direita (Preview) 35%
+    c_builder, c_preview = st.columns([3, 2])
 
     # --- COLUNA DA ESQUERDA (FORMULÁRIOS) ---
     with c_builder:
@@ -327,39 +335,79 @@ def interface_cadastro_pf():
         with st.expander("Dados Pessoais", expanded=True):
             for campo in CONFIG_CADASTRO["Dados Pessoais"]:
                 if is_edit and campo['key'] == 'cpf':
-                    st.text_input(campo['label'], value=st.session_state['dados_staging']['geral'].get('cpf', ''), disabled=True)
+                    # Campo CPF fixo na edição
+                    c_lab, c_inp = st.columns([1.2, 3.5])
+                    c_lab.markdown(f"**{campo['label']}:**")
+                    c_inp.text_input("CPF Label", value=st.session_state['dados_staging']['geral'].get('cpf', ''), disabled=True, label_visibility="collapsed")
                     continue
-                if campo['tipo'] == 'data':
-                    val = st.date_input(campo['label'], value=None, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}")
-                    if st.button("Inserir", key=f"btn_{campo['key']}"): inserir_dado_staging(campo, val)
-                else:
-                    val = st.text_input(campo['label'], key=f"in_{campo['key']}")
+                
+                # Layout: Label | Input | Botão
+                c_lbl, c_inp, c_btn = st.columns([1.2, 2.5, 0.8])
+                c_lbl.markdown(f"**{campo['label']}:**")
+                
+                with c_inp:
+                    if campo['tipo'] == 'data':
+                        val = st.date_input("Data", value=None, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}", label_visibility="collapsed")
+                    else:
+                        val = st.text_input("Texto", label_visibility="collapsed", key=f"in_{campo['key']}")
+                
+                with c_btn:
                     if st.button("Inserir", key=f"btn_{campo['key']}"): inserir_dado_staging(campo, val)
         
         # 2. CONTATOS
         with st.expander("Contatos"):
-            tel = st.text_input("Número", key="in_tel_num")
+            # Telefone
+            c_l1, c_i1 = st.columns([1.2, 3.5])
+            c_l1.markdown("**Número:**")
+            tel = c_i1.text_input("Número", key="in_tel_num", label_visibility="collapsed")
+            
+            # Tags (Whats / Qualificação)
             c_w, c_q = st.columns(2)
             whats = c_w.selectbox("WhatsApp", ["Não", "Sim"], key="in_tel_w")
             qualif = c_q.selectbox("Qualif.", ["NC", "CONFIRMADO"], key="in_tel_q")
-            if st.button("Inserir Telefone"):
+            
+            if st.button("Inserir Telefone", use_container_width=True):
                 cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
                 inserir_dado_staging(cfg, tel, {'tag_whats': whats, 'tag_qualificacao': qualif})
+            
             st.divider()
-            mail = st.text_input("E-mail", key="in_mail")
-            if st.button("Inserir E-mail"):
+            
+            # E-mail
+            c_l2, c_i2 = st.columns([1.2, 3.5])
+            c_l2.markdown("**E-mail:**")
+            mail = c_i2.text_input("E-mail", key="in_mail", label_visibility="collapsed")
+            
+            if st.button("Inserir E-mail", use_container_width=True):
                 cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
                 inserir_dado_staging(cfg, mail)
 
         # 3. ENDEREÇOS
         with st.expander("Endereço"):
-            cep = st.text_input("CEP", key="in_end_cep")
-            rua = st.text_input("Logradouro", key="in_end_rua")
-            bairro = st.text_input("Bairro", key="in_end_bairro")
-            c_cid, c_uf = st.columns([3, 1])
-            cidade = c_cid.text_input("Cidade", key="in_end_cid")
-            uf = c_uf.text_input("UF", key="in_end_uf")
-            if st.button("Inserir Endereço"):
+            # CEP
+            c_cep_l, c_cep_i = st.columns([1.2, 3.5])
+            c_cep_l.markdown("**CEP:**")
+            cep = c_cep_i.text_input("CEP", key="in_end_cep", label_visibility="collapsed")
+            
+            # Logradouro
+            c_rua_l, c_rua_i = st.columns([1.2, 3.5])
+            c_rua_l.markdown("**Logradouro:**")
+            rua = c_rua_i.text_input("Logradouro", key="in_end_rua", label_visibility="collapsed")
+            
+            # Bairro
+            c_bai_l, c_bai_i = st.columns([1.2, 3.5])
+            c_bai_l.markdown("**Bairro:**")
+            bairro = c_bai_i.text_input("Bairro", key="in_end_bairro", label_visibility="collapsed")
+            
+            # Cidade / UF
+            c_cid_l, c_cid_i = st.columns([1.2, 3.5])
+            c_cid_l.markdown("**Cidade:**")
+            cidade = c_cid_i.text_input("Cidade", key="in_end_cid", label_visibility="collapsed")
+            
+            c_uf_l, c_uf_i = st.columns([1.2, 3.5])
+            c_uf_l.markdown("**UF:**")
+            uf = c_uf_i.text_input("UF", key="in_end_uf", label_visibility="collapsed")
+
+            if st.button("Inserir Endereço", use_container_width=True):
                 obj_end = {'cep': cep, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf}
                 cfg = [c for c in CONFIG_CADASTRO["Endereços"] if c['key'] == 'cep'][0]
                 inserir_dado_staging(cfg, obj_end)
@@ -367,10 +415,16 @@ def interface_cadastro_pf():
         # 4. EMPREGO E RENDA (VÍNCULO)
         with st.expander("Emprego e Renda (Vínculo)"):
             st.caption("Cadastre aqui o vínculo principal.")
-            conv = st.text_input("Convênio (Ex: CLT, INSS)", key="in_emp_conv")
-            matr = st.text_input("Matrícula", key="in_emp_matr")
             
-            if st.button("Inserir Vínculo"):
+            c_cv_l, c_cv_i = st.columns([1.2, 3.5])
+            c_cv_l.markdown("**Convênio:**")
+            conv = c_cv_i.text_input("Convênio (Ex: CLT, INSS)", key="in_emp_conv", label_visibility="collapsed", placeholder="Ex: INSS, SIAPE")
+            
+            c_mt_l, c_mt_i = st.columns([1.2, 3.5])
+            c_mt_l.markdown("**Matrícula:**")
+            matr = c_mt_i.text_input("Matrícula", key="in_emp_matr", label_visibility="collapsed")
+            
+            if st.button("Inserir Vínculo", use_container_width=True):
                 if conv and matr:
                     obj_emp = {'convenio': conv, 'matricula': matr, 'dados_extras': ''}
                     if 'empregos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['empregos'] = []
@@ -409,12 +463,9 @@ def interface_cadastro_pf():
                     colunas_banco = get_colunas_tabela(nome_tabela)
                     
                     # 2. Gera Inputs Dinâmicos
-                    # ATUALIZADO: 'tipo_planilha' ignorado visualmente (preenchido auto)
                     campos_ignorados = ['id', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha', 'importacao_id', 'data_criacao', 'data_atualizacao']
                     inputs_gerados = {}
                     
-                    # --- MAPA DE DEPENDÊNCIA PARA CÁLCULO AUTOMÁTICO ---
-                    # Coluna de Tempo -> Coluna de Data que a origina
                     mapa_calculo_datas = {
                         'tempo_abertura_anos': 'data_abertura_empresa',
                         'tempo_admissao_anos': 'data_admissao',
@@ -460,10 +511,8 @@ def interface_cadastro_pf():
                         if 'matricula' in nomes_cols_tabela: inputs_gerados['matricula'] = dados_vinc['matricula']
                         elif 'matricula_ref' in nomes_cols_tabela: inputs_gerados['matricula_ref'] = dados_vinc['matricula']
                         
-                        # Preenche CONVENIO automaticamente
                         if 'convenio' in nomes_cols_tabela: inputs_gerados['convenio'] = dados_vinc['convenio']
                         
-                        # Preenche TIPO_PLANILHA automaticamente
                         if 'tipo_planilha' in nomes_cols_tabela and tipo_tabela:
                             inputs_gerados['tipo_planilha'] = tipo_tabela
                         
@@ -476,25 +525,25 @@ def interface_cadastro_pf():
 
     # --- COLUNA DA DIREITA (RESUMO E SALVAR) ---
     with c_preview:
-        st.markdown("### 📋 Resumo do Cadastro")
+        st.markdown("### 📋 Resumo")
         
         st.info("👤 Dados Pessoais")
         geral = st.session_state['dados_staging'].get('geral', {})
         if geral:
-            cols = st.columns(3)
+            cols = st.columns(2) # Ajustado para 2 colunas devido a largura menor
             idx = 0
             for k, v in geral.items():
                 if v:
                     val_str = v.strftime('%d/%m/%Y') if isinstance(v, (date, datetime)) else str(v)
-                    cols[idx%3].text_input(k.upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
+                    cols[idx%2].text_input(k.upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
                     idx += 1
         
-        st.warning("💼 Vínculos (Emprego e Renda)")
+        st.warning("💼 Vínculos (Emprego)")
         emps = st.session_state['dados_staging'].get('empregos', [])
         if emps:
             for i, emp in enumerate(emps):
                 c1, c2 = st.columns([5, 1])
-                c1.write(f"🏢 **{emp.get('convenio')}** | Matrícula: {emp.get('matricula')}")
+                c1.write(f"🏢 **{emp.get('convenio')}** | Mat: {emp.get('matricula')}")
                 if c2.button("🗑️", key=f"rm_emp_{i}"):
                     st.session_state['dados_staging']['empregos'].pop(i); st.rerun()
         else:
@@ -503,42 +552,29 @@ def interface_cadastro_pf():
         st.success("📝 Dados Financeiros / Planilhas")
         ctrs = st.session_state['dados_staging'].get('contratos', [])
         
-        # EXIBIÇÃO
         if ctrs:
             for i, c in enumerate(ctrs):
                 c1, c2 = st.columns([5, 1])
                 origem_nome = c.get('tipo_origem') or c.get('origem_tabela', 'Dado')
                 
-                # Exibe resumo visual
                 chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha']]
                 display_txt = f"[{origem_nome}] "
                 if len(chaves) > 0: display_txt += f"{c[chaves[0]]} "
-                if len(chaves) > 1: display_txt += f"| {c[chaves[1]]}"
                 
                 ref_matr = c.get('matricula') or c.get('matricula_ref')
                 c1.write(f"📌 {display_txt} (Ref: {ref_matr})")
                 if c2.button("🗑️", key=f"rm_ctr_{i}"):
                     st.session_state['dados_staging']['contratos'].pop(i); st.rerun()
-        
-        for emp in emps:
-            if 'contratos' in emp and emp['contratos']:
-                df_temp = pd.DataFrame(emp['contratos'])
-                if 'tipo_origem' in df_temp.columns:
-                    grupos = df_temp.groupby('tipo_origem')
-                    for nome_grp, grupo in grupos:
-                        with st.expander(f"Dados Existentes: {nome_grp} (Matr: {emp['matricula']})"):
-                            cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
-                            st.dataframe(grupo.drop(columns=cols_drop, errors='ignore'), hide_index=True)
-                else:
-                     with st.expander(f"Dados Existentes (Matr: {emp['matricula']})"):
-                        st.dataframe(df_temp, hide_index=True)
+        else:
+            # 1.2 CORREÇÃO: TEXTO FALTANTE ADICIONADO
+            st.caption("Nenhum vínculo inserido.")
 
         st.divider()
         
         if st.button("💾 CONFIRMAR E SALVAR", type="primary", use_container_width=True):
             staging = st.session_state['dados_staging']
             if not staging['geral'].get('nome') or not staging['geral'].get('cpf'):
-                st.error("É necessário informar pelo menos Nome e CPF nos Dados Pessoais.")
+                st.error("Nome e CPF são obrigatórios.")
             else:
                 df_tel = pd.DataFrame(staging['telefones'])
                 df_email = pd.DataFrame(staging['emails'])
@@ -560,10 +596,9 @@ def interface_cadastro_pf():
                 else:
                     st.error(msg)
     
-    # Rodapé de atualização na tela principal
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 20px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
 
-# --- FUNÇÃO DE SALVAMENTO (DINÂMICA) ---
+# --- FUNÇÃO DE SALVAMENTO (MANTIDA) ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     conn = get_conn()
     if conn:
@@ -585,14 +620,12 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             
             cpf_chave = dados_gerais['cpf']
             
-            # ATUALIZADO: Deletar usando 'cpf' em vez de 'cpf_ref'
             if modo == "editar":
                 tabelas_ref = ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos']
                 for tb in tabelas_ref: cur.execute(f"DELETE FROM {tb} WHERE cpf = %s", (cpf_chave,))
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
             
-            # ATUALIZADO: Inserts usando 'cpf' em vez de 'cpf_ref'
             if not df_tel.empty:
                 for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
             if not df_email.empty:
@@ -600,8 +633,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if not df_end.empty:
                 for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
             
-            # EMPREGO E RENDA (UPSERT)
-            # Mantém uso de cpf para integridade
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows():
                     matr = r['matricula']
@@ -611,7 +642,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     else:
                         cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
             
-            # CONTRATOS (DINÂMICO TOTAL)
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
@@ -619,14 +649,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     r_dict.pop('origem_tabela', None)
                     r_dict.pop('tipo_origem', None)
                     
-                    # --- LIMPEZA E FORMATAÇÃO ESPECÍFICA ---
                     final_dict = {}
                     for k, v in r_dict.items():
                         if pd.isna(v) or v == "": continue
-                        if 'cnpj' in k.lower():
-                            final_dict[k] = formatar_cnpj(v)
-                        else:
-                            final_dict[k] = v
+                        if 'cnpj' in k.lower(): final_dict[k] = formatar_cnpj(v)
+                        else: final_dict[k] = v
                     
                     if not final_dict: continue
 
@@ -635,10 +662,8 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     placeholders = ", ".join(["%s"] * len(vals))
                     col_names = ", ".join(cols)
                     try:
-                        query = f"INSERT INTO {tabela} ({col_names}) VALUES ({placeholders})"
-                        cur.execute(query, vals)
-                    except Exception as e_contr:
-                        print(f"Erro inserção dinâmica {tabela}: {e_contr}")
+                        cur.execute(f"INSERT INTO {tabela} ({col_names}) VALUES ({placeholders})", vals)
+                    except Exception as e_contr: print(f"Erro inserção dinâmica {tabela}: {e_contr}")
 
             conn.commit(); conn.close(); return True, "Salvo com sucesso!"
         except Exception as e: return False, str(e)
@@ -670,26 +695,19 @@ def dialog_visualizar_cliente(cpf_cliente):
     g = dados.get('geral', {})
     if not g: st.error("Cliente não encontrado."); return
     
-    # CSS para ajustar fino do espaçamento
     st.markdown("""
         <style>
         .compact-header { margin-bottom: -15px; }
         .stMarkdown hr { margin-top: 5px; margin-bottom: 5px; }
-        .data-row { margin-bottom: 5px; display: flex; align-items: baseline; }
-        .data-label { font-weight: bold; margin-right: 8px; min-width: 120px; }
-        .data-value { }
         </style>
     """, unsafe_allow_html=True)
     
     st.markdown(f"<h3 class='compact-header'>👤 {g.get('nome', 'Nome não informado')}</h3>", unsafe_allow_html=True)
     st.markdown(f"**CPF:** {cpf_vis}")
-    st.write("") # Pequeno espaçamento
+    st.write("") 
     
     t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos"])
     with t1:
-        # --- EXIBIÇÃO DINÂMICA DE TODOS OS CAMPOS ---
-        campos_prioritarios = ['data_nascimento', 'rg', 'nome_mae']
-        
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
         idade = calcular_idade_hoje(nasc)
@@ -698,8 +716,7 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1.write(f"**RG:** {safe_view(g.get('rg'))}")
         c2.write(f"**Mãe:** {safe_view(g.get('nome_mae'))}")
         
-        # Exibe os demais campos em grid
-        demais_campos = {k: v for k, v in g.items() if k not in campos_prioritarios and k not in ['id', 'cpf', 'nome', 'importacao_id', 'id_campanha', 'data_criacao']}
+        demais_campos = {k: v for k, v in g.items() if k not in ['data_nascimento', 'rg', 'nome_mae', 'id', 'cpf', 'nome', 'importacao_id', 'id_campanha', 'data_criacao']}
         
         if demais_campos:
             st.markdown("---")
@@ -707,23 +724,14 @@ def dialog_visualizar_cliente(cpf_cliente):
             col_iter = st.columns(3)
             idx = 0
             for k, v in demais_campos.items():
-                label_fmt = k.replace('_', ' ').title()
-                val_fmt = safe_view(v)
-                if 'data' in k and v:
-                     try: val_fmt = v.strftime('%d/%m/%Y')
-                     except: pass
-                
-                col_iter[idx % 3].write(f"**{label_fmt}:** {val_fmt}")
+                col_iter[idx % 3].write(f"**{k.replace('_', ' ').title()}:** {safe_view(v)}")
                 idx += 1
 
-        st.divider() # Substituto compacto para st.markdown("---")
-        
+        st.divider()
         st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []):
             st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
-        
-        if not dados.get('empregos'):
-            st.warning("Nenhum vínculo localizado.")
+        if not dados.get('empregos'): st.warning("Nenhum vínculo localizado.")
             
         st.divider()
         st.markdown("##### 🏠 Endereços")
@@ -746,5 +754,4 @@ def dialog_visualizar_cliente(cpf_cliente):
         for t in dados.get('telefones', []): st.write(f"📱 {safe_view(t.get('numero'))} ({safe_view(t.get('tag_whats'))})")
         for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
     
-    # Rodapé de atualização no popup
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
