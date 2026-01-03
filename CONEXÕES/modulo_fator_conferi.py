@@ -505,8 +505,13 @@ def app_fator_conferi():
             else: st.error("Erro ao consultar saldo.")
         
     with tabs[3]: 
+        # --- Alteração Solicitada: Nome da tabela exibido acima da planilha ---
+        st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 0px;'>Tabela: conexoes.fatorconferi_registo_consulta</p>", unsafe_allow_html=True)
+        
         conn = get_conn()
-        if conn: st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)); conn.close()
+        if conn: 
+            st.dataframe(pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn))
+            conn.close()
     
     with tabs[4]: 
         st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
