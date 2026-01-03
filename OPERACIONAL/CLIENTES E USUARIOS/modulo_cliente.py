@@ -972,6 +972,7 @@ def app_clientes():
         
         # 1. AGRUPAMENTO CLIENTES
         with st.expander("🏷️ Agrupamento Clientes", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: admin.agrupamento_clientes</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
@@ -993,6 +994,7 @@ def app_clientes():
 
         # 2. AGRUPAMENTO EMPRESAS
         with st.expander("🏢 Agrupamento Empresas", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: admin.agrupamento_empresas</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Novo Item")
                 c_in, c_bt = st.columns([5, 1])
@@ -1014,6 +1016,7 @@ def app_clientes():
 
         # 3. CLIENTE CNPJ
         with st.expander("💼 Cliente CNPJ", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: admin.cliente_cnpj</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Novo Cadastro")
                 c_inp1, c_inp2, c_bt = st.columns([2, 3, 1])
@@ -1036,6 +1039,7 @@ def app_clientes():
 
         # 4. RELAÇÃO PEDIDO X CARTEIRA
         with st.expander("🔗 Relação Pedido/Carteira", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.cliente_carteira_relacao_pedido_carteira</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Novo Vínculo")
                 c_rp1, c_rp2, c_bt = st.columns([2, 2, 1])
@@ -1059,6 +1063,7 @@ def app_clientes():
 
         # 5. LISTA DE CARTEIRAS (ATUALIZADO COM SELETOR DE CLIENTE E ORIGEM)
         with st.expander("📂 Lista de Carteiras", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.cliente_carteira_lista</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Nova Carteira")
                 c1, c2, c3, c4, c5 = st.columns([1.5, 2, 1.5, 1, 1])
@@ -1112,6 +1117,7 @@ def app_clientes():
 
         # 6. CONFIGURAÇÃO DE CARTEIRAS (NOVO BLOCO)
         with st.expander("⚙️ Configurações de Carteiras", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.carteiras_config</p>", unsafe_allow_html=True)
             st.info("Aqui você pode visualizar e editar as configurações de carteiras (tabela: cliente.carteiras_config).")
             df_configs = listar_carteiras_config()
             if not df_configs.empty:
