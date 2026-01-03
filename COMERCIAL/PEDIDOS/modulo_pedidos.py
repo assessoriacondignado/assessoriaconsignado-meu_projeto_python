@@ -355,10 +355,13 @@ def dialog_novo_pedido():
         return
 
     c1, c2 = st.columns(2)
+    # --- ALTERADO: Filtra só por nome e exibe nota de conferência ---
     ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
+    cli = df_c.iloc[ic]
+    c1.caption(f"🆔 Conferência: CPF {cli['cpf']} | 📞 {cli['telefone']}")
+    # ---------------------------------------------------------------
     ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
     
-    cli = df_c.iloc[ic]
     prod = df_p.iloc[ip]
     
     origem_produto = prod.get('origem_custo') if prod.get('origem_custo') else "Não definida"
@@ -375,7 +378,9 @@ def dialog_novo_pedido():
         except: conn.close()
 
     cart_display = carteira_vinculada if carteira_vinculada else "Não localizada"
-    st.info(f"📦 **Item:** {prod['nome']}\n📍 **Origem:** {origem_produto}\n💼 **Carteira:** {cart_display}")
+    
+    # Adicionada a conferência visual do cliente no bloco de informações
+    st.info(f"👤 **Cliente:** {cli['nome']}\n📦 **Item:** {prod['nome']}\n📍 **Origem:** {origem_produto}\n💼 **Carteira:** {cart_display}")
 
     c3, c4 = st.columns(2)
     qtd = c3.number_input("Qtd", 1, value=1)
