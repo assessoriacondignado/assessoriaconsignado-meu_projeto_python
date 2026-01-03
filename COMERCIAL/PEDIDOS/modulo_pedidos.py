@@ -59,7 +59,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         origem = res_prod[0]
         cpf_cliente = dados_pedido['cpf_cliente']
 
-        # 2. Localizar a Carteira na Lista do Cliente (Cruzamento CPF + Origem)
+        # 2. Localizar a Carteira na Lista do Cliente
         cur.execute("""
             SELECT nome_carteira 
             FROM cliente.cliente_carteira_lista 
@@ -148,22 +148,25 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
     if conn:
         try:
             cur = conn.cursor()
-            # 1. Cria o Pedido
+            
+            # ATUALIZADO: Insere nome_carteira, custo_carteira e origem_custo na tabela PEDIDOS
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
-                                     id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                                     id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
+                                     nome_carteira, custo_carteira, origem_custo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
-                  int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total)))
+                  int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total),
+                  nome_lista, float(custo_lista), origem_custo))
+            
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
             
-            # 2. Gestão da Lista de Carteira
+            # 2. Gestão da Lista de Carteira (Sincronização com cliente.cliente_carteira_lista)
             msg_lista = ""
             if add_lista and nome_lista:
                 cpf_limpo_cli = re.sub(r'\D', '', str(cliente['cpf']))
                 
-                # Busca usuário vinculado
                 cur.execute("""
                     SELECT u.cpf, u.nome FROM admin.clientes c
                     JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
@@ -173,7 +176,6 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
                 cpf_u = res_u[0] if res_u else None
                 nome_u = res_u[1] if res_u else None
 
-                # VERIFICA SE JÁ EXISTE NA LISTA
                 cur.execute("""
                     SELECT id FROM cliente.cliente_carteira_lista 
                     WHERE cpf_cliente = %s AND nome_carteira = %s AND origem_custo = %s
@@ -262,10 +264,12 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
     if conn:
         try:
             cur = conn.cursor()
+            
+            # ATUALIZADO: Atualiza também o custo_carteira na tabela pedidos
             cur.execute("""
-                UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, data_atualizacao=NOW()
+                UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
                 WHERE id=%s
-            """, (nova_qtd, novo_valor, total, id_pedido))
+            """, (nova_qtd, novo_valor, total, float(novo_custo_carteira), id_pedido))
             
             msg_extra = ""
             if carteira_vinculada and carteira_vinculada != "N/A":
@@ -291,7 +295,7 @@ def fechar_modal():
     st.session_state['modal_ativo'] = None
     st.session_state['pedido_ativo'] = None
 
-# --- DIALOGS ---
+# --- DIALOGS (ATUALIZADOS) ---
 
 @st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
@@ -319,7 +323,8 @@ def dialog_novo_pedido():
             res = cur.fetchone()
             if res: carteira_vinculada = res[0]
             conn.close()
-        except: conn.close()
+        except: 
+            conn.close()
 
     cart_display = carteira_vinculada if carteira_vinculada else "Não localizada"
     st.info(f"📦 **Item:** {prod['nome']}\n📍 **Origem:** {origem_produto}\n💼 **Carteira:** {cart_display}")
@@ -378,27 +383,26 @@ def dialog_novo_pedido():
 
 @st.dialog("✏️ Editar", width="large")
 def dialog_editar(ped):
-    origem_atual = "N/A"
-    carteira_atual = "N/A"
-    custo_atual_lista = 0.0
+    # Carrega dados salvos no pedido (se existirem, senão busca do produto)
+    origem_atual = ped.get('origem_custo')
+    carteira_atual = ped.get('nome_carteira')
+    custo_atual = float(ped.get('custo_carteira') or 0.0)
     
-    conn = get_conn()
-    if conn:
-        try:
-            df_prod_info = pd.read_sql(f"SELECT origem_custo FROM produtos_servicos WHERE id = {ped['id_produto']}", conn)
-            if not df_prod_info.empty: origem_atual = df_prod_info.iloc[0]['origem_custo']
-            
-            df_cart_info = pd.read_sql(f"SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = {ped['id_produto']}", conn)
-            if not df_cart_info.empty: carteira_atual = df_cart_info.iloc[0]['nome_carteira']
-            
-            if carteira_atual != "N/A":
-                cur = conn.cursor()
-                cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente = %s AND nome_carteira = %s AND origem_custo = %s", (ped['cpf_cliente'], carteira_atual, origem_atual))
-                res_c = cur.fetchone()
-                if res_c: custo_atual_lista = float(res_c[0])
-            
-            conn.close()
-        except: conn.close()
+    # Se não tiver salvo no pedido (pedidos antigos), tenta buscar do cadastro
+    if not origem_atual or not carteira_atual:
+        conn = get_conn()
+        if conn:
+            try:
+                if not origem_atual:
+                    df_prod = pd.read_sql(f"SELECT origem_custo FROM produtos_servicos WHERE id = {ped['id_produto']}", conn)
+                    if not df_prod.empty: origem_atual = df_prod.iloc[0]['origem_custo']
+                
+                if not carteira_atual:
+                    df_cart = pd.read_sql(f"SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = {ped['id_produto']}", conn)
+                    if not df_cart.empty: carteira_atual = df_cart.iloc[0]['nome_carteira']
+                    
+                conn.close()
+            except: conn.close()
 
     with st.form("fe"):
         st.markdown(f"#### Editando: {ped['codigo']}")
@@ -410,9 +414,11 @@ def dialog_editar(ped):
         st.markdown("##### Dados Financeiros")
         
         c_f1, c_f2, c_f3 = st.columns(3)
-        c_f1.text_input("Carteira (Bloqueado)", value=carteira_atual, disabled=True)
-        c_f2.text_input("Origem (Bloqueado)", value=origem_atual, disabled=True)
-        novo_custo = c_f3.number_input("Custo Carteira (R$)", value=custo_atual_lista, step=0.01)
+        c_f1.text_input("Carteira (Bloqueado)", value=carteira_atual if carteira_atual else "N/A", disabled=True)
+        c_f2.text_input("Origem (Bloqueado)", value=origem_atual if origem_atual else "N/A", disabled=True)
+        
+        # Campo Custo Editável
+        novo_custo = c_f3.number_input("Custo Carteira (R$)", value=custo_atual, step=0.01)
 
         st.markdown("##### Detalhes do Pedido")
         c_d1, c_d2 = st.columns(2)
@@ -433,7 +439,7 @@ def dialog_editar(ped):
 
 @st.dialog("🔄 Status")
 def dialog_status(ped):
-    # ATUALIZADO: Mostra empresa e CPF
+    # Mostra empresa e CPF
     st.write(f"🏢 **Empresa:** {ped.get('nome_empresa', '-')}")
     st.write(f"👤 **Cliente:** {ped['nome_cliente']} | **CPF:** {ped['cpf_cliente']}")
     st.divider()
@@ -478,7 +484,7 @@ def app_pedidos():
     c_b.button("➕ Novo", type="primary", on_click=abrir_modal, args=('novo', None))
     conn = get_conn()
     if conn:
-        # ATUALIZADO: JOIN com admin.clientes para pegar nome_empresa
+        # ATUALIZADO: Busca também custo_carteira, nome_carteira, origem_custo da tabela pedidos
         df = pd.read_sql("""
             SELECT p.*, c.nome_empresa, c.email as email_cliente 
             FROM pedidos p 
@@ -506,11 +512,15 @@ def app_pedidos():
                 elif row['status'] == 'Pendente': cor = "🟠"
                 elif row['status'] == 'Solicitado': cor = "🔵"
                 
-                # ATUALIZADO: Exibe empresa
                 empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
+                custo_show = f" | Custo: R$ {float(row['custo_carteira'] or 0):.2f}" if row.get('custo_carteira') else ""
                 
-                with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}"):
+                with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}{custo_show}"):
                     st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
+                    
+                    if row.get('nome_carteira'):
+                        st.caption(f"Carteira: {row['nome_carteira']} | Origem: {row.get('origem_custo', '-')}")
+                        
                     c1, c2, c3, c4, c5, c6 = st.columns(6)
                     ts = int(time.time())
                     c1.button("👤", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row))
