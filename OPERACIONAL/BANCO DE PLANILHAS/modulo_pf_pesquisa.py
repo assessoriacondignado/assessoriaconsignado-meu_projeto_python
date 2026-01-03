@@ -86,25 +86,41 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
     conn = pf_core.get_conn()
     if conn:
         try:
-            termo_limpo = re.sub(r'\D', '', termo).lstrip('0')
+            # REGRA 5.1: Normaliza a entrada para o formato do banco (sem zero, sem pontuação)
+            # Aceita 012... ou 123.456... e transforma em 123456...
+            termo_limpo = pf_core.limpar_normalizar_cpf(termo)
+            
             param_nome = f"%{termo}%"
             sql_base = "SELECT d.id, d.nome, d.cpf, d.data_nascimento FROM banco_pf.pf_dados d "
             conds = ["d.nome ILIKE %s"]
             params = [param_nome]
+            
             if termo_limpo: 
-                sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf=t.cpf" 
-                conds.append("d.cpf ILIKE %s"); conds.append("t.numero ILIKE %s")
-                params.append(f"%{termo_limpo}%"); params.append(f"%{termo_limpo}%")
+                # Se sobrar algo numérico, busca no CPF (d.cpf) e no Telefone (t.numero)
+                # O JOIN com telefones deve usar cpf_ref (tabelas satélites)
+                sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf = t.cpf_ref" 
+                conds.append("d.cpf ILIKE %s")
+                conds.append("t.numero ILIKE %s")
+                params.append(f"%{termo_limpo}%")
+                params.append(f"%{termo_limpo}%")
             
             where = " WHERE " + " OR ".join(conds)
+            
             cur = conn.cursor()
-            cur.execute(f"SELECT COUNT(DISTINCT d.id) FROM banco_pf.pf_dados d {sql_base.split('banco_pf.pf_dados d')[1]} {where}", tuple(params))
+            # Count
+            # Removemos a parte do SELECT do sql_base para fazer o count correto
+            part_from = sql_base.split('FROM', 1)[1]
+            cur.execute(f"SELECT COUNT(DISTINCT d.id) FROM {part_from} {where}", tuple(params))
             total = cur.fetchone()[0]
+            
+            # Select Paginado
             offset = (pagina-1)*itens_por_pagina
             df = pd.read_sql(f"{sql_base} {where} GROUP BY d.id ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}", conn, params=tuple(params))
+            
             conn.close()
             return df, total
-        except: 
+        except Exception as e:
+            st.error(f"Erro na busca simples: {e}") 
             if conn: conn.close()
     return pd.DataFrame(), 0
 
@@ -114,14 +130,19 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
         try:
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
+            
+            # CORREÇÃO DE JOINS: Uso de cpf_ref para tabelas satélites
             joins_map = {
-                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
-                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
-                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf",
-                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
-                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula",
-                'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
+                'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf_ref",
+                'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf_ref",
+                'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf_ref",
+                'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref",
+                # Contratos vincula com Matricula (emprego_renda)
+                'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
+                # CLT vincula com Matricula (emprego_renda)
+                'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf_ref LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
+            
             active_joins = []; conditions = []; params = []
 
             for regra in regras_ativas:
@@ -141,7 +162,9 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 valores = [v.strip() for v in str(val_raw).split(',') if v.strip()]
                 conds_or = []
                 for val in valores:
+                    # REGRA 5.1: Normalização de CPF na Pesquisa Ampla
                     if 'cpf' in coluna or 'cnpj' in coluna: val = pf_core.limpar_normalizar_cpf(val)
+                    
                     if tipo == 'numero': val = re.sub(r'\D', '', val)
                     if tipo == 'data':
                         if op == "=": conds_or.append(f"{col_sql} = %s"); params.append(val)
@@ -189,29 +212,33 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         cur = conn.cursor()
         cpfs_tuple = tuple(str(c) for c in cpfs_alvo)
         if not cpfs_tuple: return False, "Nenhum CPF na lista."
+        
+        # Como o delete é por CPF, e pf_dados é a chave, usamos CPF direto (normalizado)
+        # Atenção: cpfs_alvo vem do dataframe que já foi lido do banco, então já deve estar no formato normal.
+        
         if tipo == "Cadastro Completo":
             query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Telefones":
-            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf IN %s"
+            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf_ref IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "E-mails":
-            query = "DELETE FROM banco_pf.pf_emails WHERE cpf IN %s"
+            query = "DELETE FROM banco_pf.pf_emails WHERE cpf_ref IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Endereços":
-            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf IN %s"
+            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf_ref IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Emprego e Renda":
             if not convenio: return False, "Convênio não selecionado."
             if sub_opcao == "Excluir Vínculo Completo (Matrícula + Contratos)":
-                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"
+                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf_ref IN %s AND convenio = %s"
                 cur.execute(query, (cpfs_tuple, convenio))
             elif sub_opcao == "Excluir Apenas Contratos":
                 query = """
                     DELETE FROM banco_pf.pf_contratos 
-                    WHERE matricula IN (
+                    WHERE matricula_ref IN (
                         SELECT matricula FROM banco_pf.pf_emprego_renda 
-                        WHERE cpf IN %s AND convenio = %s
+                        WHERE cpf_ref IN %s AND convenio = %s
                     )
                 """
                 cur.execute(query, (cpfs_tuple, convenio))
