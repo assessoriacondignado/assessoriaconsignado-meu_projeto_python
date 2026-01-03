@@ -180,8 +180,9 @@ def obter_origem_padronizada(nome_origem):
     return origem_final
 
 def buscar_origem_por_ambiente(nome_ambiente):
+    """Converte o nome do ambiente (código) no nome da origem (financeiro)"""
     conn = get_conn()
-    origem_padrao = "WEB USUÁRIO"
+    origem_padrao = "WEB USUÁRIO" # Fallback
     if conn:
         try:
             cur = conn.cursor()
@@ -193,18 +194,30 @@ def buscar_origem_por_ambiente(nome_ambiente):
             if conn: conn.close()
     return origem_padrao
 
+def buscar_cliente_vinculado_ao_usuario(id_usuario):
+    """Busca o cliente vinculado ao usuário logado (se houver)"""
+    conn = get_conn()
+    cliente = {"id": None, "nome": None}
+    if conn and id_usuario:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, nome FROM admin.clientes WHERE id_usuario_vinculo = %s LIMIT 1", (id_usuario,))
+            res = cur.fetchone()
+            if res:
+                cliente["id"] = res[0]
+                cliente["nome"] = res[1]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return cliente
+
 # =============================================================================
-# 2. FUNÇÃO DE DÉBITO FINANCEIRO (ATUALIZADA)
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO
 # =============================================================================
 
 def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
     """
-    Executa o lançamento de débito financeiro após consulta API.
-    Regra:
-    1. Identifica a ORIGEM baseado no AMBIENTE (tabela: fatorconferi_ambiente_consulta).
-    2. Identifica a CARTEIRA/VALOR baseado no ID CLIENTE e ORIGEM (tabela: cliente_carteira_lista).
-    3. Identifica a TABELA DE TRANSAÇÃO (tabela: carteiras_config).
-    4. Realiza o INSERT de Débito.
+    Executa o lançamento de débito financeiro.
     """
     if not id_cliente_pagador:
         return False, "ID do Cliente não informado para cobrança."
@@ -216,7 +229,6 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         cur = conn.cursor()
 
         # 1. Identificar ORIGEM através do AMBIENTE
-        # Tabela: conexoes.fatorconferi_ambiente_consulta
         cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente_origem,))
         res_amb = cur.fetchone()
         if not res_amb:
@@ -226,8 +238,6 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         origem_identificada = res_amb[0]
 
         # 2. Identificar Carteira, Cliente e Valor
-        # Tabela: cliente.cliente_carteira_lista e cliente.carteiras_config (JOIN para pegar tabela transação)
-        # Filtro: id_cliente (pagador) e origem_custo (da carteira)
         query_wallet = """
             SELECT 
                 l.cpf_cliente, 
@@ -251,17 +261,12 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         valor_debito = float(custo_db) if custo_db else 0.0
 
         # 3. Realizar o Lançamento (INSERT)
-        # Buscar saldo anterior
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cli_db,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
         novo_saldo = saldo_anterior - valor_debito
-        
-        # Motivo: Conteúdo da Origem da carteira
         motivo_lancamento = origem_custo_db 
-        
-        # Origem Lançamento: Ambiente (conforme solicitado)
         origem_lancamento_db = nome_ambiente_origem
 
         sql_insert = f"""
@@ -399,46 +404,63 @@ def salvar_dados_fator_no_banco(dados_api):
         if conn: conn.close()
         return False, f"Erro DB: {e}"
 
-def realizar_consulta_cpf(cpf, ambiente_origem, forcar_nova=False, id_cliente_pagador=None):
+def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     """
-    Executa a consulta de CPF.
-    - Cenário 1 (Cache): Não lança débito.
-    - Cenário 2 (Nova API): Lança débito chamando processar_debito_automatico.
+    Função Principal de Consulta:
+    1. Identifica o Cliente (Manual ou Vinculado).
+    2. Identifica a Origem (Converter Ambiente -> Origem).
+    3. Verifica Cache (Cenário 1) ou API (Cenário 2).
+    4. Registra na tabela fatorconferi_registo_consulta.
     """
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
-    # Busca ID do Usuário Logado para registro
+    # --- 1. Identificação do Usuário e Cliente ---
     id_usuario_logado = st.session_state.get('usuario_id', 0)
     nome_usuario_logado = st.session_state.get('usuario_nome', 'Sistema')
+    
+    # Se veio manual (do selectbox de teste), usa. Senão, busca o vinculado.
+    id_cliente_final = None
+    nome_cliente_final = None
+    
+    if id_cliente_pagador_manual:
+        # Busca o nome deste ID manual
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT nome FROM admin.clientes WHERE id = %s", (id_cliente_pagador_manual,))
+            res_m = cur.fetchone()
+            if res_m:
+                id_cliente_final = id_cliente_pagador_manual
+                nome_cliente_final = res_m[0]
+        except: pass
+    else:
+        # Busca automático
+        dados_vinculo = buscar_cliente_vinculado_ao_usuario(id_usuario_logado)
+        id_cliente_final = dados_vinculo['id']
+        nome_cliente_final = dados_vinculo['nome']
+
+    # --- 2. Identificação da Origem ---
+    origem_real = buscar_origem_por_ambiente(ambiente)
 
     try:
         cur = conn.cursor()
         
-        # 1. Busca Nome do Cliente Pagador (para salvar no log)
-        nome_cliente_pagador = None
-        if id_cliente_pagador:
-            cur.execute("SELECT nome FROM admin.clientes WHERE id = %s", (id_cliente_pagador,))
-            res_n = cur.fetchone()
-            if res_n: nome_cliente_pagador = res_n[0]
-
         # --- CENÁRIO 1: CACHE (SEM DÉBITO) ---
         if not forcar_nova:
-            cur.execute("SELECT caminho_json, id_cliente FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
+            cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
             if res and res[0] and os.path.exists(res[0]):
                 try:
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
-                            # Registra o uso do Cache
-                            # Campo 'origem_consulta' recebe 'ambiente_origem'
+                            # Registra Cache
                             cur.execute("""
                                 INSERT INTO conexoes.fatorconferi_registo_consulta 
-                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente) 
-                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', %s, %s, 'CACHE', NOW(), %s, %s)
-                            """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, res[0], res[0], ambiente_origem, id_cliente_pagador, nome_cliente_pagador))
+                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
+                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', 'BAIXAR', %s, 'CACHE', NOW(), %s, %s, %s)
+                            """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, res[0], origem_real, id_cliente_final, nome_cliente_final, ambiente))
                             conn.commit(); conn.close()
                             return {"sucesso": True, "dados": dados, "msg": "Cache recuperado (Sem Débito)."}
                 except: pass
@@ -460,21 +482,19 @@ def realizar_consulta_cpf(cpf, ambiente_origem, forcar_nova=False, id_cliente_pa
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
-        # Inserir no Registro de Consulta (Com ID e Nome Cliente)
+        # Registra Nova Consulta
         custo_ref = buscar_valor_consulta_atual()
-        
-        # CORREÇÃO: Inclusão de nome_cliente e ambiente_origem no campo origem_consulta
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
-            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente) 
-            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW(), %s, %s)
-        """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, path, ambiente_origem, id_cliente_pagador, nome_cliente_pagador))
+            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
+            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', 'BAIXAR', %s, 'PAGO', NOW(), %s, %s, %s)
+        """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, origem_real, id_cliente_final, nome_cliente_final, ambiente))
         conn.commit()
         
-        # --- CHAMADA DO DÉBITO AUTOMÁTICO ---
+        # --- DÉBITO AUTOMÁTICO ---
         msg_financeira = ""
-        if id_cliente_pagador:
-            ok_fin, txt_fin = processar_debito_automatico(id_cliente_pagador, ambiente_origem)
+        if id_cliente_final:
+            ok_fin, txt_fin = processar_debito_automatico(id_cliente_final, ambiente)
             if ok_fin: 
                 msg_financeira = f" | ✅ {txt_fin}"
             else: 
@@ -514,15 +534,15 @@ def app_fator_conferi():
         
         col_cli, col_cpf = st.columns([2, 2])
         
-        # Carrega lista de clientes com carteira para teste
+        # Carrega lista de clientes para teste manual (Opcional)
         id_cliente_teste = None
         conn = get_conn()
         if conn:
             try:
-                # Busca clientes que possuem carteira configurada
                 df_clis = pd.read_sql("SELECT DISTINCT l.id_cliente, l.nome_cliente FROM cliente.cliente_carteira_lista l ORDER BY l.nome_cliente", conn)
                 opcoes_cli = {row['id_cliente']: row['nome_cliente'] for _, row in df_clis.iterrows()}
-                id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Selecione...")
+                # selectbox com opção vazia para permitir uso do vínculo automático
+                id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste Manual)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Usar Vínculo Automático")
             except: pass
             finally: conn.close()
             
@@ -531,18 +551,16 @@ def app_fator_conferi():
         
         if st.button("🔍 Consultar", type="primary"):
             if cpf_in:
-                if not id_cliente_teste:
-                    st.warning("⚠️ Selecione um Cliente Pagador para testar o débito.")
-                else:
-                    with st.spinner("Buscando..."):
-                        # Define o Ambiente fixo deste painel
-                        nome_ambiente = "Painel Fator Conferi / Teste de Consulta" 
-                        
-                        st.toast(f"Ambiente: {nome_ambiente}")
-                        
-                        # Passa o ID do cliente para a função
-                        res = realizar_consulta_cpf(cpf_in, nome_ambiente, forcar, id_cliente_teste)
-                        st.session_state['resultado_fator'] = res
+                with st.spinner("Buscando..."):
+                    # --- CORREÇÃO DO NOME DO AMBIENTE ---
+                    # Deve ser IGUAL ao cadastrado na tabela conexoes.fatorconferi_ambiente_consulta
+                    nome_ambiente = "teste_de_consulta_fatorconferi.cpf" 
+                    
+                    st.toast(f"Ambiente: {nome_ambiente}")
+                    
+                    # Passa o ambiente e o ID manual (se houver)
+                    res = realizar_consulta_cpf(cpf_in, nome_ambiente, forcar, id_cliente_teste)
+                    st.session_state['resultado_fator'] = res
         
         if 'resultado_fator' in st.session_state:
             res = st.session_state['resultado_fator']
