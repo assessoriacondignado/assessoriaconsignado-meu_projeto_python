@@ -45,14 +45,8 @@ def listar_carteiras_ativas():
         except: conn.close()
     return []
 
-# =============================================================================
-# LÓGICA FINANCEIRA AUTOMÁTICA (ATUALIZADA)
-# =============================================================================
+# --- LÓGICA FINANCEIRA ---
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
-    """
-    Lança Crédito (Pago) ou Débito (Cancelado) buscando a carteira correta
-    na lista do cliente baseada na origem do produto.
-    """
     try:
         cur = conn.cursor()
         
@@ -105,7 +99,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         if tipo_lancamento == 'CREDITO':
             saldo_novo = saldo_anterior + valor
             motivo = f"Compra Pedido {codigo_pedido}"
-        else: # DEBITO (Cancelamento)
+        else: # DEBITO
             saldo_novo = saldo_anterior - valor
             motivo = f"Cancelada Pedido {codigo_pedido}"
 
@@ -223,7 +217,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             obs_hist = obs
             msg_fin = ""
             
-            # --- LÓGICA DE LANÇAMENTO FINANCEIRO ---
             if novo_status == "Pago":
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
                 if ok: obs_hist += f" | {msg_fin}"
@@ -233,7 +226,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
-            # ---------------------------------------
 
             cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
@@ -441,6 +433,11 @@ def dialog_editar(ped):
 
 @st.dialog("🔄 Status")
 def dialog_status(ped):
+    # ATUALIZADO: Mostra empresa e CPF
+    st.write(f"🏢 **Empresa:** {ped.get('nome_empresa', '-')}")
+    st.write(f"👤 **Cliente:** {ped['nome_cliente']} | **CPF:** {ped['cpf_cliente']}")
+    st.divider()
+
     lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
     try: idx = lst.index(ped['status']) 
     except: idx = 0
@@ -481,8 +478,15 @@ def app_pedidos():
     c_b.button("➕ Novo", type="primary", on_click=abrir_modal, args=('novo', None))
     conn = get_conn()
     if conn:
-        df = pd.read_sql("SELECT p.*, c.email as email_cliente FROM pedidos p LEFT JOIN clientes_usuarios c ON p.id_cliente = c.id ORDER BY p.data_criacao DESC", conn)
+        # ATUALIZADO: JOIN com admin.clientes para pegar nome_empresa
+        df = pd.read_sql("""
+            SELECT p.*, c.nome_empresa, c.email as email_cliente 
+            FROM pedidos p 
+            LEFT JOIN admin.clientes c ON p.id_cliente = c.id 
+            ORDER BY p.data_criacao DESC
+        """, conn)
         conn.close()
+        
         with st.expander("🔍 Filtros", expanded=True):
             c1, c2, c3 = st.columns([3, 1.5, 1.5])
             busca = c1.text_input("Buscar")
@@ -501,7 +505,11 @@ def app_pedidos():
                 if row['status'] == 'Pago': cor = "🟢"
                 elif row['status'] == 'Pendente': cor = "🟠"
                 elif row['status'] == 'Solicitado': cor = "🔵"
-                with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} | R$ {row['valor_total']:.2f}"):
+                
+                # ATUALIZADO: Exibe empresa
+                empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
+                
+                with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}"):
                     st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
                     c1, c2, c3, c4, c5, c6 = st.columns(6)
                     ts = int(time.time())
