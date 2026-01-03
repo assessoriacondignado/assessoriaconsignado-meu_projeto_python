@@ -45,45 +45,82 @@ def listar_carteiras_ativas():
         except: conn.close()
     return []
 
-# --- LÓGICA FINANCEIRA ---
+# =============================================================================
+# LÓGICA FINANCEIRA AUTOMÁTICA (ATUALIZADA)
+# =============================================================================
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
+    """
+    Lança Crédito (Pago) ou Débito (Cancelado) buscando a carteira correta
+    na lista do cliente baseada na origem do produto.
+    """
     try:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT nome_tabela_transacoes, nome_carteira 
-            FROM cliente.carteiras_config 
-            WHERE id_produto = %s AND status = 'ATIVO'
-        """, (int(dados_pedido['id_produto']),))
-        config = cur.fetchone()
         
-        if config:
-            tabela_carteira = config[0]
-            nome_carteira = config[1]
-            cpf = dados_pedido['cpf_cliente']
-            valor = float(dados_pedido['valor_total'])
+        # 1. Identificar a Origem de Custo do Produto
+        cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
+        res_prod = cur.fetchone()
+        if not res_prod or not res_prod[0]:
+            return False, "Produto sem 'Origem de Custo' definida."
+        
+        origem = res_prod[0]
+        cpf_cliente = dados_pedido['cpf_cliente']
+
+        # 2. Localizar a Carteira na Lista do Cliente (Cruzamento CPF + Origem)
+        cur.execute("""
+            SELECT nome_carteira 
+            FROM cliente.cliente_carteira_lista 
+            WHERE cpf_cliente = %s AND origem_custo = %s
+            LIMIT 1
+        """, (cpf_cliente, origem))
+        res_lista = cur.fetchone()
+        
+        if not res_lista:
+            return False, f"O cliente não possui carteira vinculada para a origem '{origem}'."
+        
+        nome_carteira = res_lista[0]
+
+        # 3. Identificar a Tabela SQL da Carteira
+        cur.execute("""
+            SELECT nome_tabela_transacoes 
+            FROM cliente.carteiras_config 
+            WHERE nome_carteira = %s AND status = 'ATIVO'
+            LIMIT 1
+        """, (nome_carteira,))
+        res_config = cur.fetchone()
+        
+        if not res_config:
+            return False, f"Configuração técnica da carteira '{nome_carteira}' não encontrada."
             
-            cur.execute(f"SELECT saldo_novo FROM {tabela_carteira} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf,))
-            res_saldo = cur.fetchone()
-            saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
-            
-            if tipo_lancamento == 'DEBITO':
-                saldo_novo = saldo_anterior - valor
-                motivo = f"Cancelamento Pedido #{dados_pedido['codigo']} - Estorno"
-            else:
-                saldo_novo = saldo_anterior + valor
-                motivo = f"Compra Pedido #{dados_pedido['codigo']} - {dados_pedido['nome_produto']}"
-            
-            sql_insert = f"""
-                INSERT INTO {tabela_carteira} 
-                (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
-                VALUES (%s, %s, %s, 'PEDIDO', %s, %s, %s, %s, NOW())
-            """
-            cur.execute(sql_insert, (cpf, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
-            return True, f"{tipo_lancamento} de R$ {valor:.2f} em '{nome_carteira}'"
+        tabela_sql = res_config[0]
+
+        # 4. Calcular Valores e Motivo
+        valor = float(dados_pedido['valor_total'])
+        codigo_pedido = dados_pedido['codigo']
+        
+        # Busca saldo anterior
+        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
+        res_saldo = cur.fetchone()
+        saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
+        
+        if tipo_lancamento == 'CREDITO':
+            saldo_novo = saldo_anterior + valor
+            motivo = f"Compra Pedido {codigo_pedido}"
+        else: # DEBITO (Cancelamento)
+            saldo_novo = saldo_anterior - valor
+            motivo = f"Cancelada Pedido {codigo_pedido}"
+
+        # 5. Inserir Transação
+        sql_insert = f"""
+            INSERT INTO {tabela_sql} 
+            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
+            VALUES (%s, %s, %s, 'PEDIDO', %s, %s, %s, %s, NOW())
+        """
+        cur.execute(sql_insert, (cpf_cliente, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
+        
+        return True, f"{tipo_lancamento} de R$ {valor:.2f} na carteira '{nome_carteira}'"
+
     except Exception as e:
-        print(f"Erro mov: {e}")
-        return False, str(e)
-    return False, None
+        return False, f"Erro financeiro: {str(e)}"
 
 # --- CRUD PEDIDOS ---
 def buscar_clientes():
@@ -127,7 +164,7 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado')", (id_novo,))
             
-            # 2. Gestão da Lista de Carteira (Regra Atualizada)
+            # 2. Gestão da Lista de Carteira
             msg_lista = ""
             if add_lista and nome_lista:
                 cpf_limpo_cli = re.sub(r'\D', '', str(cliente['cpf']))
@@ -150,15 +187,13 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
                 existe = cur.fetchone()
 
                 if existe:
-                    # Se existe, ATUALIZA O CUSTO (Regra 1.1)
                     cur.execute("""
                         UPDATE cliente.cliente_carteira_lista 
                         SET custo_carteira = %s, cpf_usuario = %s, nome_usuario = %s
                         WHERE id = %s
                     """, (float(custo_lista), cpf_u, nome_u, existe[0]))
-                    msg_lista = " (Custo atualizado na lista existente)"
+                    msg_lista = " (Custo atualizado na lista)"
                 else:
-                    # Se não existe, INSERE
                     cur.execute("""
                         INSERT INTO cliente.cliente_carteira_lista 
                         (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, origem_custo, cpf_usuario, nome_usuario, nome_produto) 
@@ -168,7 +203,6 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
             
             conn.commit(); conn.close()
             
-            # Aviso WhatsApp
             if avisar_cliente and cliente['telefone']:
                 inst = modulo_wapi.buscar_instancia_ativa()
                 if inst:
@@ -186,17 +220,24 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
             obs_hist = obs
+            msg_fin = ""
             
+            # --- LÓGICA DE LANÇAMENTO FINANCEIRO ---
             if novo_status == "Pago":
-                ok, msg = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
-                if ok: obs_hist += f" | {msg}"
-            elif novo_status == "Cancelado":
-                ok, msg = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
-                if ok: obs_hist += f" | {msg}"
+                ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
+                if ok: obs_hist += f" | {msg_fin}"
+                else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
                 
+            elif novo_status == "Cancelado":
+                ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
+                if ok: obs_hist += f" | {msg_fin}"
+                else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
+            # ---------------------------------------
+
+            cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
+            
             conn.commit(); conn.close()
             
             if avisar and dados_pedido['telefone_cliente']:
@@ -208,7 +249,8 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                         msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
             return True
-        except: return False
+        except Exception as e:
+            print(e); return False
     return False
 
 def excluir_pedido_db(id_pedido):
@@ -223,24 +265,18 @@ def excluir_pedido_db(id_pedido):
     return False
 
 def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos, novo_custo_carteira, carteira_vinculada, origem_custo):
-    """
-    Atualiza dados do pedido e, se aplicável, o custo na lista de carteiras do cliente.
-    """
     total = nova_qtd * novo_valor
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
-            # 1. Atualiza Pedido
             cur.execute("""
                 UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, data_atualizacao=NOW()
                 WHERE id=%s
             """, (nova_qtd, novo_valor, total, id_pedido))
             
-            # 2. Atualiza Custo na Lista (Se houver carteira vinculada)
             msg_extra = ""
             if carteira_vinculada and carteira_vinculada != "N/A":
-                # Verifica se o cliente tem essa carteira na lista
                 cur.execute("""
                     UPDATE cliente.cliente_carteira_lista 
                     SET custo_carteira = %s 
@@ -263,7 +299,7 @@ def fechar_modal():
     st.session_state['modal_ativo'] = None
     st.session_state['pedido_ativo'] = None
 
-# --- DIALOGS (ATUALIZADOS) ---
+# --- DIALOGS ---
 
 @st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
@@ -280,7 +316,6 @@ def dialog_novo_pedido():
     cli = df_c.iloc[ic]
     prod = df_p.iloc[ip]
     
-    # [VERIFICAÇÃO DE VÍNCULO]
     origem_produto = prod.get('origem_custo') if prod.get('origem_custo') else "Não definida"
     
     carteira_vinculada = None
@@ -304,7 +339,6 @@ def dialog_novo_pedido():
     
     st.divider()
     
-    # REGRA: Automático se tiver carteira vinculada
     check_default = True if carteira_vinculada else False
     add_cart = st.checkbox("Incluir/Atualizar na Lista de Carteira?", value=check_default)
     
@@ -313,23 +347,24 @@ def dialog_novo_pedido():
         if carteira_vinculada:
             n_cart = carteira_vinculada
             st.text_input("Carteira Destino", value=n_cart, disabled=True)
-            # Tenta buscar custo atual se o cliente já tiver
             custo_atual = 0.0
             if conn:
                 try:
                     conn = get_conn()
                     cur = conn.cursor()
-                    cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente=%s AND nome_carteira=%s", (cli['cpf'], n_cart))
+                    cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente=%s AND nome_carteira=%s AND origem_custo=%s", (cli['cpf'], n_cart, origem_produto))
                     r_cus = cur.fetchone()
                     if r_cus: 
                         custo_atual = float(r_cus[0])
-                        st.caption("ℹ️ Cliente já possui esta carteira. O valor abaixo atualizará o custo existente.")
+                        st.caption("ℹ️ Cliente com lista vinculada. Atualize o custo abaixo.")
+                    else:
+                        st.caption("ℹ️ Cliente sem lista. Será criado um novo vínculo.")
                     conn.close()
                 except: pass
             
             c_cart = st.number_input("Custo do Desconto (Carteira)", 0.0, value=custo_atual, step=0.01)
         else:
-            st.warning("Este produto não tem carteira vinculada nas configurações.")
+            st.warning("Este produto não tem carteira vinculada.")
             l_carts = listar_carteiras_ativas()
             n_cart = st.selectbox("Selecione Manualmente", [""] + l_carts)
             c_cart = st.number_input("Custo", 0.0, step=0.01)
@@ -351,7 +386,6 @@ def dialog_novo_pedido():
 
 @st.dialog("✏️ Editar", width="large")
 def dialog_editar(ped):
-    # Busca dados auxiliares
     origem_atual = "N/A"
     carteira_atual = "N/A"
     custo_atual_lista = 0.0
@@ -359,18 +393,15 @@ def dialog_editar(ped):
     conn = get_conn()
     if conn:
         try:
-            # 1. Origem
             df_prod_info = pd.read_sql(f"SELECT origem_custo FROM produtos_servicos WHERE id = {ped['id_produto']}", conn)
             if not df_prod_info.empty: origem_atual = df_prod_info.iloc[0]['origem_custo']
             
-            # 2. Carteira Config
             df_cart_info = pd.read_sql(f"SELECT nome_carteira FROM cliente.carteiras_config WHERE id_produto = {ped['id_produto']}", conn)
             if not df_cart_info.empty: carteira_atual = df_cart_info.iloc[0]['nome_carteira']
             
-            # 3. Custo Atual na Lista do Cliente
             if carteira_atual != "N/A":
                 cur = conn.cursor()
-                cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente = %s AND nome_carteira = %s", (ped['cpf_cliente'], carteira_atual))
+                cur.execute("SELECT custo_carteira FROM cliente.cliente_carteira_lista WHERE cpf_cliente = %s AND nome_carteira = %s AND origem_custo = %s", (ped['cpf_cliente'], carteira_atual, origem_atual))
                 res_c = cur.fetchone()
                 if res_c: custo_atual_lista = float(res_c[0])
             
@@ -387,11 +418,8 @@ def dialog_editar(ped):
         st.markdown("##### Dados Financeiros")
         
         c_f1, c_f2, c_f3 = st.columns(3)
-        # Regra: Carteira e Origem Bloqueados
         c_f1.text_input("Carteira (Bloqueado)", value=carteira_atual, disabled=True)
         c_f2.text_input("Origem (Bloqueado)", value=origem_atual, disabled=True)
-        
-        # Regra: Custo Editável
         novo_custo = c_f3.number_input("Custo Carteira (R$)", value=custo_atual_lista, step=0.01)
 
         st.markdown("##### Detalhes do Pedido")
