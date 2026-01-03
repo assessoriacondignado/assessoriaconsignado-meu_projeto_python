@@ -371,29 +371,16 @@ def interface_pesquisa_ampla():
             cur = conn.cursor(); cur.execute("SELECT DISTINCT convenio FROM banco_pf.pf_emprego_renda WHERE convenio IS NOT NULL ORDER BY convenio"); lista_convenios = [r[0] for r in cur.fetchall()]; cur.close()
         except: pass
         conn.close()
-    
     c_menu, c_regras = st.columns([4, 2]) 
     with c_menu:
         st.markdown("### 🗂️ Campos Disponíveis")
-        
-        # --- NOVO: CAMPO DE FILTRO DE CAMPOS ---
-        termo_filtro = st.text_input("🔍 Filtrar campos (Digite para buscar...)", key="filtro_campos_ampla")
-        
         for grupo, campos in CAMPOS_CONFIG.items():
-            # Filtra os campos que correspondem ao texto
-            campos_filtrados = [c for c in campos if termo_filtro.lower() in c['label'].lower()]
-            
-            # Mostra o grupo apenas se tiver campos compatíveis
-            if campos_filtrados:
-                # Expande automaticamente se houver filtro digitado
-                expandir_grupo = bool(termo_filtro)
-                with st.expander(grupo, expanded=expandir_grupo):
-                    colunas_botoes = st.columns(4)
-                    for idx, campo in enumerate(campos_filtrados):
-                        with colunas_botoes[idx % 4]: 
-                            if st.button(f"➕ {campo['label']}", key=f"add_{campo['coluna']}", use_container_width=True):
-                                st.session_state['regras_pesquisa'].append({'label': campo['label'], 'coluna': campo['coluna'], 'tabela': campo['tabela'], 'tipo': campo['tipo'], 'operador': None, 'valor': ''}); st.rerun()
-
+            with st.expander(grupo, expanded=False):
+                colunas_botoes = st.columns(4)
+                for idx, campo in enumerate(campos):
+                    with colunas_botoes[idx % 4]: 
+                        if st.button(f"➕ {campo['label']}", key=f"add_{campo['coluna']}", use_container_width=True):
+                            st.session_state['regras_pesquisa'].append({'label': campo['label'], 'coluna': campo['coluna'], 'tabela': campo['tabela'], 'tipo': campo['tipo'], 'operador': None, 'valor': ''}); st.rerun()
     with c_regras:
         st.markdown("### 🎯 Regras Ativas")
         if not st.session_state['regras_pesquisa']: st.info("Nenhuma regra. Selecione ao lado.")
