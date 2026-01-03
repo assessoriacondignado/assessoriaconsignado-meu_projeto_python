@@ -179,7 +179,6 @@ def obter_origem_padronizada(nome_origem):
             if conn: conn.close()
     return origem_final
 
-# [NOVA FUNÇÃO] Busca origem baseada no ambiente
 def buscar_origem_por_ambiente(nome_ambiente):
     conn = get_conn()
     origem_padrao = "WEB USUÁRIO" # Fallback
@@ -194,22 +193,30 @@ def buscar_origem_por_ambiente(nome_ambiente):
             if conn: conn.close()
     return origem_padrao
 
+# --- NOVA FUNÇÃO AUXILIAR ---
+def buscar_cliente_vinculado_ao_usuario(id_usuario):
+    """Busca o cliente vinculado ao usuário logado para registro"""
+    conn = get_conn()
+    cliente = {"id": None, "nome": None}
+    if conn and id_usuario:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, nome FROM admin.clientes WHERE id_usuario_vinculo = %s LIMIT 1", (id_usuario,))
+            res = cur.fetchone()
+            if res:
+                cliente["id"] = res[0]
+                cliente["nome"] = res[1]
+            conn.close()
+        except:
+            if conn: conn.close()
+    return cliente
+
 # =============================================================================
-# 2. FUNÇÃO DE DÉBITO FINANCEIRO (ATUALIZADA)
+# 2. FUNÇÃO DE DÉBITO FINANCEIRO (MANTIDA CONFORME GITHUB)
 # =============================================================================
 
 def processar_debito_automatico(origem_da_consulta, dados_consulta):
-    """
-    Nova Regra de Débito:
-    1. Identifica o USUÁRIO logado.
-    2. Cruza USUÁRIO + ORIGEM na lista de carteiras (cliente.cliente_carteira_lista).
-    3. Identifica CLIENTE PAGADOR, CARTEIRA e VALOR.
-    4. Busca TABELA SQL na config.
-    5. Lança o débito.
-    """
-    nome_usuario_logado = st.session_state.get('usuario_nome') # Usa nome para bater com a lista
-    # Se preferir usar CPF do usuário, mude para: st.session_state.get('usuario_cpf') e ajuste a query
-    
+    nome_usuario_logado = st.session_state.get('usuario_nome')
     if not nome_usuario_logado: return False, "Usuário não identificado na sessão."
 
     conn = get_conn()
@@ -218,8 +225,6 @@ def processar_debito_automatico(origem_da_consulta, dados_consulta):
     try:
         cur = conn.cursor()
         
-        # 1. Busca na Lista de Carteiras conciliando USUÁRIO + ORIGEM
-        # Isso localiza quem é o cliente (pagador), qual a carteira e o valor
         cur.execute("""
             SELECT cpf_cliente, nome_cliente, nome_carteira, custo_carteira, nome_produto
             FROM cliente.cliente_carteira_lista 
@@ -237,9 +242,7 @@ def processar_debito_automatico(origem_da_consulta, dados_consulta):
         nome_pagador = res_lista[1]
         nome_carteira_vinculada = res_lista[2]
         valor_cobranca = float(res_lista[3])
-        # nome_produto = res_lista[4] (Se precisar usar no histórico)
 
-        # 2. Busca a TABELA SQL na 'cliente.carteiras_config' usando o nome da carteira
         cur.execute("""
             SELECT nome_tabela_transacoes 
             FROM cliente.carteiras_config 
@@ -254,7 +257,6 @@ def processar_debito_automatico(origem_da_consulta, dados_consulta):
             
         tabela_sql = res_config[0]
 
-        # 3. Realizar o Lançamento de Débito
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_pagador,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
@@ -349,7 +351,7 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
         return False
 
 # =============================================================================
-# 4. SALVAR BASE PF E CONSULTA
+# 4. SALVAR BASE PF E CONSULTA (ATUALIZADO)
 # =============================================================================
 
 def salvar_dados_fator_no_banco(dados_api):
@@ -395,50 +397,126 @@ def salvar_dados_fator_no_banco(dados_api):
         if conn: conn.close()
         return False, f"Erro DB: {e}"
 
-def realizar_consulta_cpf(cpf, origem, forcar_nova=False):
+def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False):
+    """
+    Função principal de consulta (Atualizada).
+    - Identifica usuário e cliente vinculado.
+    - Verifica cache (Cenário 1) ou consulta API (Cenário 2).
+    - Registra na tabela conexoes.fatorconferi_registo_consulta com todos os detalhes solicitados.
+    """
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
+    
+    # 1. Obter dados do Usuário e Cliente Vinculado
+    id_usuario = st.session_state.get('usuario_id')
+    nome_usuario = st.session_state.get('usuario_nome', 'Sistema')
+    
+    dados_cliente_vinc = buscar_cliente_vinculado_ao_usuario(id_usuario)
+    id_cli_reg = dados_cliente_vinc['id']
+    nome_cli_reg = dados_cliente_vinc['nome']
+
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
+    
     try:
         cur = conn.cursor()
+        
+        # --- CENÁRIO 1: CACHE (SEM CUSTO) ---
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
+            
             if res and res[0] and os.path.exists(res[0]):
                 try:
-                    with open(res[0], 'r', encoding='utf-8') as f: 
+                    caminho_arq = res[0]
+                    with open(caminho_arq, 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
                         if dados.get('nome') or dados.get('cpf'):
-                            usr = st.session_state.get('usuario_nome', 'Sistema')
-                            id_usr = st.session_state.get('usuario_id', 0)
-                            cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora) VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', %s, %s, 'CACHE', NOW())", ("CPF SIMPLES", cpf_padrao, id_usr, usr, res[0], res[0], origem))
+                            # Registra o uso do Cache
+                            sql_cache = """
+                                INSERT INTO conexoes.fatorconferi_registo_consulta (
+                                    tipo_consulta, cpf_consultado, 
+                                    id_usuario, nome_usuario, 
+                                    id_cliente, nome_cliente,
+                                    valor_pago, caminho_json, 
+                                    status_api, link_arquivo_consulta, 
+                                    origem_consulta, ambiente, 
+                                    tipo_cobranca, data_hora
+                                ) VALUES (
+                                    %s, %s, 
+                                    %s, %s, 
+                                    %s, %s,
+                                    0, %s, 
+                                    'SUCESSO', 'BAIXAR', 
+                                    %s, %s, 
+                                    'CACHE', NOW()
+                                )
+                            """
+                            # Obs: Usando 'ambiente' também como 'origem_consulta' se não especificado diferente
+                            cur.execute(sql_cache, (
+                                "CPF SIMPLES", cpf_padrao, 
+                                id_usuario, nome_usuario, 
+                                id_cli_reg, nome_cli_reg,
+                                caminho_arq, 
+                                ambiente, ambiente
+                            ))
                             conn.commit(); conn.close()
                             return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
-                except: pass
+                except Exception as e: pass
         
+        # --- CENÁRIO 2: NOVA CONSULTA (COM CUSTO) ---
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
+        
         resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
         resp.encoding = 'ISO-8859-1'
         
         dados = parse_xml_to_dict(resp.text)
-        if not dados.get('nome') and not dados.get('cpf'): conn.close(); return {"sucesso": False, "msg": "Retorno vazio ou erro.", "raw": resp.text, "dados": dados}
+        if not dados.get('nome') and not dados.get('cpf'): 
+            conn.close()
+            return {"sucesso": False, "msg": "Retorno vazio ou erro.", "raw": resp.text, "dados": dados}
 
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
-        # --- DÉBITO FINANCEIRO COM NOVA REGRA ---
+        # --- DÉBITO FINANCEIRO (Mantido como solicitado, mas registro principal é feito abaixo) ---
         msg_financeira = ""
-        ok_fin, txt_fin = processar_debito_automatico(origem, dados)
+        # Tenta debitar da carteira se configurado (complemento da função)
+        ok_fin, txt_fin = processar_debito_automatico(ambiente, dados)
         if ok_fin: msg_financeira = f" | {txt_fin}"
         else: msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
         
         custo = buscar_valor_consulta_atual()
-        usr = st.session_state.get('usuario_nome', 'Sistema')
-        id_usr = st.session_state.get('usuario_id', 0)
-        cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora) VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', %s, %s, 'PAGO', NOW())", ("CPF SIMPLES", cpf_padrao, id_usr, usr, custo, path, path, origem))
+        
+        # Registra a Nova Consulta
+        sql_novo = """
+            INSERT INTO conexoes.fatorconferi_registo_consulta (
+                tipo_consulta, cpf_consultado, 
+                id_usuario, nome_usuario, 
+                id_cliente, nome_cliente,
+                valor_pago, caminho_json, 
+                status_api, link_arquivo_consulta, 
+                origem_consulta, ambiente,
+                tipo_cobranca, data_hora
+            ) VALUES (
+                %s, %s, 
+                %s, %s, 
+                %s, %s,
+                %s, %s, 
+                'SUCESSO', 'BAIXAR', 
+                %s, %s, 
+                'PAGO', NOW()
+            )
+        """
+        cur.execute(sql_novo, (
+            "CPF SIMPLES", cpf_padrao, 
+            id_usuario, nome_usuario, 
+            id_cli_reg, nome_cli_reg,
+            custo, path, 
+            ambiente, ambiente
+        ))
         conn.commit(); conn.close()
+        
         return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_financeira}
         
     except Exception as e:
@@ -474,13 +552,11 @@ def app_fator_conferi():
         if c3.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    # 1. Identifica ORIGEM pelo AMBIENTE
-                    nome_ambiente = "Painel Fator Conferi / Teste de Consulta" # Nome fixo deste ambiente
-                    origem_padrao = buscar_origem_por_ambiente(nome_ambiente)
+                    # 1. Identificação do local de consulta (Regra 1.1)
+                    nome_ambiente_acao = "teste_de_consulta_fatorconferi.cpf"
                     
-                    st.toast(f"Ambiente: {nome_ambiente} -> Origem: {origem_padrao}")
-                    
-                    res = realizar_consulta_cpf(cpf_in, origem_padrao, forcar)
+                    # Chama a função passando o ambiente corretamente
+                    res = realizar_consulta_cpf(cpf_in, nome_ambiente_acao, forcar)
                     st.session_state['resultado_fator'] = res
         
         if 'resultado_fator' in st.session_state:
@@ -505,7 +581,7 @@ def app_fator_conferi():
             else: st.error("Erro ao consultar saldo.")
         
     with tabs[3]: 
-        # --- Alteração Solicitada: Nome da tabela exibido acima da planilha ---
+        # --- Nome da tabela exibido acima da planilha (mantido da versão anterior) ---
         st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 0px;'>Tabela: conexoes.fatorconferi_registo_consulta</p>", unsafe_allow_html=True)
         
         conn = get_conn()
