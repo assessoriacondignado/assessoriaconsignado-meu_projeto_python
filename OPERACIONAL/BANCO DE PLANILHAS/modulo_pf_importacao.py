@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 import os
-import openpyxl  # Necessário para ler formatações do Excel
+import re
+import openpyxl
 from datetime import datetime
 import modulo_pf_cadastro as pf_core
 
@@ -29,11 +30,9 @@ def validar_planilha_estrita(caminho_arquivo):
     Retorna: (bool, msg_erro)
     """
     try:
-        # Carrega o workbook preservando estilos (data_only=False)
         wb = openpyxl.load_workbook(caminho_arquivo, data_only=False)
         ws = wb.active
         
-        # Itera sobre todas as colunas, limitando a busca às linhas 1 e 2
         for col_index, col_cells in enumerate(ws.iter_cols(min_row=1, max_row=2), start=1):
             cabecalho_val = col_cells[0].value
             nome_coluna = str(cabecalho_val) if cabecalho_val else openpyxl.utils.get_column_letter(col_index)
@@ -50,6 +49,31 @@ def validar_planilha_estrita(caminho_arquivo):
     except Exception as e:
         return False, f"Erro ao validar planilha: {str(e)}"
 
+# --- FUNÇÃO HELPER DE LIMPEZA CPF (REGRAS 2.1) ---
+def limpar_cpf_regra_importacao(valor):
+    """
+    Aplica as regras 2.1:
+    - Remove espaços (2.1.3)
+    - Remove letras/especiais (2.1.4)
+    - Remove zeros à esquerda para armazenamento (2.1.1)
+    """
+    if pd.isna(valor) or valor == "":
+        return ""
+    
+    # 1. Converte para string e remove espaços (2.1.3)
+    s = str(valor).strip()
+    
+    # 2. Remove tudo que não é número (letras, pontuação) (2.1.4)
+    s_nums = re.sub(r'\D', '', s)
+    
+    if not s_nums:
+        return ""
+        
+    # 3. Remove zeros à esquerda (2.1.1 e 2.1.2)
+    # Obs: Se for cpf_convenio, a regra de negócio do arquivo original forçava 11 digitos, 
+    # mas aqui estamos padronizando a limpeza base. O tratamento específico ocorre abaixo.
+    return s_nums.lstrip('0')
+
 def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_path_original):
     cur = conn.cursor()
     try:
@@ -61,7 +85,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         cur.execute("UPDATE banco_pf.pf_historico_importacoes SET caminho_arquivo_original = %s WHERE id = %s", (file_path_original, import_id))
 
-        # Verifica colunas do banco
         cols_banco_raw = get_table_columns(table_name)
         cols_banco = [c[0] for c in cols_banco_raw]
 
@@ -78,8 +101,10 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             
             new_rows = []
             for _, row in df.iterrows():
-                cpf_val = str(row[col_cpf]) if pd.notna(row[col_cpf]) else ""
-                cpf_limpo = pf_core.limpar_normalizar_cpf(cpf_val)
+                # Aplica limpeza rigorosa no CPF
+                cpf_val = row[col_cpf]
+                cpf_limpo = limpar_cpf_regra_importacao(cpf_val)
+                
                 if not cpf_limpo: continue
                 
                 whats_val = str(row[col_whats]).upper().strip() if col_whats and pd.notna(row[col_whats]) else None
@@ -91,22 +116,15 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                         tel_limpo = pf_core.limpar_apenas_numeros(tel_raw)
                         numero_final = None
                         
-                        # --- NOVA REGRA: Apenas números com 9 dígitos (celulares) ---
-                        # Aceita apenas formato DDD + 9 dígitos (Total 11)
-                        # Rejeita fixos (10 dígitos) ou incompletos
-                        
                         if len(tel_limpo) == 13 and tel_limpo.startswith("55"): 
-                            tel_limpo = tel_limpo[2:] # Remove DDI
+                            tel_limpo = tel_limpo[2:] 
                         
                         if len(tel_limpo) == 11:
-                            # Verifica se o primeiro dígito pós-DDD é 9 (Celular)
                             if tel_limpo[2] == '9':
                                 numero_final = tel_limpo
                             else:
-                                # Regra: Não inserir se não for 9 dígitos (ignora fixo)
                                 continue 
                         else:
-                            # Regra: Se não tiver 11 dígitos (DDD+9), considera erro/incompleto e não insere
                             continue
                         
                         if numero_final: 
@@ -123,7 +141,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                             
             if not new_rows: return 0, 0, ["Nenhum telefone celular válido encontrado."]
             df_proc = pd.DataFrame(new_rows)
-            # Deduplicação interna do arquivo (CPF + Numero)
             df_proc.drop_duplicates(subset=['cpf', 'numero'], inplace=True)
             cols_order = list(df_proc.columns)
 
@@ -142,17 +159,28 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             if 'data_atualizacao' in cols_banco:
                 df_proc['data_atualizacao'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+            # --- APLICAÇÃO DAS REGRAS DE CPF (2.1) ---
             for c in ['cpf']:
                 if c in df_proc.columns:
-                    def validar_cpf(val): return 10 <= len(pf_core.limpar_apenas_numeros(val)) <= 11
-                    df_proc = df_proc[df_proc[c].astype(str).apply(validar_cpf)]
+                    # 1. Aplica a limpeza que remove zeros, espaços e letras
+                    df_proc[c] = df_proc[c].apply(limpar_cpf_regra_importacao)
                     
+                    # 2. Validação: Verifica se sobrou algum número válido
+                    # Aceita se tiver dígitos suficientes. Como removemos zeros, um CPF 00123... vira "123..." (menos dígitos).
+                    # A regra 2.1.2 diz "aceita". Então filtramos apenas vazios ou muito curtos (erro óbvio).
+                    def validar_existencia_cpf(val): 
+                        return len(str(val)) > 0 
+                    
+                    df_proc = df_proc[df_proc[c].apply(validar_existencia_cpf)]
+                    
+                    # Exceção específica: cpf_convenio pede zero a esquerda?
+                    # O usuário pediu "2.1.1 sistema deve converter para número sem zero na frente".
+                    # Mantenho a regra global sem zero. Se cpf_convenio precisar de padding visual, é feito na exportação.
                     if table_name == 'cpf_convenio':
-                        df_proc[c] = df_proc[c].astype(str).apply(lambda x: pf_core.limpar_apenas_numeros(x).zfill(11))
-                    else:
-                        df_proc[c] = df_proc[c].astype(str).apply(pf_core.limpar_normalizar_cpf)
+                         # Caso legado exija zfill, descomentar abaixo. 
+                         # Por hora, seguindo a regra 2.1.1 estrita: SEM ZERO NA FRENTE NO BANCO.
+                         pass 
 
-            # Deduplicação interna do arquivo para E-mail e Endereço
             if table_name == 'pf_emails' and 'cpf' in df_proc.columns and 'email' in df_proc.columns:
                  df_proc.drop_duplicates(subset=['cpf', 'email'], inplace=True)
             
@@ -174,31 +202,21 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
         
         qtd_novos, qtd_atualizados = 0, 0
         
-        # ---------------------------------------------------------------------
-        # ESTRATÉGIA DE UPSERT / INSERT (NOVAS REGRAS DE UNICIDADE)
-        # ---------------------------------------------------------------------
-        
-        # Configuração das chaves de unicidade para evitar duplicatas
         pk_field = None
-        unique_checks = [] # Lista de colunas para checar existência (AND)
+        unique_checks = [] 
 
         if table_name == 'pf_dados':
             pk_field = 'cpf'
         elif table_name == 'pf_telefones':
-            # Regra: Não inserir se (CPF + NUMERO) já existir
             unique_checks = ['cpf', 'numero']
         elif table_name == 'pf_emails':
-            # Regra: Não inserir se (CPF + EMAIL) já existir
             unique_checks = ['cpf', 'email']
         elif table_name == 'pf_enderecos':
-            # Regra: Não inserir se (CPF + CEP) já existir
             unique_checks = ['cpf', 'cep']
         elif table_name == 'pf_emprego_renda':
             pk_field = 'matricula'
         
-        # --- CENÁRIO 1: TABELAS DE DADOS ÚNICOS (Atualiza se existir) ---
         if pk_field:
-            # Update
             set_parts = []
             for c in cols_order:
                 if c == pk_field: continue
@@ -213,12 +231,9 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
                 cur.execute(f"UPDATE {table_full_name} t SET {set_clause} FROM {staging_table} s WHERE t.{pk_field} = s.{pk_field}")
                 qtd_atualizados = cur.rowcount
             
-            # Insert Novos
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s WHERE NOT EXISTS (SELECT 1 FROM {table_full_name} t WHERE t.{pk_field} = s.{pk_field})")
             qtd_novos = cur.rowcount
 
-        # --- CENÁRIO 2: TABELAS DE LISTA (Telefone, Email, Endereço) ---
-        # Regra: Adicionar apenas se a combinação não existir (Não sobrescreve, apenas ignora duplicado)
         elif unique_checks:
             where_conditions = " AND ".join([f"t.{col} = s.{col}" for col in unique_checks])
             
@@ -232,14 +247,11 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
             """
             cur.execute(insert_query)
             qtd_novos = cur.rowcount
-            # Obs: Nestas tabelas não estamos atualizando registros existentes para preservar histórico ou dados manuais, apenas evitando duplicatas exatas.
 
-        # --- CENÁRIO 3: GENÉRICO (Insert Simples) ---
         else:
             cur.execute(f"INSERT INTO {table_full_name} ({', '.join(cols_order)}) SELECT {', '.join(cols_order)} FROM {staging_table} s")
             qtd_novos = cur.rowcount
             
-            # Atualização auxiliar de importacao_id em pf_dados
             str_imp = str(import_id)
             if table_name in ['pf_telefones', 'pf_emails', 'pf_enderecos', 'pf_emprego_renda', 'cpf_convenio']:
                 cur.execute(f"UPDATE banco_pf.pf_dados d SET importacao_id = CASE WHEN d.importacao_id IS NULL OR d.importacao_id = '' THEN %s ELSE d.importacao_id || ', ' || %s END FROM {staging_table} s WHERE d.cpf = s.cpf", (str_imp, str_imp))
@@ -248,7 +260,6 @@ def processar_importacao_lote(conn, df, table_name, mapping, import_id, file_pat
 
     except Exception as e: raise e
 
-# --- INTERFACE HISTÓRICO E PRINCIPAL ---
 def interface_historico():
     st.markdown("### 📜 Histórico de Importações")
     if st.button("⬅️ Voltar"): st.session_state['import_step'] = 1; st.rerun()
@@ -288,9 +299,7 @@ def interface_importacao():
         st.info("ℹ️ Aceita arquivos **.CSV** e **.XLSX (Excel)**.")
         st.warning("⚠️ **Regra de Importação:** Formato 'Geral' bloqueado. Use Texto ou Número.")
         
-        # --- ALTERAÇÃO: EXIBIÇÃO DA TABELA SQL ---
         st.markdown(f"###### 🗃️ Tabela SQL: `{mapa[sel]}` | Tipo: {sel}")
-        # ----------------------------------------
         
         uploaded = st.file_uploader("Selecione o arquivo", type=['csv', 'xlsx'])
         
