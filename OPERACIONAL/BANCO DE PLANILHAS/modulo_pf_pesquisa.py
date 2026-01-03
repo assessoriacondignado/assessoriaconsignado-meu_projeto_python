@@ -432,7 +432,9 @@ def interface_pesquisa_ampla():
                 novo_op_full = c_op.selectbox("Op.", opcoes, index=idx_sel, key=f"op_{i}", label_visibility="collapsed")
                 novo_op_simbolo = novo_op_full.split(' : ')[0] if novo_op_full else "="
                 if novo_op_simbolo == '∅': c_val.text_input("Valor", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed"); novo_valor = None
-                elif regra['tipo'] == 'data': novo_valor = c_val.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
+                elif regra['tipo'] == 'data': 
+                    # REGRA 2.3 (Data de Nascimento): Limites 1900-2050
+                    novo_valor = c_val.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
                 else: novo_valor = c_val.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
                 st.session_state['regras_pesquisa'][i]['operador'] = novo_op_full; st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
                 if c_del.button("🗑️", key=f"del_{i}"): regras_rem.append(i)
