@@ -443,7 +443,7 @@ def app_fator_conferi():
         st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
         st.caption("Selecione uma tabela para visualizar e editar os parâmetros.")
         
-        # Mapeamento Amigável -> Nome Real da Tabela
+        # ATUALIZADO: Incluindo a nova tabela
         opcoes_tabelas = {
             "1. Carteiras de Clientes": "conexoes.fator_cliente_carteira",
             "2. Origens de Consulta": "conexoes.fatorconferi_origem_consulta_fator",
@@ -451,7 +451,8 @@ def app_fator_conferi():
             "4. Registros de Consulta": "conexoes.fatorconferi_registo_consulta",
             "5. Tipos de Consulta": "conexoes.fatorconferi_tipo_consulta_fator",
             "6. Valores da Consulta": "conexoes.fatorconferi_valor_da_consulta",
-            "7. Relação de Conexões": "conexoes.relacao"
+            "7. Relação de Conexões": "conexoes.relacao",
+            "8. Ambiente de Consulta": "conexoes.fatorconferi_ambiente_consulta"
         }
         
         tabela_escolhida = st.selectbox("Selecione a Tabela:", list(opcoes_tabelas.keys()))
@@ -479,3 +480,17 @@ def app_fator_conferi():
                         time.sleep(1); st.rerun()
             else:
                 st.warning("Tabela vazia ou não encontrada. Verifique se ela foi criada no banco.")
+                # Opção para criar registro inicial se for uma tabela de configuração vazia
+                if st.button("Criar registro inicial em branco"):
+                    conn = get_conn()
+                    if conn:
+                        try:
+                            cur = conn.cursor()
+                            # Tenta inserir um registro vazio dependendo da tabela
+                            # Isso é um fallback genérico, pode falhar se houver constraints NOT NULL
+                            # Mas ajuda a inicializar tabelas simples
+                            cur.execute(f"INSERT INTO {nome_sql} DEFAULT VALUES")
+                            conn.commit()
+                            st.rerun()
+                        except: 
+                            st.error("Não foi possível criar registro vazio automaticamente.")
