@@ -32,7 +32,6 @@ for pasta in pastas_modulos:
         sys.path.append(caminho)
 
 # --- 3. IMPORTAÇÕES DE MÓDULOS (Com tratamento de erro) ---
-# Se algum módulo for excluído, o sistema continua rodando os outros.
 try:
     import conexao
     import modulo_cliente
@@ -115,7 +114,7 @@ def validar_login_db(usuario_input, senha_input):
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
         
-        # BUSCA PELA COLUNA 'nivel' (Ajuste solicitado anteriormente)
+        # BUSCA PELA COLUNA 'nivel'
         sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
@@ -351,11 +350,19 @@ def main():
             else: st.info("Módulo Chat não carregado.")
             
         # Operacional
-        elif "Operacional > Clientes" in pag: modulo_cliente.app_clientes()
+        elif "Operacional > Clientes" in pag: 
+            # --- APLICAÇÃO DA REGRA DE BLOQUEIO ---
+            # Verifica se existe uma regra 'bloqueio_menu_cliente' para o nível do usuário atual
+            modulo_cliente.verificar_bloqueio_de_acesso(
+                nome_regra_codigo="bloqueio_menu_cliente", 
+                caminho_atual="Operacional > Clientes", 
+                parar_se_bloqueado=True
+            )
+            modulo_cliente.app_clientes()
+            
         elif "Operacional > Usuários" in pag:
-            # Verifica se o modulo_usuario carregou antes de chamar
             if modulo_usuario: modulo_usuario.app_usuarios()
-            else: st.error("Módulo de Usuários não encontrado (verifique se o arquivo modulo_usuario.py existe).")
+            else: st.error("Módulo de Usuários não encontrado.")
             
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
