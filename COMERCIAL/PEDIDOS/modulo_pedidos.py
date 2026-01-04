@@ -45,6 +45,18 @@ def listar_carteiras_ativas():
         except: conn.close()
     return []
 
+# --- NOVA FUNÇÃO: LISTAR TABELAS DO ADMIN ---
+def listar_tabelas_schema(schema_name):
+    conn = get_conn()
+    if conn:
+        try:
+            query = "SELECT table_name FROM information_schema.tables WHERE table_schema = %s ORDER BY table_name"
+            df = pd.read_sql(query, conn, params=(schema_name,))
+            conn.close()
+            return df['table_name'].tolist()
+        except: conn.close()
+    return []
+
 # --- LÓGICA FINANCEIRA ---
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     try:
@@ -280,61 +292,71 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
         except Exception as e: return False, str(e)
     return False, "Erro BD"
 
-# --- FUNÇÕES PARA ABA PARÂMETROS (EDIÇÃO DIRETA) ---
-def carregar_tabela_pedidos_completa():
+# --- FUNÇÕES DE SALVAMENTO GENÉRICO (PARA ADMIN E PEDIDOS) ---
+def salvar_tabela_generica(schema, tabela, df_original, df_editado):
     conn = get_conn()
-    if conn:
-        try:
-            df = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC", conn)
-            conn.close()
-            return df
-        except: conn.close()
-    return pd.DataFrame()
-
-def salvar_alteracoes_pedidos_geral(df_original, df_editado):
-    conn = get_conn()
-    if not conn: return False
+    if not conn: return False, "Sem conexão"
     try:
         cur = conn.cursor()
-        ids_originais = set(df_original['id'].dropna().astype(int).tolist())
+        pk = 'id' # Convenção padrão do sistema
         
-        # 1. Detectar Deletes
-        ids_editados_atuais = set()
-        for _, row in df_editado.iterrows():
-            if pd.notna(row.get('id')) and row.get('id') != '':
-                try: ids_editados_atuais.add(int(row['id']))
-                except: pass
-        
-        ids_del = ids_originais - ids_editados_atuais
-        if ids_del:
-            ids_str = ",".join(map(str, ids_del))
-            cur.execute(f"DELETE FROM pedidos WHERE id IN ({ids_str})")
+        # Verifica se tem ID para controle
+        if pk in df_original.columns:
+            ids_originais = set(df_original[pk].dropna().astype(int).tolist())
+        else:
+            # Se não tiver ID, tentamos rodar sem proteção de delete (arriscado, mas funcional para views simples)
+            ids_originais = set() 
 
-        # 2. Upsert (Update/Insert)
-        for index, row in df_editado.iterrows():
-            # Protege campos automáticos de edição manual direta se necessário
-            # Aqui permitimos edição de quase tudo para correção, exceto id
-            colunas_db = [c for c in row.index if c not in ['id', 'data_criacao']] 
-            valores = [row[c] for c in colunas_db]
-            row_id = row.get('id')
+        # 1. Detectar Deletes (Apenas se tiver ID)
+        if pk in df_original.columns:
+            ids_editados = set()
+            for _, row in df_editado.iterrows():
+                if pd.notna(row.get(pk)) and row.get(pk) != '':
+                    try: ids_editados.add(int(row[pk]))
+                    except: pass
             
+            ids_del = ids_originais - ids_editados
+            if ids_del:
+                ids_str = ",".join(map(str, ids_del))
+                cur.execute(f"DELETE FROM {schema}.{tabela} WHERE {pk} IN ({ids_str})")
+
+        # 2. Upsert (Insert ou Update)
+        for index, row in df_editado.iterrows():
+            colunas_validas = list(row.index)
+            # Removemos colunas timestamp automáticas se existirem no dataframe mas forem geradas pelo banco
+            cols_ignore = ['data_criacao', 'data_atualizacao']
+            colunas_validas = [c for c in colunas_validas if c not in cols_ignore]
+
+            row_id = row.get(pk)
             eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
             
             if eh_novo:
-                cols_str = ", ".join(colunas_db)
-                placeholders = ", ".join(["%s"] * len(colunas_db))
-                cur.execute(f"INSERT INTO pedidos ({cols_str}) VALUES ({placeholders})", valores)
+                # INSERT
+                # Remove ID da lista de inserção pois é SERIAL (automático)
+                cols_insert = [c for c in colunas_validas if c != pk]
+                vals_insert = [row[c] for c in cols_insert]
+                
+                placeholders = ", ".join(["%s"] * len(cols_insert))
+                cols_str = ", ".join(cols_insert)
+                
+                if cols_insert:
+                    cur.execute(f"INSERT INTO {schema}.{tabela} ({cols_str}) VALUES ({placeholders})", vals_insert)
+            
             elif int(row_id) in ids_originais:
-                set_clause = ", ".join([f"{c} = %s" for c in colunas_db])
-                valores_update = valores + [int(row_id)]
-                cur.execute(f"UPDATE pedidos SET {set_clause} WHERE id = %s", valores_update)
+                # UPDATE
+                cols_update = [c for c in colunas_validas if c != pk]
+                vals_update = [row[c] for c in cols_update]
+                vals_update.append(int(row_id)) # ID vai no WHERE
+                
+                if cols_update:
+                    set_clause = ", ".join([f"{c} = %s" for c in cols_update])
+                    cur.execute(f"UPDATE {schema}.{tabela} SET {set_clause} WHERE {pk} = %s", vals_update)
 
         conn.commit(); conn.close()
-        return True
+        return True, "Dados salvos com sucesso!"
     except Exception as e:
-        st.error(f"Erro ao salvar tabela: {e}")
         if conn: conn.close()
-        return False
+        return False, str(e)
 
 # --- FUNÇÕES DE ESTADO ---
 def abrir_modal(tipo, pedido=None):
@@ -355,15 +377,12 @@ def dialog_novo_pedido():
         return
 
     c1, c2 = st.columns(2)
-    # --- ALTERADO: Filtra só por nome e exibe nota de conferência ---
     ic = c1.selectbox("Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
     cli = df_c.iloc[ic]
     c1.caption(f"🆔 Conferência: CPF {cli['cpf']} | 📞 {cli['telefone']}")
-    # ---------------------------------------------------------------
+    
     ip = c2.selectbox("Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
-    
     prod = df_p.iloc[ip]
-    
     origem_produto = prod.get('origem_custo') if prod.get('origem_custo') else "Não definida"
     
     carteira_vinculada = None
@@ -378,8 +397,6 @@ def dialog_novo_pedido():
         except: conn.close()
 
     cart_display = carteira_vinculada if carteira_vinculada else "Não localizada"
-    
-    # Adicionada a conferência visual do cliente no bloco de informações
     st.info(f"👤 **Cliente:** {cli['nome']}\n📦 **Item:** {prod['nome']}\n📍 **Origem:** {origem_produto}\n💼 **Carteira:** {cart_display}")
 
     c3, c4 = st.columns(2)
@@ -388,7 +405,6 @@ def dialog_novo_pedido():
     st.markdown(f"### Total: R$ {qtd*val:.2f}")
     
     st.divider()
-    
     check_default = True if carteira_vinculada else False
     add_cart = st.checkbox("Incluir/Atualizar na Lista de Carteira?", value=check_default)
     
@@ -518,8 +534,8 @@ def dialog_tarefa(ped):
 def app_pedidos():
     st.markdown("## 🛒 Módulo de Pedidos")
     
-    # NOVAS ABAS DE NAVEGAÇÃO
-    tab_lista, tab_param = st.tabs(["📋 Lista de Pedidos", "⚙️ Parâmetros"])
+    # NOVAS ABAS DE NAVEGAÇÃO: Adicionado "Tabelas Admin"
+    tab_lista, tab_param, tab_admin = st.tabs(["📋 Lista de Pedidos", "⚙️ Parâmetros", "🗃️ Tabelas Admin"])
 
     # ABA 1: LISTA (ORIGINAL)
     with tab_lista:
@@ -582,27 +598,73 @@ def app_pedidos():
         st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
         st.caption("Use com cautela. Permite editar dados brutos do sistema.")
         
-        df_pedidos_raw = carregar_tabela_pedidos_completa()
-        if not df_pedidos_raw.empty:
-            # Configuração do Editor
-            df_editado = st.data_editor(
-                df_pedidos_raw,
-                key="editor_pedidos",
-                use_container_width=True,
-                num_rows="dynamic",
-                disabled=["id", "data_criacao", "data_atualizacao"] # Protege campos de sistema
-            )
-            
-            if st.button("💾 Salvar Alterações na Tabela", type="primary"):
-                with st.spinner("Salvando..."):
-                    if salvar_alteracoes_pedidos_geral(df_pedidos_raw, df_editado):
-                        st.success("Dados atualizados com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
-        else:
-            st.info("A tabela de pedidos está vazia.")
+        conn = get_conn()
+        if conn:
+            df_pedidos_raw = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC", conn)
+            conn.close()
+            if not df_pedidos_raw.empty:
+                df_editado = st.data_editor(
+                    df_pedidos_raw,
+                    key="editor_pedidos",
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    disabled=["id", "data_criacao", "data_atualizacao"] 
+                )
+                if st.button("💾 Salvar Alterações na Tabela", type="primary"):
+                    with st.spinner("Salvando..."):
+                        # Reutiliza a nova função genérica (schema public para pedidos)
+                        ok, msg = salvar_tabela_generica('public', 'pedidos', df_pedidos_raw, df_editado)
+                        if ok: st.success(msg); time.sleep(1); st.rerun()
+                        else: st.error(msg)
+            else: st.info("A tabela de pedidos está vazia.")
 
-    # Roteador de Modais (Mantido fora das abas para funcionar globalmente)
+    # ABA 3: TABELAS ADMIN (NOVA FUNCIONALIDADE)
+    with tab_admin:
+        st.markdown("#### 🗃️ Gestão de Tabelas (Schema: Admin)")
+        tabelas = listar_tabelas_schema('admin')
+        
+        if tabelas:
+            sel_tabela = st.selectbox("Selecione a Tabela para Editar:", tabelas)
+            st.divider()
+            
+            if sel_tabela:
+                conn = get_conn()
+                if conn:
+                    try:
+                        # Busca dados da tabela selecionada
+                        query = f"SELECT * FROM admin.{sel_tabela} ORDER BY id"
+                        df_tab = pd.read_sql(query, conn)
+                        conn.close()
+                        
+                        st.caption(f"Editando tabela: **admin.{sel_tabela}**")
+                        
+                        # Editor de Dados
+                        df_tab_editado = st.data_editor(
+                            df_tab,
+                            key=f"editor_admin_{sel_tabela}",
+                            use_container_width=True,
+                            num_rows="dynamic",
+                            disabled=["id", "data_criacao"] # Bloqueia ID e data de criação por segurança
+                        )
+                        
+                        # Botão Salvar
+                        if st.button(f"💾 Salvar Alterações em {sel_tabela}", type="primary"):
+                            with st.spinner(f"Processando alterações em admin.{sel_tabela}..."):
+                                ok, msg = salvar_tabela_generica('admin', sel_tabela, df_tab, df_tab_editado)
+                                if ok:
+                                    st.success(f"Tabela {sel_tabela} atualizada com sucesso!")
+                                    time.sleep(1.5)
+                                    st.rerun()
+                                else:
+                                    st.error(f"Erro ao salvar: {msg}")
+
+                    except Exception as e:
+                        if conn: conn.close()
+                        st.error(f"Erro ao carregar tabela: {e}")
+        else:
+            st.info("Nenhuma tabela encontrada no schema 'admin'.")
+
+    # Roteador de Modais
     m = st.session_state['modal_ativo']; p = st.session_state['pedido_ativo']
     if m == 'novo': dialog_novo_pedido()
     elif m == 'cliente' and p is not None: 
