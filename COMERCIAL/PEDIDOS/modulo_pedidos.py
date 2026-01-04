@@ -61,7 +61,6 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     try:
         cur = conn.cursor()
         
-        # 1. Identificar a Origem de Custo do Produto
         cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
         res_prod = cur.fetchone()
         if not res_prod or not res_prod[0]:
@@ -70,7 +69,6 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         origem = res_prod[0]
         cpf_cliente = dados_pedido['cpf_cliente']
 
-        # 2. Localizar a Carteira na Lista do Cliente
         cur.execute("""
             SELECT nome_carteira 
             FROM cliente.cliente_carteira_lista 
@@ -84,7 +82,6 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         
         nome_carteira = res_lista[0]
 
-        # 3. Identificar a Tabela SQL da Carteira
         cur.execute("""
             SELECT nome_tabela_transacoes 
             FROM cliente.carteiras_config 
@@ -98,7 +95,6 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
             
         tabela_sql = res_config[0]
 
-        # 4. Calcular Valores e Motivo
         valor = float(dados_pedido['valor_total'])
         codigo_pedido = dados_pedido['codigo']
         
@@ -113,7 +109,6 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
             saldo_novo = saldo_anterior - valor
             motivo = f"Cancelada Pedido {codigo_pedido}"
 
-        # 5. Inserir Transação
         sql_insert = f"""
             INSERT INTO {tabela_sql} 
             (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
@@ -158,7 +153,6 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
     if conn:
         try:
             cur = conn.cursor()
-            # REGRA 1.1: Ao criar (status 'Solicitado'), marca data_solicitacao
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
@@ -226,8 +220,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             cur = conn.cursor()
             obs_hist = obs
             msg_fin = ""
-            
-            # --- REGRA DE DATA E FINANCEIRO ---
             coluna_data = ""
             
             if novo_status == "Solicitado":
@@ -245,11 +237,8 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
 
-            # Atualiza Status, Observação e a DATA ESPECÍFICA
             sql_update = f"UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW(){coluna_data} WHERE id=%s"
             cur.execute(sql_update, (novo_status, obs, id_pedido))
-            
-            # Atualiza Histórico
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
             
             conn.commit(); conn.close()
@@ -511,6 +500,17 @@ def dialog_status(ped):
                 st.success("Atualizado!"); time.sleep(1); fechar_modal(); st.rerun()
     st.divider(); st.caption("Histórico")
     st.dataframe(buscar_historico_pedido(ped['id']), hide_index=True)
+
+# --- FUNÇÃO QUE FALTAVA ---
+@st.dialog("📜 Histórico")
+def dialog_historico(id_pedido, codigo):
+    st.markdown(f"### Histórico do Pedido: {codigo}")
+    df = buscar_historico_pedido(id_pedido)
+    if not df.empty:
+        # Ajuste para exibir tabela de forma elegante
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum histórico encontrado.")
 
 @st.dialog("🗑️ Excluir")
 def dialog_excluir(pid):
