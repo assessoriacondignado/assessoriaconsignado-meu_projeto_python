@@ -114,7 +114,7 @@ def validar_login_db(usuario_input, senha_input):
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
         
-        # BUSCA PELA COLUNA 'nivel'
+        # BUSCA PELA COLUNA 'nivel' (Ajuste solicitado anteriormente)
         sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
@@ -228,13 +228,15 @@ def renderizar_menu_lateral():
         nome_completo = st.session_state.get('usuario_nome', 'Visitante')
         primeiro_nome = nome_completo.split()[0].title() if nome_completo else "Visitante"
         email_user = st.session_state.get('usuario_email', 'sem_email')
-        cargo_user = st.session_state.get('usuario_cargo', '-')
-
+        
+        # Pega o cargo (nível) vindo do banco
+        cargo_banco = st.session_state.get('usuario_cargo', '-')
+        
         st.markdown(f"""
             <div style="text-align: center; margin-bottom: 20px; line-height: 1.4;">
                 <strong style="font-size: 1.1em;">{primeiro_nome}</strong><br>
                 <span style="font-size: 0.85em; color: #333;">{email_user}</span><br>
-                <span style="font-size: 0.85em; color: gray;">{cargo_user}</span>
+                <span style="font-size: 0.85em; color: gray;">{cargo_banco}</span>
             </div>
             <hr style="margin-top: 5px; margin-bottom: 15px;">
         """, unsafe_allow_html=True)
@@ -247,33 +249,37 @@ def renderizar_menu_lateral():
             "Pedidos": "🛒", "Tarefas": "📝", "Renovação": "🔄"
         }
 
-        cargo = st.session_state.get('usuario_cargo', 'Cliente')
+        # --- LÓGICA DE PERMISSÃO ROBUSTA ---
+        # 1. Converte para texto, remove espaços e joga tudo para MAIÚSCULO
+        cargo_normalizado = str(cargo_banco).strip().upper()
+        
         estrutura_menu = {}
         
         if st.button("🏠 Início", key="btn_home", on_click=resetar_atividade):
             st.session_state['pagina_atual'] = "Início"
             st.session_state['menu_aberto'] = None
             
-        # Define opções baseado no cargo
-        if cargo in ["Admin", "Gerente"]:
+        # 2. Verifica se é ADMIN ou GERENTE (independente de como está escrito no banco)
+        if cargo_normalizado in ["ADMIN", "GERENTE", "ADMINISTRADOR"]:
             estrutura_menu["Operacional"] = ["Clientes", "Usuários", "Banco PF", "Campanhas", "WhatsApp"]
             estrutura_menu["Comercial"] = ["Produtos", "Pedidos", "Tarefas", "Renovação"]
             estrutura_menu["Conexões"] = [] 
         else:
+            # Menu padrão para outros níveis (Cliente, Vendedor, etc)
             estrutura_menu["Operacional"] = ["Clientes", "Usuários", "WhatsApp"]
 
-        # Renderização Dinâmica
+        # Renderização Dinâmica (mantida igual)
         for menu_pai, subitens in estrutura_menu.items():
             icon_pai = icones.get(menu_pai, "📂")
             
-            # Menu sem filhos
+            # Menu sem filhos (Ex: Conexões)
             if not subitens:
                 if st.button(f"{icon_pai} {menu_pai}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
                     st.session_state['pagina_atual'] = menu_pai
                     st.session_state['menu_aberto'] = None
                 continue
 
-            # Menu com Filhos
+            # Menu com Filhos (Acordeão)
             seta = "▼" if st.session_state['menu_aberto'] == menu_pai else "►"
             label_pai = f"{icon_pai} {menu_pai} {seta}"
             

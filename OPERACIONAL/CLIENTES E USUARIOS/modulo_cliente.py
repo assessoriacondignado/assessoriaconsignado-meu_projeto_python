@@ -20,7 +20,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES E DB (GERAL)
+# 1. FUNÇÕES AUXILIARES
 # =============================================================================
 
 def formatar_cnpj(v):
@@ -37,16 +37,15 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-# --- NOVA LÓGICA DE BLOQUEIO (FLUXO 1 AO 7) ---
-def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_bloqueado=False):
+# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (CORRIGIDA) ---
+def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_bloqueado=False, nome_regra_codigo=None):
     """
-    Verifica permissão baseada no cruzamento de Chaves e Níveis.
-    
-    Argumentos:
-    - chave: Identificador no código (Ex: 'menu_cliente')
-    - caminho_atual: Local visual para registro (Ex: 'Operacional > Clientes')
+    Verifica bloqueio na tabela permissão.permissão_usuario_regras_nível (com acento).
     """
-    # 1. Validação de Login
+    # Compatibilidade
+    if nome_regra_codigo:
+        chave = nome_regra_codigo
+
     if not st.session_state.get('logado'):
         return True 
 
@@ -56,9 +55,8 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
     try:
         cur = conn.cursor()
         
-        # 2. Verificar Nível do Usuário (Busca ID)
+        # 1. Busca ID do Nível do Usuário
         nivel_usuario_nome = st.session_state.get('usuario_cargo', '') 
-        
         if not nivel_usuario_nome:
             nivel_usuario_nome = 'Cliente sem permissão'
 
@@ -66,63 +64,59 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
         res_nivel = cur.fetchone()
         
         if not res_nivel:
-            conn.close(); return False # Nível não existe, não bloqueia (ou trate conforme segurança desejada)
+            conn.close(); return False 
             
         id_nivel_usuario = str(res_nivel[0])
 
-        # 3. Busca Regras ATIVAS (Status = SIM)
+        # 2. Busca Regras (TABELA COM ACENTO: permissão_usuario_regras_nível)
         cur.execute("""
-            SELECT id, chave, nivel, caminho_bloqueio, nome_regra
+            SELECT id, chave, nivel, status, caminho_bloqueio, nome_regra
             FROM permissão.permissão_usuario_regras_nível 
             WHERE status = 'SIM'
         """)
         regras_ativas = cur.fetchall()
         
         bloqueado = False
-        regra_acionada = None
-        id_regra = None
+        regra_aplicada = None
+        id_regra_aplicada = None
+        caminho_registrado = None
 
         for row in regras_ativas:
-            r_id, r_chaves_db, r_niveis_db, r_caminho, r_nome = row
+            rid, r_chave_db, r_niveis_bloqueados, r_status, r_caminho, r_nome = row
             
-            # Limpeza e conversão em listas
-            lista_chaves_regra = [k.strip() for k in str(r_chaves_db).split(';') if k.strip()]
-            lista_niveis_bloqueados = [n.strip() for n in str(r_niveis_db).split(';') if n.strip()]
+            lista_chaves_db = [k.strip() for k in str(r_chave_db).split(';') if k.strip()]
             
-            # 5. Se CONSTA A CHAVE atual na regra
-            if chave in lista_chaves_regra:
-                # 4. Se CONSTA O ID do nível na regra
-                if id_nivel_usuario in lista_niveis_bloqueados:
+            if chave in lista_chaves_db:
+                lista_niveis = [n.strip() for n in str(r_niveis_bloqueados).split(';') if n.strip()]
+                
+                if id_nivel_usuario in lista_niveis:
                     bloqueado = True
-                    regra_acionada = r_nome
-                    id_regra = r_id
-                    break # Encontrou um bloqueio, para a busca
+                    regra_aplicada = r_nome
+                    id_regra_aplicada = rid
+                    caminho_registrado = r_caminho
+                    break 
         
         if bloqueado:
-            # 7. Grava resumo da execução no caminho_bloqueio
-            resumo_execucao = f"Bloqueio acionado em {datetime.now().strftime('%d/%m %H:%M')} | Chave: {chave} | Caminho: {caminho_atual} | Nível ID: {id_nivel_usuario}"
-            
-            # Só atualiza se o resumo for significativamente novo para evitar updates constantes, 
-            # ou atualiza sempre para log de última tentativa. Aqui atualizaremos sempre.
-            cur.execute("""
-                UPDATE permissão.permissão_usuario_regras_nível 
-                SET caminho_bloqueio = %s 
-                WHERE id = %s
-            """, (resumo_execucao, id_regra))
-            conn.commit()
+            # Atualiza caminho (TABELA COM ACENTO)
+            if not caminho_registrado and id_regra_aplicada:
+                cur.execute("""
+                    UPDATE permissão.permissão_usuario_regras_nível 
+                    SET caminho_bloqueio = %s 
+                    WHERE id = %s
+                """, (caminho_atual, id_regra_aplicada))
+                conn.commit()
             
             conn.close()
             
-            # 6. Bloqueio Visual
             if parar_se_bloqueado:
-                st.error("🚫 SEM PERMISSÃO")
-                st.caption(f"Regra aplicada: {regra_acionada}")
+                st.error("🚫 USUÁRIO SEM PERMISSÃO")
+                st.caption(f"Regra de bloqueio: {regra_aplicada}")
                 st.stop()
-            
+                
             return True
-
+            
         conn.close()
-        return False # Liberado
+        return False
 
     except Exception as e:
         print(f"Erro verificação permissão: {e}")
@@ -133,6 +127,7 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
 def listar_regras_bloqueio():
     conn = get_conn()
     try:
+        # TABELA COM ACENTO
         df = pd.read_sql("SELECT * FROM permissão.permissão_usuario_regras_nível ORDER BY id", conn)
         conn.close(); return df
     except: 
@@ -143,6 +138,7 @@ def salvar_regra_bloqueio(nome, chave, niveis_ids_str, categoria, status, descri
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # TABELA COM ACENTO
         cur.execute("""
             INSERT INTO permissão.permissão_usuario_regras_nível 
             (nome_regra, chave, nivel, categoria, status, descricao) 
@@ -157,6 +153,7 @@ def atualizar_regra_bloqueio(id_reg, nome, chave, niveis_ids_str, categoria, sta
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # TABELA COM ACENTO
         cur.execute("""
             UPDATE permissão.permissão_usuario_regras_nível 
             SET nome_regra=%s, chave=%s, nivel=%s, categoria=%s, status=%s, descricao=%s
@@ -171,13 +168,14 @@ def excluir_regra_bloqueio(id_reg):
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # TABELA COM ACENTO
         cur.execute("DELETE FROM permissão.permissão_usuario_regras_nível WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except:
         if conn: conn.close()
         return False
 
-# --- FUNÇÕES NÍVEIS (AUXILIARES) ---
+# --- DEMAIS FUNÇÕES DE PERMISSÃO (Mantidas sem alteração de nome de tabela pois são outras) ---
 def listar_permissoes_nivel():
     conn = get_conn()
     try:
@@ -217,7 +215,11 @@ def atualizar_permissao_nivel(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
-# --- FUNÇÕES CHAVE (AUXILIARES) ---
+# ... [MANTIDO O RESTANTE DAS FUNÇÕES DE CHAVE, CATEGORIA, AGRUPAMENTOS, CLIENTES, ETC] ...
+# (Para economizar espaço, mantenha as funções que não interagem com a tabela de regras inalteradas do código anterior.
+# Se precisar, eu reenvio TUDO, mas o foco da correção foi nas funções acima).
+# ...
+
 def listar_permissoes_chave():
     conn = get_conn()
     try:
@@ -257,7 +259,6 @@ def atualizar_permissao_chave(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
-# --- FUNÇÕES CATEGORIA (AUXILIARES) ---
 def listar_permissoes_categoria():
     conn = get_conn()
     try:
@@ -297,11 +298,7 @@ def atualizar_permissao_categoria(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
-# ... [MANTIDO O RESTANTE DAS FUNÇÕES DE AGRUPAMENTO, CNPJ, CARTEIRAS, ETC] ...
-# (Para economizar espaço, as funções de negócio como salvar_cliente_cnpj e outras permanecem iguais ao arquivo anterior.
-# Se precisar delas completas aqui, me avise, mas elas não mudaram).
-
-# --- AGRUPAMENTOS ---
+# --- MANTENDO FUNÇÕES DE NEGÓCIO ---
 def listar_agrupamentos(tipo):
     conn = get_conn()
     tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
@@ -345,7 +342,6 @@ def atualizar_agrupamento(tipo, id_agrup, novo_nome):
         if conn: conn.close()
         return False
 
-# --- CLIENTE CNPJ ---
 def listar_cliente_cnpj():
     conn = get_conn()
     try:
@@ -385,7 +381,6 @@ def atualizar_cliente_cnpj(id_reg, cnpj, nome):
         if conn: conn.close()
         return False
 
-# --- RELAÇÃO PEDIDO CARTEIRA ---
 def listar_relacao_pedido_carteira():
     conn = get_conn()
     try:
@@ -425,7 +420,6 @@ def excluir_relacao_pedido_carteira(id_reg):
         if conn: conn.close()
         return False
 
-# --- CLIENTE CARTEIRA LISTA ---
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
@@ -517,9 +511,6 @@ def listar_clientes_para_selecao():
     except: 
         if conn: conn.close()
         return pd.DataFrame()
-
-# ... [MANTIDO O RESTANTE DAS FUNÇÕES DE BANCO: garantir_tabela_config_carteiras, listar_tabelas_transacao_reais, etc...] ...
-# ... [Para garantir que o código funcione, replico aqui as essenciais para o app] ...
 
 def garantir_tabela_config_carteiras():
     conn = get_conn()
@@ -614,6 +605,15 @@ def salvar_nova_carteira_sistema(id_prod, nome_prod, nome_carteira, status, orig
     except:
         if conn: conn.close()
         return False
+
+def listar_produtos_para_selecao():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, nome FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
+        conn.close(); return df
+    except: 
+        if conn: conn.close()
+        return pd.DataFrame()
 
 def listar_todas_carteiras_ativas():
     conn = get_conn()
@@ -772,7 +772,6 @@ def listar_tabelas_planilhas():
     if not conn: return []
     try:
         cur = conn.cursor()
-        # --- ATUALIZADO: Lista schemas admin, cliente e permissão ---
         query = """
             SELECT table_schema || '.' || table_name 
             FROM information_schema.tables 
@@ -793,7 +792,6 @@ def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_ed
     if not conn: return False
     try:
         cur = conn.cursor()
-        
         ids_originais = set()
         if 'id' in df_original.columns:
             ids_originais = set(df_original['id'].dropna().astype(int).tolist())
@@ -811,12 +809,9 @@ def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_ed
 
         for index, row in df_editado.iterrows():
             colunas_db = [c for c in row.index if c not in ['data_criacao', 'data_registro']]
-            
             row_id = row.get('id')
             eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
-            
             valores = [row[c] for c in colunas_db if c != 'id']
-            
             if eh_novo:
                 cols_str = ", ".join([c for c in colunas_db if c != 'id'])
                 placeholders = ", ".join(["%s"] * len(valores))
@@ -836,16 +831,9 @@ def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_ed
         if conn: conn.close()
         return False
 
-# =============================================================================
-# 4. DIALOGS
-# =============================================================================
-
-# --- NOVO DIALOG: EDITAR REGRAS (ATUALIZADO PARA MULTISELECT) ---
 @st.dialog("✏️ Editar Regra de Bloqueio")
 def dialog_editar_regra_bloqueio(regra):
     st.caption(f"Editando: {regra['nome_regra']}")
-    
-    # Busca os níveis disponíveis para o Multiselect
     df_niveis = listar_permissoes_nivel()
     
     with st.form("form_edit_regra"):
@@ -855,30 +843,20 @@ def dialog_editar_regra_bloqueio(regra):
         n_desc = st.text_area("Descrição", value=regra['descricao'])
         n_status = st.selectbox("Status", ["SIM", "NÃO"], index=0 if regra['status'] == "SIM" else 1)
         
-        # Multiselect de Níveis (Salva IDs na coluna 'nivel')
-        # 1. Identifica quais IDs já estão salvos na coluna 'nivel'
         ids_salvos = [int(x) for x in str(regra['nivel']).split(';') if x.strip().isdigit()]
-        
-        # 2. Cria lista de opções (nomes) e mapas
         opcoes_nomes = df_niveis['nivel'].tolist()
         mapa_id_nome = dict(zip(df_niveis['id'], df_niveis['nivel']))
         mapa_nome_id = dict(zip(df_niveis['nivel'], df_niveis['id']))
-        
-        # 3. Define pré-seleção
         nomes_selecionados = [mapa_id_nome[i] for i in ids_salvos if i in mapa_id_nome]
-        
         sel_niveis = st.multiselect("Níveis Bloqueados", options=opcoes_nomes, default=nomes_selecionados)
         
         if st.form_submit_button("💾 Salvar", use_container_width=True):
-            # Converte nomes para IDs separados por ;
             ids_finais = [str(mapa_nome_id[n]) for n in sel_niveis]
             str_ids_finais = ";".join(ids_finais)
-            
             if atualizar_regra_bloqueio(regra['id'], n_nome, n_chave, str_ids_finais, n_cat, n_status, n_desc):
                 st.success("Atualizado!"); time.sleep(0.5); st.rerun()
             else: st.error("Erro ao atualizar.")
 
-# --- NOVO DIALOG: EDITAR NIVEL ---
 @st.dialog("✏️ Editar Nível")
 def dialog_editar_permissao_nivel(id_reg, nome_atual):
     st.caption(f"Editando: {nome_atual}")
@@ -890,7 +868,6 @@ def dialog_editar_permissao_nivel(id_reg, nome_atual):
                     st.success("Atualizado!"); time.sleep(0.5); st.rerun()
                 else: st.error("Erro ao atualizar.")
 
-# --- NOVO DIALOG: EDITAR CHAVE ---
 @st.dialog("✏️ Editar Chave")
 def dialog_editar_permissao_chave(id_reg, nome_atual):
     st.caption(f"Editando: {nome_atual}")
@@ -902,7 +879,6 @@ def dialog_editar_permissao_chave(id_reg, nome_atual):
                     st.success("Atualizado!"); time.sleep(0.5); st.rerun()
                 else: st.error("Erro ao atualizar.")
 
-# --- NOVO DIALOG: EDITAR CATEGORIA ---
 @st.dialog("✏️ Editar Categoria")
 def dialog_editar_permissao_categoria(id_reg, nome_atual):
     st.caption(f"Editando: {nome_atual}")
@@ -913,10 +889,6 @@ def dialog_editar_permissao_categoria(id_reg, nome_atual):
                 if atualizar_permissao_categoria(id_reg, n_nome):
                     st.success("Atualizado!"); time.sleep(0.5); st.rerun()
                 else: st.error("Erro ao atualizar.")
-
-# ... [RESTANTE DOS DIALOGS: EDITAR CARTEIRA, CONFIG CARTEIRA, VINCULO, EXCLUIR CLIENTE, HISTORICO, LANCAMENTO, ETC - MANTIDOS IGUAIS] ...
-# (Para o código funcionar completo, apenas garanta que todas as funções auxiliares e dialogs anteriores estejam aqui. 
-# O código acima já contém tudo necessário para as novas funcionalidades).
 
 @st.dialog("✏️ Editar Carteira Cliente")
 def dialog_editar_cart_lista(dados):
@@ -950,7 +922,6 @@ def dialog_editar_cart_lista(dados):
         if st.form_submit_button("Salvar"):
             cpf_u_final = None
             nome_u_final = None
-            
             if sel_user:
                 partes = sel_user.split(" | CPF: ")
                 nome_u_final = partes[0]
@@ -1132,18 +1103,12 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
         if st.form_submit_button("Salvar"):
             if atualizar_relacao_pedido_carteira(id_reg, n_p, n_c): st.success("Ok!"); st.rerun()
 
-# =============================================================================
-# 5. INTERFACE PRINCIPAL
-# =============================================================================
-
 def app_clientes():
     garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # --- ATUALIZADO: NOVA ABA REGRAS ---
-    tab_cli, tab_user, tab_param, tab_regras, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "🛡️ Regras", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
+    tab_cli, tab_user, tab_param, tab_regras, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "🛡️ Regras (Vis)", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
 
-    # --- ABA CLIENTES ---
     with tab_cli:
         c1, c2 = st.columns([6, 1])
         filtro = c1.text_input("🔍 Buscar Cliente", placeholder="Nome, CPF ou Nome Empresa")
@@ -1197,7 +1162,6 @@ def app_clientes():
                         
                         st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
 
-                        # --- ÁREA EXPANSÍVEL DO EXTRATO ---
                         if st.session_state.get('extrato_expandido') == row['id']:
                             with st.container(border=True):
                                 st.markdown(f"#### 📜 Extrato Financeiro: {row['nome']}")
@@ -1268,14 +1232,12 @@ def app_clientes():
         elif st.session_state['view_cliente'] in ['novo', 'editar']:
             st.markdown(f"### {'📝 Novo' if st.session_state['view_cliente']=='novo' else '✏️ Editar'}")
             
-            # --- CARREGA DADOS PRÉVIOS (EDITAR) ---
             dados = {}
             if st.session_state['view_cliente'] == 'editar':
                 conn = get_conn(); df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}", conn); conn.close()
                 if not df.empty: dados = df.iloc[0]
 
-            # --- CARREGA LISTAS PARA OS SELETORES ---
-            df_empresas = listar_cliente_cnpj() # Tabela: admin.cliente_cnpj
+            df_empresas = listar_cliente_cnpj() 
             df_ag_cli = listar_agrupamentos("cliente")
             df_ag_emp = listar_agrupamentos("empresa")
 
@@ -1342,7 +1304,6 @@ def app_clientes():
                 st.markdown("---")
                 if st.button("🗑️ Excluir Cliente", type="primary"): dialog_excluir_cliente(st.session_state['cli_id'], nome)
 
-    # --- ABA USUÁRIOS ---
     with tab_user:
         st.markdown("### Gestão de Acesso")
         busca_user = st.text_input("Buscar Usuário", placeholder="Nome ou Email")
@@ -1375,10 +1336,8 @@ def app_clientes():
                         else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_nivel, n_ativo, u['id']))
                         conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
 
-    # --- ABA PARÂMETROS ---
     with tab_param:
         
-        # 1. AGRUPAMENTO CLIENTES
         with st.expander("🏷️ Agrupamento Clientes", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: admin.agrupamento_clientes</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1400,7 +1359,6 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 2. AGRUPAMENTO EMPRESAS
         with st.expander("🏢 Agrupamento Empresas", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: admin.agrupamento_empresas</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1422,7 +1380,6 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 3. CLIENTE CNPJ
         with st.expander("💼 Cliente CNPJ", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: admin.cliente_cnpj</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1445,7 +1402,6 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 4. RELAÇÃO PEDIDO X CARTEIRA
         with st.expander("🔗 Relação Pedido/Carteira", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.cliente_carteira_relacao_pedido_carteira</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1469,21 +1425,17 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 5. LISTA DE CARTEIRAS (ATUALIZADO COM SELETOR DE CLIENTE E ORIGEM)
         with st.expander("📂 Lista de Carteiras", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.cliente_carteira_lista</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Nova Carteira")
                 c1, c2, c3, c4, c5 = st.columns([1.5, 2, 1.5, 1, 1])
                 
-                # --- MUDANÇA: Seletor de Cliente com CPF ---
                 df_clis = listar_clientes_para_selecao()
                 n_sel = c2.selectbox("Cliente", options=[""] + df_clis.apply(lambda x: f"{x['nome']} | CPF: {x['cpf']}", axis=1).tolist(), key="n_sel_l")
                 cpf_auto = n_sel.split(" | CPF: ")[1] if n_sel else ""
                 n_cpf = c1.text_input("CPF", value=cpf_auto, key="n_cpf_l")
-                # -------------------------------------------
                 
-                # --- ATUALIZADO: Incluindo Produto na seleção ---
                 df_prods = listar_produtos_para_selecao()
                 n_prod_sel = c3.selectbox("Produto", options=[""] + df_prods['nome'].tolist(), key="n_prod_l")
 
@@ -1492,10 +1444,8 @@ def app_clientes():
                 
                 n_val = c4.number_input("Custo", key="n_val_l", step=0.01)
                 
-                # --- MUDANÇA: Seletor de Origem de Custo ---
                 orgs = listar_origens_para_selecao()
                 n_org = st.selectbox("Origem Custo", options=[""] + orgs, key="n_org_l")
-                # -------------------------------------------
                 
                 if c5.button("➕", key="add_cl_btn"):
                     if n_cpf and n_cart:
@@ -1506,14 +1456,12 @@ def app_clientes():
 
             df_l = listar_cliente_carteira_lista()
             if not df_l.empty:
-                # ADICIONADA COLUNA CPF, PRODUTO E TABELA SQL NA VISUALIZAÇÃO
                 st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.85em;"><div style="flex: 2;">Cliente</div><div style="flex: 1.5;">CPF</div><div style="flex: 2;">Carteira</div><div style="flex: 2;">Tabela SQL</div><div style="flex: 1;">Custo</div><div style="flex: 1.5;">Origem</div><div style="flex: 1.5;">Usuário</div><div style="flex: 1; text-align: center;">Ações</div></div>""", unsafe_allow_html=True)
                 for _, r in df_l.iterrows():
                     c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2, 1.5, 2, 2, 1, 1.5, 1.5, 1])
                     c1.write(r['nome_cliente'])
                     c2.write(r['cpf_cliente']) 
                     c3.write(r['nome_carteira'])
-                    # Exibe Tabela SQL com caption
                     c4.caption(r.get('nome_tabela_transacoes', '-')) 
                     c5.write(f"R$ {float(r['custo_carteira'] or 0):.2f}")
                     c6.write(r.get('origem_custo', '-'))
@@ -1523,7 +1471,6 @@ def app_clientes():
                         if st.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
                         if st.button("🗑️", key=f"de_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
 
-        # 6. CONFIGURAÇÃO DE CARTEIRAS (NOVO BLOCO)
         with st.expander("⚙️ Configurações de Carteiras", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.carteiras_config</p>", unsafe_allow_html=True)
             st.info("Aqui você pode visualizar e editar as configurações de carteiras (tabela: cliente.carteiras_config).")
@@ -1540,7 +1487,6 @@ def app_clientes():
             else:
                 st.info("Nenhuma carteira configurada no sistema.")
                 
-        # 7. NÍVEIS DE PERMISSÃO (GRUPO)
         with st.expander("🛡️ Níveis de Permissão (Grupo)", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_grupo_nivel</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1562,7 +1508,6 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 8. NOVO: CHAVES DE PERMISSÃO (USUÁRIO)
         with st.expander("🔑 Chaves de Permissão (Usuário)", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_usuario_cheve</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1584,7 +1529,6 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-        # 9. NOVO: CATEGORIAS DE PERMISSÃO (USUÁRIO)
         with st.expander("🗂️ Categorias de Permissão (Usuário)", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_usuario_categoria</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1606,17 +1550,13 @@ def app_clientes():
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
-    # --- ABA REGRAS (VISUALIZAÇÃO) ---
     with tab_regras:
         st.markdown("### 🛡️ Regras de Bloqueio")
         st.info("Aqui você define quais níveis são bloqueados para cada código (chave).")
         
-        # --- TABELA DE REGRAS FIXA (VISUALIZAÇÃO / EDIÇÃO) ---
         df_regras = listar_regras_bloqueio()
         
-        # Botão Nova Regra
         if st.button("➕ Nova Regra", type="primary"):
-            # Cria regra vazia para edição
             salvar_regra_bloqueio("", "", "", "", "SIM", "")
             st.rerun()
 
@@ -1635,7 +1575,7 @@ def app_clientes():
                     c1.write(r['id'])
                     c2.write(r['nome_regra'])
                     c3.code(r['chave'])
-                    c4.write(r['nivel']) # Agora mostra os IDs bloqueados
+                    c4.write(r['nivel']) 
                     c5.write(r['status'])
                     with c6:
                         if st.button("✏️", key=f"ed_rg_{r['id']}"): dialog_editar_regra_bloqueio(r)
@@ -1645,10 +1585,9 @@ def app_clientes():
         else:
             st.warning("Nenhuma regra de bloqueio cadastrada.")
 
-    with tab_carteira: # Gestão de Carteira e Tabelas Reais
+    with tab_carteira: 
         st.markdown("### 💼 Gestão de Carteira")
         
-        # --- MUDANÇA: Nova Carteira com Origem Custo ---
         with st.expander("📂 Nova Carteira (Produtos)", expanded=False):
             st.info("Cria carteiras e tabelas automaticamente.")
             df_pds = listar_produtos_para_selecao()
@@ -1658,10 +1597,8 @@ def app_clientes():
                     idx_p = cc1.selectbox("Produto", range(len(df_pds)), format_func=lambda x: df_pds.iloc[x]['nome'])
                     n_cart_in = cc2.text_input("Nome Carteira", key="n_c_n")
                     
-                    # --- Campo Origem Custo ---
                     orgs = listar_origens_para_selecao()
                     origem_cart_in = cc3.selectbox("Origem Custo", options=[""] + orgs, key="org_c_new")
-                    # --------------------------
                     
                     stt_in = cc4.selectbox("Status", ["ATIVO", "INATIVO"], key="s_c_n")
                     
@@ -1711,14 +1648,10 @@ def app_clientes():
                 st.info("🔎 Consultas"); 
                 if st.button("Ver Histórico"): dialog_historico_consultas(row['cpf'])
 
-    # =========================================================================
-    # --- NOVA ABA: PLANILHAS ---
-    # =========================================================================
     with tab_plan:
         st.markdown("### 📅 Gestão de Planilhas do Banco")
         st.caption("Visualização e edição direta de tabelas (Schemas: admin, cliente, permissão)")
         
-        # 1. Carregar lista de tabelas disponíveis
         lista_tabelas = listar_tabelas_planilhas()
         
         if lista_tabelas:
@@ -1729,22 +1662,14 @@ def app_clientes():
                 conn = get_conn()
                 if conn:
                     try:
-                        # Carregar dados
                         st.markdown(f"**Editando:** `{tabela_selecionada}`")
-                        # Limite de segurança ou paginação pode ser adicionado se as tabelas forem gigantes
                         df_tabela = pd.read_sql(f"SELECT * FROM {tabela_selecionada} ORDER BY id DESC LIMIT 1000", conn)
                         conn.close()
                         
-                        # Definir colunas travadas (normalmente ID não se edita)
                         cols_travadas = ["data_criacao", "data_registro"]
                         if 'id' in df_tabela.columns:
-                            # Se quiser travar o ID: cols_travadas.append("id")
-                            # Se quiser permitir criar linhas novas, o ID deve ser gerado pelo banco (SERIAL), 
-                            # então deixamos o ID visível mas inativo para inserção manual geralmente, 
-                            # ou ocultamos. O data_editor lida bem com IDs se configurado.
                             pass
 
-                        # Editor
                         df_editado = st.data_editor(
                             df_tabela,
                             key=f"editor_planilha_{tabela_selecionada}",
@@ -1753,7 +1678,6 @@ def app_clientes():
                             disabled=cols_travadas
                         )
                         
-                        # Botão Salvar
                         if st.button("💾 Salvar Alterações na Planilha", type="primary"):
                             with st.spinner("Salvando..."):
                                 if salvar_alteracoes_planilha_generica(tabela_selecionada, df_tabela, df_editado):
