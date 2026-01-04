@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+import time  # <--- FALTAVA ESTA IMPORTAÇÃO
 import os
 import shutil
 import uuid
@@ -283,7 +284,7 @@ def dialog_editar_produto(dados_atuais):
         # Campo de Origem
         novo_origem = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, index=idx_origem)
         
-        # [MUDANÇA AQUI] - Exibe carteira ou opção de criar
+        # Exibe carteira ou opção de criar
         criar_carteira_check = False
         if carteira_vinculada:
             c5.text_input("Carteira Vinculada", value=carteira_vinculada, disabled=True)
@@ -313,104 +314,4 @@ def dialog_editar_produto(dados_atuais):
 def dialog_novo_cadastro():
     st.write("Novo item")
     lista_origens = listar_origens_custo()
-    opcoes_origem = [""] + lista_origens
-
-    with st.form("form_cadastro_popup", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        nome = c1.text_input("Nome")
-        tipo = c2.selectbox("Categoria", ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"])
-        
-        c3, c4 = st.columns(2)
-        preco = c3.number_input("Preço (R$) (Opcional)", min_value=0.0, format="%.2f")
-        origem_sel = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, help="Vincula este produto a uma regra de cobrança.")
-        
-        arquivos = st.file_uploader("Arquivos", accept_multiple_files=True)
-        resumo = st.text_area("Resumo", height=100)
-        
-        st.divider()
-        st.markdown("##### ⚙️ Configurações Automáticas")
-        criar_cart = st.checkbox("✅ Criar Carteira Financeira Automaticamente?", value=True)
-        if criar_cart:
-            st.caption("ℹ️ Uma nova carteira será criada vinculada à origem selecionada.")
-        
-        if st.form_submit_button("💾 Salvar"):
-            if nome:
-                codigo_auto = gerar_codigo_automatico()
-                caminho = criar_pasta_produto(codigo_auto, nome)
-                
-                if arquivos: salvar_arquivos(arquivos, caminho)
-                
-                novo_id = cadastrar_produto_db(codigo_auto, nome, tipo, resumo, preco, caminho, origem_sel)
-                
-                if novo_id:
-                    msg_sucesso = f"Produto criado: {codigo_auto}"
-                    if criar_cart:
-                        ok_cart, msg_cart = criar_carteira_automatica(novo_id, nome, origem_sel)
-                        if ok_cart: msg_sucesso += f"\n\n + Carteira criada com sucesso!"
-                        else: st.error(f"Erro ao criar carteira: {msg_cart}")
-                    
-                    st.success(msg_sucesso)
-                    time.sleep(2)
-                    st.rerun()
-                else: st.error("Erro ao salvar no banco.")
-            else: st.warning("Nome obrigatório.")
-
-# --- INTERFACE PRINCIPAL ---
-def app_produtos():
-    st.markdown("## 📦 Módulo Produtos e Serviços")
-    
-    col_head1, col_head2 = st.columns([6, 1])
-    with col_head2:
-        if st.button("➕ Novo", help="Cadastrar novo item"):
-            dialog_novo_cadastro()
-
-    st.markdown("---")
-    
-    df = listar_produtos()
-    if not df.empty:
-        col_f1, col_f2 = st.columns(2)
-        with col_f1: filtro_nome = st.text_input("🔎 Pesquisar")
-        with col_f2: filtro_tipo = st.multiselect("Filtrar Categoria", df['tipo'].unique())
-
-        if filtro_nome:
-            df = df[df['nome'].str.contains(filtro_nome, case=False) | df['codigo'].str.contains(filtro_nome, case=False)]
-        if filtro_tipo:
-            df = df[df['tipo'].isin(filtro_tipo)]
-
-        for index, row in df.iterrows():
-            status_cor = "🟢" if row['ativo'] else "🔴"
-            with st.expander(f"{status_cor} {row['nome']} ({row['codigo']})"):
-                c1, c2 = st.columns(2)
-                c1.markdown(f"**Categoria:** {row['tipo']}")
-                c1.markdown(f"**Preço:** R$ {row['preco']:.2f}")
-                
-                origem_display = row.get('origem_custo') if row.get('origem_custo') else "-"
-                c2.markdown(f"**Origem Custo:** {origem_display}")
-                
-                st.markdown(f"**Resumo:** {row['resumo']}")
-                st.markdown("---")
-                
-                col_folder, col_actions = st.columns([1, 1])
-                with col_folder:
-                     if st.button(f"📂 Arquivos", key=f"f_{row['id']}"):
-                        dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
-
-                with col_actions:
-                    b1, b2, b3 = st.columns(3)
-                    with b1:
-                        if st.button("✏️", key=f"ed_{row['id']}", help="Editar"):
-                            dialog_editar_produto(row)
-                    with b2:
-                        if st.button("🔄", key=f"st_{row['id']}", help="Alterar Status"):
-                            if alternar_status(row['id'], row['ativo']):
-                                st.rerun()
-                    with b3:
-                        if st.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
-                            if excluir_produto(row['id'], row['caminho_pasta']):
-                                st.warning("Item removido.")
-                                st.rerun()
-    else:
-        st.info("Nenhum item encontrado no banco de dados.")
-
-if __name__ == "__main__":
-    app_produtos()
+    opcoes_origem = [""] + lista_
