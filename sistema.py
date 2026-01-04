@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import random
 import string
 import time
-# REMOVIDO: from streamlit_autorefresh import st_autorefresh (Não é mais necessário)
+# REMOVIDO: from streamlit_autorefresh import st_autorefresh (Timer estático)
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
@@ -90,8 +90,8 @@ def gerenciar_sessao():
     
     # Retorna o tempo formatado (será atualizado apenas quando houver clique)
     if hh > 0:
-        return f"{hh:02d}:{mm:02d}" # Removi os segundos para ficar mais limpo estático
-    return f"{mm:02d}:{ss:02d}" # Mantive segundos aqui caso seja pouco tempo
+        return f"{hh:02d}:{mm:02d}" # Sem segundos (estático)
+    return f"{mm:02d}:{ss:02d}" # Com segundos se for menos de 1h
 
 # --- 5. BANCO DE DADOS E AUTH ---
 @st.cache_resource(ttl=600)
@@ -115,9 +115,12 @@ def validar_login_db(usuario_input, senha_input):
     try:
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
-        sql = """SELECT id, nome, hierarquia, senha, email, COALESCE(tentativas_falhas, 0) 
+        
+        # --- ATENÇÃO: AQUI FOI FEITA A ALTERAÇÃO (hierarquia -> nivel) ---
+        sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
+                 
         cursor.execute(sql, (usuario_limpo, usuario_limpo, usuario_limpo))
         res = cursor.fetchone()
         
@@ -324,7 +327,7 @@ def renderizar_menu_lateral():
 def main():
     iniciar_estado()
     
-    # REMOVIDO O ST_AUTOREFRESH AQUI PARA PARAR DE CARREGAR A PÁGINA
+    # REMOVIDO ST_AUTOREFRESH (Evita reload constante)
 
     # TELA DE LOGIN
     if not st.session_state.get('logado'):
