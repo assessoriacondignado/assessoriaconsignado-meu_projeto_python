@@ -114,7 +114,6 @@ def validar_login_db(usuario_input, senha_input):
     try:
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
-        # AJUSTE: Incluído campo 'email' na busca para exibir no layout
         sql = """SELECT id, nome, hierarquia, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
@@ -188,7 +187,7 @@ def dialog_reset_senha():
     if st.button("Enviar Nova Senha", use_container_width=True, type="primary") and identificador:
         st.info("Funcionalidade de reset em manutenção para ajuste de segurança.")
 
-# --- 7. RENDERIZAÇÃO DO MENU (LAYOUT AJUSTADO) ---
+# --- 7. RENDERIZAÇÃO DO MENU (LAYOUT + EMOJIS) ---
 def renderizar_menu_lateral():
     # CSS Personalizado para o Menu
     st.markdown("""
@@ -222,7 +221,6 @@ def renderizar_menu_lateral():
 
     with st.sidebar:
         # --- 1.1 LOGO E DADOS DO CLIENTE (Topo) ---
-        # Logo
         try:
             st.image("logo_assessoria.png", use_container_width=True)
         except:
@@ -243,11 +241,28 @@ def renderizar_menu_lateral():
             <hr style="margin-top: 5px; margin-bottom: 15px;">
         """, unsafe_allow_html=True)
 
-        # --- MENU PRINCIPAL ---
+        # --- MENU PRINCIPAL (Mapeamento de Emojis) ---
+        
+        # Dicionário de Ícones
+        icones = {
+            "Operacional": "⚙️",
+            "Comercial": "💼",
+            "Conexões": "🔌",
+            "Clientes": "👥",
+            "Usuários": "🛡️",
+            "Banco PF": "🏦",
+            "Campanhas": "📣",
+            "WhatsApp": "💬",
+            "Produtos": "📦",
+            "Pedidos": "🛒",
+            "Tarefas": "📝",
+            "Renovação": "🔄"
+        }
+
         cargo = st.session_state.get('usuario_cargo', 'Cliente')
         estrutura_menu = {}
         
-        # Menu Sempre visível
+        # Botão Início (Sempre visível)
         if st.button("🏠 Início", key="btn_home", on_click=resetar_atividade):
             st.session_state['pagina_atual'] = "Início"
             st.session_state['menu_aberto'] = None
@@ -260,16 +275,21 @@ def renderizar_menu_lateral():
         else:
             estrutura_menu["Operacional"] = ["Clientes", "Usuários", "WhatsApp"]
 
-        # Renderização Dinâmica (Acordeão)
+        # Renderização Dinâmica
         for menu_pai, subitens in estrutura_menu.items():
-            if menu_pai == "Conexões":
-                if st.button(f"🔌 {menu_pai}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
-                    st.session_state['pagina_atual'] = "Conexões"
+            # Pega o ícone correspondente no dicionário, ou usa padrão se não achar
+            icon_pai = icones.get(menu_pai, "📂")
+            
+            # Caso especial: Menu sem filhos
+            if not subitens:
+                if st.button(f"{icon_pai} {menu_pai}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
+                    st.session_state['pagina_atual'] = menu_pai
                     st.session_state['menu_aberto'] = None
                 continue
 
-            icone = "▼" if st.session_state['menu_aberto'] == menu_pai else "►"
-            label_pai = f"📂 {menu_pai} {icone}"
+            # Menu com Filhos
+            seta = "▼" if st.session_state['menu_aberto'] == menu_pai else "►"
+            label_pai = f"{icon_pai} {menu_pai} {seta}"
             
             if st.button(label_pai, key=f"pai_{menu_pai}", on_click=resetar_atividade):
                 if st.session_state['menu_aberto'] == menu_pai:
@@ -281,19 +301,18 @@ def renderizar_menu_lateral():
                 for item in subitens:
                     _, col_btn = st.columns([0.1, 0.9])
                     with col_btn:
-                        if st.button(f"↳ {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
+                        icon_filho = icones.get(item, "↳")
+                        # Botão Filho com Emoji Específico
+                        if st.button(f"{icon_filho} {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
                             st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
 
         # --- 2. RODAPÉ (Botão Sair + Tempo) ---
-        # Espaçador grande para empurrar tudo para baixo
         st.markdown("<br>" * 10, unsafe_allow_html=True)
         
-        # 2.4 Botão Sair (Acima do tempo)
         if st.button("🚪 Sair", key="btn_sair"):
             st.session_state.clear()
             st.rerun()
 
-        # 2.3 Tempo de Sessão (Abaixo do botão, sem borda)
         tempo_str = gerenciar_sessao()
         st.markdown(f"""
             <div style="text-align: center; margin-top: 10px; font-size: 0.9em; color: #444;">
@@ -304,8 +323,6 @@ def renderizar_menu_lateral():
 # --- 8. FUNÇÃO PRINCIPAL ---
 def main():
     iniciar_estado()
-    
-    # Auto-refresh para o relógio (1 segundo)
     st_autorefresh(interval=1000, key="sistema_relogio")
 
     # TELA DE LOGIN
@@ -325,7 +342,7 @@ def main():
                             'usuario_id': res['id'], 
                             'usuario_nome': res['nome'], 
                             'usuario_cargo': res['cargo'],
-                            'usuario_email': res.get('email', '') # Guarda o email na sessão
+                            'usuario_email': res.get('email', '')
                         })
                         st.rerun()
                     elif res.get('status') == "bloqueado": st.error("🚨 USUÁRIO BLOQUEADO.")
@@ -337,7 +354,6 @@ def main():
     else:
         renderizar_menu_lateral()
         
-        # Botão Flutuante Superior
         c1, c2 = st.columns([10, 2])
         with c2:
             if st.button("💬 Msg Rápida"): dialog_mensagem_rapida()
