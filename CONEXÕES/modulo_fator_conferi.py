@@ -353,7 +353,7 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
         return False
 
 # =============================================================================
-# 4. SALVAR BASE PF E CONSULTA (COM AUTODETECÇÃO DE COLUNA)
+# 4. SALVAR BASE PF E CONSULTA (COM CORREÇÕES E AUTODETECÇÃO)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -380,7 +380,7 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         cpf_limpo = re.sub(r'\D', '', str(dados_api.get('cpf', '')))
-        if not cpf_limpo or len(cpf_limpo) != 11: return False, "CPF inválido."
+        if not cpf_limpo or len(cpf_limpo) != 11: return False, "CPF inválido ou não encontrado no retorno."
 
         campos = {
             'nome': dados_api.get('nome'),
@@ -411,18 +411,15 @@ def salvar_dados_fator_no_banco(dados_api):
             for t in telefones:
                 n = re.sub(r'\D', '', str(t['numero']))
                 if n: 
-                    # Tenta inserção direta. Removemos 'ON CONFLICT' para ver se ocorre erro de duplicidade real.
-                    # Se a tabela tiver restrição unique, vai falhar e o 'try/except' pega.
                     try:
                         cur.execute(f"""
                             INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, tag_qualificacao, data_atualizacao) 
                             VALUES (%s, %s, %s, CURRENT_DATE)
                         """, (cpf_limpo, n, t.get('prioridade', '')))
                     except psycopg2.errors.UniqueViolation:
-                        conn.rollback() # Ignora duplicado e segue
-                        cur = conn.cursor() # Recria cursor após rollback parcial
+                        conn.rollback(); cur = conn.cursor()
                     except Exception as e:
-                        print(f"Erro ao inserir telefone {n}: {e}")
+                        print(f"Erro Insert Telefone: {e}"); conn.rollback(); cur = conn.cursor()
 
         # 3. Emails
         emails = dados_api.get('emails', [])
@@ -436,6 +433,8 @@ def salvar_dados_fator_no_banco(dados_api):
                             VALUES (%s, %s)
                         """, (cpf_limpo, str(e).lower()))
                     except psycopg2.errors.UniqueViolation:
+                        conn.rollback(); cur = conn.cursor()
+                    except Exception:
                         conn.rollback(); cur = conn.cursor()
 
         # 4. Endereços
@@ -452,9 +451,11 @@ def salvar_dados_fator_no_banco(dados_api):
                         """, (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
                     except psycopg2.errors.UniqueViolation:
                         conn.rollback(); cur = conn.cursor()
+                    except Exception:
+                        conn.rollback(); cur = conn.cursor()
 
         conn.commit(); conn.close()
-        return True, f"Dados processados. (Tel: {len(telefones)} | End: {len(enderecos)})"
+        return True, f"Dados salvos na Base PF. (Tel: {len(telefones)} | End: {len(enderecos)})"
     except Exception as e:
         if conn: conn.close()
         return False, f"Erro DB (Salvar PF): {e}"
@@ -499,6 +500,9 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 try:
                     with open(res[0], 'r', encoding='utf-8') as f: 
                         dados = json.load(f)
+                        # Garante que o CPF está presente para o salvamento
+                        if not dados.get('cpf'): dados['cpf'] = cpf_padrao
+                        
                         if dados.get('nome') or dados.get('cpf'):
                             cur.execute("""
                                 INSERT INTO conexoes.fatorconferi_registo_consulta 
@@ -517,9 +521,14 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         resp.encoding = 'ISO-8859-1'
         
         dados = parse_xml_to_dict(resp.text)
-        if not dados.get('nome') and not dados.get('cpf'): 
+        
+        # CORREÇÃO CRÍTICA: Se a API não devolve o CPF mas devolve o Nome, injetamos o CPF pesquisado
+        if not dados.get('nome'):
             conn.close()
             return {"sucesso": False, "msg": "Retorno vazio ou erro na API.", "raw": resp.text, "dados": dados}
+            
+        if not dados.get('cpf'):
+            dados['cpf'] = cpf_padrao
 
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
@@ -591,7 +600,6 @@ def app_fator_conferi():
         if st.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
-                    # AMBIENTE
                     nome_ambiente = "teste_de_consulta_fatorconferi.cpf" 
                     st.toast(f"Ambiente: {nome_ambiente}")
                     res = realizar_consulta_cpf(cpf_in, nome_ambiente, forcar, id_cliente_teste)
