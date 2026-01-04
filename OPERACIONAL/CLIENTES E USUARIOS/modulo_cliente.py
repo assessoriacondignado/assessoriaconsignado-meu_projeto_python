@@ -37,18 +37,15 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (REGRA 1, 2, 3) ---
-def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido", parar_se_bloqueado=False):
+# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (NOVA LÓGICA) ---
+def verificar_bloqueio_de_acesso(chave_codigo, caminho_atual="Desconhecido", parar_se_bloqueado=False):
     """
-    Verifica se o usuário atual deve ser bloqueado com base na tabela permissão_usuario_regras_nível.
+    Verifica se o usuário atual deve ser bloqueado.
     
-    Lógica:
-    1. Pega o nível do usuário logado.
-    2. Busca o ID desse nível.
-    3. Busca a regra pelo 'nome_regra'.
-    4. Se STATUS='SIM' e ID_NIVEL estiver na coluna 'chave', BLOQUEIA.
-    
-    Se parar_se_bloqueado=True, executa st.error e st.stop().
+    Conceito Atualizado:
+    - chave_codigo: O identificador passado pelo código (ex: 'bloqueio_menu_cliente')
+    - Banco 'chave': Pode conter múltiplos códigos (ex: 'bloqueio_menu_cliente;bloqueio_total')
+    - Banco 'nivel': Contém a lista de IDs de níveis bloqueados (ex: '3;4;5')
     """
     # 1. Validação de Login
     if not st.session_state.get('logado'):
@@ -60,10 +57,9 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
     try:
         cur = conn.cursor()
         
-        # 2. Busca ID do Nível do Usuário Atual (admin.clientes_usuarios -> permissão.permissão_grupo_nivel)
+        # 2. Busca ID do Nível do Usuário Atual
         nivel_usuario_nome = st.session_state.get('usuario_cargo', '') 
         
-        # Regra 1: Todo usuário sem nível definido é tratado com nível padrão (segurança)
         if not nivel_usuario_nome:
             nivel_usuario_nome = 'Cliente sem permissão'
 
@@ -71,61 +67,64 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
         res_nivel = cur.fetchone()
         
         if not res_nivel:
-            # Se o nível do usuário não existe na tabela de níveis, por segurança, não bloqueia (ou bloqueia tudo, dependendo da política. Aqui segue fluxo permissivo se erro de cadastro)
             conn.close()
             return False 
             
         id_nivel_usuario = str(res_nivel[0])
 
-        # 3. Busca a Regra na tabela permissão_usuario_regras_nível
+        # 3. Busca TODAS as regras ativas para filtrar no Python
+        # (Necessário pois a coluna 'chave' pode ter múltiplos valores separados por ;)
         cur.execute("""
-            SELECT id, chave, status, caminho_bloqueio 
+            SELECT id, chave, nivel, status, caminho_bloqueio, nome_regra
             FROM permissão.permissão_usuario_regras_nível 
-            WHERE nome_regra = %s
-        """, (nome_regra_codigo,))
+            WHERE status = 'SIM'
+        """)
         
-        regra = cur.fetchone()
+        regras_ativas = cur.fetchall()
         
-        # Se a regra não existe no banco, não bloqueia
-        if not regra:
-            conn.close()
-            return False
+        bloqueado = False
+        regra_aplicada = None
+        id_regra_aplicada = None
+        caminho_registrado = None
 
-        id_regra, lista_bloqueio_str, status, caminho_registrado = regra
-        
-        # Verifica Status (3.1)
-        if status != 'SIM':
-            conn.close()
-            return False # Regra inativa
-
-        # Verifica a Chave (Lista de IDs bloqueados)
-        # Exemplo chave: "1; 5; 10"
-        lista_ids = [x.strip() for x in str(lista_bloqueio_str).split(';') if x.strip()]
-        
-        if id_nivel_usuario in lista_ids:
-            # BLOQUEIO DETECTADO!
+        for row in regras_ativas:
+            rid, r_chave, r_nivel_bloqueados, r_status, r_caminho, r_nome = row
             
-            # Regra 3: Registrar caminho se for a primeira vez
-            if not caminho_registrado:
+            # Verifica se a chave do código está presente na regra (separada por ;)
+            lista_chaves_regra = [k.strip() for k in str(r_chave).split(';') if k.strip()]
+            
+            if chave_codigo in lista_chaves_regra:
+                # Regra encontrada! Agora verifica se o NÍVEL do usuário está na lista de bloqueio
+                lista_niveis_bloqueados = [n.strip() for n in str(r_nivel_bloqueados).split(';') if n.strip()]
+                
+                if id_nivel_usuario in lista_niveis_bloqueados:
+                    bloqueado = True
+                    regra_aplicada = r_nome
+                    id_regra_aplicada = rid
+                    caminho_registrado = r_caminho
+                    break # Parar na primeira regra que bloquear
+        
+        if bloqueado:
+            # Registrar caminho se for a primeira vez
+            if not caminho_registrado and id_regra_aplicada:
                 cur.execute("""
                     UPDATE permissão.permissão_usuario_regras_nível 
                     SET caminho_bloqueio = %s 
                     WHERE id = %s
-                """, (caminho_atual, id_regra))
+                """, (caminho_atual, id_regra_aplicada))
                 conn.commit()
             
             conn.close()
             
-            # 3.1 Apresentar Aviso e Parar (se solicitado)
             if parar_se_bloqueado:
                 st.error("🚫 USUÁRIO SEM PERMISSÃO")
-                st.caption(f"Regra de bloqueio: {nome_regra_codigo}")
-                st.stop() # Interrompe o carregamento da tela
+                st.caption(f"Bloqueio aplicado pela regra: {regra_aplicada}")
+                st.stop()
                 
-            return True 
+            return True
             
         conn.close()
-        return False # Acesso Liberado
+        return False
 
     except Exception as e:
         print(f"Erro verificação permissão: {e}")
@@ -142,7 +141,45 @@ def listar_regras_bloqueio():
         if conn: conn.close()
         return pd.DataFrame()
 
-# --- NOVO: FUNÇÕES PARA PERMISSÃO GRUPO NIVEL ---
+def salvar_regra_bloqueio(nome, chave, niveis_ids_str, categoria, status, descricao):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO permissão.permissão_usuario_regras_nível 
+            (nome_regra, chave, nivel, categoria, status, descricao) 
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (nome, chave, niveis_ids_str, categoria, status, descricao))
+        conn.commit(); conn.close(); return True
+    except:
+        if conn: conn.close()
+        return False
+
+def atualizar_regra_bloqueio(id_reg, nome, chave, niveis_ids_str, categoria, status, descricao):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE permissão.permissão_usuario_regras_nível 
+            SET nome_regra=%s, chave=%s, nivel=%s, categoria=%s, status=%s, descricao=%s
+            WHERE id=%s
+        """, (nome, chave, niveis_ids_str, categoria, status, descricao, id_reg))
+        conn.commit(); conn.close(); return True
+    except:
+        if conn: conn.close()
+        return False
+
+def excluir_regra_bloqueio(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM permissão.permissão_usuario_regras_nível WHERE id=%s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except:
+        if conn: conn.close()
+        return False
+
+# --- FUNÇÕES PARA PERMISSÃO GRUPO NIVEL ---
 def listar_permissoes_nivel():
     conn = get_conn()
     try:
@@ -182,7 +219,7 @@ def atualizar_permissao_nivel(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
-# --- NOVO: FUNÇÕES PARA PERMISSÃO USUARIO CHAVE ---
+# --- FUNÇÕES PARA PERMISSÃO USUARIO CHAVE ---
 def listar_permissoes_chave():
     conn = get_conn()
     try:
@@ -222,7 +259,7 @@ def atualizar_permissao_chave(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
-# --- NOVO: FUNÇÕES PARA PERMISSÃO USUARIO CATEGORIA ---
+# --- FUNÇÕES PARA PERMISSÃO USUARIO CATEGORIA ---
 def listar_permissoes_categoria():
     conn = get_conn()
     try:
@@ -753,6 +790,44 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
 # 4. DIALOGS
 # =============================================================================
 
+# --- NOVO DIALOG: EDITAR REGRAS ---
+@st.dialog("✏️ Editar Regra de Bloqueio")
+def dialog_editar_regra_bloqueio(regra):
+    st.caption(f"Editando: {regra['nome_regra']}")
+    
+    # Busca os níveis disponíveis para o Multiselect
+    df_niveis = listar_permissoes_nivel()
+    
+    with st.form("form_edit_regra"):
+        n_nome = st.text_input("Nome da Regra (Controle)", value=regra['nome_regra'])
+        n_chave = st.text_input("Chave do Código (ID)", value=regra['chave'], help="Use ; para múltiplas chaves. Ex: menu_cli;submenu_fin")
+        n_cat = st.text_input("Categoria", value=regra['categoria'])
+        n_desc = st.text_area("Descrição", value=regra['descricao'])
+        n_status = st.selectbox("Status", ["SIM", "NÃO"], index=0 if regra['status'] == "SIM" else 1)
+        
+        # Multiselect de Níveis (Lógica de conversão ID <-> Nome)
+        # 1. Identifica quais IDs já estão salvos
+        ids_salvos = [int(x) for x in str(regra['nivel']).split(';') if x.strip().isdigit()]
+        
+        # 2. Cria lista de opções (nomes) e mapa reverso
+        opcoes_nomes = df_niveis['nivel'].tolist()
+        mapa_id_nome = dict(zip(df_niveis['id'], df_niveis['nivel']))
+        mapa_nome_id = dict(zip(df_niveis['nivel'], df_niveis['id']))
+        
+        # 3. Define quais nomes devem vir pré-selecionados
+        nomes_selecionados = [mapa_id_nome[i] for i in ids_salvos if i in mapa_id_nome]
+        
+        sel_niveis = st.multiselect("Níveis Bloqueados", options=opcoes_nomes, default=nomes_selecionados)
+        
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            # Converte nomes selecionados de volta para IDs separados por ;
+            ids_finais = [str(mapa_nome_id[n]) for n in sel_niveis]
+            str_ids_finais = ";".join(ids_finais)
+            
+            if atualizar_regra_bloqueio(regra['id'], n_nome, n_chave, str_ids_finais, n_cat, n_status, n_desc):
+                st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+            else: st.error("Erro ao atualizar.")
+
 # --- NOVO DIALOG: EDITAR NIVEL ---
 @st.dialog("✏️ Editar Nível")
 def dialog_editar_permissao_nivel(id_reg, nome_atual):
@@ -1081,12 +1156,6 @@ def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_ed
 # =============================================================================
 
 def app_clientes():
-    # --- BLOQUEIO DE SEGURANÇA (NOVO) ---
-    # Verifica se o nível do usuário está bloqueado para o módulo "modulo_clientes"
-    # Se bloqueado, para a execução aqui mesmo e mostra o aviso.
-    verificar_bloqueio_de_acesso("modulo_clientes", caminho_atual="Operacional > Clientes", parar_se_bloqueado=True)
-    # ------------------------------------
-
     garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
     
@@ -1565,11 +1634,40 @@ def app_clientes():
 
     # --- ABA REGRAS (VISUALIZAÇÃO) ---
     with tab_regras:
-        st.markdown("### 🛡️ Regras de Bloqueio (Visualização)")
-        st.info("Esta tabela define quais níveis de usuário são bloqueados em funções específicas do sistema.")
+        st.markdown("### 🛡️ Regras de Bloqueio")
+        st.info("Aqui você define quais níveis são bloqueados para cada código (chave).")
+        
+        # --- TABELA DE REGRAS FIXA (VISUALIZAÇÃO / EDIÇÃO) ---
         df_regras = listar_regras_bloqueio()
+        
+        # Botão Nova Regra
+        if st.button("➕ Nova Regra", type="primary"):
+            # Cria regra vazia para edição
+            salvar_regra_bloqueio("", "", "", "", "SIM", "")
+            st.rerun()
+
         if not df_regras.empty:
-            st.dataframe(df_regras, use_container_width=True, hide_index=True)
+            st.markdown("""<div style="display: flex; font-weight: bold; background: #e9ecef; padding: 5px;">
+            <div style="flex:1;">ID</div>
+            <div style="flex:2;">Nome Regra</div>
+            <div style="flex:2;">Chave (Código)</div>
+            <div style="flex:2;">Níveis Bloqueados (IDs)</div>
+            <div style="flex:1;">Status</div>
+            <div style="flex:1;">Ações</div></div>""", unsafe_allow_html=True)
+            
+            for _, r in df_regras.iterrows():
+                with st.container():
+                    c1, c2, c3, c4, c5, c6 = st.columns([1, 2, 2, 2, 1, 1])
+                    c1.write(r['id'])
+                    c2.write(r['nome_regra'])
+                    c3.code(r['chave'])
+                    c4.write(r['nivel']) # Agora mostra os IDs bloqueados
+                    c5.write(r['status'])
+                    with c6:
+                        if st.button("✏️", key=f"ed_rg_{r['id']}"): dialog_editar_regra_bloqueio(r)
+                        if st.button("🗑️", key=f"del_rg_{r['id']}"): 
+                            excluir_regra_bloqueio(r['id']); st.rerun()
+                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
         else:
             st.warning("Nenhuma regra de bloqueio cadastrada.")
 
