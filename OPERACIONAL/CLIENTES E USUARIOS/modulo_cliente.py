@@ -37,14 +37,22 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (CORE DO SISTEMA) ---
-def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"):
+# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (REGRA 1, 2, 3) ---
+def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido", parar_se_bloqueado=False):
     """
     Verifica se o usuário atual deve ser bloqueado com base na tabela permissão_usuario_regras_nível.
-    Retorna True se DEVE BLOQUEAR, False se PERMITIDO.
+    
+    Lógica:
+    1. Pega o nível do usuário logado.
+    2. Busca o ID desse nível.
+    3. Busca a regra pelo 'nome_regra'.
+    4. Se STATUS='SIM' e ID_NIVEL estiver na coluna 'chave', BLOQUEIA.
+    
+    Se parar_se_bloqueado=True, executa st.error e st.stop().
     """
+    # 1. Validação de Login
     if not st.session_state.get('logado'):
-        return True # Bloqueia se não logado
+        return True 
 
     conn = get_conn()
     if not conn: return False 
@@ -52,17 +60,24 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
     try:
         cur = conn.cursor()
         
-        # 1. Busca ID do Nível do Usuário Atual
+        # 2. Busca ID do Nível do Usuário Atual (admin.clientes_usuarios -> permissão.permissão_grupo_nivel)
         nivel_usuario_nome = st.session_state.get('usuario_cargo', '') 
+        
+        # Regra 1: Todo usuário sem nível definido é tratado com nível padrão (segurança)
+        if not nivel_usuario_nome:
+            nivel_usuario_nome = 'Cliente sem permissão'
+
         cur.execute("SELECT id FROM permissão.permissão_grupo_nivel WHERE nivel = %s", (nivel_usuario_nome,))
         res_nivel = cur.fetchone()
         
         if not res_nivel:
-            return False # Nível não encontrado, libera acesso
+            # Se o nível do usuário não existe na tabela de níveis, por segurança, não bloqueia (ou bloqueia tudo, dependendo da política. Aqui segue fluxo permissivo se erro de cadastro)
+            conn.close()
+            return False 
             
         id_nivel_usuario = str(res_nivel[0])
 
-        # 2. Busca a Regra (ATUALIZADO: COLUNA 'chave' em vez de 'chaves_niveis')
+        # 3. Busca a Regra na tabela permissão_usuario_regras_nível
         cur.execute("""
             SELECT id, chave, status, caminho_bloqueio 
             FROM permissão.permissão_usuario_regras_nível 
@@ -71,22 +86,26 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
         
         regra = cur.fetchone()
         
+        # Se a regra não existe no banco, não bloqueia
         if not regra:
             conn.close()
             return False
 
         id_regra, lista_bloqueio_str, status, caminho_registrado = regra
         
-        # 3. Verifica Status
+        # Verifica Status (3.1)
         if status != 'SIM':
             conn.close()
-            return False 
+            return False # Regra inativa
 
-        # Verifica se o ID do usuário está na lista de bloqueio
+        # Verifica a Chave (Lista de IDs bloqueados)
+        # Exemplo chave: "1; 5; 10"
         lista_ids = [x.strip() for x in str(lista_bloqueio_str).split(';') if x.strip()]
         
         if id_nivel_usuario in lista_ids:
-            # 3.1 Otimização: Atualiza caminho se vazio
+            # BLOQUEIO DETECTADO!
+            
+            # Regra 3: Registrar caminho se for a primeira vez
             if not caminho_registrado:
                 cur.execute("""
                     UPDATE permissão.permissão_usuario_regras_nível 
@@ -96,10 +115,17 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
                 conn.commit()
             
             conn.close()
-            return True # BLOQUEAR!
+            
+            # 3.1 Apresentar Aviso e Parar (se solicitado)
+            if parar_se_bloqueado:
+                st.error("🚫 USUÁRIO SEM PERMISSÃO")
+                st.caption(f"Regra de bloqueio: {nome_regra_codigo}")
+                st.stop() # Interrompe o carregamento da tela
+                
+            return True 
             
         conn.close()
-        return False 
+        return False # Acesso Liberado
 
     except Exception as e:
         print(f"Erro verificação permissão: {e}")
@@ -713,6 +739,10 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     conn = get_conn()
     try:
         cur = conn.cursor(); senha_f = hash_senha(senha)
+        # REGRA 1: Obrigatoriamente "Cliente sem permissão" se não informado
+        if not nivel:
+            nivel = 'Cliente sem permissão'
+            
         cur.execute("INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id", (nome, email, cpf, tel, senha_f, nivel, ativo))
         nid = cur.fetchone()[0]; conn.commit(); conn.close(); return nid
     except: 
@@ -1051,6 +1081,12 @@ def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_ed
 # =============================================================================
 
 def app_clientes():
+    # --- BLOQUEIO DE SEGURANÇA (NOVO) ---
+    # Verifica se o nível do usuário está bloqueado para o módulo "modulo_clientes"
+    # Se bloqueado, para a execução aqui mesmo e mostra o aviso.
+    verificar_bloqueio_de_acesso("modulo_clientes", caminho_atual="Operacional > Clientes", parar_se_bloqueado=True)
+    # ------------------------------------
+
     garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
     
