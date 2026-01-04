@@ -383,34 +383,34 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
         
-        # 2. Telefones (CORRIGIDO: cpf -> cpf_ref)
+        # 2. Telefones (CORRIGIDO: cpf_ref -> cpf)
         telefones = dados_api.get('telefones', [])
         print(f"DEBUG: Salvando {len(telefones)} telefones para {cpf_limpo}")
         for t in telefones:
             n = re.sub(r'\D', '', str(t['numero']))
             if n: 
+                # Ajustado para usar 'cpf' como nome da coluna
                 cur.execute("""
-                    INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_qualificacao, data_atualizacao) 
+                    INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_qualificacao, data_atualizacao) 
                     VALUES (%s, %s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING
                 """, (cpf_limpo, n, t.get('prioridade', '')))
         
-        # 3. Emails (CORRIGIDO: cpf -> cpf_ref)
+        # 3. Emails (CORRIGIDO: cpf_ref -> cpf)
         emails = dados_api.get('emails', [])
         for e in emails:
             if e: 
                 cur.execute("""
-                    INSERT INTO banco_pf.pf_emails (cpf_ref, email) 
+                    INSERT INTO banco_pf.pf_emails (cpf, email) 
                     VALUES (%s, %s) ON CONFLICT DO NOTHING
                 """, (cpf_limpo, str(e).lower()))
             
-        # 4. Endereços (CORRIGIDO: cpf -> cpf_ref)
+        # 4. Endereços (CORRIGIDO: cpf_ref -> cpf)
         enderecos = dados_api.get('enderecos', [])
         for d in enderecos:
             cp = re.sub(r'\D', '', str(d['cep']))
-            # CORREÇÃO: Salva endereço mesmo sem CEP se tiver rua
             if cp or d['rua']: 
                 cur.execute("""
-                    INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) 
+                    INSERT INTO banco_pf.pf_enderecos (cpf, rua, bairro, cidade, uf, cep) 
                     VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
 
