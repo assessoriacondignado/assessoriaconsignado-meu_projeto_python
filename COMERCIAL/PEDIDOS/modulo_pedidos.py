@@ -45,7 +45,6 @@ def listar_carteiras_ativas():
         except: conn.close()
     return []
 
-# --- NOVA FUNÇÃO: LISTAR TABELAS DO ADMIN ---
 def listar_tabelas_schema(schema_name):
     conn = get_conn()
     if conn:
@@ -127,7 +126,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     except Exception as e:
         return False, f"Erro financeiro: {str(e)}"
 
-# --- CRUD PEDIDOS (FUNCIONALIDADES ORIGINAIS) ---
+# --- CRUD PEDIDOS ---
 def buscar_clientes():
     conn = get_conn()
     if conn:
@@ -159,11 +158,12 @@ def criar_pedido(cliente, produto, qtd, valor_unitario, valor_total, avisar_clie
     if conn:
         try:
             cur = conn.cursor()
+            # REGRA 1.1: Ao criar (status 'Solicitado'), marca data_solicitacao
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
-                                     nome_carteira, custo_carteira, origem_custo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                                     nome_carteira, custo_carteira, origem_custo, data_solicitacao)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
             """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
                   int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total),
                   nome_lista, float(custo_lista), origem_custo))
@@ -227,17 +227,29 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             obs_hist = obs
             msg_fin = ""
             
-            if novo_status == "Pago":
+            # --- REGRA DE DATA E FINANCEIRO ---
+            coluna_data = ""
+            
+            if novo_status == "Solicitado":
+                coluna_data = ", data_solicitacao = NOW()"
+            elif novo_status == "Pago":
+                coluna_data = ", data_pago = NOW()"
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
-                
+            elif novo_status == "Pendente":
+                coluna_data = ", data_pendente = NOW()"
             elif novo_status == "Cancelado":
+                coluna_data = ", data_cancelado = NOW()"
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
 
-            cur.execute("UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, obs, id_pedido))
+            # Atualiza Status, Observação e a DATA ESPECÍFICA
+            sql_update = f"UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW(){coluna_data} WHERE id=%s"
+            cur.execute(sql_update, (novo_status, obs, id_pedido))
+            
+            # Atualiza Histórico
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
             
             conn.commit(); conn.close()
@@ -292,22 +304,18 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
         except Exception as e: return False, str(e)
     return False, "Erro BD"
 
-# --- FUNÇÕES DE SALVAMENTO GENÉRICO (PARA ADMIN E PEDIDOS) ---
 def salvar_tabela_generica(schema, tabela, df_original, df_editado):
     conn = get_conn()
     if not conn: return False, "Sem conexão"
     try:
         cur = conn.cursor()
-        pk = 'id' # Convenção padrão do sistema
+        pk = 'id' 
         
-        # Verifica se tem ID para controle
         if pk in df_original.columns:
             ids_originais = set(df_original[pk].dropna().astype(int).tolist())
         else:
-            # Se não tiver ID, tentamos rodar sem proteção de delete (arriscado, mas funcional para views simples)
             ids_originais = set() 
 
-        # 1. Detectar Deletes (Apenas se tiver ID)
         if pk in df_original.columns:
             ids_editados = set()
             for _, row in df_editado.iterrows():
@@ -320,10 +328,8 @@ def salvar_tabela_generica(schema, tabela, df_original, df_editado):
                 ids_str = ",".join(map(str, ids_del))
                 cur.execute(f"DELETE FROM {schema}.{tabela} WHERE {pk} IN ({ids_str})")
 
-        # 2. Upsert (Insert ou Update)
         for index, row in df_editado.iterrows():
             colunas_validas = list(row.index)
-            # Removemos colunas timestamp automáticas se existirem no dataframe mas forem geradas pelo banco
             cols_ignore = ['data_criacao', 'data_atualizacao']
             colunas_validas = [c for c in colunas_validas if c not in cols_ignore]
 
@@ -331,23 +337,16 @@ def salvar_tabela_generica(schema, tabela, df_original, df_editado):
             eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
             
             if eh_novo:
-                # INSERT
-                # Remove ID da lista de inserção pois é SERIAL (automático)
                 cols_insert = [c for c in colunas_validas if c != pk]
                 vals_insert = [row[c] for c in cols_insert]
-                
                 placeholders = ", ".join(["%s"] * len(cols_insert))
                 cols_str = ", ".join(cols_insert)
-                
                 if cols_insert:
                     cur.execute(f"INSERT INTO {schema}.{tabela} ({cols_str}) VALUES ({placeholders})", vals_insert)
-            
             elif int(row_id) in ids_originais:
-                # UPDATE
                 cols_update = [c for c in colunas_validas if c != pk]
                 vals_update = [row[c] for c in cols_update]
-                vals_update.append(int(row_id)) # ID vai no WHERE
-                
+                vals_update.append(int(row_id)) 
                 if cols_update:
                     set_clause = ", ".join([f"{c} = %s" for c in cols_update])
                     cur.execute(f"UPDATE {schema}.{tabela} SET {set_clause} WHERE {pk} = %s", vals_update)
@@ -534,10 +533,9 @@ def dialog_tarefa(ped):
 def app_pedidos():
     st.markdown("## 🛒 Módulo de Pedidos")
     
-    # NOVAS ABAS DE NAVEGAÇÃO: Adicionado "Tabelas Admin"
     tab_lista, tab_param, tab_admin = st.tabs(["📋 Lista de Pedidos", "⚙️ Parâmetros", "🗃️ Tabelas Admin"])
 
-    # ABA 1: LISTA (ORIGINAL)
+    # ABA 1: LISTA
     with tab_lista:
         if 'modal_ativo' not in st.session_state: st.session_state.update({'modal_ativo': None, 'pedido_ativo': None})
         
@@ -583,17 +581,18 @@ def app_pedidos():
                         if row.get('nome_carteira'):
                             st.caption(f"Carteira: {row['nome_carteira']} | Origem: {row.get('origem_custo', '-')}")
                             
+                        # REGRA 2: BOTÕES COM NOME (Sem Emojis)
                         c1, c2, c3, c4, c5, c6 = st.columns(6)
                         ts = int(time.time())
-                        c1.button("👤", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row))
-                        c2.button("✏️", key=f"e_{row['id']}_{ts}", on_click=abrir_modal, args=('editar', row))
-                        c3.button("🔄", key=f"s_{row['id']}_{ts}", on_click=abrir_modal, args=('status', row))
-                        c4.button("📜", key=f"h_{row['id']}_{ts}", on_click=abrir_modal, args=('historico', row))
-                        c5.button("🗑️", key=f"d_{row['id']}_{ts}", on_click=abrir_modal, args=('excluir', row))
-                        c6.button("📝", key=f"t_{row['id']}_{ts}", on_click=abrir_modal, args=('tarefa', row))
+                        c1.button("Cliente", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row), use_container_width=True)
+                        c2.button("Editar", key=f"e_{row['id']}_{ts}", on_click=abrir_modal, args=('editar', row), use_container_width=True)
+                        c3.button("Status", key=f"s_{row['id']}_{ts}", on_click=abrir_modal, args=('status', row), use_container_width=True)
+                        c4.button("Histórico", key=f"h_{row['id']}_{ts}", on_click=abrir_modal, args=('historico', row), use_container_width=True)
+                        c5.button("Excluir", key=f"d_{row['id']}_{ts}", on_click=abrir_modal, args=('excluir', row), use_container_width=True)
+                        c6.button("Tarefa", key=f"t_{row['id']}_{ts}", on_click=abrir_modal, args=('tarefa', row), use_container_width=True)
             else: st.info("Nenhum pedido.")
     
-    # ABA 2: PARÂMETROS (EDIÇÃO DIRETA)
+    # ABA 2: PARÂMETROS
     with tab_param:
         st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
         st.caption("Use com cautela. Permite editar dados brutos do sistema.")
@@ -608,17 +607,16 @@ def app_pedidos():
                     key="editor_pedidos",
                     use_container_width=True,
                     num_rows="dynamic",
-                    disabled=["id", "data_criacao", "data_atualizacao"] 
+                    disabled=["id", "data_criacao", "data_atualizacao", "data_solicitacao", "data_pago", "data_pendente", "data_cancelado"] 
                 )
                 if st.button("💾 Salvar Alterações na Tabela", type="primary"):
                     with st.spinner("Salvando..."):
-                        # Reutiliza a nova função genérica (schema public para pedidos)
                         ok, msg = salvar_tabela_generica('public', 'pedidos', df_pedidos_raw, df_editado)
                         if ok: st.success(msg); time.sleep(1); st.rerun()
                         else: st.error(msg)
             else: st.info("A tabela de pedidos está vazia.")
 
-    # ABA 3: TABELAS ADMIN (NOVA FUNCIONALIDADE)
+    # ABA 3: TABELAS ADMIN
     with tab_admin:
         st.markdown("#### 🗃️ Gestão de Tabelas (Schema: Admin)")
         tabelas = listar_tabelas_schema('admin')
@@ -631,23 +629,20 @@ def app_pedidos():
                 conn = get_conn()
                 if conn:
                     try:
-                        # Busca dados da tabela selecionada
                         query = f"SELECT * FROM admin.{sel_tabela} ORDER BY id"
                         df_tab = pd.read_sql(query, conn)
                         conn.close()
                         
                         st.caption(f"Editando tabela: **admin.{sel_tabela}**")
                         
-                        # Editor de Dados
                         df_tab_editado = st.data_editor(
                             df_tab,
                             key=f"editor_admin_{sel_tabela}",
                             use_container_width=True,
                             num_rows="dynamic",
-                            disabled=["id", "data_criacao"] # Bloqueia ID e data de criação por segurança
+                            disabled=["id", "data_criacao"]
                         )
                         
-                        # Botão Salvar
                         if st.button(f"💾 Salvar Alterações em {sel_tabela}", type="primary"):
                             with st.spinner(f"Processando alterações em admin.{sel_tabela}..."):
                                 ok, msg = salvar_tabela_generica('admin', sel_tabela, df_tab, df_tab_editado)
