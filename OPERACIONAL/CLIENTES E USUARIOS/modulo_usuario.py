@@ -31,6 +31,21 @@ def ler_perms(id_user):
         conn.close(); return res
     except: return []
 
+# --- NOVA FUNÇÃO: BUSCAR NÍVEIS NO BANCO ---
+def listar_niveis_disponiveis():
+    conn = get_conn()
+    if not conn: return ["Cliente"] # Fallback se falhar conexão
+    try:
+        # Busca apenas a coluna 'nivel' da nova tabela criada
+        df = pd.read_sql("SELECT nivel FROM permissão.permissão_grupo_nivel ORDER BY id", conn)
+        conn.close()
+        # Retorna lista de strings. Se vazio, retorna padrão básico.
+        lista = df['nivel'].tolist()
+        return lista if lista else ["Cliente"]
+    except:
+        if conn: conn.close()
+        return ["Cliente"]
+
 def app_usuarios():
     st.markdown("## 🔐 Gestão de Usuários e Permissões")
     if 'modo_user' not in st.session_state: st.session_state['modo_user'] = None
@@ -54,11 +69,15 @@ def app_usuarios():
                 # Campo senha vazio para segurança
                 senha_nova = c2.text_input("Nova Senha", value="", type="password", placeholder="Deixe vazio para manter a atual")
                 
-                opcoes_h = ["Cliente", "Grupo", "Gerente", "Admin"]
+                # --- MUDANÇA AQUI: Busca níveis do banco de dados ---
+                opcoes_h = listar_niveis_disponiveis()
                 
-                # ATUALIZADO: hierarquia -> nivel
-                idx_h = opcoes_h.index(d.get('nivel', 'Cliente')) if d.get('nivel') in opcoes_h else 0
+                # Tenta encontrar o nível atual na lista, se não achar, usa o primeiro (index 0)
+                nivel_atual = d.get('nivel', '')
+                idx_h = opcoes_h.index(nivel_atual) if nivel_atual in opcoes_h else 0
+                
                 cargo = c3.selectbox("Nível", opcoes_h, index=idx_h)
+                # ----------------------------------------------------
                 
                 st.markdown("#### Permissões e Status")
                 cp1, cp2, cp3 = st.columns(3)
