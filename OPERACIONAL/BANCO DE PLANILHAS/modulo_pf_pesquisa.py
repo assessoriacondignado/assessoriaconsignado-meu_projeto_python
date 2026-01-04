@@ -3,11 +3,11 @@ import pandas as pd
 from datetime import date
 import re
 import time
-import json  # Suporta lista de colunas no filtro fixo
+import json
 import modulo_pf_cadastro as pf_core
 import modulo_pf_config_exportacao as pf_export
 
-# --- CONFIGURAÇÕES DE CAMPOS (ATUALIZADA COMPLETA) ---
+# --- CONFIGURAÇÕES DE CAMPOS (MANTIDA) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -71,22 +71,18 @@ CAMPOS_CONFIG = {
     ]
 }
 
-# --- FUNÇÕES SQL EXISTENTES ---
+# --- FUNÇÕES SQL E AUXILIARES (MANTIDAS) ---
 
 def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50):
     conn = pf_core.get_conn()
     if conn:
         try:
-            # REGRA 5.1: Normaliza a entrada para o formato do banco
             termo_limpo = pf_core.limpar_normalizar_cpf(termo)
-            
             param_nome = f"%{termo}%"
             sql_base = "SELECT d.id, d.nome, d.cpf, d.data_nascimento FROM banco_pf.pf_dados d "
             conds = ["d.nome ILIKE %s"]
             params = [param_nome]
-            
             if termo_limpo: 
-                # AJUSTE DE CORREÇÃO: Usa 't.cpf' ao invés de 't.cpf_ref' para compatibilidade com banco legado
                 sql_base += " LEFT JOIN banco_pf.pf_telefones t ON d.cpf = t.cpf" 
                 conds.append("d.cpf ILIKE %s")
                 conds.append("t.numero ILIKE %s")
@@ -94,17 +90,12 @@ def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagi
                 params.append(f"%{termo_limpo}%")
             
             where = " WHERE " + " OR ".join(conds)
-            
             cur = conn.cursor()
-            # Count
             part_from = sql_base.split('FROM', 1)[1]
             cur.execute(f"SELECT COUNT(DISTINCT d.id) FROM {part_from} {where}", tuple(params))
             total = cur.fetchone()[0]
-            
-            # Select Paginado
             offset = (pagina-1)*itens_por_pagina
             df = pd.read_sql(f"{sql_base} {where} GROUP BY d.id ORDER BY d.nome LIMIT {itens_por_pagina} OFFSET {offset}", conn, params=tuple(params))
-            
             conn.close()
             return df, total
         except Exception as e:
@@ -118,19 +109,14 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
         try:
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
-            
-            # AJUSTE DE CORREÇÃO: Usa 'cpf' ao invés de 'cpf_ref' para tabelas satélites
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
                 'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf",
                 'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
-                # Contratos vincula com Matricula
                 'banco_pf.pf_contratos': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula_ref",
-                # CLT vincula com Matricula
                 'banco_pf.pf_matricula_dados_clt': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
-            
             active_joins = []; conditions = []; params = []
 
             for regra in regras_ativas:
@@ -138,7 +124,6 @@ def executar_pesquisa_ampla(regras_ativas, pagina=1, itens_por_pagina=50):
                 val_raw = regra['valor']; tipo = regra['tipo']
                 if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
                 if tabela in joins_map and joins_map[tabela] not in active_joins: active_joins.append(joins_map[tabela])
-                
                 col_sql = f"{coluna}"
                 if coluna == 'virtual_idade': col_sql = "EXTRACT(YEAR FROM AGE(d.data_nascimento))"
                 if coluna == 'virtual_ddd': col_sql = "SUBSTRING(tel.numero, 1, 2)"
@@ -199,23 +184,22 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         cpfs_tuple = tuple(str(c) for c in cpfs_alvo)
         if not cpfs_tuple: return False, "Nenhum CPF na lista."
         
-        # Ajuste de Correção para DELETE usando 'cpf' se necessário
         if tipo == "Cadastro Completo":
             query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Telefones":
-            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf IN %s" # Ajustado para cpf
+            query = "DELETE FROM banco_pf.pf_telefones WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "E-mails":
-            query = "DELETE FROM banco_pf.pf_emails WHERE cpf IN %s" # Ajustado para cpf
+            query = "DELETE FROM banco_pf.pf_emails WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Endereços":
-            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf IN %s" # Ajustado para cpf
+            query = "DELETE FROM banco_pf.pf_enderecos WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
         elif tipo == "Emprego e Renda":
             if not convenio: return False, "Convênio não selecionado."
             if sub_opcao == "Excluir Vínculo Completo (Matrícula + Contratos)":
-                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s" # Ajustado
+                query = "DELETE FROM banco_pf.pf_emprego_renda WHERE cpf IN %s AND convenio = %s"
                 cur.execute(query, (cpfs_tuple, convenio))
             elif sub_opcao == "Excluir Apenas Contratos":
                 query = """
@@ -224,7 +208,7 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
                         SELECT matricula FROM banco_pf.pf_emprego_renda 
                         WHERE cpf IN %s AND convenio = %s
                     )
-                """ # Ajustado
+                """
                 cur.execute(query, (cpfs_tuple, convenio))
 
         registros = cur.rowcount
@@ -324,31 +308,55 @@ def interface_pesquisa_rapida():
     if col_b3.button("📥 Importar"): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
     
     if busca:
-        # --- CORREÇÃO: Usa 'pf_pagina_atual' ---
         df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
         
         if not df_lista.empty:
             st.markdown(f"**Resultados encontrados: {total}**")
             
-            # BLOCO DE EXPORTAÇÃO PARA PESQUISA RÁPIDA
-            with st.expander("📂 Exportar Resultados da Busca", expanded=False):
-                df_modelos = pf_export.listar_modelos_ativos()
-                if not df_modelos.empty:
-                    c_sel, c_btn = st.columns([3, 1])
-                    opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
-                    idx_mod = c_sel.selectbox("Layout de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_fast")
-                    if c_btn.button("⬇️ Gerar Arquivos", key="btn_fast_exp"):
-                        with st.spinner("Preparando arquivos..."):
-                            df_total, _ = buscar_pf_simples(busca, pagina=1, itens_por_pagina=9999999)
-                            lista_cpfs = df_total['cpf'].unique().tolist()
-                            limite = 200000
-                            partes = (len(lista_cpfs) // limite) + (1 if len(lista_cpfs) % limite > 0 else 0)
-                            for p in range(partes):
-                                cpfs_lote = lista_cpfs[p*limite : (p+1)*limite]
-                                df_final = pf_export.gerar_dataframe_por_modelo(df_modelos.iloc[idx_mod]['id'], cpfs_lote)
-                                if not df_final.empty:
-                                    csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
-                                    st.download_button(label=f"💾 Baixar Parte {p+1}", data=csv, file_name=f"busca_p{p+1}.csv", key=f"dl_fast_{p}")
+            # --- BLOCO DE EXPORTAÇÃO (CORRIGIDO) ---
+            with st.expander("📂 Exportar Resultados da Busca", expanded=bool(st.session_state.get('cache_export_fast'))):
+                # 1. Se já existe cache, mostra os botões e opção de limpar
+                if st.session_state.get('cache_export_fast'):
+                    st.success("Arquivos prontos para download:")
+                    arquivos = st.session_state['cache_export_fast']
+                    for i, item in enumerate(arquivos):
+                        st.download_button(
+                            label=f"⬇️ {item['nome']}",
+                            data=item['data'],
+                            file_name=item['nome'],
+                            mime="text/csv",
+                            key=f"dl_cached_fast_{i}"
+                        )
+                    st.markdown("---")
+                    if st.button("❌ Limpar / Fechar Exportação", key="cls_fast"):
+                        del st.session_state['cache_export_fast']
+                        st.rerun()
+                
+                # 2. Se não existe cache, mostra o formulário para gerar
+                else:
+                    df_modelos = pf_export.listar_modelos_ativos()
+                    if not df_modelos.empty:
+                        c_sel, c_btn = st.columns([3, 1])
+                        opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
+                        idx_mod = c_sel.selectbox("Layout de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_fast")
+                        
+                        if c_btn.button("⬇️ Gerar Arquivos", key="btn_fast_exp"):
+                            with st.spinner("Gerando arquivos... Aguarde..."):
+                                df_total, _ = buscar_pf_simples(busca, pagina=1, itens_por_pagina=9999999)
+                                lista_cpfs = df_total['cpf'].unique().tolist()
+                                limite = 200000
+                                partes = (len(lista_cpfs) // limite) + (1 if len(lista_cpfs) % limite > 0 else 0)
+                                
+                                cache_data = []
+                                for p in range(partes):
+                                    cpfs_lote = lista_cpfs[p*limite : (p+1)*limite]
+                                    df_final = pf_export.gerar_dataframe_por_modelo(df_modelos.iloc[idx_mod]['id'], cpfs_lote)
+                                    if not df_final.empty:
+                                        csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                                        cache_data.append({'nome': f"busca_p{p+1}.csv", 'data': csv})
+                                
+                                st.session_state['cache_export_fast'] = cache_data
+                                st.rerun()
 
             st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
             for _, row in df_lista.iterrows():
@@ -364,7 +372,6 @@ def interface_pesquisa_rapida():
                 c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome'])
                 st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
             
-            # --- CORREÇÃO: Paginação usa 'pf_pagina_atual' ---
             cp1, cp2, cp3 = st.columns([1, 3, 1])
             if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pf_pagina_atual', 1) > 1: st.session_state['pf_pagina_atual'] -= 1; st.rerun()
             if cp3.button("Próx. ➡️", key="next_fast"): st.session_state['pf_pagina_atual'] = st.session_state.get('pf_pagina_atual', 1) + 1; st.rerun()
@@ -375,9 +382,13 @@ def interface_pesquisa_ampla():
     c_voltar, c_tipos, c_limpar, c_spacer = st.columns([1, 1.5, 1.5, 5])
     if c_voltar.button("⬅️ Voltar"): st.session_state.update({'pf_view': 'lista'}); st.rerun()
     if c_tipos.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"): dialog_tipos_filtro()
-    
-    # --- CORREÇÃO: Limpar filtros reseta 'pf_pagina_atual' ---
-    if c_limpar.button("🗑️ Limpar Filtros"): st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pf_pagina_atual'] = 1; st.rerun()
+    if c_limpar.button("🗑️ Limpar Filtros"): 
+        st.session_state['regras_pesquisa'] = []
+        st.session_state['executar_busca'] = False
+        st.session_state['pf_pagina_atual'] = 1
+        # Limpa cache também ao limpar filtros
+        if 'cache_export_ampla' in st.session_state: del st.session_state['cache_export_ampla']
+        st.rerun()
     
     st.divider()
     conn = pf_core.get_conn(); ops_cache = {'texto': [], 'numero': [], 'data': []}; lista_convenios = []
@@ -392,17 +403,10 @@ def interface_pesquisa_ampla():
     c_menu, c_regras = st.columns([4, 2]) 
     with c_menu:
         st.markdown("### 🗂️ Campos Disponíveis")
-        
-        # --- NOVO: CAMPO DE FILTRO DE CAMPOS ---
         termo_filtro = st.text_input("🔍 Filtrar campos (Digite para buscar...)", key="filtro_campos_ampla")
-        
         for grupo, campos in CAMPOS_CONFIG.items():
-            # Filtra os campos que correspondem ao texto
             campos_filtrados = [c for c in campos if termo_filtro.lower() in c['label'].lower()]
-            
-            # Mostra o grupo apenas se tiver campos compatíveis
             if campos_filtrados:
-                # Expande automaticamente se houver filtro digitado
                 expandir_grupo = bool(termo_filtro)
                 with st.expander(grupo, expanded=expandir_grupo):
                     colunas_botoes = st.columns(4)
@@ -423,7 +427,6 @@ def interface_pesquisa_ampla():
                 novo_op_simbolo = novo_op_full.split(' : ')[0] if novo_op_full else "="
                 if novo_op_simbolo == '∅': c_val.text_input("Valor", value="[Vazio]", disabled=True, key=f"val_{i}", label_visibility="collapsed"); novo_valor = None
                 elif regra['tipo'] == 'data': 
-                    # REGRA 2.3 (Data de Nascimento): Limites 1900-2050
                     novo_valor = c_val.date_input("Data", value=None, min_value=date(1900,1,1), max_value=date(2050,12,31), key=f"val_{i}", format="DD/MM/YYYY", label_visibility="collapsed")
                 else: novo_valor = c_val.text_input("Valor", value=regra['valor'], key=f"val_{i}", label_visibility="collapsed")
                 st.session_state['regras_pesquisa'][i]['operador'] = novo_op_full; st.session_state['regras_pesquisa'][i]['valor'] = novo_valor
@@ -439,36 +442,60 @@ def interface_pesquisa_ampla():
             r_copy = r.copy()
             if r_copy['operador']: r_copy['operador'] = r_copy['operador'].split(' : ')[0]
             regras_limpas.append(r_copy)
-            
-        # --- CORREÇÃO: Usa 'pf_pagina_atual' ---
         df_res, total = executar_pesquisa_ampla(regras_limpas, st.session_state.get('pf_pagina_atual', 1))
         st.write(f"**Resultados:** {total}")
         
         if not df_res.empty:
             st.divider()
 
-            # --- ÁREA DE EXPORTAÇÃO MASSIVA POR LOTES ---
-            with st.expander("📂 Exportar Dados", expanded=False):
-                df_modelos = pf_export.listar_modelos_ativos()
-                if not df_modelos.empty:
-                    c_sel, c_btn = st.columns([3, 1])
-                    opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
-                    idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_ampla")
-                    modelo_selecionado = df_modelos.iloc[idx_mod]
-                    st.caption(f"📝 {modelo_selecionado['descricao']}")
-                    if c_btn.button("⬇️ Gerar Arquivos", key="btn_ampla_exp"):
-                        with st.spinner("Processando exportação por lotes..."):
-                            df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 9999999)
-                            lista_cpfs_total = df_total['cpf'].unique().tolist()
-                            limite = 200000
-                            partes = (len(lista_cpfs_total) // limite) + (1 if len(lista_cpfs_total) % limite > 0 else 0)
-                            st.info(f"Gerando {partes} lote(s) de 200 mil.")
-                            for p in range(partes):
-                                cpfs_lote = lista_cpfs_total[p*limite : (p+1)*limite]
-                                df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], cpfs_lote)
-                                if not df_final.empty:
-                                    csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
-                                    st.download_button(label=f"💾 Baixar Parte {p+1}", data=csv, file_name=f"export_p{p+1}.csv", key=f"dl_ampla_{p}")
+            # --- ÁREA DE EXPORTAÇÃO MASSIVA (CORRIGIDA) ---
+            with st.expander("📂 Exportar Dados (Lotes)", expanded=bool(st.session_state.get('cache_export_ampla'))):
+                
+                # 1. Se já existe cache, exibe os downloads persistentes
+                if st.session_state.get('cache_export_ampla'):
+                    st.success("✅ Arquivos gerados e prontos para download:")
+                    arquivos = st.session_state['cache_export_ampla']
+                    for i, item in enumerate(arquivos):
+                        st.download_button(
+                            label=f"💾 Baixar {item['nome']}",
+                            data=item['data'],
+                            file_name=item['nome'],
+                            mime="text/csv",
+                            key=f"dl_cached_ampla_{i}"
+                        )
+                    st.markdown("---")
+                    if st.button("❌ Limpar / Fechar Exportação", key="cls_ampla"):
+                        del st.session_state['cache_export_ampla']
+                        st.rerun()
+
+                # 2. Se não, exibe o formulário
+                else:
+                    df_modelos = pf_export.listar_modelos_ativos()
+                    if not df_modelos.empty:
+                        c_sel, c_btn = st.columns([3, 1])
+                        opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
+                        idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_ampla")
+                        modelo_selecionado = df_modelos.iloc[idx_mod]
+                        st.caption(f"📝 {modelo_selecionado['descricao']}")
+                        
+                        if c_btn.button("⬇️ Gerar Arquivos", key="btn_ampla_exp"):
+                            with st.spinner("Processando e gerando arquivos em memória..."):
+                                df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 9999999)
+                                lista_cpfs_total = df_total['cpf'].unique().tolist()
+                                limite = 200000
+                                partes = (len(lista_cpfs_total) // limite) + (1 if len(lista_cpfs_total) % limite > 0 else 0)
+                                st.info(f"Gerando {partes} lote(s) de 200 mil.")
+                                
+                                cache_data = []
+                                for p in range(partes):
+                                    cpfs_lote = lista_cpfs_total[p*limite : (p+1)*limite]
+                                    df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], cpfs_lote)
+                                    if not df_final.empty:
+                                        csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                                        cache_data.append({'nome': f"export_p{p+1}.csv", 'data': csv})
+                                
+                                st.session_state['cache_export_ampla'] = cache_data
+                                st.rerun()
 
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
                 st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados."); tipo_exc = st.selectbox("O que excluir?", ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"])
@@ -498,7 +525,6 @@ def interface_pesquisa_ampla():
                         if st.button("🗑️", key=f"d_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                 c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome']); st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
             
-            # --- CORREÇÃO: Paginação usa 'pf_pagina_atual' ---
             cp1, cp2, cp3 = st.columns([1, 3, 1])
             if cp1.button("⬅️ Ant.") and st.session_state.get('pf_pagina_atual', 1) > 1: st.session_state['pf_pagina_atual'] -= 1; st.rerun()
             if cp3.button("Próx. ➡️"): st.session_state['pf_pagina_atual'] = st.session_state.get('pf_pagina_atual', 1) + 1; st.rerun()
