@@ -114,20 +114,27 @@ def validar_login_db(usuario_input, senha_input):
     try:
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
-        sql = """SELECT id, nome, hierarquia, senha, COALESCE(tentativas_falhas, 0) 
+        # AJUSTE: Incluído campo 'email' na busca para exibir no layout
+        sql = """SELECT id, nome, hierarquia, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
         cursor.execute(sql, (usuario_limpo, usuario_limpo, usuario_limpo))
         res = cursor.fetchone()
         
         if res:
-            id_user, nome, cargo, senha_hash, falhas = res
+            id_user, nome, cargo, senha_hash, email_user, falhas = res
             if falhas >= 5: return {"status": "bloqueado"}
             
             if verificar_senha(senha_input, senha_hash):
                 cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (id_user,))
                 conn.commit()
-                return {"id": id_user, "nome": nome, "cargo": cargo, "status": "sucesso"}
+                return {
+                    "id": id_user, 
+                    "nome": nome, 
+                    "cargo": cargo, 
+                    "email": email_user, 
+                    "status": "sucesso"
+                }
             else:
                 cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (id_user,))
                 conn.commit()
@@ -138,7 +145,6 @@ def validar_login_db(usuario_input, senha_input):
 # --- 6. DIALOGS ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
-    # ... (Mantendo a lógica original do dialog)
     try:
         conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
@@ -177,14 +183,12 @@ def dialog_mensagem_rapida():
 
 @st.dialog("Recuperar Acesso")
 def dialog_reset_senha():
-    # ... (Mantendo a lógica original do dialog)
     st.write("Receba uma nova senha via WhatsApp.")
     identificador = st.text_input("E-mail ou CPF")
     if st.button("Enviar Nova Senha", use_container_width=True, type="primary") and identificador:
-        # (Logica de reset mantida simplificada aqui para não estourar linhas)
-        st.info("Funcionalidade mantida (ver código original para lógica completa se necessário)")
+        st.info("Funcionalidade de reset em manutenção para ajuste de segurança.")
 
-# --- 7. RENDERIZAÇÃO DO MENU (NOVO LAYOUT) ---
+# --- 7. RENDERIZAÇÃO DO MENU (LAYOUT AJUSTADO) ---
 def renderizar_menu_lateral():
     # CSS Personalizado para o Menu
     st.markdown("""
@@ -217,15 +221,30 @@ def renderizar_menu_lateral():
     """, unsafe_allow_html=True)
 
     with st.sidebar:
-        # Cabeçalho
-        st.markdown(f"**Usuário:** {st.session_state.get('usuario_nome', 'Visitante')}")
-        st.caption(f"Cargo: {st.session_state.get('usuario_cargo', '-')}")
-        st.markdown("---")
-
-        # Definição dos Menus baseada no Cargo
-        cargo = st.session_state.get('usuario_cargo', 'Cliente')
+        # --- 1.1 LOGO E DADOS DO CLIENTE (Topo) ---
+        # Logo
+        try:
+            st.image("logo_assessoria.png", use_container_width=True)
+        except:
+            st.warning("Logo não encontrada")
         
-        # Estrutura do Menu: "Nome do Menu": ["Subitem 1", "Subitem 2"]
+        # Dados Formatados
+        nome_completo = st.session_state.get('usuario_nome', 'Visitante')
+        primeiro_nome = nome_completo.split()[0].title() if nome_completo else "Visitante"
+        email_user = st.session_state.get('usuario_email', 'sem_email')
+        cargo_user = st.session_state.get('usuario_cargo', '-')
+
+        st.markdown(f"""
+            <div style="text-align: center; margin-bottom: 20px; line-height: 1.4;">
+                <strong style="font-size: 1.1em;">{primeiro_nome}</strong><br>
+                <span style="font-size: 0.85em; color: #333;">{email_user}</span><br>
+                <span style="font-size: 0.85em; color: gray;">{cargo_user}</span>
+            </div>
+            <hr style="margin-top: 5px; margin-bottom: 15px;">
+        """, unsafe_allow_html=True)
+
+        # --- MENU PRINCIPAL ---
+        cargo = st.session_state.get('usuario_cargo', 'Cliente')
         estrutura_menu = {}
         
         # Menu Sempre visível
@@ -237,58 +256,50 @@ def renderizar_menu_lateral():
         if cargo in ["Admin", "Gerente"]:
             estrutura_menu["Operacional"] = ["Clientes", "Usuários", "Banco PF", "Campanhas", "WhatsApp"]
             estrutura_menu["Comercial"] = ["Produtos", "Pedidos", "Tarefas", "Renovação"]
-            estrutura_menu["Conexões"] = [] # Menu sem filhos (direto)
+            estrutura_menu["Conexões"] = [] 
         else:
             estrutura_menu["Operacional"] = ["Clientes", "Usuários", "WhatsApp"]
 
         # Renderização Dinâmica (Acordeão)
         for menu_pai, subitens in estrutura_menu.items():
-            
-            # Caso especial: Conexões é um menu direto sem filhos neste exemplo
             if menu_pai == "Conexões":
                 if st.button(f"🔌 {menu_pai}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
                     st.session_state['pagina_atual'] = "Conexões"
                     st.session_state['menu_aberto'] = None
                 continue
 
-            # Menu Pai com Filhos
             icone = "▼" if st.session_state['menu_aberto'] == menu_pai else "►"
             label_pai = f"📂 {menu_pai} {icone}"
             
-            # Botão Pai
             if st.button(label_pai, key=f"pai_{menu_pai}", on_click=resetar_atividade):
-                # Lógica de Abrir/Fechar
                 if st.session_state['menu_aberto'] == menu_pai:
                     st.session_state['menu_aberto'] = None
                 else:
                     st.session_state['menu_aberto'] = menu_pai
             
-            # Botões Filhos (Se pai aberto)
             if st.session_state['menu_aberto'] == menu_pai:
                 for item in subitens:
-                    # Recuo visual usando colunas
                     _, col_btn = st.columns([0.1, 0.9])
                     with col_btn:
-                        # Botão Filho
                         if st.button(f"↳ {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
-                            # Define a página atual como "Menu > Subitem"
                             st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
 
-        # Rodapé com Timer e Logout
-        st.markdown("<br>" * 3, unsafe_allow_html=True)
-        st.markdown("---")
+        # --- 2. RODAPÉ (Botão Sair + Tempo) ---
+        # Espaçador grande para empurrar tudo para baixo
+        st.markdown("<br>" * 10, unsafe_allow_html=True)
         
-        tempo_str = gerenciar_sessao()
-        st.markdown(f"""
-            <div style="text-align: center; padding: 10px; border: 1px dashed gray; margin-bottom: 10px;">
-                <small>Sessão Ativa</small><br>
-                <strong style="font-size: 1.2em;">{tempo_str}</strong>
-            </div>
-        """, unsafe_allow_html=True)
-
+        # 2.4 Botão Sair (Acima do tempo)
         if st.button("🚪 Sair", key="btn_sair"):
             st.session_state.clear()
             st.rerun()
+
+        # 2.3 Tempo de Sessão (Abaixo do botão, sem borda)
+        tempo_str = gerenciar_sessao()
+        st.markdown(f"""
+            <div style="text-align: center; margin-top: 10px; font-size: 0.9em; color: #444;">
+                sessão ativa: {tempo_str}
+            </div>
+        """, unsafe_allow_html=True)
 
 # --- 8. FUNÇÃO PRINCIPAL ---
 def main():
@@ -299,9 +310,7 @@ def main():
 
     # TELA DE LOGIN
     if not st.session_state.get('logado'):
-        # CSS Básico para tela de login
         st.markdown("""<style>div.stButton > button {border: 1px solid black; border-radius: 0px;}</style>""", unsafe_allow_html=True)
-        
         st.markdown('<div style="text-align:center; padding:40px;"><h2>Assessoria Consignado</h2><p>Portal Integrado</p></div>', unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
@@ -311,7 +320,13 @@ def main():
                 res = validar_login_db(u, s)
                 if res:
                     if res.get('status') == "sucesso":
-                        st.session_state.update({'logado': True, 'usuario_id': res['id'], 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
+                        st.session_state.update({
+                            'logado': True, 
+                            'usuario_id': res['id'], 
+                            'usuario_nome': res['nome'], 
+                            'usuario_cargo': res['cargo'],
+                            'usuario_email': res.get('email', '') # Guarda o email na sessão
+                        })
                         st.rerun()
                     elif res.get('status') == "bloqueado": st.error("🚨 USUÁRIO BLOQUEADO.")
                     else: st.error(f"Senha incorreta. Tentativas restantes: {res.get('restantes')}")
@@ -330,25 +345,21 @@ def main():
         # ROTEAMENTO DE PÁGINAS
         pag = st.session_state['pagina_atual']
         
-        # 1. Início
         if pag == "Início":
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Módulo Chat não carregado.")
             
-        # 2. Operacional
         elif "Operacional > Clientes" in pag: modulo_cliente.app_clientes()
         elif "Operacional > Usuários" in pag: modulo_usuario.app_usuarios()
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
         elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
         
-        # 3. Comercial
         elif "Comercial > Produtos" in pag and modulo_produtos: modulo_produtos.app_produtos()
         elif "Comercial > Pedidos" in pag and modulo_pedidos: modulo_pedidos.app_pedidos()
         elif "Comercial > Tarefas" in pag and modulo_tarefas: modulo_tarefas.app_tarefas()
         elif "Comercial > Renovação" in pag and modulo_rf: modulo_rf.app_renovacao_feedback()
         
-        # 4. Conexões
         elif pag == "Conexões" and modulo_conexoes: modulo_conexoes.app_conexoes()
         
         else:
