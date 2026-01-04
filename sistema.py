@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import random
 import string
 import time
-# REMOVIDO: from streamlit_autorefresh import st_autorefresh (Timer estático)
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
@@ -33,14 +32,15 @@ for pasta in pastas_modulos:
         sys.path.append(caminho)
 
 # --- 3. IMPORTAÇÕES DE MÓDULOS (Com tratamento de erro) ---
+# Se algum módulo for excluído, o sistema continua rodando os outros.
 try:
     import conexao
     import modulo_cliente
-    import modulo_usuario
     import modulo_wapi
     import modulo_whats_controlador
     
     # Importações condicionais
+    modulo_usuario = __import__('modulo_usuario') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS/modulo_usuario.py")) else None
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
@@ -51,7 +51,7 @@ try:
     modulo_conexoes = __import__('modulo_conexoes') if os.path.exists(os.path.join(BASE_DIR, "CONEXÕES/modulo_conexoes.py")) else None
 
 except Exception as e:
-    st.error(f"Erro ao carregar módulos: {e}")
+    st.error(f"Aviso do Sistema: Alguns módulos não foram carregados corretamente ({e}).")
 
 # --- 4. FUNÇÕES DE ESTADO E UTILITÁRIOS ---
 
@@ -88,10 +88,9 @@ def gerenciar_sessao():
     mm, ss = divmod(tempo_total.seconds, 60)
     hh, mm = divmod(mm, 60)
     
-    # Retorna o tempo formatado (será atualizado apenas quando houver clique)
     if hh > 0:
         return f"{hh:02d}:{mm:02d}" # Sem segundos (estático)
-    return f"{mm:02d}:{ss:02d}" # Com segundos se for menos de 1h
+    return f"{mm:02d}:{ss:02d}"
 
 # --- 5. BANCO DE DADOS E AUTH ---
 @st.cache_resource(ttl=600)
@@ -116,7 +115,7 @@ def validar_login_db(usuario_input, senha_input):
         usuario_limpo = str(usuario_input).strip().lower()
         cursor = conn.cursor()
         
-        # --- ATENÇÃO: AQUI FOI FEITA A ALTERAÇÃO (hierarquia -> nivel) ---
+        # BUSCA PELA COLUNA 'nivel' (Ajuste solicitado anteriormente)
         sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
@@ -189,23 +188,22 @@ def dialog_reset_senha():
     st.write("Receba uma nova senha via WhatsApp.")
     identificador = st.text_input("E-mail ou CPF")
     if st.button("Enviar Nova Senha", use_container_width=True, type="primary") and identificador:
-        st.info("Funcionalidade de reset em manutenção para ajuste de segurança.")
+        st.info("Funcionalidade em manutenção.")
 
 # --- 7. RENDERIZAÇÃO DO MENU (LAYOUT + EMOJIS) ---
 def renderizar_menu_lateral():
-    # CSS Personalizado para o Menu
+    # CSS Personalizado
     st.markdown("""
         <style>
-        /* Botões do Menu: Borda preta e Quadrados */
         div.stButton > button {
             width: 100%;
             border: 1px solid #000000 !important;
-            border-radius: 0px !important; /* Quadrado */
+            border-radius: 0px !important;
             color: black;
             background-color: #ffffff;
             font-weight: 500;
             margin-bottom: 5px;
-            justify-content: flex-start; /* Alinhar texto à esquerda */
+            justify-content: flex-start;
             padding-left: 15px;
         }
         div.stButton > button:hover {
@@ -213,24 +211,21 @@ def renderizar_menu_lateral():
             color: #FF4B4B;
             background-color: #f0f0f0;
         }
-        /* Fundo da Sidebar */
         section[data-testid="stSidebar"] {
             background-color: rgba(255, 224, 178, 0.3);
         }
-        /* Ocultar menu padrão */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
 
     with st.sidebar:
-        # --- 1.1 LOGO E DADOS DO CLIENTE (Topo) ---
+        # --- 1.1 LOGO E DADOS (Topo) ---
         try:
             st.image("logo_assessoria.png", use_container_width=True)
         except:
             st.warning("Logo não encontrada")
         
-        # Dados Formatados
         nome_completo = st.session_state.get('usuario_nome', 'Visitante')
         primeiro_nome = nome_completo.split()[0].title() if nome_completo else "Visitante"
         email_user = st.session_state.get('usuario_email', 'sem_email')
@@ -246,32 +241,21 @@ def renderizar_menu_lateral():
         """, unsafe_allow_html=True)
 
         # --- MENU PRINCIPAL (Mapeamento de Emojis) ---
-        
-        # Dicionário de Ícones
         icones = {
-            "Operacional": "⚙️",
-            "Comercial": "💼",
-            "Conexões": "🔌",
-            "Clientes": "👥",
-            "Usuários": "🛡️",
-            "Banco PF": "🏦",
-            "Campanhas": "📣",
-            "WhatsApp": "💬",
-            "Produtos": "📦",
-            "Pedidos": "🛒",
-            "Tarefas": "📝",
-            "Renovação": "🔄"
+            "Operacional": "⚙️", "Comercial": "💼", "Conexões": "🔌",
+            "Clientes": "👥", "Usuários": "🛡️", "Banco PF": "🏦",
+            "Campanhas": "📣", "WhatsApp": "💬", "Produtos": "📦",
+            "Pedidos": "🛒", "Tarefas": "📝", "Renovação": "🔄"
         }
 
         cargo = st.session_state.get('usuario_cargo', 'Cliente')
         estrutura_menu = {}
         
-        # Botão Início (Sempre visível)
         if st.button("🏠 Início", key="btn_home", on_click=resetar_atividade):
             st.session_state['pagina_atual'] = "Início"
             st.session_state['menu_aberto'] = None
             
-        # Menus por Permissão
+        # Define opções baseado no cargo
         if cargo in ["Admin", "Gerente"]:
             estrutura_menu["Operacional"] = ["Clientes", "Usuários", "Banco PF", "Campanhas", "WhatsApp"]
             estrutura_menu["Comercial"] = ["Produtos", "Pedidos", "Tarefas", "Renovação"]
@@ -283,7 +267,7 @@ def renderizar_menu_lateral():
         for menu_pai, subitens in estrutura_menu.items():
             icon_pai = icones.get(menu_pai, "📂")
             
-            # Caso especial: Menu sem filhos
+            # Menu sem filhos
             if not subitens:
                 if st.button(f"{icon_pai} {menu_pai}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
                     st.session_state['pagina_atual'] = menu_pai
@@ -308,14 +292,13 @@ def renderizar_menu_lateral():
                         if st.button(f"{icon_filho} {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
                             st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
 
-        # --- 2. RODAPÉ (Botão Sair + Tempo) ---
+        # --- RODAPÉ ---
         st.markdown("<br>" * 10, unsafe_allow_html=True)
         
         if st.button("🚪 Sair", key="btn_sair"):
             st.session_state.clear()
             st.rerun()
 
-        # Tempo de Sessão (ESTÁTICO - Atualiza só no clique)
         tempo_str = gerenciar_sessao()
         st.markdown(f"""
             <div style="text-align: center; margin-top: 10px; font-size: 0.9em; color: #444;">
@@ -327,8 +310,6 @@ def renderizar_menu_lateral():
 def main():
     iniciar_estado()
     
-    # REMOVIDO ST_AUTOREFRESH (Evita reload constante)
-
     # TELA DE LOGIN
     if not st.session_state.get('logado'):
         st.markdown("""<style>div.stButton > button {border: 1px solid black; border-radius: 0px;}</style>""", unsafe_allow_html=True)
@@ -369,17 +350,24 @@ def main():
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Módulo Chat não carregado.")
             
+        # Operacional
         elif "Operacional > Clientes" in pag: modulo_cliente.app_clientes()
-        elif "Operacional > Usuários" in pag: modulo_usuario.app_usuarios()
+        elif "Operacional > Usuários" in pag:
+            # Verifica se o modulo_usuario carregou antes de chamar
+            if modulo_usuario: modulo_usuario.app_usuarios()
+            else: st.error("Módulo de Usuários não encontrado (verifique se o arquivo modulo_usuario.py existe).")
+            
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
         elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
         
+        # Comercial
         elif "Comercial > Produtos" in pag and modulo_produtos: modulo_produtos.app_produtos()
         elif "Comercial > Pedidos" in pag and modulo_pedidos: modulo_pedidos.app_pedidos()
         elif "Comercial > Tarefas" in pag and modulo_tarefas: modulo_tarefas.app_tarefas()
         elif "Comercial > Renovação" in pag and modulo_rf: modulo_rf.app_renovacao_feedback()
         
+        # Conexões
         elif pag == "Conexões" and modulo_conexoes: modulo_conexoes.app_conexoes()
         
         else:
