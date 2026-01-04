@@ -200,9 +200,6 @@ def executar_exclusao_lote(tipo, cpfs_alvo, convenio=None, sub_opcao=None):
         if not cpfs_tuple: return False, "Nenhum CPF na lista."
         
         # Ajuste de Correção para DELETE usando 'cpf' se necessário
-        # A tabela pf_dados sempre tem 'cpf'. As satélites podem ter 'cpf' ou 'cpf_ref'.
-        # Vou usar 'cpf' nas satélites também, pois parece ser o padrão do banco legado.
-        
         if tipo == "Cadastro Completo":
             query = "DELETE FROM banco_pf.pf_dados WHERE cpf IN %s"
             cur.execute(query, (cpfs_tuple,))
@@ -327,7 +324,9 @@ def interface_pesquisa_rapida():
     if col_b3.button("📥 Importar"): st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
     
     if busca:
-        df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
+        # --- CORREÇÃO: Usa 'pf_pagina_atual' ---
+        df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
+        
         if not df_lista.empty:
             st.markdown(f"**Resultados encontrados: {total}**")
             
@@ -365,9 +364,10 @@ def interface_pesquisa_rapida():
                 c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome'])
                 st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
             
+            # --- CORREÇÃO: Paginação usa 'pf_pagina_atual' ---
             cp1, cp2, cp3 = st.columns([1, 3, 1])
-            if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pagina_atual', 1) > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
-            if cp3.button("Próx. ➡️", key="next_fast"): st.session_state['pagina_atual'] = st.session_state.get('pagina_atual', 1) + 1; st.rerun()
+            if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pf_pagina_atual', 1) > 1: st.session_state['pf_pagina_atual'] -= 1; st.rerun()
+            if cp3.button("Próx. ➡️", key="next_fast"): st.session_state['pf_pagina_atual'] = st.session_state.get('pf_pagina_atual', 1) + 1; st.rerun()
         else: st.warning("Nenhum registro encontrado.")
     else: st.info("Utilize a busca para listar clientes.")
 
@@ -375,7 +375,10 @@ def interface_pesquisa_ampla():
     c_voltar, c_tipos, c_limpar, c_spacer = st.columns([1, 1.5, 1.5, 5])
     if c_voltar.button("⬅️ Voltar"): st.session_state.update({'pf_view': 'lista'}); st.rerun()
     if c_tipos.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"): dialog_tipos_filtro()
-    if c_limpar.button("🗑️ Limpar Filtros"): st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pagina_atual'] = 1; st.rerun()
+    
+    # --- CORREÇÃO: Limpar filtros reseta 'pf_pagina_atual' ---
+    if c_limpar.button("🗑️ Limpar Filtros"): st.session_state['regras_pesquisa'] = []; st.session_state['executar_busca'] = False; st.session_state['pf_pagina_atual'] = 1; st.rerun()
+    
     st.divider()
     conn = pf_core.get_conn(); ops_cache = {'texto': [], 'numero': [], 'data': []}; lista_convenios = []
     if conn:
@@ -436,7 +439,9 @@ def interface_pesquisa_ampla():
             r_copy = r.copy()
             if r_copy['operador']: r_copy['operador'] = r_copy['operador'].split(' : ')[0]
             regras_limpas.append(r_copy)
-        df_res, total = executar_pesquisa_ampla(regras_limpas, st.session_state['pagina_atual'])
+            
+        # --- CORREÇÃO: Usa 'pf_pagina_atual' ---
+        df_res, total = executar_pesquisa_ampla(regras_limpas, st.session_state.get('pf_pagina_atual', 1))
         st.write(f"**Resultados:** {total}")
         
         if not df_res.empty:
@@ -492,7 +497,9 @@ def interface_pesquisa_ampla():
                     with b3:
                         if st.button("🗑️", key=f"d_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                 c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome']); st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+            
+            # --- CORREÇÃO: Paginação usa 'pf_pagina_atual' ---
             cp1, cp2, cp3 = st.columns([1, 3, 1])
-            if cp1.button("⬅️ Ant.") and st.session_state['pagina_atual'] > 1: st.session_state['pagina_atual'] -= 1; st.rerun()
-            if cp3.button("Próx. ➡️"): st.session_state['pagina_atual'] += 1; st.rerun()
+            if cp1.button("⬅️ Ant.") and st.session_state.get('pf_pagina_atual', 1) > 1: st.session_state['pf_pagina_atual'] -= 1; st.rerun()
+            if cp3.button("Próx. ➡️"): st.session_state['pf_pagina_atual'] = st.session_state.get('pf_pagina_atual', 1) + 1; st.rerun()
         else: st.warning("Nenhum registro encontrado.")

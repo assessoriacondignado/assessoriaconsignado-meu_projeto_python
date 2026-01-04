@@ -40,7 +40,9 @@ def app_pessoa_fisica():
     # Inicializa estados
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'regras_pesquisa' not in st.session_state: st.session_state['regras_pesquisa'] = []
-    if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 1
+    
+    # --- CORREÇÃO: Variável exclusiva para paginação do módulo PF ---
+    if 'pf_pagina_atual' not in st.session_state: st.session_state['pf_pagina_atual'] = 1
 
     # =========================================================================
     # ROTEAMENTO DE TELAS
@@ -80,7 +82,6 @@ def app_pessoa_fisica():
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
         
         # --- MENU ATUALIZADO ---
-        # Adicionado col_b6 para o novo botão
         col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1, 1, 1, 1, 1, 1])
         
         if col_b1.button("➕ Novo", use_container_width=True): 
@@ -102,9 +103,11 @@ def app_pessoa_fisica():
         if col_b6.button("📊 Planilhas", help="Ver/Editar Tabelas (banco_pf)", use_container_width=True):
             st.session_state.update({'pf_view': 'planilhas'}); st.rerun()
         
-        # RESULTADO DA BUSCA RÁPIDA (Código mantido igual)
+        # RESULTADO DA BUSCA RÁPIDA
         if busca:
-            df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=st.session_state.get('pagina_atual', 1))
+            # --- CORREÇÃO: Usa 'pf_pagina_atual' ---
+            df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
+            
             if not df_lista.empty:
                 st.markdown(f"**Encontrados: {total}**")
                 st.markdown("""
