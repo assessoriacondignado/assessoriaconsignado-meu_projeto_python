@@ -1,227 +1,314 @@
 import streamlit as st
+from streamlit_option_menu import option_menu
+import os
+import sys
+import psycopg2
+import bcrypt
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
-from streamlit_autorefresh import st_autorefresh
+import random
+import string
+import time
 
-# --- 1. CONFIGURAÇÃO DA PÁGINA E ESTADO ---
-st.set_page_config(page_title="Sistema de Gestão", layout="wide")
+# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
 
-def iniciar_estado():
-    # Inicializa variáveis de sessão se não existirem
-    if 'ultima_atividade' not in st.session_state:
-        st.session_state['ultima_atividade'] = datetime.now()
+# --- 2. CONFIGURAÇÃO DE CAMINHOS ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+pastas_modulos = [
+    "OPERACIONAL/CLIENTES E USUARIOS",
+    "OPERACIONAL/BANCO DE PLANILHAS",
+    "OPERACIONAL/MODULO_W-API",
+    "OPERACIONAL/MODULO_CHAT",
+    "COMERCIAL/PRODUTOS E SERVICOS",
+    "COMERCIAL/PEDIDOS",
+    "COMERCIAL/TAREFAS",
+    "COMERCIAL/RENOVACAO E FEEDBACK",
+    "CONEXÕES"
+]
+
+for pasta in pastas_modulos:
+    caminho = os.path.join(BASE_DIR, pasta)
+    if caminho not in sys.path:
+        sys.path.append(caminho)
+
+# --- 3. IMPORTAÇÕES DE MÓDULOS (Com tratamento de erro) ---
+try:
+    import conexao
+    import modulo_cliente
+    import modulo_usuario
+    import modulo_wapi
+    import modulo_whats_controlador
     
-    if 'hora_login' not in st.session_state:
-        st.session_state['hora_login'] = datetime.now()
+    # Importação do módulo de Chat
+    modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
+    
+    # Importação do módulo Pessoa Física
+    modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
+    
+    # Módulos Comerciais
+    modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
+    modulo_pedidos = __import__('modulo_pedidos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS/modulo_pedidos.py")) else None
+    modulo_tarefas = __import__('modulo_tarefas') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS/modulo_tarefas.py")) else None
+    modulo_rf = __import__('modulo_renovacao_feedback') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py")) else None
+    
+    # Módulo de Campanhas (se existir)
+    modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
 
-    if 'menu_aberto' not in st.session_state:
-        st.session_state['menu_aberto'] = None # Começa fechado
+    # Módulo Conexões
+    modulo_conexoes = __import__('modulo_conexoes') if os.path.exists(os.path.join(BASE_DIR, "CONEXÕES/modulo_conexoes.py")) else None
+
+except Exception as e:
+    st.error(f"Erro ao carregar módulos: {e}")
+
+# --- 4. FUNÇÕES DE BANCO E SEGURANÇA ---
+
+@st.cache_resource(ttl=600)
+def get_conn():
+    try:
+        return psycopg2.connect(
+            host=conexao.host, port=conexao.port, database=conexao.database, 
+            user=conexao.user, password=conexao.password, connect_timeout=5
+        )
+    except: return None
+
+def verificar_senha(senha_plana, senha_hash):
+    try:
+        if senha_hash == senha_plana: return True 
+        return bcrypt.checkpw(senha_plana.encode('utf-8'), senha_hash.encode('utf-8'))
+    except: return False
+
+def validar_login_db(usuario_input, senha_input):
+    conn = get_conn()
+    if not conn: return None
+    try:
+        usuario_limpo = str(usuario_input).strip().lower()
+        cursor = conn.cursor()
+        sql = """SELECT id, nome, hierarquia, senha, COALESCE(tentativas_falhas, 0) 
+                 FROM clientes_usuarios 
+                 WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
+        cursor.execute(sql, (usuario_limpo, usuario_limpo, usuario_limpo))
+        res = cursor.fetchone()
         
-    if 'pagina_atual' not in st.session_state:
-        st.session_state['pagina_atual'] = "Home"
+        if res:
+            id_user, nome, cargo, senha_hash, falhas = res
+            if falhas >= 5: return {"status": "bloqueado"}
+            
+            if verificar_senha(senha_input, senha_hash):
+                cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (id_user,))
+                conn.commit()
+                return {"id": id_user, "nome": nome, "cargo": cargo, "status": "sucesso"}
+            else:
+                cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (id_user,))
+                conn.commit()
+                return {"status": "erro_senha", "restantes": 4 - falhas}
+    except: return None
+    return None
 
-def resetar_atividade():
-    """Callback para resetar o timer de inatividade ao clicar em botões."""
-    st.session_state['ultima_atividade'] = datetime.now()
+# --- 5. DIALOGS E UTILITÁRIOS ---
 
-# --- 2. CSS (ESTILOS E LAYOUT) ---
-def carregar_css():
+@st.dialog("🚀 Mensagem Rápida")
+def dialog_mensagem_rapida():
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+        inst = cur.fetchone()
+        if not inst:
+            st.error("Sem instância de WhatsApp ativa.")
+            return
+
+        opcao = st.selectbox("Destinatário", ["Selecionar Cliente", "Número Manual", "ID Grupo Manual"])
+        destino = ""
+        
+        if opcao == "Selecionar Cliente":
+            cur.execute("SELECT nome, telefone, id_grupo_whats FROM admin.clientes ORDER BY nome")
+            clis = cur.fetchall()
+            if clis:
+                sel_n = st.selectbox("Buscar Cliente", [c[0] for c in clis])
+                c_info = next(i for i in clis if i[0] == sel_n)
+                tel, grp = c_info[1], c_info[2]
+                opts = []
+                if tel: opts.append(f"Telefone: {tel}")
+                if grp: opts.append(f"Grupo: {grp}")
+                if opts:
+                    contato = st.radio("Enviar para:", opts)
+                    destino = contato.split(": ")[1]
+                else: st.warning("Cliente sem dados de contato.")
+            else: st.warning("Nenhum cliente na base.")
+        elif opcao == "Número Manual": destino = st.text_input("DDI+DDD+Número")
+        elif opcao == "ID Grupo Manual": destino = st.text_input("ID (@g.us)")
+
+        msg = st.text_area("Mensagem")
+        if st.button("Enviar Agora", type="primary") and destino and msg:
+            res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
+            if res.get('success') or res.get('messageId'):
+                st.success("Enviado!"); time.sleep(1); st.rerun()
+            else: st.error("Erro no envio.")
+    finally:
+        if 'cur' in locals(): cur.close()
+
+@st.dialog("Recuperar Acesso")
+def dialog_reset_senha():
+    st.write("Receba uma nova senha via WhatsApp.")
+    identificador = st.text_input("E-mail ou CPF")
+    if st.button("Enviar Nova Senha", use_container_width=True, type="primary") and identificador:
+        id_limpo = str(identificador).strip().lower()
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT id, nome, telefone FROM clientes_usuarios WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s) AND ativo = TRUE", (id_limpo, id_limpo))
+        user = cur.fetchone()
+        if user and user[2]:
+            nova_s = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(8))
+            hash_s = bcrypt.hashpw(nova_s.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+            inst = cur.fetchone()
+            if inst:
+                msg = f"Olá {user[1].split()[0]}! Sua nova senha é: *{nova_s}*"
+                res = modulo_wapi.enviar_msg_api(inst[0], inst[1], user[2], msg)
+                if res.get('success') or res.get('messageId'):
+                    cur.execute("UPDATE clientes_usuarios SET senha = %s, tentativas_falhas = 0 WHERE id = %s", (hash_s, user[0]))
+                    conn.commit(); st.success("Senha enviada!"); time.sleep(2); st.rerun()
+            else: st.error("WhatsApp indisponível.")
+        else: st.error("Usuário não localizado ou sem telefone.")
+
+# --- 7. INTERFACE PRINCIPAL (COM AJUSTES DE LAYOUT) ---
+def main():
+    # Timeout de sessão
+    if 'last_action' not in st.session_state: st.session_state['last_action'] = datetime.now()
+    if st.session_state.get('logado') and datetime.now() - st.session_state['last_action'] > timedelta(minutes=30):
+        st.session_state.clear(); st.warning("Sessão encerrada por inatividade."); st.rerun()
+    st.session_state['last_action'] = datetime.now()
+
+    # --- INJEÇÃO DE CSS PERSONALIZADO ---
     st.markdown("""
         <style>
-        /* Regra 2: Botões com bordas quadradas e contorno preto */
-        div.stButton > button {
-            width: 100%;
-            border: 1px solid #000000 !important;
-            border-radius: 0px !important; /* Quadrado */
-            color: black;
-            background-color: #ffffff;
-            font-weight: 500;
-            margin-bottom: 5px;
-            transition: all 0.3s;
-        }
-        
-        div.stButton > button:hover {
-            border-color: #FF4B4B !important;
-            color: #FF4B4B;
-        }
+            /* 3 - Contêiner Lateral: Cor laranja claro com 30% de opacidade (aprox.) */
+            [data-testid="stSidebar"] {
+                background-color: rgba(255, 224, 178, 0.3) !important;
+            }
+            
+            /* 2 - Centralizar botão Home/Chat */
+            div.stButton > button {
+                width: 100%;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
 
-        /* Regra 1: Submenu com cor diferenciada (50% visualmente) */
-        /* Identificamos botões de submenu por estarem dentro de colunas específicas */
-        /* Nota: O seletor exato pode variar dependendo da versão do Streamlit, 
-           aqui usamos uma classe auxiliar injetada na lógica ou contexto */
-        
-        /* Ajuste do Sidebar */
-        section[data-testid="stSidebar"] {
-            background-color: #f0f2f6; /* Fundo claro para contraste */
-        }
-        
-        /* Esconder menu padrão do Streamlit */
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
+            /* 1.5 - Sublinhar ao passar o mouse no Menu */
+            .nav-link:hover {
+                text-decoration: underline !important;
+                background-color: rgba(0,0,0,0.05) !important;
+            }
         </style>
     """, unsafe_allow_html=True)
 
-# --- 3. REGRAS DE SESSÃO ---
-def gerenciar_sessao():
-    """Calcula tempo de sessão e verifica inatividade."""
-    TEMPO_LIMITE_MINUTOS = 60
+    # TELA DE LOGIN
+    if not st.session_state.get('logado'):
+        st.markdown('<div style="text-align:center; padding:40px;"><h2>Assessoria Consignado</h2><p>Portal Integrado</p></div>', unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            u = st.text_input("E-mail ou CPF")
+            s = st.text_input("Senha", type="password")
+            if st.button("ENTRAR", use_container_width=True, type="primary"):
+                res = validar_login_db(u, s)
+                if res:
+                    if res.get('status') == "sucesso":
+                        st.session_state.update({'logado': True, 'usuario_id': res['id'], 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
+                        st.rerun()
+                    elif res.get('status') == "bloqueado": st.error("🚨 USUÁRIO BLOQUEADO por múltiplas falhas.")
+                    else: st.error(f"Senha incorreta. Tentativas restantes: {res.get('restantes')}")
+                else: st.error("Acesso negado.")
+            if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
     
-    agora = datetime.now()
-    
-    # 1.1.1 Checar Inatividade
-    # Se o usuário não clicou em nada (resetar_atividade não foi chamado), o tempo sobe.
-    tempo_inativo = agora - st.session_state['ultima_atividade']
-    
-    # 1.1.4 Logout automático
-    if tempo_inativo.total_seconds() > (TEMPO_LIMITE_MINUTOS * 60):
-        st.session_state.clear()
-        st.error("Sessão expirada por inatividade (60min). Por favor, recarregue a página.")
-        st.stop()
-
-    # 1.1.3 Formato do tempo de sessão (Sessão Ativa: MM:SS)
-    tempo_total_sessao = agora - st.session_state['hora_login']
-    mm, ss = divmod(tempo_total_sessao.seconds, 60)
-    # Se passar de 1 hora, ajusta para HH:MM:SS ou acumula minutos
-    hh, mm = divmod(mm, 60)
-    
-    if hh > 0:
-        return f"{hh:02d}:{mm:02d}:{ss:02d}"
-    return f"{mm:02d}:{ss:02d}"
-
-# --- 4. TELAS DO SISTEMA (CONTEÚDO) ---
-def tela_fluxo_caixa():
-    st.title("💰 Financeiro > Fluxo de Caixa")
-    st.markdown("---")
-    
-    # Filtros Fictícios
-    c1, c2, c3 = st.columns(3)
-    with c1: st.date_input("Data Início")
-    with c2: st.date_input("Data Fim")
-    with c3: st.selectbox("Conta", ["Banco A", "Banco B", "Caixa Físico"])
-    
-    st.markdown("### Resumo do Período")
-    
-    # Métricas
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Entradas", "R$ 45.200,00", "+5%")
-    m2.metric("Saídas", "R$ 32.100,00", "-2%")
-    m3.metric("Saldo", "R$ 13.100,00", "OK")
-    
-    # Gráfico Dummy
-    st.markdown("### Evolução Diária")
-    chart_data = pd.DataFrame(
-        np.random.randn(20, 3),
-        columns=['Entradas', 'Saídas', 'Saldo']
-    )
-    st.line_chart(chart_data)
-    
-    # Tabela Dummy
-    st.markdown("### Lançamentos Recentes")
-    df = pd.DataFrame({
-        "Data": [datetime.today().date()] * 5,
-        "Descrição": ["Pagamento Fornecedor X", "Recebimento Cliente Y", "Conta Luz", "Serviço Z", "Retirada"],
-        "Valor": [-1500.00, 5000.00, -350.00, 1200.00, -500.00],
-        "Tipo": ["Saída", "Entrada", "Saída", "Entrada", "Saída"]
-    })
-    st.dataframe(df, use_container_width=True)
-
-def tela_generica(titulo):
-    st.title(f"📂 {titulo}")
-    st.info("Esta funcionalidade está em desenvolvimento.")
-
-# --- 5. MENU LATERAL ---
-def renderizar_menu():
-    with st.sidebar:
-        # 5. Espaço Usuário e Logo
-        st.markdown("**Usuário:** Admin System")
-        
-        # 5.1 Logo da Assessoria
-        # Tenta carregar imagem, se não der, mostra texto
-        try:
-            st.image("logo_assessoria.png", use_container_width=True)
-        except:
-            st.warning("Insira 'logo_assessoria.png' na pasta")
-            st.markdown("---")
-
-        # Estrutura do Menu
-        # Regra 4: Inicio/Chat removido
-        opcoes = {
-            "Cadastros": ["Clientes", "Fornecedores", "Produtos"],
-            "Financeiro": ["Contas a Pagar", "Contas a Receber", "Fluxo de Caixa"],
-            "Relatórios": ["Geral", "Vendas", "Auditoria"]
-        }
-
-        # Loop Principal do Menu
-        for menu_pai, subitens in opcoes.items():
-            # Estado do ícone
-            icone = "▼" if st.session_state['menu_aberto'] == menu_pai else "►"
-            
-            # Botão Principal (Pai)
-            # on_click=resetar_atividade garante a regra de reiniciar inatividade
-            if st.button(f"{menu_pai} {icone}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
-                # Regra 1.4: Clica em qualquer menu -> Fecha outros
-                # Regra 1.3: Clica novamente -> Fecha o atual
-                if st.session_state['menu_aberto'] == menu_pai:
-                    st.session_state['menu_aberto'] = None
-                else:
-                    st.session_state['menu_aberto'] = menu_pai
-
-            # Regra 1.1.1: Abre opções logo abaixo
-            if st.session_state['menu_aberto'] == menu_pai:
-                for item in subitens:
-                    # Layout para indentação e cor
-                    col_espaco, col_btn = st.columns([0.1, 0.9])
-                    with col_btn:
-                        # Estilo inline para simular cor mais escura (50%) no botão específico é difícil no Streamlit puro
-                        # A solução aqui é visual via CSS global ou aceitar a cor padrão do tema.
-                        # Usamos o CSS global para pintar botões dentro de colunas de forma diferente se necessário.
-                        if st.button(f"{item}", key=f"sub_{item}", on_click=resetar_atividade):
-                            st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
-                            # Força rerun para carregar o conteúdo novo imediatamente
-                            # st.rerun() não é estritamente necessário devido ao callback, mas garante fluidez
-
-        # Espaçador para jogar o timer para baixo
-        st.markdown("<br>" * 5, unsafe_allow_html=True)
-        st.markdown("---")
-
-        # Regra de Sessão (Barra Inferior)
-        tempo_str = gerenciar_sessao()
-        
-        # Container visual para o tempo
-        st.markdown(f"""
-            <div style="text-align: center; padding: 10px; border: 1px dashed gray;">
-                <small>Tempo de Sessão</small><br>
-                <strong style="font-size: 1.2em;">{tempo_str}</strong>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Botão de Sair manual
-        if st.button("Sair / Logout", key="btn_logout"):
-            st.session_state.clear()
-            st.rerun()
-
-# --- 6. FUNÇÃO PRINCIPAL ---
-def main():
-    iniciar_estado()
-    carregar_css()
-    
-    # Componente de Auto-Refresh (Timer Realtime)
-    # Atualiza a cada 1 segundo (1000ms) para o relógio "andar"
-    st_autorefresh(interval=1000, key="sistema_relogio")
-    
-    renderizar_menu()
-
-    # Roteador de Páginas
-    pagina = st.session_state['pagina_atual']
-    
-    if "Fluxo de Caixa" in pagina:
-        tela_fluxo_caixa()
-    elif pagina == "Home":
-        st.title("Bem-vindo ao Sistema")
-        st.write("Selecione uma opção no menu lateral para começar.")
+    # ÁREA LOGADA
     else:
-        tela_generica(pagina)
+        # Botão de ação global no topo
+        col_m1, col_m2 = st.columns([10, 2])
+        with col_m2:
+            if st.button("🟢 Mensagem Rápida", use_container_width=True): dialog_mensagem_rapida()
 
-if __name__ == "__main__":
-    main()
+        # MENU LATERAL
+        with st.sidebar:
+            st.markdown('<div style="font-size:16px; font-weight:800; color:#333;">ASSESSORIA CONSIGNADO</div>', unsafe_allow_html=True)
+            st.caption(f"👤 {st.session_state['usuario_nome']} ({st.session_state['usuario_cargo']})")
+            
+            # 2 - Botão Centralizado
+            if st.button("🏠 Home / Chat"): st.rerun()
+            st.divider()
+            
+            cargo = st.session_state.get('usuario_cargo', 'Cliente')
+            
+            opcoes = ["Início"]
+            if cargo in ["Admin", "Gerente"]:
+                opcoes += ["COMERCIAL", "FINANCEIRO", "OPERACIONAL", "CONEXÕES"]
+            else:
+                opcoes += ["OPERACIONAL"]
+                
+            # 1 - CONFIGURAÇÃO DO MENU (Redução de tamanho, nome e cores)
+            mod = option_menu(
+                "MENU",  # 1.2 - Nome alterado
+                opcoes, 
+                icons=["chat-dots", "cart", "cash", "gear", "plug"], 
+                default_index=0,
+                styles={
+                    "container": {"padding": "0!important", "background-color": "transparent"},
+                    # 1.1 - Reduzir tamanho do título (MENU)
+                    "menu-title": {"font-size": "14px", "font-weight": "bold", "margin-bottom": "5px"},
+                    # 1.3 - Texto dentro do menu reduzido
+                    "nav-link": {
+                        "font-size": "12px",  # 1.3.1 - Reduzido
+                        "text-align": "left", 
+                        "margin": "0px", 
+                        "--hover-color": "#eee"
+                    },
+                    "nav-link-selected": {"background-color": "#ff6f00"}, # Laranja para seleção
+                    # 1.4 - Ícones coloridos
+                    "icon": {"color": "#e65100", "font-size": "14px"} 
+                }
+            )
+            
+            sub = None
+            if mod == "COMERCIAL":
+                sub = option_menu(None, ["Produtos", "Pedidos", "Tarefas", "Renovação"], 
+                                  icons=["box", "cart-check", "check2-all", "arrow-repeat"],
+                                  styles={"nav-link": {"font-size": "12px"}, "icon": {"color": "#e65100", "font-size": "12px"}})
+            elif mod == "OPERACIONAL":
+                sub = option_menu(None, ["Clientes", "Usuários", "Banco PF", "WhatsApp"], 
+                                  icons=["people", "lock", "person-vcard", "whatsapp"],
+                                  styles={"nav-link": {"font-size": "12px"}, "icon": {"color": "#e65100", "font-size": "12px"}})
+            
+            if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
+
+        # ROTEAMENTO DOS MÓDULOS
+        
+        # 1. TELA INICIAL (CHAT)
+        if mod == "Início":
+            if modulo_chat:
+                modulo_chat.app_chat_screen()
+            else:
+                st.info("Bem-vindo! Selecione um módulo no menu lateral.")
+                st.warning("Módulo de Chat não encontrado na pasta OPERACIONAL/MODULO_CHAT.")
+
+        # 2. MÓDULOS COMERCIAIS
+        elif mod == "COMERCIAL":
+            if sub == "Produtos" and modulo_produtos: modulo_produtos.app_produtos()
+            elif sub == "Pedidos" and modulo_pedidos: modulo_pedidos.app_pedidos()
+            elif sub == "Tarefas" and modulo_tarefas: modulo_tarefas.app_tarefas()
+            elif sub == "Renovação" and modulo_rf: modulo_rf.app_renovacao_feedback()
+            
+        # 3. MÓDULOS OPERACIONAIS
+        elif mod == "OPERACIONAL":
+            if sub == "Clientes": modulo_cliente.app_clientes()
+            elif sub == "Usuários": modulo_usuario.app_usuarios()
+            elif sub == "Banco PF" and modulo_pf: modulo_pf.app_pessoa_fisica()
+            elif sub == "Campanhas" and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
+            elif sub == "WhatsApp": modulo_whats_controlador.app_wapi()
+
+        # 4. MÓDULO CONEXÕES
+        elif mod == "CONEXÕES":
+            if modulo_conexoes:
+                modulo_conexoes.app_conexoes()
+            else:
+                st.warning("Módulo 'modulo_conexoes.py' não encontrado na pasta CONEXÕES.")
+
+if __name__ == "__main__": main()
