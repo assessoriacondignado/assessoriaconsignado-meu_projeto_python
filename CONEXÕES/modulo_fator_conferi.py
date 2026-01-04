@@ -371,6 +371,7 @@ def salvar_dados_fator_no_banco(dados_api):
             'nome_mae': dados_api.get('mae')
         }
         
+        # IMPORTANTE: Garante que está a usar o schema banco_pf
         query_dados = """
             INSERT INTO banco_pf.pf_dados (cpf, nome, data_nascimento, rg, nome_mae, data_criacao)
             VALUES (%s, %s, %s, %s, %s, NOW())
@@ -397,7 +398,7 @@ def salvar_dados_fator_no_banco(dados_api):
         return True, "Dados salvos na Base PF."
     except Exception as e:
         if conn: conn.close()
-        return False, f"Erro DB: {e}"
+        return False, f"Erro DB (Salvar PF): {e}"
 
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
@@ -536,19 +537,20 @@ def app_fator_conferi():
                     st.toast(f"Ambiente: {nome_ambiente}")
                     res = realizar_consulta_cpf(cpf_in, nome_ambiente, forcar, id_cliente_teste)
                     st.session_state['resultado_fator'] = res
+
+                    # --- AUTOMAÇÃO: Salva automaticamente se a consulta der certo ---
+                    if res['sucesso']:
+                        ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
+                        if ok_s: st.toast("✅ Dados salvos automaticamente na Base PF!", icon="💾")
+                        else: st.error(f"Erro ao salvar na base PF: {msg_s}")
         
         if 'resultado_fator' in st.session_state:
             res = st.session_state['resultado_fator']
             if res['sucesso']:
                 if "msg" in res: st.success(res['msg'])
-                st.divider()
-                if st.button("💾 Salvar na Base PF", type="primary"):
-                    ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
-                    if ok_s: st.success(msg_s)
-                    else: st.error(msg_s)
                 
                 dados = res['dados']
-                with st.expander("Dados", expanded=True):
+                with st.expander("Ver Dados Retornados", expanded=True):
                     st.json(dados)
             else: st.error(res.get('msg', 'Erro'))
 
@@ -559,15 +561,12 @@ def app_fator_conferi():
             else: st.error("Erro ao consultar saldo.")
         
     with tabs[3]: 
-        # --- TABELA INTERATIVA COM DOWNLOAD ---
         st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 0px;'>Tabela: conexoes.fatorconferi_registo_consulta</p>", unsafe_allow_html=True)
         conn = get_conn()
         if conn: 
-            # Lê os dados
             df_hist = pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)
             conn.close()
             
-            # Exibe com seleção habilitada
             event = st.dataframe(
                 df_hist,
                 on_select="rerun",
@@ -576,7 +575,6 @@ def app_fator_conferi():
                 hide_index=True
             )
             
-            # Lógica para mostrar botão de download ao selecionar
             if len(event.selection.rows) > 0:
                 idx = event.selection.rows[0]
                 linha_selecionada = df_hist.iloc[idx]
