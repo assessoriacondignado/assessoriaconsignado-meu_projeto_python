@@ -37,6 +37,86 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
+# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (CORE DO SISTEMA) ---
+def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"):
+    """
+    Verifica se o usuário atual deve ser bloqueado com base na tabela permissão_usuario_regras_nível.
+    Retorna True se DEVE BLOQUEAR, False se PERMITIDO.
+    """
+    if not st.session_state.get('logado'):
+        return True # Bloqueia se não logado
+
+    conn = get_conn()
+    if not conn: return False # Falha aberta se sem banco (ou True para falha fechada)
+    
+    try:
+        cur = conn.cursor()
+        
+        # 1. Busca ID do Nível do Usuário Atual
+        nivel_usuario_nome = st.session_state.get('usuario_cargo', '') # Assume que 'usuario_cargo' guarda o nome do nível
+        cur.execute("SELECT id FROM permissão.permissão_grupo_nivel WHERE nivel = %s", (nivel_usuario_nome,))
+        res_nivel = cur.fetchone()
+        
+        if not res_nivel:
+            return False # Se nível não existe no banco, não aplica bloqueio por segurança ou define padrão
+            
+        id_nivel_usuario = str(res_nivel[0])
+
+        # 2. Busca a Regra
+        cur.execute("""
+            SELECT id, chaves_niveis, status, caminho_bloqueio 
+            FROM permissão.permissão_usuario_regras_nível 
+            WHERE nome_regra = %s
+        """, (nome_regra_codigo,))
+        
+        regra = cur.fetchone()
+        
+        # 4. Se a regra não existe, NÃO BLOQUEAR (Conforme solicitado)
+        if not regra:
+            conn.close()
+            return False
+
+        id_regra, lista_bloqueio_str, status, caminho_registrado = regra
+        
+        # 3. Verifica Status (SE status == 'SIM' faz a checagem)
+        if status != 'SIM':
+            conn.close()
+            return False # Regra desativada
+
+        # Verifica se o ID do usuário está na lista de bloqueio (ex: "1;2;5")
+        lista_ids = [x.strip() for x in str(lista_bloqueio_str).split(';') if x.strip()]
+        
+        if id_nivel_usuario in lista_ids:
+            # 3.1 Otimização: Atualiza caminho se vazio
+            if not caminho_registrado:
+                cur.execute("""
+                    UPDATE permissão.permissão_usuario_regras_nível 
+                    SET caminho_bloqueio = %s 
+                    WHERE id = %s
+                """, (caminho_atual, id_regra))
+                conn.commit()
+            
+            conn.close()
+            return True # BLOQUEAR!
+            
+        conn.close()
+        return False # Não está na lista negra
+
+    except Exception as e:
+        print(f"Erro verificação permissão: {e}")
+        if conn: conn.close()
+        return False
+
+# --- LISTAGEM DE REGRAS (VISUALIZAÇÃO) ---
+def listar_regras_bloqueio():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT * FROM permissão.permissão_usuario_regras_nível ORDER BY id", conn)
+        conn.close(); return df
+    except: 
+        if conn: conn.close()
+        return pd.DataFrame()
+
 # --- NOVO: FUNÇÕES PARA PERMISSÃO GRUPO NIVEL ---
 def listar_permissoes_nivel():
     conn = get_conn()
@@ -634,6 +714,11 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     conn = get_conn()
     try:
         cur = conn.cursor(); senha_f = hash_senha(senha)
+        
+        # --- ATUALIZAÇÃO: REGRA 1 (Nível Padrão) ---
+        if not nivel:
+            nivel = 'Cliente sem permissão'
+            
         cur.execute("INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id", (nome, email, cpf, tel, senha_f, nivel, ativo))
         nid = cur.fetchone()[0]; conn.commit(); conn.close(); return nid
     except: 
@@ -768,7 +853,7 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 u_cpf = st.text_input("CPF", value=dados_cliente['cpf'])
                 u_nome = st.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
                 if st.form_submit_button("Criar e Vincular"):
-                    novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente', True)
+                    novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente sem permissão', True)
                     if novo_id: 
                         ok, msg = vincular_usuario_cliente(dados_cliente['id'], novo_id)
                         if ok: st.success("Criado e vinculado!"); time.sleep(1); st.rerun()
@@ -903,6 +988,7 @@ def listar_tabelas_planilhas():
     if not conn: return []
     try:
         cur = conn.cursor()
+        # --- ATUALIZADO: Lista schemas admin, cliente e permissão ---
         query = """
             SELECT table_schema || '.' || table_name 
             FROM information_schema.tables 
@@ -974,7 +1060,8 @@ def app_clientes():
     garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    tab_cli, tab_user, tab_param, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
+    # --- ATUALIZADO: NOVA ABA REGRAS ---
+    tab_cli, tab_user, tab_param, tab_regras, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "🛡️ Regras (Vis)", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
 
     # --- ABA CLIENTES ---
     with tab_cli:
@@ -1445,6 +1532,16 @@ def app_clientes():
                     if ca3.button("🗑️", key=f"del_cat_{r['id']}"): excluir_permissao_categoria(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
+
+    # --- ABA REGRAS (VISUALIZAÇÃO) ---
+    with tab_regras:
+        st.markdown("### 🛡️ Regras de Bloqueio (Visualização)")
+        st.info("Esta tabela define quais níveis de usuário são bloqueados em funções específicas do sistema.")
+        df_regras = listar_regras_bloqueio()
+        if not df_regras.empty:
+            st.dataframe(df_regras, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Nenhuma regra de bloqueio cadastrada.")
 
     with tab_carteira: # Gestão de Carteira e Tabelas Reais
         st.markdown("### 💼 Gestão de Carteira")
