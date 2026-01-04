@@ -1,7 +1,9 @@
--- 1. Adicionar novas colunas na tabela de Origem Fator
-ALTER TABLE conexoes.fatorconferi_origem_consulta_fator
-ADD COLUMN IF NOT EXISTS produto VARCHAR(255),
-ADD COLUMN IF NOT EXISTS carteira_vinculada VARCHAR(255);
+-- 1. Cria o Schema
+CREATE SCHEMA IF NOT EXISTS permissão;
 
--- 2. Excluir a tabela antiga (se existir)
+-- 2. Cria a Tabela
+CREATE TABLE IF NOT EXISTS permissão.permissão_grupo_nivel (
+    id SERIAL PRIMARY KEY,
+    nivel VARCHAR(255)
+);
 DROP TABLE IF EXISTS conexoes.fatorconferi_origem_consulta;

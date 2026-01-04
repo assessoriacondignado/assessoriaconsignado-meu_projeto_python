@@ -55,8 +55,10 @@ def app_usuarios():
                 senha_nova = c2.text_input("Nova Senha", value="", type="password", placeholder="Deixe vazio para manter a atual")
                 
                 opcoes_h = ["Cliente", "Grupo", "Gerente", "Admin"]
-                idx_h = opcoes_h.index(d.get('hierarquia', 'Cliente')) if d.get('hierarquia') in opcoes_h else 0
-                cargo = c3.selectbox("Hierarquia", opcoes_h, index=idx_h)
+                
+                # ATUALIZADO: hierarquia -> nivel
+                idx_h = opcoes_h.index(d.get('nivel', 'Cliente')) if d.get('nivel') in opcoes_h else 0
+                cargo = c3.selectbox("Nível", opcoes_h, index=idx_h)
                 
                 st.markdown("#### Permissões e Status")
                 cp1, cp2, cp3 = st.columns(3)
@@ -75,7 +77,8 @@ def app_usuarios():
                         senha_final = d.get('senha') # Mantém a senha antiga
 
                     conn = get_conn(); cur = conn.cursor()
-                    cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login_limpo, senha_final, cargo, ativo, st.session_state['id_user']))
+                    # ATUALIZADO: hierarquia -> nivel
+                    cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, nivel=%s, ativo=%s WHERE id=%s", (login_limpo, senha_final, cargo, ativo, st.session_state['id_user']))
                     conn.commit(); conn.close()
                     
                     novas = []
@@ -93,7 +96,8 @@ def app_usuarios():
                             senha_reset = senha_nova if senha_nova else "1234"
                             senha_f = hash_senha(senha_reset)
                             
-                            cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, hierarquia=%s, ativo=%s WHERE id=%s", (login_limpo, senha_f, cargo, ativo, st.session_state['id_user']))
+                            # ATUALIZADO: hierarquia -> nivel
+                            cur.execute("UPDATE clientes_usuarios SET email=%s, senha=%s, nivel=%s, ativo=%s WHERE id=%s", (login_limpo, senha_f, cargo, ativo, st.session_state['id_user']))
                             conn.commit()
                             
                             msg = f"Olá! 🔐 Sua senha foi resetada pelo administrador.\nLogin: {login_limpo}\nNova Senha: {senha_reset}"
@@ -106,7 +110,7 @@ def app_usuarios():
                 if b3.form_submit_button("Cancelar"): st.session_state['modo_user'] = None; st.rerun()
             st.divider()
 
-        # --- LISTAGEM DOS USUÁRIOS (LAYOUT TABELA) ---
+        # --- LISTAGEM DOS USUÁRIOS (LAYOUT TÍPICO DE TABELA) ---
         
         # Cabeçalho da Tabela
         st.markdown("<br>", unsafe_allow_html=True)
@@ -118,9 +122,9 @@ def app_usuarios():
         st.markdown("<hr style='margin: 5px 0; border-top: 2px solid #bbb;'>", unsafe_allow_html=True)
 
         conn = get_conn()
-        # Busca atualizada incluindo telefone e id_grupo
+        # ATUALIZADO: hierarquia -> nivel
         query = """
-            SELECT id, nome, email, hierarquia, ativo, telefone, id_grupo_whats 
+            SELECT id, nome, email, nivel, ativo, telefone, id_grupo_whats 
             FROM clientes_usuarios 
             ORDER BY id DESC
         """

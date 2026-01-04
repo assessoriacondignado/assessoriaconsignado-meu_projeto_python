@@ -510,11 +510,12 @@ def excluir_cliente_db(id_cliente):
         if conn: conn.close()
         return False
 
-def salvar_usuario_novo(nome, email, cpf, tel, senha, hierarquia, ativo):
+def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     conn = get_conn()
     try:
+        # ATUALIZADO: hierarquia -> nivel
         cur = conn.cursor(); senha_f = hash_senha(senha)
-        cur.execute("INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, hierarquia, ativo) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id", (nome, email, cpf, tel, senha_f, hierarquia, ativo))
+        cur.execute("INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id", (nome, email, cpf, tel, senha_f, nivel, ativo))
         nid = cur.fetchone()[0]; conn.commit(); conn.close(); return nid
     except: 
         if conn: conn.close()
@@ -1036,19 +1037,27 @@ def app_clientes():
     with tab_user:
         st.markdown("### Gestão de Acesso")
         busca_user = st.text_input("Buscar Usuário", placeholder="Nome ou Email")
-        conn = get_conn(); sql_u = "SELECT id, nome, email, hierarquia, ativo, telefone, id_grupo_whats FROM clientes_usuarios WHERE 1=1"
+        
+        # ATUALIZADO: hierarquia -> nivel
+        conn = get_conn(); sql_u = "SELECT id, nome, email, nivel, ativo, telefone, id_grupo_whats FROM clientes_usuarios WHERE 1=1"
         if busca_user: sql_u += f" AND (nome ILIKE '%{busca_user}%' OR email ILIKE '%{busca_user}%')"
         sql_u += " ORDER BY id DESC"
+        
         df_users = pd.read_sql(sql_u, conn); conn.close()
         for _, u in df_users.iterrows():
-            with st.expander(f"{u['nome']} ({u['hierarquia']})"):
+            with st.expander(f"{u['nome']} ({u['nivel']})"):
                 with st.form(f"form_user_{u['id']}"):
                     c_n, c_e = st.columns(2); n_nome = c_n.text_input("Nome", value=u['nome']); n_mail = c_e.text_input("Email", value=u['email'])
-                    c_h, c_s, c_a = st.columns(3); n_hier = c_h.selectbox("Nível", ["Cliente", "Admin", "Gerente"], index=["Cliente", "Admin", "Gerente"].index(u['hierarquia']) if u['hierarquia'] in ["Cliente", "Admin", "Gerente"] else 0); n_senha = c_s.text_input("Nova Senha", type="password"); n_ativo = c_a.checkbox("Ativo", value=u['ativo'])
+                    c_h, c_s, c_a = st.columns(3); 
+                    
+                    # ATUALIZADO: hierarquia -> nivel
+                    n_nivel = c_h.selectbox("Nível", ["Cliente", "Admin", "Gerente"], index=["Cliente", "Admin", "Gerente"].index(u['nivel']) if u['nivel'] in ["Cliente", "Admin", "Gerente"] else 0)
+                    n_senha = c_s.text_input("Nova Senha", type="password"); n_ativo = c_a.checkbox("Ativo", value=u['ativo'])
                     if st.form_submit_button("Atualizar"):
                         conn = get_conn(); cur = conn.cursor()
-                        if n_senha: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, senha=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, hash_senha(n_senha), n_ativo, u['id']))
-                        else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, hierarquia=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_hier, n_ativo, u['id']))
+                        # ATUALIZADO: hierarquia -> nivel
+                        if n_senha: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, senha=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_nivel, hash_senha(n_senha), n_ativo, u['id']))
+                        else: cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, ativo=%s WHERE id=%s", (n_nome, n_mail, n_nivel, n_ativo, u['id']))
                         conn.commit(); conn.close(); st.success("Atualizado!"); st.rerun()
 
     # --- ABA PARÂMETROS ---
