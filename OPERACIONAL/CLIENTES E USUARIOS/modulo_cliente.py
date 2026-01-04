@@ -37,6 +37,46 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
+# --- NOVO: FUNÇÕES PARA PERMISSÃO GRUPO NIVEL ---
+def listar_permissoes_nivel():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, nivel FROM permissão.permissão_grupo_nivel ORDER BY id", conn)
+        conn.close(); return df
+    except: 
+        if conn: conn.close()
+        return pd.DataFrame()
+
+def salvar_permissao_nivel(nome_nivel):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO permissão.permissão_grupo_nivel (nivel) VALUES (%s)", (nome_nivel,))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def excluir_permissao_nivel(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM permissão.permissão_grupo_nivel WHERE id = %s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def atualizar_permissao_nivel(id_reg, novo_nome):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE permissão.permissão_grupo_nivel SET nivel = %s WHERE id = %s", (novo_nome, id_reg))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
 # --- AGRUPAMENTOS ---
 def listar_agrupamentos(tipo):
     conn = get_conn()
@@ -513,7 +553,6 @@ def excluir_cliente_db(id_cliente):
 def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     conn = get_conn()
     try:
-        # ATUALIZADO: hierarquia -> nivel
         cur = conn.cursor(); senha_f = hash_senha(senha)
         cur.execute("INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id", (nome, email, cpf, tel, senha_f, nivel, ativo))
         nid = cur.fetchone()[0]; conn.commit(); conn.close(); return nid
@@ -524,6 +563,18 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
 # =============================================================================
 # 4. DIALOGS
 # =============================================================================
+
+# --- NOVO DIALOG: EDITAR NIVEL ---
+@st.dialog("✏️ Editar Nível")
+def dialog_editar_permissao_nivel(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_nivel"):
+        n_nome = st.text_input("Nível", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if n_nome:
+                if atualizar_permissao_nivel(id_reg, n_nome):
+                    st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+                else: st.error("Erro ao atualizar.")
 
 @st.dialog("✏️ Editar Carteira Cliente")
 def dialog_editar_cart_lista(dados):
@@ -744,10 +795,6 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
 # =============================================================================
 
 def listar_tabelas_planilhas():
-    """
-    Lista tabelas do schema 'admin' que começam com 'cliente'
-    E todas as tabelas do schema 'cliente'.
-    """
     conn = get_conn()
     if not conn: return []
     try:
@@ -770,15 +817,11 @@ def listar_tabelas_planilhas():
         return []
 
 def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_editado):
-    """
-    Salva edições genéricas para tabelas completas (ex: admin.clientes)
-    """
     conn = get_conn()
     if not conn: return False
     try:
         cur = conn.cursor()
         
-        # Identifica IDs originais para saber o que foi excluído
         ids_originais = set()
         if 'id' in df_original.columns:
             ids_originais = set(df_original['id'].dropna().astype(int).tolist())
@@ -789,13 +832,11 @@ def salvar_alteracoes_planilha_generica(nome_tabela_completo, df_original, df_ed
                 try: ids_editados_atuais.add(int(row['id']))
                 except: pass
 
-        # 1. DELETE (IDs que estavam no original mas não estão no editado)
         ids_del = ids_originais - ids_editados_atuais
         if ids_del:
             ids_str = ",".join(map(str, ids_del))
             cur.execute(f"DELETE FROM {nome_tabela_completo} WHERE id IN ({ids_str})")
 
-        # 2. UPDATE e INSERT
         for index, row in df_editado.iterrows():
             colunas_db = [c for c in row.index if c not in ['data_criacao', 'data_registro']]
             
@@ -831,7 +872,6 @@ def app_clientes():
     garantir_tabela_config_carteiras()
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # Adicionada a aba "Planilhas" ao final
     tab_cli, tab_user, tab_param, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
 
     # --- ABA CLIENTES ---
@@ -1224,6 +1264,28 @@ def app_clientes():
                             if excluir_carteira_config(row['id'], row['nome_tabela_transacoes']): st.rerun()
             else:
                 st.info("Nenhuma carteira configurada no sistema.")
+                
+        # 7. NOVO: NÍVEIS DE PERMISSÃO (GRUPO)
+        with st.expander("🛡️ Níveis de Permissão (Grupo)", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_grupo_nivel</p>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.caption("Novo Nível")
+                c_in, c_bt = st.columns([5, 1])
+                n_ni = c_in.text_input("Nome do Nível", key="in_ni", label_visibility="visible", placeholder="Ex: Supervisor")
+                c_bt.write(""); c_bt.write("") 
+                if c_bt.button("➕", key="add_ni", use_container_width=True):
+                    if n_ni: salvar_permissao_nivel(n_ni); st.rerun()
+            
+            st.divider()
+            df_ni = listar_permissoes_nivel()
+            if not df_ni.empty:
+                for _, r in df_ni.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1]) 
+                    ca1.markdown(f"**{r['id']}** | {r['nivel']}")
+                    if ca2.button("✏️", key=f"ed_ni_{r['id']}"): dialog_editar_permissao_nivel(r['id'], r['nivel'])
+                    if ca3.button("🗑️", key=f"del_ni_{r['id']}"): excluir_permissao_nivel(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
 
     with tab_carteira: # Gestão de Carteira e Tabelas Reais
         st.markdown("### 💼 Gestão de Carteira")
