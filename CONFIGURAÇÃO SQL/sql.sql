@@ -1,9 +1,11 @@
--- 1. Cria o Schema
-CREATE SCHEMA IF NOT EXISTS permissão;
+-- Criação das novas tabelas no schema 'permissão'
 
--- 2. Cria a Tabela
-CREATE TABLE IF NOT EXISTS permissão.permissão_grupo_nivel (
+CREATE TABLE IF NOT EXISTS permissão.permissão_usuario_cheve (
     id SERIAL PRIMARY KEY,
-    nivel VARCHAR(255)
+    chave VARCHAR(255)
 );
-DROP TABLE IF EXISTS conexoes.fatorconferi_origem_consulta;
+
+CREATE TABLE IF NOT EXISTS permissão.permissão_usuario_categoria (
+    id SERIAL PRIMARY KEY,
+    categoria VARCHAR(255)
+);

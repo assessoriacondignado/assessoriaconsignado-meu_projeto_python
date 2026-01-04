@@ -77,6 +77,86 @@ def atualizar_permissao_nivel(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
+# --- NOVO: FUNÇÕES PARA PERMISSÃO USUARIO CHAVE ---
+def listar_permissoes_chave():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, chave FROM permissão.permissão_usuario_cheve ORDER BY id", conn)
+        conn.close(); return df
+    except: 
+        if conn: conn.close()
+        return pd.DataFrame()
+
+def salvar_permissao_chave(nome_chave):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO permissão.permissão_usuario_cheve (chave) VALUES (%s)", (nome_chave,))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def excluir_permissao_chave(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM permissão.permissão_usuario_cheve WHERE id = %s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def atualizar_permissao_chave(id_reg, novo_nome):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE permissão.permissão_usuario_cheve SET chave = %s WHERE id = %s", (novo_nome, id_reg))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+# --- NOVO: FUNÇÕES PARA PERMISSÃO USUARIO CATEGORIA ---
+def listar_permissoes_categoria():
+    conn = get_conn()
+    try:
+        df = pd.read_sql("SELECT id, categoria FROM permissão.permissão_usuario_categoria ORDER BY id", conn)
+        conn.close(); return df
+    except: 
+        if conn: conn.close()
+        return pd.DataFrame()
+
+def salvar_permissao_categoria(nome_cat):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO permissão.permissão_usuario_categoria (categoria) VALUES (%s)", (nome_cat,))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def excluir_permissao_categoria(id_reg):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM permissão.permissão_usuario_categoria WHERE id = %s", (id_reg,))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def atualizar_permissao_categoria(id_reg, novo_nome):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE permissão.permissão_usuario_categoria SET categoria = %s WHERE id = %s", (novo_nome, id_reg))
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
 # --- AGRUPAMENTOS ---
 def listar_agrupamentos(tipo):
     conn = get_conn()
@@ -576,6 +656,30 @@ def dialog_editar_permissao_nivel(id_reg, nome_atual):
                     st.success("Atualizado!"); time.sleep(0.5); st.rerun()
                 else: st.error("Erro ao atualizar.")
 
+# --- NOVO DIALOG: EDITAR CHAVE ---
+@st.dialog("✏️ Editar Chave")
+def dialog_editar_permissao_chave(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_chave"):
+        n_nome = st.text_input("Chave", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if n_nome:
+                if atualizar_permissao_chave(id_reg, n_nome):
+                    st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+                else: st.error("Erro ao atualizar.")
+
+# --- NOVO DIALOG: EDITAR CATEGORIA ---
+@st.dialog("✏️ Editar Categoria")
+def dialog_editar_permissao_categoria(id_reg, nome_atual):
+    st.caption(f"Editando: {nome_atual}")
+    with st.form("form_edit_categoria"):
+        n_nome = st.text_input("Categoria", value=nome_atual)
+        if st.form_submit_button("💾 Salvar", use_container_width=True):
+            if n_nome:
+                if atualizar_permissao_categoria(id_reg, n_nome):
+                    st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+                else: st.error("Erro ao atualizar.")
+
 @st.dialog("✏️ Editar Carteira Cliente")
 def dialog_editar_cart_lista(dados):
     st.write(f"Editando: **{dados['nome_cliente']}**")
@@ -799,13 +903,12 @@ def listar_tabelas_planilhas():
     if not conn: return []
     try:
         cur = conn.cursor()
+        # --- ATUALIZADO: Lista schemas admin, cliente e permissão ---
         query = """
             SELECT table_schema || '.' || table_name 
             FROM information_schema.tables 
             WHERE 
-                (table_schema = 'admin' AND table_name LIKE 'cliente%')
-                OR 
-                (table_schema = 'cliente')
+                table_schema IN ('cliente', 'admin', 'permissão')
             ORDER BY table_schema, table_name;
         """
         cur.execute(query)
@@ -1265,7 +1368,7 @@ def app_clientes():
             else:
                 st.info("Nenhuma carteira configurada no sistema.")
                 
-        # 7. NOVO: NÍVEIS DE PERMISSÃO (GRUPO)
+        # 7. NÍVEIS DE PERMISSÃO (GRUPO)
         with st.expander("🛡️ Níveis de Permissão (Grupo)", expanded=False):
             st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_grupo_nivel</p>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -1284,6 +1387,50 @@ def app_clientes():
                     ca1.markdown(f"**{r['id']}** | {r['nivel']}")
                     if ca2.button("✏️", key=f"ed_ni_{r['id']}"): dialog_editar_permissao_nivel(r['id'], r['nivel'])
                     if ca3.button("🗑️", key=f"del_ni_{r['id']}"): excluir_permissao_nivel(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
+
+        # 8. NOVO: CHAVES DE PERMISSÃO (USUÁRIO)
+        with st.expander("🔑 Chaves de Permissão (Usuário)", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_usuario_cheve</p>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.caption("Nova Chave")
+                c_in, c_bt = st.columns([5, 1])
+                n_ch = c_in.text_input("Chave", key="in_ch", label_visibility="visible", placeholder="Ex: Acesso_Especial")
+                c_bt.write(""); c_bt.write("") 
+                if c_bt.button("➕", key="add_ch", use_container_width=True):
+                    if n_ch: salvar_permissao_chave(n_ch); st.rerun()
+            
+            st.divider()
+            df_ch = listar_permissoes_chave()
+            if not df_ch.empty:
+                for _, r in df_ch.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1]) 
+                    ca1.markdown(f"**{r['id']}** | {r['chave']}")
+                    if ca2.button("✏️", key=f"ed_ch_{r['id']}"): dialog_editar_permissao_chave(r['id'], r['chave'])
+                    if ca3.button("🗑️", key=f"del_ch_{r['id']}"): excluir_permissao_chave(r['id']); st.rerun()
+                    st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+            else: st.info("Vazio.")
+
+        # 9. NOVO: CATEGORIAS DE PERMISSÃO (USUÁRIO)
+        with st.expander("🗂️ Categorias de Permissão (Usuário)", expanded=False):
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: permissão.permissão_usuario_categoria</p>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.caption("Nova Categoria")
+                c_in, c_bt = st.columns([5, 1])
+                n_cat = c_in.text_input("Categoria", key="in_cat", label_visibility="visible", placeholder="Ex: Financeiro")
+                c_bt.write(""); c_bt.write("") 
+                if c_bt.button("➕", key="add_cat", use_container_width=True):
+                    if n_cat: salvar_permissao_categoria(n_cat); st.rerun()
+            
+            st.divider()
+            df_cat = listar_permissoes_categoria()
+            if not df_cat.empty:
+                for _, r in df_cat.iterrows():
+                    ca1, ca2, ca3 = st.columns([8, 1, 1]) 
+                    ca1.markdown(f"**{r['id']}** | {r['categoria']}")
+                    if ca2.button("✏️", key=f"ed_cat_{r['id']}"): dialog_editar_permissao_categoria(r['id'], r['categoria'])
+                    if ca3.button("🗑️", key=f"del_cat_{r['id']}"): excluir_permissao_categoria(r['id']); st.rerun()
                     st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
             else: st.info("Vazio.")
 
@@ -1358,7 +1505,7 @@ def app_clientes():
     # =========================================================================
     with tab_plan:
         st.markdown("### 📅 Gestão de Planilhas do Banco")
-        st.caption("Visualização e edição direta de tabelas (Admin: 'cliente...' e Schema: 'cliente')")
+        st.caption("Visualização e edição direta de tabelas (Schemas: admin, cliente, permissão)")
         
         # 1. Carregar lista de tabelas disponíveis
         lista_tabelas = listar_tabelas_planilhas()
@@ -1408,7 +1555,7 @@ def app_clientes():
                         st.error(f"Erro ao ler tabela: {e}")
                         if conn: conn.close()
         else:
-            st.warning("Nenhuma tabela encontrada com os critérios (Admin 'cliente...' ou schema 'Cliente').")
+            st.warning("Nenhuma tabela encontrada nos schemas selecionados (admin, cliente, permissão).")
 
 if __name__ == "__main__":
     app_clientes()
