@@ -353,7 +353,7 @@ def main():
         elif "Operacional > Clientes" in pag: 
             # --- APLICAÇÃO DA REGRA DE BLOQUEIO (CORRIGIDO) ---
             # Usa 'chave' em vez de 'nome_regra_codigo'
-            permissão_usuario_regras_nível(
+            modulo_cliente.verificar_bloqueio_de_acesso(
                 chave="bloqueio_menu_cliente", 
                 caminho_atual="Operacional > Clientes", 
                 parar_se_bloqueado=True
