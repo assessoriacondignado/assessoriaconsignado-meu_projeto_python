@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import random
 import string
 import time
-from streamlit_autorefresh import st_autorefresh
+# REMOVIDO: from streamlit_autorefresh import st_autorefresh (Não é mais necessário)
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
@@ -88,9 +88,10 @@ def gerenciar_sessao():
     mm, ss = divmod(tempo_total.seconds, 60)
     hh, mm = divmod(mm, 60)
     
+    # Retorna o tempo formatado (será atualizado apenas quando houver clique)
     if hh > 0:
-        return f"{hh:02d}:{mm:02d}:{ss:02d}"
-    return f"{mm:02d}:{ss:02d}"
+        return f"{hh:02d}:{mm:02d}" # Removi os segundos para ficar mais limpo estático
+    return f"{mm:02d}:{ss:02d}" # Mantive segundos aqui caso seja pouco tempo
 
 # --- 5. BANCO DE DADOS E AUTH ---
 @st.cache_resource(ttl=600)
@@ -277,7 +278,6 @@ def renderizar_menu_lateral():
 
         # Renderização Dinâmica
         for menu_pai, subitens in estrutura_menu.items():
-            # Pega o ícone correspondente no dicionário, ou usa padrão se não achar
             icon_pai = icones.get(menu_pai, "📂")
             
             # Caso especial: Menu sem filhos
@@ -302,7 +302,6 @@ def renderizar_menu_lateral():
                     _, col_btn = st.columns([0.1, 0.9])
                     with col_btn:
                         icon_filho = icones.get(item, "↳")
-                        # Botão Filho com Emoji Específico
                         if st.button(f"{icon_filho} {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
                             st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
 
@@ -313,6 +312,7 @@ def renderizar_menu_lateral():
             st.session_state.clear()
             st.rerun()
 
+        # Tempo de Sessão (ESTÁTICO - Atualiza só no clique)
         tempo_str = gerenciar_sessao()
         st.markdown(f"""
             <div style="text-align: center; margin-top: 10px; font-size: 0.9em; color: #444;">
@@ -323,7 +323,8 @@ def renderizar_menu_lateral():
 # --- 8. FUNÇÃO PRINCIPAL ---
 def main():
     iniciar_estado()
-    st_autorefresh(interval=1000, key="sistema_relogio")
+    
+    # REMOVIDO O ST_AUTOREFRESH AQUI PARA PARAR DE CARREGAR A PÁGINA
 
     # TELA DE LOGIN
     if not st.session_state.get('logado'):
