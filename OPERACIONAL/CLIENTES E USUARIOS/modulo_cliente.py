@@ -37,16 +37,20 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (NOVA LÓGICA) ---
-def verificar_bloqueio_de_acesso(chave_codigo, caminho_atual="Desconhecido", parar_se_bloqueado=False):
+# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (CONCEITO AJUSTADO) ---
+def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_bloqueado=False, nome_regra_codigo=None):
     """
     Verifica se o usuário atual deve ser bloqueado.
     
-    Conceito Atualizado:
-    - chave_codigo: O identificador passado pelo código (ex: 'bloqueio_menu_cliente')
-    - Banco 'chave': Pode conter múltiplos códigos (ex: 'bloqueio_menu_cliente;bloqueio_total')
-    - Banco 'nivel': Contém a lista de IDs de níveis bloqueados (ex: '3;4;5')
+    Conceito Novo:
+    - chave (Argumento): Código identificador no sistema (Ex: 'bloqueio_menu_cliente')
+    - DB Coluna 'chave': Lista de códigos que a regra cobre (Ex: 'bloqueio_menu_cliente;bloqueio_total')
+    - DB Coluna 'nivel': Lista de IDs de níveis bloqueados (Ex: '3;4;5')
     """
+    # Compatibilidade com chamadas antigas que usavam nome_regra_codigo
+    if nome_regra_codigo:
+        chave = nome_regra_codigo
+
     # 1. Validação de Login
     if not st.session_state.get('logado'):
         return True 
@@ -72,8 +76,7 @@ def verificar_bloqueio_de_acesso(chave_codigo, caminho_atual="Desconhecido", par
             
         id_nivel_usuario = str(res_nivel[0])
 
-        # 3. Busca TODAS as regras ativas para filtrar no Python
-        # (Necessário pois a coluna 'chave' pode ter múltiplos valores separados por ;)
+        # 3. Busca TODAS as regras ativas
         cur.execute("""
             SELECT id, chave, nivel, status, caminho_bloqueio, nome_regra
             FROM permissão.permissão_usuario_regras_nível 
@@ -88,21 +91,21 @@ def verificar_bloqueio_de_acesso(chave_codigo, caminho_atual="Desconhecido", par
         caminho_registrado = None
 
         for row in regras_ativas:
-            rid, r_chave, r_nivel_bloqueados, r_status, r_caminho, r_nome = row
+            rid, r_chave_db, r_niveis_bloqueados, r_status, r_caminho, r_nome_amigavel = row
             
-            # Verifica se a chave do código está presente na regra (separada por ;)
-            lista_chaves_regra = [k.strip() for k in str(r_chave).split(';') if k.strip()]
+            # Verifica se a CHAVE do código está presente na coluna CHAVE do banco (separada por ;)
+            lista_chaves_db = [k.strip() for k in str(r_chave_db).split(';') if k.strip()]
             
-            if chave_codigo in lista_chaves_regra:
-                # Regra encontrada! Agora verifica se o NÍVEL do usuário está na lista de bloqueio
-                lista_niveis_bloqueados = [n.strip() for n in str(r_nivel_bloqueados).split(';') if n.strip()]
+            if chave in lista_chaves_db:
+                # Regra encontrada! Agora verifica se o NÍVEL do usuário está na lista de bloqueio (coluna nivel)
+                lista_niveis_bloqueados = [n.strip() for n in str(r_niveis_bloqueados).split(';') if n.strip()]
                 
                 if id_nivel_usuario in lista_niveis_bloqueados:
                     bloqueado = True
-                    regra_aplicada = r_nome
+                    regra_aplicada = r_nome_amigavel
                     id_regra_aplicada = rid
                     caminho_registrado = r_caminho
-                    break # Parar na primeira regra que bloquear
+                    break # Bloqueia na primeira ocorrência
         
         if bloqueado:
             # Registrar caminho se for a primeira vez
@@ -118,7 +121,7 @@ def verificar_bloqueio_de_acesso(chave_codigo, caminho_atual="Desconhecido", par
             
             if parar_se_bloqueado:
                 st.error("🚫 USUÁRIO SEM PERMISSÃO")
-                st.caption(f"Bloqueio aplicado pela regra: {regra_aplicada}")
+                st.caption(f"Regra de bloqueio: {regra_aplicada}")
                 st.stop()
                 
             return True
@@ -776,7 +779,6 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     conn = get_conn()
     try:
         cur = conn.cursor(); senha_f = hash_senha(senha)
-        # REGRA 1: Obrigatoriamente "Cliente sem permissão" se não informado
         if not nivel:
             nivel = 'Cliente sem permissão'
             
@@ -790,7 +792,7 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
 # 4. DIALOGS
 # =============================================================================
 
-# --- NOVO DIALOG: EDITAR REGRAS ---
+# --- NOVO DIALOG: EDITAR REGRAS (ATUALIZADO) ---
 @st.dialog("✏️ Editar Regra de Bloqueio")
 def dialog_editar_regra_bloqueio(regra):
     st.caption(f"Editando: {regra['nome_regra']}")
@@ -799,28 +801,28 @@ def dialog_editar_regra_bloqueio(regra):
     df_niveis = listar_permissoes_nivel()
     
     with st.form("form_edit_regra"):
-        n_nome = st.text_input("Nome da Regra (Controle)", value=regra['nome_regra'])
-        n_chave = st.text_input("Chave do Código (ID)", value=regra['chave'], help="Use ; para múltiplas chaves. Ex: menu_cli;submenu_fin")
+        n_nome = st.text_input("Nome da Regra (Amigável)", value=regra['nome_regra'])
+        n_chave = st.text_input("Chave do Código (Ex: menu_cliente)", value=regra['chave'], help="Use ; para múltiplas chaves.")
         n_cat = st.text_input("Categoria", value=regra['categoria'])
         n_desc = st.text_area("Descrição", value=regra['descricao'])
         n_status = st.selectbox("Status", ["SIM", "NÃO"], index=0 if regra['status'] == "SIM" else 1)
         
-        # Multiselect de Níveis (Lógica de conversão ID <-> Nome)
-        # 1. Identifica quais IDs já estão salvos
+        # Multiselect de Níveis (Salva IDs na coluna 'nivel')
+        # 1. Identifica quais IDs já estão salvos na coluna 'nivel'
         ids_salvos = [int(x) for x in str(regra['nivel']).split(';') if x.strip().isdigit()]
         
-        # 2. Cria lista de opções (nomes) e mapa reverso
+        # 2. Cria lista de opções (nomes) e mapas
         opcoes_nomes = df_niveis['nivel'].tolist()
         mapa_id_nome = dict(zip(df_niveis['id'], df_niveis['nivel']))
         mapa_nome_id = dict(zip(df_niveis['nivel'], df_niveis['id']))
         
-        # 3. Define quais nomes devem vir pré-selecionados
+        # 3. Define pré-seleção
         nomes_selecionados = [mapa_id_nome[i] for i in ids_salvos if i in mapa_id_nome]
         
         sel_niveis = st.multiselect("Níveis Bloqueados", options=opcoes_nomes, default=nomes_selecionados)
         
         if st.form_submit_button("💾 Salvar", use_container_width=True):
-            # Converte nomes selecionados de volta para IDs separados por ;
+            # Converte nomes para IDs separados por ;
             ids_finais = [str(mapa_nome_id[n]) for n in sel_niveis]
             str_ids_finais = ";".join(ids_finais)
             
