@@ -379,8 +379,17 @@ def salvar_dados_fator_no_banco(dados_api):
     if not conn: return False, "Erro de conexão."
     try:
         cur = conn.cursor()
-        cpf_limpo = re.sub(r'\D', '', str(dados_api.get('cpf', '')))
-        if not cpf_limpo or len(cpf_limpo) != 11: return False, "CPF inválido ou não encontrado no retorno."
+        
+        # --- CORREÇÃO DE CPF ROBUSTA ---
+        raw_cpf = str(dados_api.get('cpf', '')).strip()
+        cpf_limpo = re.sub(r'\D', '', raw_cpf)
+        
+        # Se perdeu zeros à esquerda, recoloca
+        if cpf_limpo and len(cpf_limpo) < 11:
+            cpf_limpo = cpf_limpo.zfill(11)
+            
+        if not cpf_limpo or len(cpf_limpo) != 11: 
+            return False, f"CPF inválido para gravação. Recebido: '{raw_cpf}' | Processado: '{cpf_limpo}'"
 
         campos = {
             'nome': dados_api.get('nome'),
@@ -417,7 +426,7 @@ def salvar_dados_fator_no_banco(dados_api):
                             VALUES (%s, %s, %s, CURRENT_DATE)
                         """, (cpf_limpo, n, t.get('prioridade', '')))
                     except psycopg2.errors.UniqueViolation:
-                        conn.rollback(); cur = conn.cursor()
+                        conn.rollback(); cur = conn.cursor() # Ignora duplicado
                     except Exception as e:
                         print(f"Erro Insert Telefone: {e}"); conn.rollback(); cur = conn.cursor()
 
