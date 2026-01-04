@@ -903,7 +903,6 @@ def listar_tabelas_planilhas():
     if not conn: return []
     try:
         cur = conn.cursor()
-        # --- ATUALIZADO: Lista schemas admin, cliente e permissão ---
         query = """
             SELECT table_schema || '.' || table_name 
             FROM information_schema.tables 
@@ -1187,14 +1186,27 @@ def app_clientes():
         sql_u += " ORDER BY id DESC"
         
         df_users = pd.read_sql(sql_u, conn); conn.close()
+
+        # --- AQUI: BUSCA OS NÍVEIS NO BANCO DE DADOS ---
+        df_niveis_disponiveis = listar_permissoes_nivel()
+        # Converte para lista simples. Se vazio, usa padrão "Cliente"
+        lista_niveis = df_niveis_disponiveis['nivel'].tolist() if not df_niveis_disponiveis.empty else ["Cliente"]
+
         for _, u in df_users.iterrows():
             with st.expander(f"{u['nome']} ({u['nivel']})"):
                 with st.form(f"form_user_{u['id']}"):
                     c_n, c_e = st.columns(2); n_nome = c_n.text_input("Nome", value=u['nome']); n_mail = c_e.text_input("Email", value=u['email'])
                     c_h, c_s, c_a = st.columns(3); 
                     
-                    # ATUALIZADO: hierarquia -> nivel
-                    n_nivel = c_h.selectbox("Nível", ["Cliente", "Admin", "Gerente"], index=["Cliente", "Admin", "Gerente"].index(u['nivel']) if u['nivel'] in ["Cliente", "Admin", "Gerente"] else 0)
+                    # --- AQUI: SELECTBOX COM OPÇÕES DO BANCO ---
+                    # Tenta encontrar o índice do nível atual na lista nova
+                    idx_n = 0
+                    if u['nivel'] in lista_niveis:
+                        idx_n = lista_niveis.index(u['nivel'])
+                    
+                    n_nivel = c_h.selectbox("Nível", lista_niveis, index=idx_n)
+                    # ------------------------------------------
+
                     n_senha = c_s.text_input("Nova Senha", type="password"); n_ativo = c_a.checkbox("Ativo", value=u['ativo'])
                     if st.form_submit_button("Atualizar"):
                         conn = get_conn(); cur = conn.cursor()
