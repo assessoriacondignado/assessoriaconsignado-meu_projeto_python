@@ -353,8 +353,26 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
         return False
 
 # =============================================================================
-# 4. SALVAR BASE PF E CONSULTA
+# 4. SALVAR BASE PF E CONSULTA (COM AUTODETECÇÃO DE COLUNA)
 # =============================================================================
+
+def verificar_coluna_cpf(cur, tabela):
+    """
+    Verifica se a tabela usa 'cpf' ou 'cpf_ref' como chave estrangeira.
+    Retorna o nome da coluna correto.
+    """
+    try:
+        cur.execute(f"""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'banco_pf' AND table_name = '{tabela}' AND column_name IN ('cpf', 'cpf_ref')
+        """)
+        res = cur.fetchone()
+        if res:
+            return res[0]
+    except:
+        pass
+    return 'cpf_ref' # Padrão seguro se falhar a verificação
 
 def salvar_dados_fator_no_banco(dados_api):
     conn = get_conn()
@@ -371,7 +389,7 @@ def salvar_dados_fator_no_banco(dados_api):
             'nome_mae': dados_api.get('mae')
         }
         
-        # 1. Inserção na Tabela Principal (pf_dados)
+        # 1. Inserção na Tabela Principal (pf_dados - Sempre usa 'cpf')
         query_dados = """
             INSERT INTO banco_pf.pf_dados (cpf, nome, data_nascimento, rg, nome_mae, data_criacao)
             VALUES (%s, %s, %s, %s, %s, NOW())
@@ -383,39 +401,60 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
         
-        # 2. Telefones (CORRIGIDO: cpf_ref -> cpf)
-        telefones = dados_api.get('telefones', [])
-        print(f"DEBUG: Salvando {len(telefones)} telefones para {cpf_limpo}")
-        for t in telefones:
-            n = re.sub(r'\D', '', str(t['numero']))
-            if n: 
-                # Ajustado para usar 'cpf' como nome da coluna
-                cur.execute("""
-                    INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_qualificacao, data_atualizacao) 
-                    VALUES (%s, %s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING
-                """, (cpf_limpo, n, t.get('prioridade', '')))
+        # === INSERÇÃO NAS TABELAS SATÉLITES (COM VERIFICAÇÃO DINÂMICA) ===
         
-        # 3. Emails (CORRIGIDO: cpf_ref -> cpf)
-        emails = dados_api.get('emails', [])
-        for e in emails:
-            if e: 
-                cur.execute("""
-                    INSERT INTO banco_pf.pf_emails (cpf, email) 
-                    VALUES (%s, %s) ON CONFLICT DO NOTHING
-                """, (cpf_limpo, str(e).lower()))
+        # 2. Telefones
+        telefones = dados_api.get('telefones', [])
+        if telefones:
+            col_fk = verificar_coluna_cpf(cur, 'pf_telefones') # Descobre se é cpf ou cpf_ref
             
-        # 4. Endereços (CORRIGIDO: cpf_ref -> cpf)
+            for t in telefones:
+                n = re.sub(r'\D', '', str(t['numero']))
+                if n: 
+                    # Tenta inserção direta. Removemos 'ON CONFLICT' para ver se ocorre erro de duplicidade real.
+                    # Se a tabela tiver restrição unique, vai falhar e o 'try/except' pega.
+                    try:
+                        cur.execute(f"""
+                            INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, tag_qualificacao, data_atualizacao) 
+                            VALUES (%s, %s, %s, CURRENT_DATE)
+                        """, (cpf_limpo, n, t.get('prioridade', '')))
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback() # Ignora duplicado e segue
+                        cur = conn.cursor() # Recria cursor após rollback parcial
+                    except Exception as e:
+                        print(f"Erro ao inserir telefone {n}: {e}")
+
+        # 3. Emails
+        emails = dados_api.get('emails', [])
+        if emails:
+            col_fk = verificar_coluna_cpf(cur, 'pf_emails')
+            for e in emails:
+                if e: 
+                    try:
+                        cur.execute(f"""
+                            INSERT INTO banco_pf.pf_emails ({col_fk}, email) 
+                            VALUES (%s, %s)
+                        """, (cpf_limpo, str(e).lower()))
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback(); cur = conn.cursor()
+
+        # 4. Endereços
         enderecos = dados_api.get('enderecos', [])
-        for d in enderecos:
-            cp = re.sub(r'\D', '', str(d['cep']))
-            if cp or d['rua']: 
-                cur.execute("""
-                    INSERT INTO banco_pf.pf_enderecos (cpf, rua, bairro, cidade, uf, cep) 
-                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
-                """, (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
+        if enderecos:
+            col_fk = verificar_coluna_cpf(cur, 'pf_enderecos')
+            for d in enderecos:
+                cp = re.sub(r'\D', '', str(d['cep']))
+                if cp or d['rua']: 
+                    try:
+                        cur.execute(f"""
+                            INSERT INTO banco_pf.pf_enderecos ({col_fk}, rua, bairro, cidade, uf, cep) 
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback(); cur = conn.cursor()
 
         conn.commit(); conn.close()
-        return True, f"Dados salvos na Base PF. (Tel: {len(telefones)} | End: {len(enderecos)})"
+        return True, f"Dados processados. (Tel: {len(telefones)} | End: {len(enderecos)})"
     except Exception as e:
         if conn: conn.close()
         return False, f"Erro DB (Salvar PF): {e}"
@@ -558,7 +597,7 @@ def app_fator_conferi():
                     res = realizar_consulta_cpf(cpf_in, nome_ambiente, forcar, id_cliente_teste)
                     st.session_state['resultado_fator'] = res
 
-                    # --- AUTOMAÇÃO: Salva automaticamente se a consulta der certo ---
+                    # AUTOMAÇÃO: Salva automaticamente
                     if res['sucesso']:
                         ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
                         if ok_s: st.toast(f"✅ {msg_s}", icon="💾")
