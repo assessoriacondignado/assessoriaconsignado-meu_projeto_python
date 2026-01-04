@@ -371,7 +371,7 @@ def salvar_dados_fator_no_banco(dados_api):
             'nome_mae': dados_api.get('mae')
         }
         
-        # IMPORTANTE: Garante que está a usar o schema banco_pf
+        # 1. Inserção na Tabela Principal (pf_dados)
         query_dados = """
             INSERT INTO banco_pf.pf_dados (cpf, nome, data_nascimento, rg, nome_mae, data_criacao)
             VALUES (%s, %s, %s, %s, %s, NOW())
@@ -383,19 +383,39 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
         
-        for t in dados_api.get('telefones', []):
+        # 2. Telefones (CORRIGIDO: cpf -> cpf_ref)
+        telefones = dados_api.get('telefones', [])
+        print(f"DEBUG: Salvando {len(telefones)} telefones para {cpf_limpo}")
+        for t in telefones:
             n = re.sub(r'\D', '', str(t['numero']))
-            if n: cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING", (cpf_limpo, n, t.get('prioridade', '')))
+            if n: 
+                cur.execute("""
+                    INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_qualificacao, data_atualizacao) 
+                    VALUES (%s, %s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING
+                """, (cpf_limpo, n, t.get('prioridade', '')))
         
-        for e in dados_api.get('emails', []):
-            if e: cur.execute("INSERT INTO banco_pf.pf_emails (cpf, email) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, str(e).lower()))
+        # 3. Emails (CORRIGIDO: cpf -> cpf_ref)
+        emails = dados_api.get('emails', [])
+        for e in emails:
+            if e: 
+                cur.execute("""
+                    INSERT INTO banco_pf.pf_emails (cpf_ref, email) 
+                    VALUES (%s, %s) ON CONFLICT DO NOTHING
+                """, (cpf_limpo, str(e).lower()))
             
-        for d in dados_api.get('enderecos', []):
+        # 4. Endereços (CORRIGIDO: cpf -> cpf_ref)
+        enderecos = dados_api.get('enderecos', [])
+        for d in enderecos:
             cp = re.sub(r'\D', '', str(d['cep']))
-            if cp: cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
+            # CORREÇÃO: Salva endereço mesmo sem CEP se tiver rua
+            if cp or d['rua']: 
+                cur.execute("""
+                    INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) 
+                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+                """, (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
 
         conn.commit(); conn.close()
-        return True, "Dados salvos na Base PF."
+        return True, f"Dados salvos na Base PF. (Tel: {len(telefones)} | End: {len(enderecos)})"
     except Exception as e:
         if conn: conn.close()
         return False, f"Erro DB (Salvar PF): {e}"
@@ -541,7 +561,7 @@ def app_fator_conferi():
                     # --- AUTOMAÇÃO: Salva automaticamente se a consulta der certo ---
                     if res['sucesso']:
                         ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
-                        if ok_s: st.toast("✅ Dados salvos automaticamente na Base PF!", icon="💾")
+                        if ok_s: st.toast(f"✅ {msg_s}", icon="💾")
                         else: st.error(f"Erro ao salvar na base PF: {msg_s}")
         
         if 'resultado_fator' in st.session_state:
