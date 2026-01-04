@@ -47,43 +47,42 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
         return True # Bloqueia se não logado
 
     conn = get_conn()
-    if not conn: return False # Falha aberta se sem banco (ou True para falha fechada)
+    if not conn: return False 
     
     try:
         cur = conn.cursor()
         
         # 1. Busca ID do Nível do Usuário Atual
-        nivel_usuario_nome = st.session_state.get('usuario_cargo', '') # Assume que 'usuario_cargo' guarda o nome do nível
+        nivel_usuario_nome = st.session_state.get('usuario_cargo', '') 
         cur.execute("SELECT id FROM permissão.permissão_grupo_nivel WHERE nivel = %s", (nivel_usuario_nome,))
         res_nivel = cur.fetchone()
         
         if not res_nivel:
-            return False # Se nível não existe no banco, não aplica bloqueio por segurança ou define padrão
+            return False # Nível não encontrado, libera acesso
             
         id_nivel_usuario = str(res_nivel[0])
 
-        # 2. Busca a Regra
+        # 2. Busca a Regra (ATUALIZADO: COLUNA 'chave' em vez de 'chaves_niveis')
         cur.execute("""
-            SELECT id, chaves_niveis, status, caminho_bloqueio 
+            SELECT id, chave, status, caminho_bloqueio 
             FROM permissão.permissão_usuario_regras_nível 
             WHERE nome_regra = %s
         """, (nome_regra_codigo,))
         
         regra = cur.fetchone()
         
-        # 4. Se a regra não existe, NÃO BLOQUEAR (Conforme solicitado)
         if not regra:
             conn.close()
             return False
 
         id_regra, lista_bloqueio_str, status, caminho_registrado = regra
         
-        # 3. Verifica Status (SE status == 'SIM' faz a checagem)
+        # 3. Verifica Status
         if status != 'SIM':
             conn.close()
-            return False # Regra desativada
+            return False 
 
-        # Verifica se o ID do usuário está na lista de bloqueio (ex: "1;2;5")
+        # Verifica se o ID do usuário está na lista de bloqueio
         lista_ids = [x.strip() for x in str(lista_bloqueio_str).split(';') if x.strip()]
         
         if id_nivel_usuario in lista_ids:
@@ -100,7 +99,7 @@ def verificar_bloqueio_de_acesso(nome_regra_codigo, caminho_atual="Desconhecido"
             return True # BLOQUEAR!
             
         conn.close()
-        return False # Não está na lista negra
+        return False 
 
     except Exception as e:
         print(f"Erro verificação permissão: {e}")
@@ -714,11 +713,6 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     conn = get_conn()
     try:
         cur = conn.cursor(); senha_f = hash_senha(senha)
-        
-        # --- ATUALIZAÇÃO: REGRA 1 (Nível Padrão) ---
-        if not nivel:
-            nivel = 'Cliente sem permissão'
-            
         cur.execute("INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id", (nome, email, cpf, tel, senha_f, nivel, ativo))
         nid = cur.fetchone()[0]; conn.commit(); conn.close(); return nid
     except: 
