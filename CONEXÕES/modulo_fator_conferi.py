@@ -12,8 +12,9 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 
 # --- IMPORTAÇÃO DE MÓDULOS EXTERNOS (MODULO PF CADASTRO) ---
-# Tenta adicionar o diretório do módulo de cadastro ao path
 try:
+    # Ajuste o caminho relativo conforme a estrutura real das suas pastas
+    # Tenta localizar o modulo_pf_cadastro na pasta OPERACIONAL
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../OPERACIONAL/BANCO DE PLANILHAS')))
     import modulo_pf_cadastro
 except ImportError:
@@ -284,7 +285,7 @@ def salvar_dados_fator_no_banco(dados_api):
         # --- ETAPA 1: GARANTIR O CADASTRO (MODO NOVO) ---
         dados_novo = {'nome': nome_cliente, 'cpf': cpf_limpo}
         
-        # Tenta criar o cadastro básico. Se já existir, o módulo trata internamente e ignora.
+        # Tenta criar o cadastro básico.
         modulo_pf_cadastro.salvar_pf(
             dados_gerais=dados_novo,
             df_tel=pd.DataFrame(),
@@ -306,41 +307,48 @@ def salvar_dados_fator_no_banco(dados_api):
             'data_nascimento': modulo_pf_cadastro.converter_data_br_iso(dados_api.get('nascimento'))
         }
         
-        # B. Preparar Telefones (CORREÇÃO DA LEITURA)
+        # B. Preparar Telefones (CORREÇÃO DA LEITURA DE OBJETOS E LIMPEZA PRÉVIA)
         lista_tels = []
         raw_telefones = dados_api.get('telefones', [])
         
         if raw_telefones is None: raw_telefones = []
         
         for t in raw_telefones:
-            # Verifica se é um dicionário (padrão do JSON da Fator)
+            # Verifica se é um dicionário (padrão do JSON da Fator) ou string
+            numero_bruto = ""
             if isinstance(t, dict):
                 numero_bruto = str(t.get('numero', ''))
-                # Limpeza preventiva
-                numero_limpo = re.sub(r'\D', '', numero_bruto)
-                # Validação usando a regra do cadastro
-                num_val, erro = modulo_pf_cadastro.validar_formatar_telefone(numero_limpo)
-                if num_val and not erro:
-                    lista_tels.append({'numero': num_val})
+            else:
+                numero_bruto = str(t)
+                
+            # Limpeza preventiva ANTES da validação: remove caracteres não numéricos
+            numero_limpo = re.sub(r'\D', '', numero_bruto)
+            
+            # Validação usando a regra do cadastro
+            num_val, erro = modulo_pf_cadastro.validar_formatar_telefone(numero_limpo)
+            if num_val and not erro:
+                lista_tels.append({'numero': num_val})
         
         df_tels = pd.DataFrame(lista_tels)
 
-        # C. Preparar Emails (CORREÇÃO DA LEITURA)
+        # C. Preparar Emails (CORREÇÃO DA LEITURA MISTA)
         lista_emails = []
         raw_emails = dados_api.get('emails', [])
         
         if raw_emails is None: raw_emails = []
         
         for e in raw_emails:
-            # Se for string simples ["email1", "email2"]
+            # Se for string simples ["email1", "email2"] (Padrão observado)
+            val_email = ""
             if isinstance(e, str):
-                email_limpo = e.strip().lower()
+                val_email = e
+            # Se for objeto {"email": "..."}
+            elif isinstance(e, dict):
+                 val_email = str(e.get('email', ''))
+            
+            if val_email:
+                email_limpo = val_email.strip().lower()
                 if modulo_pf_cadastro.validar_email(email_limpo):
-                    lista_emails.append({'email': email_limpo})
-            # Se for objeto {"email": "..."} (Caso de erro de parser ou variação)
-            elif isinstance(e, dict) and 'email' in e:
-                 email_limpo = str(e['email']).strip().lower()
-                 if modulo_pf_cadastro.validar_email(email_limpo):
                     lista_emails.append({'email': email_limpo})
 
         df_emails = pd.DataFrame(lista_emails)
