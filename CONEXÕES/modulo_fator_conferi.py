@@ -340,19 +340,16 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
             if conn: conn.close()
     return cliente
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE SALDO (AJUSTADA - 4 PASSOS) ---
+# --- FUNÇÃO DE VERIFICAÇÃO DE SALDO (RETORNA VALOR DO SALDO) ---
 def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
     """
-    1º Verifica qual o cliente que esta fazendo a consulta
-    2º O teste de consulta possui uma chave, e deve usar a tabela de consulta para identifica a origem
-    3º Com a origem e o cliente que quer executar a consulta na tabela: cliente.cliente_carteira_lista para localizar o nome da tabela na coluna tabela SQL
-    4º Com as informação do nome nome da tabela e cliente, identifica o valor do saldo novo
+    Retorna: (Autorizado:bool, Saldo_Atual:float, Mensagem:str)
     """
     if not id_cliente: 
-        return True, "Cliente não identificado (Teste/Admin)." 
+        return True, 0.0, "Cliente não identificado (Teste/Admin)." 
     
     conn = get_conn()
-    if not conn: return False, "Erro conexão DB"
+    if not conn: return False, 0.0, "Erro conexão DB"
     
     try:
         cur = conn.cursor()
@@ -362,7 +359,7 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
         res_cli = cur.fetchone()
         if not res_cli:
             conn.close()
-            return False, "Cliente não encontrado no cadastro."
+            return False, 0.0, "Cliente não encontrado no cadastro."
         cpf_cliente_db = re.sub(r'\D', '', str(res_cli[0]))
 
         # 2º Passo: Identificar a Origem através da tabela de consulta (Chave/Ambiente)
@@ -370,11 +367,10 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
         res_amb = cur.fetchone()
         if not res_amb:
             conn.close()
-            return False, f"Ambiente '{ambiente_chave}' não configurado nas origens."
+            return False, 0.0, f"Ambiente '{ambiente_chave}' não configurado nas origens."
         origem_custo_esperada = res_amb[0]
         
-        # 3º Passo: Localizar o nome da tabela na coluna tabela SQL (usando a tabela cliente.cliente_carteira_lista)
-        # Nota: A coluna com o nome da tabela SQL (nome_tabela_transacoes) está na tabela carteiras_config, vinculada via nome_carteira
+        # 3º Passo: Localizar o nome da tabela na coluna tabela SQL
         query_cart = """
             SELECT c.nome_tabela_transacoes
             FROM cliente.cliente_carteira_lista l
@@ -388,11 +384,11 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
         
         if not res_tab:
             conn.close()
-            return False, f"Carteira não encontrada para origem '{origem_custo_esperada}'."
+            return False, 0.0, f"Carteira não encontrada para origem '{origem_custo_esperada}'."
             
         tabela_transacoes = res_tab[0]
         
-        # 4º Passo: Identificar o valor do saldo novo na tabela encontrada
+        # 4º Passo: Identificar o valor do saldo novo
         query_saldo = f"SELECT saldo_novo FROM {tabela_transacoes} WHERE regexp_replace(cpf_cliente, '[^0-9]', '', 'g') = %s ORDER BY id DESC LIMIT 1"
         cur.execute(query_saldo, (cpf_cliente_db,))
         res_saldo = cur.fetchone()
@@ -402,13 +398,13 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
         conn.close()
         
         if saldo_atual >= valor_consulta:
-            return True, f"Saldo OK (R$ {saldo_atual:.2f})"
+            return True, saldo_atual, f"Saldo OK (R$ {saldo_atual:.2f})"
         else:
-            return False, f"Saldo insuficiente. Disponível: R$ {saldo_atual:.2f} | Necessário: R$ {valor_consulta:.2f}"
+            return False, saldo_atual, f"Saldo insuficiente. Disponível: R$ {saldo_atual:.2f} | Necessário: R$ {valor_consulta:.2f}"
 
     except Exception as e:
         if conn: conn.close()
-        return False, f"Erro na verificação de saldo: {str(e)}"
+        return False, 0.0, f"Erro na verificação de saldo: {str(e)}"
 
 def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
     if not id_cliente_pagador: return False, "ID Cliente ausente."
@@ -431,7 +427,7 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
             conn.close(); return False, "Cliente admin não encontrado."
         cpf_limpo = re.sub(r'\D', '', str(res_cpf[0]))
 
-        # 3. Busca Carteira (mesma lógica da verificação)
+        # 3. Busca Carteira
         query = """SELECT l.cpf_cliente, l.nome_cliente, l.custo_carteira, l.origem_custo, c.nome_tabela_transacoes 
                    FROM cliente.cliente_carteira_lista l JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
                    WHERE regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g') = %s AND l.origem_custo = %s LIMIT 1"""
@@ -490,13 +486,13 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # BLOQUEIO POR SALDO (Chamada Ajustada)
+        # BLOQUEIO POR SALDO (Ajustado para receber os 3 valores)
         custo = buscar_valor_consulta_atual()
         if id_cliente_final:
-            saldo_ok, msg_saldo = verificar_saldo_suficiente(id_cliente_final, ambiente, custo)
+            saldo_ok, saldo_val, msg_saldo = verificar_saldo_suficiente(id_cliente_final, ambiente, custo)
             if not saldo_ok:
                 conn.close()
-                return {"sucesso": False, "msg": f"BLOQUEIO: {msg_saldo}"}
+                return {"sucesso": False, "msg": f"BLOQUEIO: {msg_saldo} (Saldo Atual: R$ {saldo_val:.2f})"}
 
         # API
         cred = buscar_credenciais()
