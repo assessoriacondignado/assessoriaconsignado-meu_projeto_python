@@ -307,7 +307,7 @@ def salvar_dados_fator_no_banco(dados_api):
             'data_nascimento': modulo_pf_cadastro.converter_data_br_iso(dados_api.get('nascimento'))
         }
         
-        # B. Preparar Telefones (CORREÇÃO DA LEITURA DE OBJETOS E LIMPEZA PRÉVIA)
+        # B. Preparar Telefones (CORREÇÃO DA LEITURA DE OBJETOS)
         lista_tels = []
         raw_telefones = dados_api.get('telefones', [])
         
@@ -342,7 +342,7 @@ def salvar_dados_fator_no_banco(dados_api):
             val_email = ""
             if isinstance(e, str):
                 val_email = e
-            # Se for objeto {"email": "..."}
+            # Se for objeto {"email": "..."} (Caso de erro de parser ou variação)
             elif isinstance(e, dict):
                  val_email = str(e.get('email', ''))
             
