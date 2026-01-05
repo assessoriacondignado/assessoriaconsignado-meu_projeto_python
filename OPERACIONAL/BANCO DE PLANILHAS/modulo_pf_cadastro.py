@@ -12,6 +12,9 @@ except ImportError:
 
 # --- CONEXÃO E UTILS (BASE) ---
 def get_conn():
+    """
+    Estabelece conexão com o banco PostgreSQL usando as credenciais do arquivo conexao.py.
+    """
     try:
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database,
@@ -21,14 +24,19 @@ def get_conn():
         return None
 
 def init_db_structures():
+    """
+    Garante que o esquema e tabelas básicas existam no PostgreSQL.
+    """
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
             
+            # Tabela de referências auxiliares
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             
+            # Tabela de mapeamento de planilhas/convênios
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.convenio_por_planilha (
                     id SERIAL PRIMARY KEY,
@@ -45,25 +53,15 @@ def init_db_structures():
 # --- HELPERS DE FORMATAÇÃO E CÁLCULO ---
 
 def formatar_cpf_visual(cpf_db):
-    """
-    VISUALIZAÇÃO: Garante 11 dígitos e aplica máscara 000.000.000-00.
-    """
     if not cpf_db: return ""
-    # Remove qualquer coisa que não seja número
     cpf_limpo = re.sub(r'\D', '', str(cpf_db))
-    # Garante 11 dígitos preenchendo com zeros à esquerda
     cpf_full = cpf_limpo.zfill(11)
-    # Formata
     return f"{cpf_full[:3]}.{cpf_full[3:6]}.{cpf_full[6:9]}-{cpf_full[9:]}"
 
 def limpar_normalizar_cpf(cpf_raw):
-    """
-    BANCO DE DADOS: Remove pontuação e garante 11 dígitos (zfill).
-    """
     if not cpf_raw: return ""
     s = str(cpf_raw).strip()
     apenas_nums = re.sub(r'\D', '', s)
-    # Preenche com zeros à esquerda até ter 11 dígitos
     return apenas_nums.zfill(11)
 
 def limpar_apenas_numeros(valor):
@@ -77,18 +75,9 @@ def validar_formatar_telefone(tel_raw):
     return None, "Telefone deve ter 10 ou 11 dígitos."
 
 def validar_formatar_cpf(cpf_raw):
-    """
-    VALIDAÇÃO TELA: Aceita qualquer entrada numérica até 11 dígitos.
-    Permite digitar com ou sem zeros, com ou sem pontos.
-    """
     numeros = re.sub(r'\D', '', str(cpf_raw).strip())
-    
     if not numeros: return None, "CPF inválido (vazio)."
-    
-    # Se tiver mais de 11 dígitos reais, é erro (ex: CNPJ ou erro de digitação)
     if len(numeros) > 11: return None, "CPF deve ter no máximo 11 dígitos."
-    
-    # Retorna os números limpos. A normalização (zfill) será feita ao salvar/inserir.
     return numeros, None
 
 def validar_email(email):
@@ -143,14 +132,16 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)      
             params_busca = (cpf_norm,)
             
-            # 1. Dados Pessoais
+            # 1. Dados Pessoais da tabela principal
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=params_busca)
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # Tabelas satélites - Tenta buscar por cpf_ref ou cpf (Compatibilidade)
+            # [MODIFICADO] Carregamento de satélites mantido apenas para visualização de dados antigos,
+            # caso existam, mas o salvamento agora foca apenas na tabela principal.
+            # Se desejar remover a leitura também, basta comentar os blocos abaixo.
+            
             col_fk = 'cpf_ref' 
             try:
-                # Testa se existe cpf_ref
                 pd.read_sql("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1", conn)
             except:
                 col_fk = 'cpf'
@@ -170,7 +161,6 @@ def carregar_dados_completos(cpf):
                     matricula = str(row_emp['matricula']).strip()
                     vinculo = {'convenio': conv_nome, 'matricula': matricula, 'dados_extras': '', 'contratos': []}
 
-                    # Roteamento
                     query_map = "SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s"
                     cur = conn.cursor()
                     cur.execute(query_map, (conv_nome,))
@@ -259,6 +249,9 @@ CONFIG_CADASTRO = {
 }
 
 def inserir_dado_staging(campo_config, valor, extras=None):
+    """
+    Armazena os dados temporariamente na sessão (Staging) antes de confirmar.
+    """
     tabela = campo_config['tabela']
     chave = campo_config['key']
     
@@ -483,11 +476,14 @@ def interface_cadastro_pf():
         else: st.caption("Nenhum vínculo inserido.")
 
         st.divider()
+        
+        # --- BOTÃO DE CONFIRMAÇÃO ---
         if st.button("💾 CONFIRMAR E SALVAR", type="primary", use_container_width=True):
             staging = st.session_state['dados_staging']
             if not staging['geral'].get('nome') or not staging['geral'].get('cpf'):
                 st.error("Nome e CPF são obrigatórios.")
             else:
+                # Dados coletados na interface são passados, mas a função salvar_pf filtrará o uso.
                 df_tel = pd.DataFrame(staging['telefones'])
                 df_email = pd.DataFrame(staging['emails'])
                 df_end = pd.DataFrame(staging['enderecos'])
@@ -510,6 +506,10 @@ def interface_cadastro_pf():
 
 # --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
+    """
+    Realiza a inserção final SOMENTE no banco PostgreSQL tabela banco_pf.pf_dados.
+    Tabelas satélites foram desabilitadas conforme solicitação.
+    """
     conn = get_conn()
     if conn:
         try:
@@ -519,6 +519,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
 
+            # 1. SALVAMENTO NA TABELA PRINCIPAL (pf_dados)
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
                 placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
@@ -528,56 +529,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 vals = list(dados_gerais.values()) + [cpf_original]
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
-            cpf_chave = dados_gerais['cpf']
-            if modo == "editar":
-                tabelas_ref = ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos']
-                col_fk_del = 'cpf_ref'
-                try: 
-                    cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
-                except: 
-                    col_fk_del = 'cpf'; conn.rollback(); cur = conn.cursor()
-                
-                for tb in tabelas_ref: 
-                    try: cur.execute(f"DELETE FROM {tb} WHERE {col_fk_del} = %s", (cpf_chave,))
-                    except: conn.rollback(); cur = conn.cursor()
+            # --- BLOCO DE SATÉLITES REMOVIDO/COMENTADO ---
+            # O sistema não deve mais inserir em pf_telefones, pf_emails, etc.
+            # Apenas a tabela pf_dados é afetada.
             
-            def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
-            
-            # Detecção de Coluna FK (cpf ou cpf_ref)
-            col_fk = 'cpf_ref'
-            try: cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
-            except: col_fk = 'cpf'; conn.rollback(); cur = conn.cursor()
-
-            if not df_tel.empty:
-                for _, r in df_upper(df_tel).iterrows(): cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
-            if not df_email.empty:
-                for _, r in df_upper(df_email).iterrows(): cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_fk}, email) VALUES (%s, %s)", (cpf_chave, r['email']))
-            if not df_end.empty:
-                for _, r in df_upper(df_end).iterrows(): cur.execute(f"INSERT INTO banco_pf.pf_enderecos ({col_fk}, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
-            if not df_emp.empty:
-                for _, r in df_upper(df_emp).iterrows():
-                    matr = r['matricula']
-                    cur.execute("SELECT 1 FROM banco_pf.pf_emprego_renda WHERE matricula = %s", (matr,))
-                    if cur.fetchone():
-                        cur.execute(f"UPDATE banco_pf.pf_emprego_renda SET {col_fk} = %s, convenio = %s, data_atualizacao = %s WHERE matricula = %s", (cpf_chave, r['convenio'], datetime.now(), matr))
-                    else:
-                        cur.execute(f"INSERT INTO banco_pf.pf_emprego_renda ({col_fk}, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
-            if not df_contr.empty:
-                for _, r in df_upper(df_contr).iterrows():
-                    tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')
-                    r_dict = r.to_dict()
-                    r_dict.pop('origem_tabela', None); r_dict.pop('tipo_origem', None)
-                    final_dict = {}
-                    for k, v in r_dict.items():
-                        if pd.isna(v) or v == "": continue
-                        if 'cnpj' in k.lower(): final_dict[k] = formatar_cnpj(v)
-                        else: final_dict[k] = v
-                    if not final_dict: continue
-                    cols = list(final_dict.keys()); vals = list(final_dict.values())
-                    placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
-                    try: cur.execute(f"INSERT INTO {tabela} ({col_names}) VALUES ({placeholders})", vals)
-                    except Exception as e_contr: print(f"Erro inserção dinâmica {tabela}: {e_contr}")
-            conn.commit(); conn.close(); return True, "Salvo com sucesso!"
+            conn.commit(); conn.close(); return True, "✅ Salvo com sucesso!"
         except Exception as e: return False, str(e)
     return False, "Erro conexão"
 
@@ -615,7 +571,6 @@ def dialog_visualizar_cliente(cpf_cliente):
     with t1:
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
-        # REGRA: Não exibir idade automaticamente ao lado da data
         txt_nasc = nasc.strftime('%d/%m/%Y') if nasc and isinstance(nasc, (date, datetime)) else safe_view(nasc)
         
         c1.write(f"**Nascimento:** {txt_nasc}"); c1.write(f"**RG:** {safe_view(g.get('rg'))}"); c2.write(f"**Mãe:** {safe_view(g.get('nome_mae'))}")
