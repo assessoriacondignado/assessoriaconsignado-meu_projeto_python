@@ -340,12 +340,13 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
             if conn: conn.close()
     return cliente
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE SALDO (AJUSTADA) ---
+# --- FUNÇÃO DE VERIFICAÇÃO DE SALDO (AJUSTADA - 4 PASSOS) ---
 def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
     """
     1º Verifica qual o cliente que esta fazendo a consulta
-    2º O teste de consulta possui uma chave (ambiente), e deve usar a tabela de consulta para identifica a origem
-    3º Com a origem e o cliente que quer executar a consulta, deve observar o saldo no Relatório Financeiro Detalhado (tabela de transações)
+    2º O teste de consulta possui uma chave, e deve usar a tabela de consulta para identifica a origem
+    3º Com a origem e o cliente que quer executar a consulta na tabela: cliente.cliente_carteira_lista para localizar o nome da tabela na coluna tabela SQL
+    4º Com as informação do nome nome da tabela e cliente, identifica o valor do saldo novo
     """
     if not id_cliente: 
         return True, "Cliente não identificado (Teste/Admin)." 
@@ -356,16 +357,7 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
     try:
         cur = conn.cursor()
         
-        # 1. Identificar a Origem através da tabela de consulta (Chave/Ambiente)
-        cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (ambiente_chave,))
-        res_amb = cur.fetchone()
-        if not res_amb:
-            conn.close()
-            # Se não houver configuração, bloqueia por segurança ou avisa
-            return False, f"Ambiente '{ambiente_chave}' não configurado. Verifique tabela 'fatorconferi_ambiente_consulta'."
-        origem_custo_esperada = res_amb[0]
-        
-        # 2. Buscar CPF do cliente para cruzar com a carteira
+        # 1º Passo: Verificar qual o cliente (Buscar CPF)
         cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente,))
         res_cli = cur.fetchone()
         if not res_cli:
@@ -373,8 +365,16 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
             return False, "Cliente não encontrado no cadastro."
         cpf_cliente_db = re.sub(r'\D', '', str(res_cli[0]))
 
-        # 3. Localizar Carteira e Tabela Financeira (Relatório Financeiro Detalhado)
-        # Cruza: CPF do Cliente + Origem do Custo
+        # 2º Passo: Identificar a Origem através da tabela de consulta (Chave/Ambiente)
+        cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (ambiente_chave,))
+        res_amb = cur.fetchone()
+        if not res_amb:
+            conn.close()
+            return False, f"Ambiente '{ambiente_chave}' não configurado nas origens."
+        origem_custo_esperada = res_amb[0]
+        
+        # 3º Passo: Localizar o nome da tabela na coluna tabela SQL (usando a tabela cliente.cliente_carteira_lista)
+        # Nota: A coluna com o nome da tabela SQL (nome_tabela_transacoes) está na tabela carteiras_config, vinculada via nome_carteira
         query_cart = """
             SELECT c.nome_tabela_transacoes
             FROM cliente.cliente_carteira_lista l
@@ -392,7 +392,7 @@ def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
             
         tabela_transacoes = res_tab[0]
         
-        # 4. Observar o Saldo na Tabela Encontrada
+        # 4º Passo: Identificar o valor do saldo novo na tabela encontrada
         query_saldo = f"SELECT saldo_novo FROM {tabela_transacoes} WHERE regexp_replace(cpf_cliente, '[^0-9]', '', 'g') = %s ORDER BY id DESC LIMIT 1"
         cur.execute(query_saldo, (cpf_cliente_db,))
         res_saldo = cur.fetchone()
