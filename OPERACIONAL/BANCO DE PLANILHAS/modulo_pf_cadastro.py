@@ -46,21 +46,19 @@ def init_db_structures():
 
 def formatar_cpf_visual(cpf_db):
     """
-    Formata o CPF armazenado (sem zeros) para visualização (com zeros e pontuação).
+    ALTERADO: Não aplica mais máscara. Retorna o valor original.
     """
     if not cpf_db: return ""
-    cpf_limpo = str(cpf_db).strip()
-    cpf_full = cpf_limpo.zfill(11)
-    return f"{cpf_full[:3]}.{cpf_full[3:6]}.{cpf_full[6:9]}-{cpf_full[9:]}"
+    return str(cpf_db).strip()
 
 def limpar_normalizar_cpf(cpf_raw):
     """
-    Regra CPF: Remove espaços, não-números e zeros à esquerda.
+    ALTERADO: Não força mais números nem 11 dígitos.
+    Apenas remove espaços em branco das pontas.
     """
     if not cpf_raw: return ""
-    s = str(cpf_raw).strip()
-    apenas_nums = re.sub(r'\D', '', s)
-    return apenas_nums.lstrip('0')
+    # Retorna a string limpa de espaços, aceitando letras, pontos ou traços se digitado.
+    return str(cpf_raw).strip()
 
 def limpar_apenas_numeros(valor):
     if not valor: return ""
@@ -74,12 +72,12 @@ def validar_formatar_telefone(tel_raw):
 
 def validar_formatar_cpf(cpf_raw):
     """
-    Validação de entrada na Tela: Aceita com ou sem zeros, desde que numérico e <= 11 dígitos.
+    ALTERADO: Validação removida. Aceita qualquer entrada não vazia.
     """
-    numeros = re.sub(r'\D', '', str(cpf_raw).strip())
-    if not numeros: return None, "CPF inválido (vazio)."
-    if len(numeros) > 11: return None, "CPF deve ter no máximo 11 dígitos."
-    return numeros, None
+    valor = str(cpf_raw).strip()
+    if not valor: return None, "CPF inválido (vazio)."
+    # Retorna o valor exato digitado, sem erro.
+    return valor, None
 
 def validar_email(email):
     if not email: return False
@@ -137,13 +135,21 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=params_busca)
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # Tabelas satélites
-            dados['telefones'] = pd.read_sql("SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE cpf_ref = %s", conn, params=params_busca).fillna("").to_dict('records')
-            dados['emails'] = pd.read_sql("SELECT email FROM banco_pf.pf_emails WHERE cpf_ref = %s", conn, params=params_busca).fillna("").to_dict('records')
-            dados['enderecos'] = pd.read_sql("SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE cpf_ref = %s", conn, params=params_busca).fillna("").to_dict('records')
+            # Tabelas satélites - Tenta buscar por cpf_ref ou cpf (Compatibilidade)
+            col_fk = 'cpf_ref' 
+            try:
+                # Testa se existe cpf_ref
+                pd.read_sql("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1", conn)
+            except:
+                col_fk = 'cpf'
+                conn.rollback()
+
+            dados['telefones'] = pd.read_sql(f"SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
+            dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
+            dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
             # Busca Vínculos
-            query_emp = "SELECT convenio, matricula FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s"
+            query_emp = f"SELECT convenio, matricula FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
             df_emp = pd.read_sql(query_emp, conn, params=params_busca)
             
             if not df_emp.empty:
@@ -317,7 +323,6 @@ def interface_cadastro_pf():
                 c_lbl.markdown(f"**{campo['label']}:**")
                 with c_inp:
                     if campo['tipo'] == 'data':
-                        # REGRA 2.3: Limites entre 01/01/1900 e 31/12/2050
                         val = st.date_input("Data", value=None, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}", label_visibility="collapsed")
                     else:
                         val = st.text_input("Texto", label_visibility="collapsed", key=f"in_{campo['key']}")
@@ -514,24 +519,37 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_chave = dados_gerais['cpf']
             if modo == "editar":
                 tabelas_ref = ['banco_pf.pf_telefones', 'banco_pf.pf_emails', 'banco_pf.pf_enderecos']
-                for tb in tabelas_ref: cur.execute(f"DELETE FROM {tb} WHERE cpf_ref = %s", (cpf_chave,))
+                col_fk_del = 'cpf_ref'
+                try: 
+                    cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
+                except: 
+                    col_fk_del = 'cpf'; conn.rollback(); cur = conn.cursor()
+                
+                for tb in tabelas_ref: 
+                    try: cur.execute(f"DELETE FROM {tb} WHERE {col_fk_del} = %s", (cpf_chave,))
+                    except: conn.rollback(); cur = conn.cursor()
             
             def df_upper(df): return df.applymap(lambda x: x.upper() if isinstance(x, str) else x)
             
+            # Detecção de Coluna FK (cpf ou cpf_ref)
+            col_fk = 'cpf_ref'
+            try: cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
+            except: col_fk = 'cpf'; conn.rollback(); cur = conn.cursor()
+
             if not df_tel.empty:
-                for _, r in df_upper(df_tel).iterrows(): cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
+                for _, r in df_upper(df_tel).iterrows(): cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, tag_whats, tag_qualificacao, data_atualizacao) VALUES (%s, %s, %s, %s, %s)", (cpf_chave, r['numero'], r.get('tag_whats'), r.get('tag_qualificacao'), date.today()))
             if not df_email.empty:
-                for _, r in df_upper(df_email).iterrows(): cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s)", (cpf_chave, r['email']))
+                for _, r in df_upper(df_email).iterrows(): cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_fk}, email) VALUES (%s, %s)", (cpf_chave, r['email']))
             if not df_end.empty:
-                for _, r in df_upper(df_end).iterrows(): cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
+                for _, r in df_upper(df_end).iterrows(): cur.execute(f"INSERT INTO banco_pf.pf_enderecos ({col_fk}, rua, bairro, cidade, uf, cep) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_chave, r['rua'], r['bairro'], r['cidade'], r['uf'], r['cep']))
             if not df_emp.empty:
                 for _, r in df_upper(df_emp).iterrows():
                     matr = r['matricula']
                     cur.execute("SELECT 1 FROM banco_pf.pf_emprego_renda WHERE matricula = %s", (matr,))
                     if cur.fetchone():
-                        cur.execute("UPDATE banco_pf.pf_emprego_renda SET cpf_ref = %s, convenio = %s, data_atualizacao = %s WHERE matricula = %s", (cpf_chave, r['convenio'], datetime.now(), matr))
+                        cur.execute(f"UPDATE banco_pf.pf_emprego_renda SET {col_fk} = %s, convenio = %s, data_atualizacao = %s WHERE matricula = %s", (cpf_chave, r['convenio'], datetime.now(), matr))
                     else:
-                        cur.execute("INSERT INTO banco_pf.pf_emprego_renda (cpf_ref, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
+                        cur.execute(f"INSERT INTO banco_pf.pf_emprego_renda ({col_fk}, convenio, matricula, data_atualizacao) VALUES (%s, %s, %s, %s)", (cpf_chave, r['convenio'], matr, datetime.now()))
             if not df_contr.empty:
                 for _, r in df_upper(df_contr).iterrows():
                     tabela = r.get('origem_tabela', 'banco_pf.pf_contratos')

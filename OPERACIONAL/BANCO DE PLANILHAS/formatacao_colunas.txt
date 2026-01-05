@@ -1,0 +1,37 @@
+✅ COMO ESTA CADASTRADO A COLUNA
+ ▪️CPF
+   ▶️ REGRAS BANCO DE DADOS:
+    -> em forma de texto / 20 letras /  not null / unic
+    -> schemas: banco_pf:  pf_dados / pf_dados / pf_emails / pf_emprego_renda / pf_endereco pf_telefones
+   ▶️ REGRAS PYGTON
+   TABELAS: 
+    -> MODULO_PF_CADASTRO.PY
+       1.banco_pf.pf_dados / 
+         - função: visualizar
+         - função: cadastrar novo
+         - função: editrar
+    -> MODULO_PF_PESQUISAR.PY
+       1.banco_pf.pf_dados
+         - função: visualizar
+         - função: Consultar simples no banco de dados
+         - função: filtrar pesquisa ampla
+    -> MODULO_PF_IMPORTAR.PY
+       1.banco_pf.pf_dados
+         - função: inserir dados
+         - função: Consultar simples no banco de dados
+         - função: filtrar pesquisa ampla
+    -> MODULO_PF_CONFIG_EXPORTAÇÃO.PY
+       1.banco_pf.pf_dados
+         - função: visualizar
+         - função: Consultar simples no banco de dados
+         - função: filtrar pesquisa ampla
+    -> MODULO_PF_IMPORTAÇÃO.PY
+       1.banco_pf.pf_dados
+         - função: visualizar
+         - função: Consultar simples no banco de dados
+         - função: filtrar pesquisa ampla
+    -> MODULO_PF_EXPORTAÇÃO.PY
+       1.banco_pf.pf_dados
+         - função: visualizar
+         - função: Consultar simples no banco de dados
+         - função: filtrar pesquisa ampla                   
