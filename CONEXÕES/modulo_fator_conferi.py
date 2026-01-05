@@ -12,8 +12,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 
 # --- IMPORTAÇÃO DE MÓDULOS EXTERNOS (MODULO PF CADASTRO) ---
+# Tenta adicionar o diretório do módulo de cadastro ao path
 try:
-    # Ajuste o caminho relativo conforme a estrutura real das suas pastas
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../OPERACIONAL/BANCO DE PLANILHAS')))
     import modulo_pf_cadastro
 except ImportError:
@@ -355,7 +355,7 @@ def salvar_dados_fator_no_banco(dados_api):
             if isinstance(d, dict):
                 cep_num, _, erro_cep = modulo_pf_cadastro.validar_formatar_cep(d.get('cep'))
                 if (cep_num and not erro_cep) or d.get('rua'):
-                    uf_val = d.get('uf', '').upper()
+                    uf_val = str(d.get('uf', '')).upper()
                     if modulo_pf_cadastro.validar_uf(uf_val):
                          lista_ends.append({
                              'cep': cep_num,
