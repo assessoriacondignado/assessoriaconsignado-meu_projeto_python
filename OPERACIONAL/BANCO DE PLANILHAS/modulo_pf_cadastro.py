@@ -66,7 +66,7 @@ def init_db_structures():
                     email VARCHAR(150)
                 );
             """)
-            
+
             conn.commit()
             conn.close()
         except: pass
@@ -89,11 +89,7 @@ def limpar_apenas_numeros(valor):
     if not valor: return ""
     return re.sub(r'\D', '', str(valor))
 
-# --- NOVA REGRA DE TELEFONE ---
 def formatar_telefone_visual(tel_raw):
-    """
-    Formato visual: (DD)999999999
-    """
     if not tel_raw: return ""
     nums = re.sub(r'\D', '', str(tel_raw))
     if len(nums) >= 2:
@@ -101,23 +97,14 @@ def formatar_telefone_visual(tel_raw):
     return nums
 
 def validar_formatar_telefone(tel_raw):
-    """
-    Validação Rígida:
-    - Apenas números.
-    - Tamanho: 10 ou 11 dígitos.
-    - Se falhar: Retorna erro com exemplo.
-    """
     s = str(tel_raw).strip()
-    # Verifica se tem letras ou caracteres inválidos (permitido apenas dígitos, espaço, parênteses e traço para limpeza)
     if re.search(r'[a-zA-Z]', s):
-        return None, "Erro: Contém letras. Digite apenas números. Ex: (82)999025155"
+        return None, "Erro: Contém letras. Digite apenas números."
     
     numeros = re.sub(r'\D', '', s)
-    
     if len(numeros) < 10 or len(numeros) > 11:
-        return None, "⚠️ Erro: Formato inválido! Digite 10 ou 11 números.\nExemplos: 82999025155 ou (82)999025155"
-    
-    return numeros, None # Retorna o número limpo (DDD + Numero) para o banco
+        return None, "⚠️ Erro: Formato inválido! Digite 10 ou 11 números."
+    return numeros, None
 
 def validar_formatar_cpf(cpf_raw):
     numeros = re.sub(r'\D', '', str(cpf_raw).strip())
@@ -130,10 +117,33 @@ def validar_email(email):
     regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(regex, email))
 
+# --- NOVAS VALIDAÇÕES DE ENDEREÇO ---
+
+LISTA_UFS_BR = [
+    'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 
+    'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 
+    'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
+]
+
+def validar_uf(uf_input):
+    """Verifica se a UF é válida no Brasil."""
+    if not uf_input: return False
+    return str(uf_input).strip().upper() in LISTA_UFS_BR
+
 def validar_formatar_cep(cep_raw):
+    """
+    Valida e formata o CEP.
+    Retorna: (cep_numerico, cep_visual, erro)
+    """
     numeros = limpar_apenas_numeros(cep_raw)
-    if len(numeros) != 8: return None, "CEP deve ter 8 dígitos."
-    return f"{numeros[:5]}-{numeros[5:]}", None
+    
+    if len(numeros) != 8:
+        return None, None, "CEP deve ter exatamente 8 dígitos."
+    
+    cep_visual = f"{numeros[:5]}-{numeros[5:]}"
+    return numeros, cep_visual, None
+
+# ------------------------------------
 
 def formatar_cnpj(valor):
     if not valor: return None
@@ -191,6 +201,7 @@ def carregar_dados_completos(cpf):
 
             dados['telefones'] = pd.read_sql(f"SELECT numero FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
+            # Busca Endereços
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
             # Busca Vínculos
@@ -288,7 +299,6 @@ CONFIG_CADASTRO = {
         {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"},
     ],
     "Contatos": [
-        # Extras removidos (WhatsApp, Qualificação)
         {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True},
         {"label": "E-mail", "key": "email", "tabela": "emails", "tipo": "email", "multiplo": True},
     ],
@@ -320,11 +330,9 @@ def inserir_dado_staging(campo_config, valor, extras=None):
         if not erro: valor_final = val
     elif campo_config['tipo'] == 'email':
         if not validar_email(valor): erro = "E-mail inválido."
-    elif campo_config['tipo'] == 'cep':
-        val, erro = validar_formatar_cep(valor)
-        if not erro: valor_final = val
+    # CEP AGORA TRATADO DIRETAMENTE NA INTERFACE
     
-    if erro: st.error(erro); return # Exibe erro na tela
+    if erro: st.error(erro); return
     if not valor_final and campo_config.get('obrigatorio'): st.toast(f"❌ O campo {campo_config['label']} é obrigatório."); return
 
     if campo_config.get('multiplo'):
@@ -389,7 +397,6 @@ def interface_cadastro_pf():
         
         # --- BLOCO CONTATOS (REGRAS DE INCLUSÃO) ---
         with st.expander("Contatos"):
-            # 1. TELEFONES E EMAILS (Regra: Apenas na Edição)
             if not is_edit:
                 st.info("🚫 A inclusão de telefones e e-mails é permitida apenas no modo 'Editar', após salvar o cadastro inicial.")
             else:
@@ -405,7 +412,7 @@ def interface_cadastro_pf():
                 
                 st.divider()
 
-                # --- ÁREA DE E-MAILS (NOVA REGRA APLICADA) ---
+                # --- ÁREA DE E-MAILS (COM VALIDAÇÃO) ---
                 st.markdown("##### 📧 Cadastro de E-mail")
                 c_mail_in, c_mail_btn = st.columns([5, 2])
                 with c_mail_in: 
@@ -413,31 +420,82 @@ def interface_cadastro_pf():
                 with c_mail_btn:
                     st.write(""); st.write("")
                     if st.button("Inserir E-mail", type="primary", use_container_width=True):
-                        # Validação de Formato (Regra 3 e 5 do fluxo)
                         if validar_email(mail):
-                            # Validação Visual de Duplicidade (Regra: e-mail não repete para o mesmo CPF na lista atual)
                             emails_atuais = [e['email'] for e in st.session_state['dados_staging'].get('emails', [])]
                             if mail in emails_atuais:
-                                st.warning("⚠️ Este e-mail já está na lista deste cliente.") # Validação 6
+                                st.warning("⚠️ Este e-mail já está na lista deste cliente.")
                             else:
                                 cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
                                 inserir_dado_staging(cfg, mail)
-                                st.success("E-mail validado e adicionado à lista temporária!") # Validação 7
+                                st.success("E-mail validado e adicionado!")
                         else:
-                            st.error("⚠️ Formato de e-mail inválido. Verifique se digitou corretamente.") # Validação 6
+                            st.error("⚠️ Formato de e-mail inválido.")
 
+        # --- BLOCO ENDEREÇO (REGRAS DE INCLUSÃO ATUALIZADAS) ---
         with st.expander("Endereço"):
-            c_rua, c_cep = st.columns([1, 1])
-            with c_rua: rua = st.text_input("Logradouro (Endereço)", key="in_end_rua")
-            with c_cep: cep = st.text_input("CEP", key="in_end_cep")
-            c_bai, c_cid, c_uf = st.columns([2, 2, 1])
-            with c_bai: bairro = st.text_input("Bairro", key="in_end_bairro")
-            with c_cid: cidade = st.text_input("Cidade", key="in_end_cid")
-            with c_uf: uf = st.text_input("UF", key="in_end_uf")
-            if st.button("Inserir Endereço", type="primary", use_container_width=True):
-                obj_end = {'cep': cep, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf}
-                cfg = [c for c in CONFIG_CADASTRO["Endereços"] if c['key'] == 'cep'][0]
-                inserir_dado_staging(cfg, obj_end)
+            if not is_edit:
+                st.info("🚫 A inclusão de endereços é permitida apenas no modo 'Editar', após salvar o cadastro inicial.")
+            else:
+                st.markdown("##### 📍 Cadastro de Endereço")
+                
+                c_cep, c_rua = st.columns([1.5, 3.5])
+                with c_cep: 
+                    cep = st.text_input("CEP", key="in_end_cep", placeholder="00000-000")
+                with c_rua: 
+                    rua = st.text_input("Logradouro", key="in_end_rua", placeholder="Rua, Av, etc.")
+                
+                c_bai, c_cid, c_uf = st.columns([2, 2, 1])
+                with c_bai: bairro = st.text_input("Bairro", key="in_end_bairro")
+                with c_cid: cidade = st.text_input("Cidade", key="in_end_cid")
+                with c_uf: 
+                    uf_digitada = st.text_input("UF", key="in_end_uf", placeholder="UF", max_chars=2).upper()
+                
+                if st.button("Inserir Endereço", type="primary", use_container_width=True):
+                    # 1. VALIDAÇÃO DE CEP
+                    cep_num, cep_vis, erro_cep = validar_formatar_cep(cep)
+                    
+                    # 2. VALIDAÇÃO DE UF
+                    erro_uf = None
+                    if not validar_uf(uf_digitada):
+                        erro_uf = f"UF inválida: '{uf_digitada}'. Use siglas (ex: SP, MG, BA)."
+                    
+                    if erro_cep:
+                        st.error(erro_cep)
+                    elif erro_uf:
+                        st.error(erro_uf)
+                    elif not rua:
+                        st.warning("O campo Logradouro é obrigatório.")
+                    else:
+                        # 3. VALIDAÇÃO DE DUPLICIDADE VISUAL
+                        # Verifica se CEP + Rua já existem na lista atual
+                        ends_atuais = st.session_state['dados_staging'].get('enderecos', [])
+                        duplicado = False
+                        for e in ends_atuais:
+                            if e.get('cep') == cep_num and e.get('rua') == rua:
+                                duplicado = True
+                                break
+                        
+                        if duplicado:
+                            st.warning("⚠️ Este endereço já está na lista deste cliente.")
+                        else:
+                            # Adiciona objeto formatado
+                            obj_end = {
+                                'cep': cep_num, # Salva só números (para o banco)
+                                'rua': rua, 
+                                'bairro': bairro, 
+                                'cidade': cidade, 
+                                'uf': uf_digitada
+                            }
+                            
+                            # Inicializa lista se não existir
+                            if 'enderecos' not in st.session_state['dados_staging']:
+                                st.session_state['dados_staging']['enderecos'] = []
+                                
+                            st.session_state['dados_staging']['enderecos'].append(obj_end)
+                            
+                            cfg_dummy = [c for c in CONFIG_CADASTRO["Endereços"] if c['key'] == 'cep'][0]
+                            st.toast(f"✅ Endereço adicionado! (CEP: {cep_vis})")
+                            st.success("Endereço validado e incluído na lista temporária.")
 
         with st.expander("Emprego e Renda (Vínculo)"):
             c_conv, c_matr, c_btn_emp = st.columns([3, 3, 2])
@@ -521,12 +579,11 @@ def interface_cadastro_pf():
                     cols[idx%2].text_input(k.replace('_', ' ').upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
                     idx += 1
         
-        st.warning("📞 Telefones e E-mails")
+        st.warning("📞 Contatos")
         tels = st.session_state['dados_staging'].get('telefones', [])
         if tels:
             for i, t in enumerate(tels):
                 c1, c2 = st.columns([5, 1])
-                # Exibe formatado: (82)999025155
                 val_view = formatar_telefone_visual(t.get('numero'))
                 c1.write(f"📱 **{val_view}**")
                 if c2.button("🗑️", key=f"rm_tel_{i}"):
@@ -541,6 +598,18 @@ def interface_cadastro_pf():
                     st.session_state['dados_staging']['emails'].pop(i); st.rerun()
         
         if not tels and not mails: st.caption("Nenhum contato.")
+
+        st.warning("📍 Endereços")
+        ends = st.session_state['dados_staging'].get('enderecos', [])
+        if ends:
+            for i, e in enumerate(ends):
+                c1, c2 = st.columns([5, 1])
+                # Formata CEP para visualização
+                _, cep_fmt, _ = validar_formatar_cep(e.get('cep'))
+                c1.write(f"🏠 **{e.get('rua')}** - {e.get('bairro')} | {e.get('cidade')}/{e.get('uf')} (CEP: {cep_fmt})")
+                if c2.button("🗑️", key=f"rm_end_{i}"):
+                    st.session_state['dados_staging']['enderecos'].pop(i); st.rerun()
+        else: st.caption("Nenhum endereço.")
         
         st.warning("💼 Vínculos (Emprego)")
         emps = st.session_state['dados_staging'].get('empregos', [])
@@ -597,7 +666,7 @@ def interface_cadastro_pf():
 # --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     """
-    Realiza a inserção no banco pf_dados, pf_telefones e pf_emails com validações.
+    Realiza a inserção no banco pf_dados, pf_telefones, pf_emails e pf_enderecos com validações.
     """
     conn = get_conn()
     if conn:
@@ -635,9 +704,8 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                         if not cur.fetchone():
                             cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, num_novo))
 
-            # 3. SALVAMENTO DE E-MAILS (COM VALIDAÇÃO DE DUPLICIDADE)
+            # 3. SALVAMENTO DE E-MAILS
             if not df_email.empty:
-                # Garante nome correto da coluna de ligação
                 col_fk_email = 'cpf_ref'
                 try: cur.execute("SELECT 1 FROM banco_pf.pf_emails WHERE cpf_ref = '1' LIMIT 1")
                 except: col_fk_email = 'cpf'; conn.rollback(); cur = conn.cursor()
@@ -645,12 +713,34 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 for _, r in df_email.iterrows():
                     email_novo = r['email']
                     if email_novo:
-                        # REGRA: O e-mail não pode se repetir para o MESMO CPF
                         cur.execute(f"SELECT 1 FROM banco_pf.pf_emails WHERE {col_fk_email} = %s AND email = %s", (cpf_limpo, email_novo))
-                        existe = cur.fetchone()
-                        
-                        if not existe:
+                        if not cur.fetchone():
                             cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_fk_email}, email) VALUES (%s, %s)", (cpf_limpo, email_novo))
+            
+            # 4. SALVAMENTO DE ENDEREÇOS (COM VALIDAÇÃO DE DUPLICIDADE NO BANCO)
+            if not df_end.empty:
+                col_fk_end = 'cpf_ref'
+                try: cur.execute("SELECT 1 FROM banco_pf.pf_enderecos WHERE cpf_ref = '1' LIMIT 1")
+                except: col_fk_end = 'cpf'; conn.rollback(); cur = conn.cursor()
+
+                for _, r in df_end.iterrows():
+                    # Salva apenas se tiver rua ou CEP
+                    if r.get('rua') or r.get('cep'):
+                        cep_limpo = limpar_apenas_numeros(r.get('cep'))
+                        rua_val = r.get('rua')
+                        
+                        # VERIFICA DUPLICIDADE: Mesmo CPF, Mesmo CEP e Mesma Rua
+                        cur.execute(f"""
+                            SELECT 1 FROM banco_pf.pf_enderecos 
+                            WHERE {col_fk_end} = %s AND cep = %s AND rua = %s
+                        """, (cpf_limpo, cep_limpo, rua_val))
+                        
+                        if not cur.fetchone():
+                            cur.execute(f"""
+                                INSERT INTO banco_pf.pf_enderecos 
+                                ({col_fk_end}, cep, rua, bairro, cidade, uf) 
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (cpf_limpo, cep_limpo, rua_val, r.get('bairro'), r.get('cidade'), r.get('uf')))
 
             conn.commit(); conn.close()
             return True, "✅ Dados salvos com sucesso!"
@@ -689,7 +779,7 @@ def dialog_visualizar_cliente(cpf_cliente):
     st.markdown(f"**CPF:** {cpf_vis}")
     st.write("") 
     
-    t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos"])
+    t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos & Endereços"])
     with t1:
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
@@ -708,8 +798,6 @@ def dialog_visualizar_cliente(cpf_cliente):
         st.divider(); st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []): st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
         if not dados.get('empregos'): st.warning("Nenhum vínculo localizado.")
-        st.divider(); st.markdown("##### 🏠 Endereços")
-        for end in dados.get('enderecos', []): st.success(f"📍 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))}")
             
     with t2:
         st.markdown("##### 💰 Detalhes Financeiros & Contratos")
@@ -723,9 +811,17 @@ def dialog_visualizar_cliente(cpf_cliente):
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
             else: st.caption(f"Sem contratos detalhados para {v['convenio']}.")
     with t3:
-        # Visualização de telefones formatada
         for t in dados.get('telefones', []): 
             st.write(f"📱 {formatar_telefone_visual(t.get('numero'))}")
-        for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
+        for m in dados.get('emails', []): 
+            st.write(f"📧 {safe_view(m.get('email'))}")
+        
+        st.divider()
+        st.markdown("##### 📍 Endereços")
+        for end in dados.get('enderecos', []): 
+            # Validação e formatação de visualização de CEP
+            _, cep_view, _ = validar_formatar_cep(end.get('cep'))
+            cep_view = cep_view if cep_view else end.get('cep')
+            st.success(f"🏠 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))} (CEP: {cep_view})")
     
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
