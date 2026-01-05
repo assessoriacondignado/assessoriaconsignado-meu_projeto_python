@@ -340,11 +340,8 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
             if conn: conn.close()
     return cliente
 
-# --- NOVA FUNÇÃO DE VERIFICAÇÃO DE SALDO ---
+# --- FUNÇÃO DE VERIFICAÇÃO DE SALDO ---
 def verificar_saldo_suficiente(id_cliente, ambiente, valor_consulta):
-    """
-    Verifica se o cliente possui saldo suficiente na carteira correspondente à origem do ambiente.
-    """
     if not id_cliente: 
         return True, "Cliente não identificado (Teste ou Admin)." 
     
@@ -354,7 +351,6 @@ def verificar_saldo_suficiente(id_cliente, ambiente, valor_consulta):
     try:
         cur = conn.cursor()
         
-        # 1. Identificar a Origem baseada no Ambiente (Ex: API, WEB)
         cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (ambiente,))
         res_amb = cur.fetchone()
         if not res_amb:
@@ -362,7 +358,6 @@ def verificar_saldo_suficiente(id_cliente, ambiente, valor_consulta):
             return False, f"Ambiente '{ambiente}' não configurado nas origens."
         origem_ambiente = res_amb[0]
         
-        # 2. Buscar CPF do cliente (Pois a carteira é vinculada ao CPF)
         cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente,))
         res_cli = cur.fetchone()
         if not res_cli:
@@ -371,7 +366,6 @@ def verificar_saldo_suficiente(id_cliente, ambiente, valor_consulta):
         cpf_cliente = res_cli[0]
         cpf_limpo = re.sub(r'\D', '', str(cpf_cliente))
 
-        # 3. Encontrar Carteira e Tabela de Transações
         query_cart = """
             SELECT c.nome_tabela_transacoes, c.nome_carteira
             FROM cliente.cliente_carteira_lista l
@@ -389,7 +383,6 @@ def verificar_saldo_suficiente(id_cliente, ambiente, valor_consulta):
             
         tabela_transacoes = res_tab[0]
         
-        # 4. Verificar Saldo na Tabela da Carteira
         query_saldo = f"SELECT saldo_novo FROM {tabela_transacoes} WHERE regexp_replace(cpf_cliente, '[^0-9]', '', 'g') = %s ORDER BY id DESC LIMIT 1"
         cur.execute(query_saldo, (cpf_limpo,))
         res_saldo = cur.fetchone()
@@ -414,21 +407,18 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
     try:
         cur = conn.cursor()
         
-        # 1. Busca Origem
         cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente_origem,))
         res_amb = cur.fetchone()
         if not res_amb:
             conn.close(); return False, "Ambiente não cadastrado."
         origem = res_amb[0]
 
-        # 2. Busca CPF do Cliente (Correção: usar CPF para buscar carteira, não ID direto na lista)
         cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente_pagador,))
         res_cpf = cur.fetchone()
         if not res_cpf:
             conn.close(); return False, "Cliente admin não encontrado."
         cpf_limpo = re.sub(r'\D', '', str(res_cpf[0]))
 
-        # 3. Busca Carteira
         query = """SELECT l.cpf_cliente, l.nome_cliente, l.custo_carteira, l.origem_custo, c.nome_tabela_transacoes 
                    FROM cliente.cliente_carteira_lista l JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
                    WHERE regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g') = %s AND l.origem_custo = %s LIMIT 1"""
@@ -439,7 +429,6 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         cpf_cli_banco, nome_cli, custo, orig_custo, tabela = dados
         val = float(custo) if custo else 0.0
         
-        # 4. Aplica Débito
         cur.execute(f"SELECT saldo_novo FROM {tabela} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cli_banco,))
         res_saldo = cur.fetchone()
         saldo_ant = float(res_saldo[0]) if res_saldo else 0.0
@@ -478,7 +467,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
     try:
         cur = conn.cursor()
         
-        # --- VERIFICAÇÃO DE CACHE ---
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -487,16 +475,13 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # --- BLOQUEIO POR SALDO INSUFICIENTE (Novo) ---
         custo = buscar_valor_consulta_atual()
         if id_cliente_final:
-            # Chama a função de verificação antes de gastar na API
             saldo_ok, msg_saldo = verificar_saldo_suficiente(id_cliente_final, ambiente, custo)
             if not saldo_ok:
                 conn.close()
                 return {"sucesso": False, "msg": f"BLOQUEIO: {msg_saldo}"}
 
-        # --- CHAMADA API ---
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
         
@@ -592,13 +577,8 @@ def app_fator_conferi():
         conn = get_conn()
         if conn:
             try:
-                # Ajuste para listar clientes que possuem carteira configurada
-                df_clis = pd.read_sql("""
-                    SELECT DISTINCT c.id, c.nome 
-                    FROM admin.clientes c
-                    JOIN cliente.cliente_carteira_lista l ON regexp_replace(c.cpf, '[^0-9]', '', 'g') = regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g')
-                    ORDER BY c.nome
-                """, conn)
+                # --- CORREÇÃO AQUI: BUSCA DE TODOS OS CLIENTES DE ADMIN.CLIENTES ---
+                df_clis = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
                 opcoes_cli = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
                 id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste Manual)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Usar Vínculo Automático")
             except: pass
