@@ -33,10 +33,23 @@ def init_db_structures():
             cur = conn.cursor()
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
             
-            # Tabela de referências auxiliares
+            # Garante que as novas colunas existam (Segurança extra caso o SQL manual não tenha sido rodado)
+            # Observação: O ideal é rodar o ALTER TABLE via SQL, mas isso evita erros de inserção.
+            cols_extras = [
+                "uf_rg VARCHAR(2)", "pis VARCHAR(20)", "nome_procurador VARCHAR(150)", 
+                "cpf_procurador VARCHAR(14)", "dados_exp_rg VARCHAR(50)", 
+                "serie_ctps VARCHAR(20)", "cnh VARCHAR(20)", "nome_pai VARCHAR(150)"
+            ]
+            for col_def in cols_extras:
+                try:
+                    col_name = col_def.split()[0]
+                    cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
+                except: pass
+            
+            conn.commit()
+            
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             
-            # Tabela de mapeamento de planilhas/convênios
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.convenio_por_planilha (
                     id SERIAL PRIMARY KEY,
@@ -133,13 +146,11 @@ def carregar_dados_completos(cpf):
             params_busca = (cpf_norm,)
             
             # 1. Dados Pessoais da tabela principal
+            # O SELECT * pegará automaticamente as novas colunas (pis, cnh, etc) se existirem no banco
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=params_busca)
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # [MODIFICADO] Carregamento de satélites mantido apenas para visualização de dados antigos,
-            # caso existam, mas o salvamento agora foca apenas na tabela principal.
-            # Se desejar remover a leitura também, basta comentar os blocos abaixo.
-            
+            # Visualização de dados legados de tabelas satélites (apenas leitura)
             col_fk = 'cpf_ref' 
             try:
                 pd.read_sql("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1", conn)
@@ -226,14 +237,27 @@ def get_colunas_tabela(nome_tabela_completo):
         except: conn.close()
     return colunas
 
-# --- CONFIGURAÇÃO VISUAL ---
+# --- CONFIGURAÇÃO VISUAL (ATUALIZADA) ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
+        # Campos Básicos
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
         {"label": "CPF", "key": "cpf", "tabela": "geral", "tipo": "cpf", "obrigatorio": True},
         {"label": "RG", "key": "rg", "tabela": "geral", "tipo": "texto"},
         {"label": "Data Nascimento", "key": "data_nascimento", "tabela": "geral", "tipo": "data"},
         {"label": "Nome da Mãe", "key": "nome_mae", "tabela": "geral", "tipo": "texto"},
+        
+        # Campos Adicionais Solicitados
+        {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
+        {"label": "UF do RG", "key": "uf_rg", "tabela": "geral", "tipo": "texto"},
+        {"label": "Dados Exp. RG", "key": "dados_exp_rg", "tabela": "geral", "tipo": "texto"},
+        {"label": "PIS", "key": "pis", "tabela": "geral", "tipo": "texto"},
+        {"label": "CNH", "key": "cnh", "tabela": "geral", "tipo": "texto"},
+        {"label": "Série CTPS", "key": "serie_ctps", "tabela": "geral", "tipo": "texto"},
+        
+        # Procurador
+        {"label": "Nome Procurador", "key": "nome_procurador", "tabela": "geral", "tipo": "texto"},
+        {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"},
     ],
     "Contatos": [
         {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True, "extras": ["tag_whats", "tag_qualificacao"]},
@@ -289,6 +313,9 @@ def inserir_dado_staging(campo_config, valor, extras=None):
 
 # --- INTERFACE PRINCIPAL ---
 def interface_cadastro_pf():
+    # Inicializa estruturas do banco se necessário
+    init_db_structures()
+
     is_edit = st.session_state['pf_view'] == 'editar'
     
     cpf_formatado_titulo = ""
@@ -446,8 +473,8 @@ def interface_cadastro_pf():
             for k, v in geral.items():
                 if v:
                     val_str = v.strftime('%d/%m/%Y') if isinstance(v, (date, datetime)) else str(v)
-                    if k == 'cpf': val_str = formatar_cpf_visual(val_str)
-                    cols[idx%2].text_input(k.upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
+                    if k == 'cpf' or k == 'cpf_procurador': val_str = formatar_cpf_visual(val_str)
+                    cols[idx%2].text_input(k.replace('_', ' ').upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
                     idx += 1
         
         st.warning("💼 Vínculos (Emprego)")
@@ -508,7 +535,7 @@ def interface_cadastro_pf():
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     """
     Realiza a inserção final SOMENTE no banco PostgreSQL tabela banco_pf.pf_dados.
-    Tabelas satélites foram desabilitadas conforme solicitação.
+    As tabelas satélites não são mais alimentadas.
     """
     conn = get_conn()
     if conn:
@@ -517,9 +544,18 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
+            
+            # Normaliza dados (Maiúsculas)
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
+            
+            # Normaliza CPF Procurador se existir
+            if 'cpf_procurador' in dados_gerais and dados_gerais['cpf_procurador']:
+                dados_gerais['cpf_procurador'] = limpar_normalizar_cpf(dados_gerais['cpf_procurador'])
 
             # 1. SALVAMENTO NA TABELA PRINCIPAL (pf_dados)
+            # Remove chaves que não sejam colunas reais da tabela (segurança)
+            # Aqui assumimos que todas as chaves em dados_gerais correspondem a colunas.
+            
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
                 placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
@@ -528,10 +564,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 set_clause = ", ".join([f"{k}=%s" for k in dados_gerais.keys()])
                 vals = list(dados_gerais.values()) + [cpf_original]
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
-            
-            # --- BLOCO DE SATÉLITES REMOVIDO/COMENTADO ---
-            # O sistema não deve mais inserir em pf_telefones, pf_emails, etc.
-            # Apenas a tabela pf_dados é afetada.
             
             conn.commit(); conn.close(); return True, "✅ Salvo com sucesso!"
         except Exception as e: return False, str(e)
@@ -574,11 +606,17 @@ def dialog_visualizar_cliente(cpf_cliente):
         txt_nasc = nasc.strftime('%d/%m/%Y') if nasc and isinstance(nasc, (date, datetime)) else safe_view(nasc)
         
         c1.write(f"**Nascimento:** {txt_nasc}"); c1.write(f"**RG:** {safe_view(g.get('rg'))}"); c2.write(f"**Mãe:** {safe_view(g.get('nome_mae'))}")
+        
+        # Exibe os novos campos se existirem
         demais_campos = {k: v for k, v in g.items() if k not in ['data_nascimento', 'rg', 'nome_mae', 'id', 'cpf', 'nome', 'importacao_id', 'id_campanha', 'data_criacao']}
         if demais_campos:
             st.markdown("---"); st.markdown("##### 📌 Outras Informações")
             col_iter = st.columns(3); idx = 0
-            for k, v in demais_campos.items(): col_iter[idx % 3].write(f"**{k.replace('_', ' ').title()}:** {safe_view(v)}"); idx += 1
+            for k, v in demais_campos.items(): 
+                val_display = safe_view(v)
+                if 'cpf' in k: val_display = formatar_cpf_visual(val_display)
+                col_iter[idx % 3].write(f"**{k.replace('_', ' ').title()}:** {val_display}"); idx += 1
+        
         st.divider(); st.markdown("##### 🔗 Vínculos")
         for v in dados.get('empregos', []): st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
         if not dados.get('empregos'): st.warning("Nenhum vínculo localizado.")
