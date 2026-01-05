@@ -7,8 +7,20 @@ import os
 import time
 import re
 import base64
+import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
+
+# --- IMPORTAÇÃO DE MÓDULOS EXTERNOS (MODULO PF CADASTRO) ---
+# Tenta adicionar o diretório do módulo de cadastro ao path
+try:
+    # Ajuste o caminho relativo conforme a estrutura real das suas pastas
+    # Baseado em: CONEXÕES/.. -> OPERACIONAL/BANCO DE PLANILHAS
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../OPERACIONAL/BANCO DE PLANILHAS')))
+    import modulo_pf_cadastro
+except ImportError:
+    st.error("Erro crítico: modulo_pf_cadastro.py não encontrado. Verifique a estrutura de pastas.")
+
 import conexao
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
@@ -30,7 +42,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES
+# 1. FUNÇÕES AUXILIARES (PARSING E DADOS)
 # =============================================================================
 
 def buscar_credenciais():
@@ -58,20 +70,6 @@ def buscar_valor_consulta_atual():
         except: pass
         finally: conn.close()
     return valor
-
-def formatar_cpf_cnpj_visual(valor):
-    dado = re.sub(r'\D', '', str(valor))
-    if len(dado) == 11:
-        return f"{dado[:3]}.{dado[3:6]}.{dado[6:9]}-{dado[9:]}"
-    elif len(dado) == 14:
-        return f"{dado[:2]}.{dado[2:5]}.{dado[5:8]}/{dado[8:12]}-{dado[12:]}"
-    return valor
-
-def converter_data_banco(data_str):
-    if not data_str: return None
-    try:
-        return datetime.strptime(data_str, '%d/%m/%Y').strftime('%Y-%m-%d')
-    except: return None
 
 def get_tag_text(element, tag_name):
     if element is None: return None
@@ -165,23 +163,9 @@ def consultar_saldo_api():
         return True, saldo
     except Exception as e: return False, 0.0
 
-def obter_origem_padronizada(nome_origem):
-    conn = get_conn()
-    origem_final = nome_origem 
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator WHERE origem = %s", (nome_origem,))
-            res = cur.fetchone()
-            if res: origem_final = res[0]
-            conn.close()
-        except:
-            if conn: conn.close()
-    return origem_final
-
 def buscar_origem_por_ambiente(nome_ambiente):
     conn = get_conn()
-    origem_padrao = "WEB USUÁRIO" # Fallback
+    origem_padrao = "WEB USUÁRIO" 
     if conn:
         try:
             cur = conn.cursor()
@@ -280,7 +264,208 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         return False, f"Erro crítico no débito: {str(e)}"
 
 # =============================================================================
-# 3. FUNÇÕES GESTÃO DE PARÂMETROS
+# 3. SALVAR BASE PF (INTEGRAÇÃO ESTRITA COM MODULO_PF_CADASTRO)
+# =============================================================================
+
+def salvar_dados_fator_no_banco(dados_api):
+    """
+    Função atualizada para utilizar as regras do modulo_pf_cadastro sem verificação manual de existência.
+    Fluxo: Tenta inserir (Novo) -> Se falhar, ignora -> Atualiza (Editar).
+    """
+    # 1. Tratamento Inicial do CPF e Nome
+    raw_cpf = str(dados_api.get('cpf', '')).strip()
+    cpf_limpo = modulo_pf_cadastro.limpar_normalizar_cpf(raw_cpf)
+    
+    if not cpf_limpo or len(cpf_limpo) != 11:
+        return False, f"CPF inválido para gravação: '{raw_cpf}'"
+
+    nome_cliente = dados_api.get('nome') or "Cliente Fator"
+
+    try:
+        # --- ETAPA 1: TENTATIVA DE INSERÇÃO (MODO NOVO) ---
+        # Envia apenas Nome e CPF conforme regra de "Novo Cadastro"
+        dados_novo = {'nome': nome_cliente, 'cpf': cpf_limpo}
+        
+        # Chama salvar_pf no modo NOVO. 
+        # Se o cliente já existir, o banco retornará erro de duplicidade, que é capturado internamente.
+        # Nós ignoramos o retorno False aqui, pois o objetivo é apenas garantir que o registro exista.
+        modulo_pf_cadastro.salvar_pf(
+            dados_gerais=dados_novo,
+            df_tel=pd.DataFrame(),
+            df_email=pd.DataFrame(),
+            df_end=pd.DataFrame(),
+            df_emp=pd.DataFrame(),
+            df_contr=pd.DataFrame(),
+            modo="novo"
+        )
+        
+        # --- ETAPA 2: ATUALIZAÇÃO E ENRIQUECIMENTO (MODO EDITAR) ---
+        # Agora enviamos todos os dados para atualizar o registro (seja ele novo ou antigo)
+        
+        # A. Preparar Dados Gerais
+        dados_editar = {
+            'nome': nome_cliente,
+            'cpf': cpf_limpo,
+            'rg': dados_api.get('rg'),
+            'nome_mae': dados_api.get('mae'),
+            # Formata data para YYYY-MM-DD
+            'data_nascimento': modulo_pf_cadastro.converter_data_br_iso(dados_api.get('nascimento'))
+        }
+        
+        # B. Preparar Telefones (Validação via Módulo Cadastro)
+        lista_tels = []
+        for t in dados_api.get('telefones', []):
+            num_val, erro = modulo_pf_cadastro.validar_formatar_telefone(t.get('numero'))
+            if num_val and not erro:
+                lista_tels.append({'numero': num_val})
+        df_tels = pd.DataFrame(lista_tels)
+
+        # C. Preparar Emails (Validação via Módulo Cadastro)
+        lista_emails = []
+        for e in dados_api.get('emails', []):
+            if modulo_pf_cadastro.validar_email(e):
+                lista_emails.append({'email': e.lower()})
+        df_emails = pd.DataFrame(lista_emails)
+
+        # D. Preparar Endereços (Validação via Módulo Cadastro)
+        lista_ends = []
+        for d in dados_api.get('enderecos', []):
+            cep_num, _, erro_cep = modulo_pf_cadastro.validar_formatar_cep(d.get('cep'))
+            # Regra: Só adiciona se tiver CEP válido ou Rua preenchida
+            if (cep_num and not erro_cep) or d.get('rua'):
+                uf_val = d.get('uf', '').upper()
+                if modulo_pf_cadastro.validar_uf(uf_val):
+                     lista_ends.append({
+                         'cep': cep_num,
+                         'rua': d.get('rua'),
+                         'bairro': d.get('bairro'),
+                         'cidade': d.get('cidade'),
+                         'uf': uf_val
+                     })
+        df_ends = pd.DataFrame(lista_ends)
+
+        # Chama salvar_pf no modo EDITAR
+        ok_edit, msg_edit = modulo_pf_cadastro.salvar_pf(
+            dados_gerais=dados_editar,
+            df_tel=df_tels,
+            df_email=df_emails,
+            df_end=df_ends,
+            df_emp=pd.DataFrame(),
+            df_contr=pd.DataFrame(),
+            modo="editar",
+            cpf_original=cpf_limpo
+        )
+        
+        if ok_edit:
+            return True, "Consulta realizada. | ✅ Cadastro atualizado com dados da Fator."
+        else:
+            return False, f"Erro na atualização dos dados: {msg_edit}"
+
+    except Exception as e:
+        return False, f"Erro crítico na integração PF: {str(e)}"
+
+# =============================================================================
+# 4. FUNÇÕES DE CONSULTA
+# =============================================================================
+
+def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
+    cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
+    conn = get_conn()
+    if not conn: return {"sucesso": False, "msg": "Erro DB."}
+    
+    # Identificação do Usuário e Cliente
+    id_usuario_logado = st.session_state.get('usuario_id', 0)
+    nome_usuario_logado = st.session_state.get('usuario_nome', 'Sistema')
+    
+    id_cliente_final = None
+    nome_cliente_final = None
+    
+    if id_cliente_pagador_manual:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT nome FROM admin.clientes WHERE id = %s", (id_cliente_pagador_manual,))
+            res_m = cur.fetchone()
+            if res_m:
+                id_cliente_final = id_cliente_pagador_manual
+                nome_cliente_final = res_m[0]
+        except: pass
+    else:
+        dados_vinculo = buscar_cliente_vinculado_ao_usuario(id_usuario_logado)
+        id_cliente_final = dados_vinculo['id']
+        nome_cliente_final = dados_vinculo['nome']
+
+    origem_real = buscar_origem_por_ambiente(ambiente)
+
+    try:
+        cur = conn.cursor()
+        
+        # CACHE
+        if not forcar_nova:
+            cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
+            res = cur.fetchone()
+            if res and res[0] and os.path.exists(res[0]):
+                try:
+                    with open(res[0], 'r', encoding='utf-8') as f: 
+                        dados = json.load(f)
+                        if not dados.get('cpf'): dados['cpf'] = cpf_padrao
+                        
+                        if dados.get('nome') or dados.get('cpf'):
+                            cur.execute("""
+                                INSERT INTO conexoes.fatorconferi_registo_consulta 
+                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
+                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', 'BAIXAR', %s, 'CACHE', NOW(), %s, %s, %s)
+                            """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, res[0], origem_real, id_cliente_final, nome_cliente_final, ambiente))
+                            conn.commit(); conn.close()
+                            return {"sucesso": True, "dados": dados, "msg": "Cache recuperado (Sem Débito)."}
+                except: pass
+        
+        # NOVA CONSULTA API
+        cred = buscar_credenciais()
+        if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
+        
+        resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
+        resp.encoding = 'ISO-8859-1'
+        
+        dados = parse_xml_to_dict(resp.text)
+        
+        if not dados.get('nome'):
+            conn.close()
+            return {"sucesso": False, "msg": "Retorno vazio ou erro na API.", "raw": resp.text, "dados": dados}
+            
+        if not dados.get('cpf'):
+            dados['cpf'] = cpf_padrao
+
+        nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
+        path = os.path.join(PASTA_JSON, nome_arq)
+        with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
+        
+        custo_ref = buscar_valor_consulta_atual()
+        cur.execute("""
+            INSERT INTO conexoes.fatorconferi_registo_consulta 
+            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
+            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', 'BAIXAR', %s, 'PAGO', NOW(), %s, %s, %s)
+        """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, origem_real, id_cliente_final, nome_cliente_final, ambiente))
+        conn.commit()
+        
+        msg_financeira = ""
+        if id_cliente_final:
+            ok_fin, txt_fin = processar_debito_automatico(id_cliente_final, ambiente)
+            if ok_fin: 
+                msg_financeira = f" | ✅ {txt_fin}"
+            else: 
+                msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
+        else:
+            msg_financeira = " | ⚠️ Sem débito (Cliente não identificado)."
+
+        conn.close()
+        return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_financeira}
+        
+    except Exception as e:
+        if conn: conn.close()
+        return {"sucesso": False, "msg": str(e)}
+
+# =============================================================================
+# 5. GESTÃO DE PARÂMETROS E INTERFACE
 # =============================================================================
 
 def carregar_dados_genericos(nome_tabela):
@@ -352,232 +537,12 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
         if conn: conn.close()
         return False
 
-# =============================================================================
-# 4. SALVAR BASE PF E CONSULTA (COM CORREÇÕES E AUTODETECÇÃO)
-# =============================================================================
-
-def verificar_coluna_cpf(cur, tabela):
-    """
-    Verifica se a tabela usa 'cpf' ou 'cpf_ref' como chave estrangeira.
-    Retorna o nome da coluna correto.
-    """
-    try:
-        cur.execute(f"""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_schema = 'banco_pf' AND table_name = '{tabela}' AND column_name IN ('cpf', 'cpf_ref')
-        """)
-        res = cur.fetchone()
-        if res:
-            return res[0]
-    except:
-        pass
-    return 'cpf_ref' # Padrão seguro se falhar a verificação
-
-def salvar_dados_fator_no_banco(dados_api):
-    conn = get_conn()
-    if not conn: return False, "Erro de conexão."
-    try:
-        cur = conn.cursor()
-        
-        # --- CORREÇÃO DE CPF ROBUSTA ---
-        raw_cpf = str(dados_api.get('cpf', '')).strip()
-        cpf_limpo = re.sub(r'\D', '', raw_cpf)
-        
-        # Se perdeu zeros à esquerda, recoloca
-        if cpf_limpo and len(cpf_limpo) < 11:
-            cpf_limpo = cpf_limpo.zfill(11)
-            
-        if not cpf_limpo or len(cpf_limpo) != 11: 
-            return False, f"CPF inválido para gravação. Recebido: '{raw_cpf}' | Processado: '{cpf_limpo}'"
-
-        campos = {
-            'nome': dados_api.get('nome'),
-            'data_nascimento': converter_data_banco(dados_api.get('nascimento')),
-            'rg': dados_api.get('rg'),
-            'nome_mae': dados_api.get('mae')
-        }
-        
-        # 1. Inserção na Tabela Principal (pf_dados - Sempre usa 'cpf')
-        query_dados = """
-            INSERT INTO banco_pf.pf_dados (cpf, nome, data_nascimento, rg, nome_mae, data_criacao)
-            VALUES (%s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (cpf) DO UPDATE SET
-                nome = COALESCE(EXCLUDED.nome, banco_pf.pf_dados.nome),
-                data_nascimento = COALESCE(EXCLUDED.data_nascimento, banco_pf.pf_dados.data_nascimento),
-                rg = COALESCE(EXCLUDED.rg, banco_pf.pf_dados.rg),
-                nome_mae = COALESCE(EXCLUDED.nome_mae, banco_pf.pf_dados.nome_mae);
-        """
-        cur.execute(query_dados, (cpf_limpo, campos['nome'], campos['data_nascimento'], campos['rg'], campos['nome_mae']))
-        
-        # === INSERÇÃO NAS TABELAS SATÉLITES (COM VERIFICAÇÃO DINÂMICA) ===
-        
-        # 2. Telefones
-        telefones = dados_api.get('telefones', [])
-        if telefones:
-            col_fk = verificar_coluna_cpf(cur, 'pf_telefones') # Descobre se é cpf ou cpf_ref
-            
-            for t in telefones:
-                n = re.sub(r'\D', '', str(t['numero']))
-                if n: 
-                    try:
-                        cur.execute(f"""
-                            INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, tag_qualificacao, data_atualizacao) 
-                            VALUES (%s, %s, %s, CURRENT_DATE)
-                        """, (cpf_limpo, n, t.get('prioridade', '')))
-                    except psycopg2.errors.UniqueViolation:
-                        conn.rollback(); cur = conn.cursor() # Ignora duplicado
-                    except Exception as e:
-                        print(f"Erro Insert Telefone: {e}"); conn.rollback(); cur = conn.cursor()
-
-        # 3. Emails
-        emails = dados_api.get('emails', [])
-        if emails:
-            col_fk = verificar_coluna_cpf(cur, 'pf_emails')
-            for e in emails:
-                if e: 
-                    try:
-                        cur.execute(f"""
-                            INSERT INTO banco_pf.pf_emails ({col_fk}, email) 
-                            VALUES (%s, %s)
-                        """, (cpf_limpo, str(e).lower()))
-                    except psycopg2.errors.UniqueViolation:
-                        conn.rollback(); cur = conn.cursor()
-                    except Exception:
-                        conn.rollback(); cur = conn.cursor()
-
-        # 4. Endereços
-        enderecos = dados_api.get('enderecos', [])
-        if enderecos:
-            col_fk = verificar_coluna_cpf(cur, 'pf_enderecos')
-            for d in enderecos:
-                cp = re.sub(r'\D', '', str(d['cep']))
-                if cp or d['rua']: 
-                    try:
-                        cur.execute(f"""
-                            INSERT INTO banco_pf.pf_enderecos ({col_fk}, rua, bairro, cidade, uf, cep) 
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (cpf_limpo, d['rua'], d['bairro'], d['cidade'], d['uf'], cp))
-                    except psycopg2.errors.UniqueViolation:
-                        conn.rollback(); cur = conn.cursor()
-                    except Exception:
-                        conn.rollback(); cur = conn.cursor()
-
-        conn.commit(); conn.close()
-        return True, f"Dados salvos na Base PF. (Tel: {len(telefones)} | End: {len(enderecos)})"
-    except Exception as e:
-        if conn: conn.close()
-        return False, f"Erro DB (Salvar PF): {e}"
-
-def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
-    cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
-    conn = get_conn()
-    if not conn: return {"sucesso": False, "msg": "Erro DB."}
-    
-    # 1. Identificação do Usuário e Cliente
-    id_usuario_logado = st.session_state.get('usuario_id', 0)
-    nome_usuario_logado = st.session_state.get('usuario_nome', 'Sistema')
-    
-    id_cliente_final = None
-    nome_cliente_final = None
-    
-    if id_cliente_pagador_manual:
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT nome FROM admin.clientes WHERE id = %s", (id_cliente_pagador_manual,))
-            res_m = cur.fetchone()
-            if res_m:
-                id_cliente_final = id_cliente_pagador_manual
-                nome_cliente_final = res_m[0]
-        except: pass
-    else:
-        dados_vinculo = buscar_cliente_vinculado_ao_usuario(id_usuario_logado)
-        id_cliente_final = dados_vinculo['id']
-        nome_cliente_final = dados_vinculo['nome']
-
-    # 2. Identificação da Origem
-    origem_real = buscar_origem_por_ambiente(ambiente)
-
-    try:
-        cur = conn.cursor()
-        
-        # --- CENÁRIO 1: CACHE (SEM DÉBITO) ---
-        if not forcar_nova:
-            cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado = %s AND status_api = 'SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
-            res = cur.fetchone()
-            if res and res[0] and os.path.exists(res[0]):
-                try:
-                    with open(res[0], 'r', encoding='utf-8') as f: 
-                        dados = json.load(f)
-                        # Garante que o CPF está presente para o salvamento
-                        if not dados.get('cpf'): dados['cpf'] = cpf_padrao
-                        
-                        if dados.get('nome') or dados.get('cpf'):
-                            cur.execute("""
-                                INSERT INTO conexoes.fatorconferi_registo_consulta 
-                                (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
-                                VALUES (%s, %s, %s, %s, 0, %s, 'SUCESSO', 'BAIXAR', %s, 'CACHE', NOW(), %s, %s, %s)
-                            """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, res[0], origem_real, id_cliente_final, nome_cliente_final, ambiente))
-                            conn.commit(); conn.close()
-                            return {"sucesso": True, "dados": dados, "msg": "Cache recuperado (Sem Débito)."}
-                except: pass
-        
-        # --- CENÁRIO 2: CONSULTA API NOVA (COM DÉBITO) ---
-        cred = buscar_credenciais()
-        if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
-        
-        resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
-        resp.encoding = 'ISO-8859-1'
-        
-        dados = parse_xml_to_dict(resp.text)
-        
-        # CORREÇÃO CRÍTICA: Se a API não devolve o CPF mas devolve o Nome, injetamos o CPF pesquisado
-        if not dados.get('nome'):
-            conn.close()
-            return {"sucesso": False, "msg": "Retorno vazio ou erro na API.", "raw": resp.text, "dados": dados}
-            
-        if not dados.get('cpf'):
-            dados['cpf'] = cpf_padrao
-
-        nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
-        path = os.path.join(PASTA_JSON, nome_arq)
-        with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
-        
-        custo_ref = buscar_valor_consulta_atual()
-        cur.execute("""
-            INSERT INTO conexoes.fatorconferi_registo_consulta 
-            (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, link_arquivo_consulta, origem_consulta, tipo_cobranca, data_hora, id_cliente, nome_cliente, ambiente) 
-            VALUES (%s, %s, %s, %s, %s, %s, 'SUCESSO', 'BAIXAR', %s, 'PAGO', NOW(), %s, %s, %s)
-        """, ("CPF SIMPLES", cpf_padrao, id_usuario_logado, nome_usuario_logado, custo_ref, path, origem_real, id_cliente_final, nome_cliente_final, ambiente))
-        conn.commit()
-        
-        msg_financeira = ""
-        if id_cliente_final:
-            ok_fin, txt_fin = processar_debito_automatico(id_cliente_final, ambiente)
-            if ok_fin: 
-                msg_financeira = f" | ✅ {txt_fin}"
-            else: 
-                msg_financeira = f" | ⚠️ Falha Financeira: {txt_fin}"
-        else:
-            msg_financeira = " | ⚠️ Sem débito (Cliente não identificado)."
-
-        conn.close()
-        return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_financeira}
-        
-    except Exception as e:
-        if conn: conn.close()
-        return {"sucesso": False, "msg": str(e)}
-
 def listar_clientes_carteira():
     conn = get_conn()
     if conn:
         try: df = pd.read_sql("SELECT * FROM conexoes.fator_cliente_carteira ORDER BY id", conn); conn.close(); return df
         except: conn.close()
     return pd.DataFrame()
-
-# =============================================================================
-# 5. INTERFACE PRINCIPAL
-# =============================================================================
 
 def app_fator_conferi():
     st.markdown("### ⚡ Painel Fator Conferi")
@@ -617,7 +582,7 @@ def app_fator_conferi():
                     # AUTOMAÇÃO: Salva automaticamente
                     if res['sucesso']:
                         ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
-                        if ok_s: st.toast(f"✅ {msg_s}", icon="💾")
+                        if ok_s: st.toast(f"{msg_s}", icon="💾")
                         else: st.error(f"Erro ao salvar na base PF: {msg_s}")
         
         if 'resultado_fator' in st.session_state:
