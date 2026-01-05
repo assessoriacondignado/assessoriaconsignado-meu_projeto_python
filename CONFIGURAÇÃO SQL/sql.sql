@@ -1,1 +1,1 @@
-TRUNCATE TABLE banco_pf.cpf_convenio;
+TRUNCATE TABLE banco_pf.pf_telefones RESTART IDENTITY CASCADE;

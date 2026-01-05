@@ -1,8 +1,10 @@
 ✅ COMO ESTA CADASTRADO A COLUNA
  ▪️CPF
    ▶️ REGRAS BANCO DE DADOS:
-    -> em forma de texto / 20 letras /  not null / unic
-    -> schemas: banco_pf:  pf_dados / pf_dados / pf_emails / pf_emprego_renda / pf_endereco pf_telefones
+    -> FORMATAÇÃO: em forma de texto / 20 letras /  not null / unic
+    -> SCHEMAS: banco_pf:  pf_dados / pf_dados / pf_emails / pf_emprego_renda / pf_endereco pf_telefones
+    -> DDOS INSERIOS: números com o zero na frente
+   ▶️  SQL PYTHON:
    ▶️ REGRAS PYGTON
    TABELAS: 
     -> MODULO_PF_CADASTRO.PY
@@ -34,4 +36,11 @@
        1.banco_pf.pf_dados
          - função: visualizar
          - função: Consultar simples no banco de dados
-         - função: filtrar pesquisa ampla                   
+         - função: filtrar pesquisa ampla
+
+
+
+
+  ✅ FORMULA PARA BANCO DE DADOS
+  ▪️pagar todos os daods, e dados vinculados a planilha
+  TRUNCATE TABLE banco_pf.pf_telefones RESTART IDENTITY CASCADE;                         

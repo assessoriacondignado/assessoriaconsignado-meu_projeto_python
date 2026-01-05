@@ -46,19 +46,25 @@ def init_db_structures():
 
 def formatar_cpf_visual(cpf_db):
     """
-    ALTERADO: Não aplica mais máscara. Retorna o valor original.
+    VISUALIZAÇÃO: Garante 11 dígitos e aplica máscara 000.000.000-00.
     """
     if not cpf_db: return ""
-    return str(cpf_db).strip()
+    # Remove qualquer coisa que não seja número
+    cpf_limpo = re.sub(r'\D', '', str(cpf_db))
+    # Garante 11 dígitos preenchendo com zeros à esquerda
+    cpf_full = cpf_limpo.zfill(11)
+    # Formata
+    return f"{cpf_full[:3]}.{cpf_full[3:6]}.{cpf_full[6:9]}-{cpf_full[9:]}"
 
 def limpar_normalizar_cpf(cpf_raw):
     """
-    ALTERADO: Não força mais números nem 11 dígitos.
-    Apenas remove espaços em branco das pontas.
+    BANCO DE DADOS: Remove pontuação e garante 11 dígitos (zfill).
     """
     if not cpf_raw: return ""
-    # Retorna a string limpa de espaços, aceitando letras, pontos ou traços se digitado.
-    return str(cpf_raw).strip()
+    s = str(cpf_raw).strip()
+    apenas_nums = re.sub(r'\D', '', s)
+    # Preenche com zeros à esquerda até ter 11 dígitos
+    return apenas_nums.zfill(11)
 
 def limpar_apenas_numeros(valor):
     if not valor: return ""
@@ -72,12 +78,18 @@ def validar_formatar_telefone(tel_raw):
 
 def validar_formatar_cpf(cpf_raw):
     """
-    ALTERADO: Validação removida. Aceita qualquer entrada não vazia.
+    VALIDAÇÃO TELA: Aceita qualquer entrada numérica até 11 dígitos.
+    Permite digitar com ou sem zeros, com ou sem pontos.
     """
-    valor = str(cpf_raw).strip()
-    if not valor: return None, "CPF inválido (vazio)."
-    # Retorna o valor exato digitado, sem erro.
-    return valor, None
+    numeros = re.sub(r'\D', '', str(cpf_raw).strip())
+    
+    if not numeros: return None, "CPF inválido (vazio)."
+    
+    # Se tiver mais de 11 dígitos reais, é erro (ex: CNPJ ou erro de digitação)
+    if len(numeros) > 11: return None, "CPF deve ter no máximo 11 dígitos."
+    
+    # Retorna os números limpos. A normalização (zfill) será feita ao salvar/inserir.
+    return numeros, None
 
 def validar_email(email):
     if not email: return False
