@@ -12,10 +12,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 
 # --- IMPORTAÇÃO DE MÓDULOS EXTERNOS (MODULO PF CADASTRO) ---
-# Tenta adicionar o diretório do módulo de cadastro ao path
 try:
     # Ajuste o caminho relativo conforme a estrutura real das suas pastas
-    # Baseado em: CONEXÕES/.. -> OPERACIONAL/BANCO DE PLANILHAS
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../OPERACIONAL/BANCO DE PLANILHAS')))
     import modulo_pf_cadastro
 except ImportError:
@@ -207,7 +205,6 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
     try:
         cur = conn.cursor()
 
-        # 1. Identificar ORIGEM através do AMBIENTE
         cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente_origem,))
         res_amb = cur.fetchone()
         if not res_amb:
@@ -216,7 +213,6 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         
         origem_identificada = res_amb[0]
 
-        # 2. Identificar Carteira, Cliente e Valor
         query_wallet = """
             SELECT 
                 l.cpf_cliente, 
@@ -239,7 +235,6 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         cpf_cli_db, nome_cli_db, custo_db, origem_custo_db, tabela_sql = dados_wallet
         valor_debito = float(custo_db) if custo_db else 0.0
 
-        # 3. Realizar o Lançamento (INSERT)
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cli_db,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
@@ -264,31 +259,32 @@ def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
         return False, f"Erro crítico no débito: {str(e)}"
 
 # =============================================================================
-# 3. SALVAR BASE PF (INTEGRAÇÃO ESTRITA COM MODULO_PF_CADASTRO)
+# 3. SALVAR BASE PF (INTEGRAÇÃO ESTRITA E CORRIGIDA)
 # =============================================================================
 
 def salvar_dados_fator_no_banco(dados_api):
     """
-    Função atualizada para utilizar as regras do modulo_pf_cadastro sem verificação manual de existência.
-    Fluxo: Tenta inserir (Novo) -> Se falhar, ignora -> Atualiza (Editar).
+    Função atualizada para utilizar as regras do modulo_pf_cadastro.
+    Corrige o parsing de listas do JSON (Telefones e Emails).
     """
-    # 1. Tratamento Inicial do CPF e Nome
-    raw_cpf = str(dados_api.get('cpf', '')).strip()
-    cpf_limpo = modulo_pf_cadastro.limpar_normalizar_cpf(raw_cpf)
+    conn = get_conn()
+    if not conn: return False, "Erro de conexão."
     
-    if not cpf_limpo or len(cpf_limpo) != 11:
-        return False, f"CPF inválido para gravação: '{raw_cpf}'"
-
-    nome_cliente = dados_api.get('nome') or "Cliente Fator"
-
     try:
-        # --- ETAPA 1: TENTATIVA DE INSERÇÃO (MODO NOVO) ---
-        # Envia apenas Nome e CPF conforme regra de "Novo Cadastro"
+        # 1. Tratamento Inicial do CPF
+        raw_cpf = str(dados_api.get('cpf', '')).strip()
+        cpf_limpo = modulo_pf_cadastro.limpar_normalizar_cpf(raw_cpf)
+        
+        if not cpf_limpo or len(cpf_limpo) != 11:
+            conn.close()
+            return False, f"CPF inválido para gravação: '{raw_cpf}'"
+
+        nome_cliente = dados_api.get('nome') or "Cliente Fator"
+
+        # --- ETAPA 1: GARANTIR O CADASTRO (MODO NOVO) ---
         dados_novo = {'nome': nome_cliente, 'cpf': cpf_limpo}
         
-        # Chama salvar_pf no modo NOVO. 
-        # Se o cliente já existir, o banco retornará erro de duplicidade, que é capturado internamente.
-        # Nós ignoramos o retorno False aqui, pois o objetivo é apenas garantir que o registro exista.
+        # Tenta criar o cadastro básico. Se já existir, o módulo trata internamente e ignora.
         modulo_pf_cadastro.salvar_pf(
             dados_gerais=dados_novo,
             df_tel=pd.DataFrame(),
@@ -299,8 +295,7 @@ def salvar_dados_fator_no_banco(dados_api):
             modo="novo"
         )
         
-        # --- ETAPA 2: ATUALIZAÇÃO E ENRIQUECIMENTO (MODO EDITAR) ---
-        # Agora enviamos todos os dados para atualizar o registro (seja ele novo ou antigo)
+        # --- ETAPA 2: ENRIQUECIMENTO (MODO EDITAR) ---
         
         # A. Preparar Dados Gerais
         dados_editar = {
@@ -308,43 +303,70 @@ def salvar_dados_fator_no_banco(dados_api):
             'cpf': cpf_limpo,
             'rg': dados_api.get('rg'),
             'nome_mae': dados_api.get('mae'),
-            # Formata data para YYYY-MM-DD
             'data_nascimento': modulo_pf_cadastro.converter_data_br_iso(dados_api.get('nascimento'))
         }
         
-        # B. Preparar Telefones (Validação via Módulo Cadastro)
+        # B. Preparar Telefones (CORREÇÃO DA LEITURA)
         lista_tels = []
-        for t in dados_api.get('telefones', []):
-            num_val, erro = modulo_pf_cadastro.validar_formatar_telefone(t.get('numero'))
-            if num_val and not erro:
-                lista_tels.append({'numero': num_val})
+        raw_telefones = dados_api.get('telefones', [])
+        
+        if raw_telefones is None: raw_telefones = []
+        
+        for t in raw_telefones:
+            # Verifica se é um dicionário (padrão do JSON da Fator)
+            if isinstance(t, dict):
+                numero_bruto = str(t.get('numero', ''))
+                # Limpeza preventiva
+                numero_limpo = re.sub(r'\D', '', numero_bruto)
+                # Validação usando a regra do cadastro
+                num_val, erro = modulo_pf_cadastro.validar_formatar_telefone(numero_limpo)
+                if num_val and not erro:
+                    lista_tels.append({'numero': num_val})
+        
         df_tels = pd.DataFrame(lista_tels)
 
-        # C. Preparar Emails (Validação via Módulo Cadastro)
+        # C. Preparar Emails (CORREÇÃO DA LEITURA)
         lista_emails = []
-        for e in dados_api.get('emails', []):
-            if modulo_pf_cadastro.validar_email(e):
-                lista_emails.append({'email': e.lower()})
+        raw_emails = dados_api.get('emails', [])
+        
+        if raw_emails is None: raw_emails = []
+        
+        for e in raw_emails:
+            # Se for string simples ["email1", "email2"]
+            if isinstance(e, str):
+                email_limpo = e.strip().lower()
+                if modulo_pf_cadastro.validar_email(email_limpo):
+                    lista_emails.append({'email': email_limpo})
+            # Se for objeto {"email": "..."} (Caso de erro de parser ou variação)
+            elif isinstance(e, dict) and 'email' in e:
+                 email_limpo = str(e['email']).strip().lower()
+                 if modulo_pf_cadastro.validar_email(email_limpo):
+                    lista_emails.append({'email': email_limpo})
+
         df_emails = pd.DataFrame(lista_emails)
 
-        # D. Preparar Endereços (Validação via Módulo Cadastro)
+        # D. Preparar Endereços
         lista_ends = []
-        for d in dados_api.get('enderecos', []):
-            cep_num, _, erro_cep = modulo_pf_cadastro.validar_formatar_cep(d.get('cep'))
-            # Regra: Só adiciona se tiver CEP válido ou Rua preenchida
-            if (cep_num and not erro_cep) or d.get('rua'):
-                uf_val = d.get('uf', '').upper()
-                if modulo_pf_cadastro.validar_uf(uf_val):
-                     lista_ends.append({
-                         'cep': cep_num,
-                         'rua': d.get('rua'),
-                         'bairro': d.get('bairro'),
-                         'cidade': d.get('cidade'),
-                         'uf': uf_val
-                     })
+        raw_enderecos = dados_api.get('enderecos', [])
+        
+        if raw_enderecos is None: raw_enderecos = []
+
+        for d in raw_enderecos:
+            if isinstance(d, dict):
+                cep_num, _, erro_cep = modulo_pf_cadastro.validar_formatar_cep(d.get('cep'))
+                if (cep_num and not erro_cep) or d.get('rua'):
+                    uf_val = d.get('uf', '').upper()
+                    if modulo_pf_cadastro.validar_uf(uf_val):
+                         lista_ends.append({
+                             'cep': cep_num,
+                             'rua': d.get('rua'),
+                             'bairro': d.get('bairro'),
+                             'cidade': d.get('cidade'),
+                             'uf': uf_val
+                         })
         df_ends = pd.DataFrame(lista_ends)
 
-        # Chama salvar_pf no modo EDITAR
+        # Envia tudo para o modulo de cadastro salvar no modo EDITAR
         ok_edit, msg_edit = modulo_pf_cadastro.salvar_pf(
             dados_gerais=dados_editar,
             df_tel=df_tels,
@@ -356,12 +378,17 @@ def salvar_dados_fator_no_banco(dados_api):
             cpf_original=cpf_limpo
         )
         
+        conn.close()
+        
         if ok_edit:
-            return True, "Consulta realizada. | ✅ Cadastro atualizado com dados da Fator."
+            qtd_tel = len(df_tels)
+            qtd_email = len(df_emails)
+            return True, f"Consulta realizada. | ✅ Atualizado: {qtd_tel} tels, {qtd_email} emails."
         else:
             return False, f"Erro na atualização dos dados: {msg_edit}"
 
     except Exception as e:
+        if conn: conn.close()
         return False, f"Erro crítico na integração PF: {str(e)}"
 
 # =============================================================================
