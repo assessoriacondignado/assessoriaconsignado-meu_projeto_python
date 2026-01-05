@@ -30,7 +30,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES E VALIDAÇÕES (CÓPIA DAS REGRAS DO CADASTRO)
+# 1. FUNÇÕES AUXILIARES E VALIDAÇÕES
 # =============================================================================
 
 def limpar_apenas_numeros(valor):
@@ -49,9 +49,8 @@ def validar_email(email):
     return bool(re.match(regex, email))
 
 def validar_formatar_telefone(tel_raw):
-    """Regra de validação copiada do cadastro: 10 ou 11 digitos, sem letras."""
     s = str(tel_raw).strip()
-    if re.search(r'[a-zA-Z]', s): return None # Contém letras
+    if re.search(r'[a-zA-Z]', s): return None 
     numeros = re.sub(r'\D', '', s)
     if len(numeros) < 10 or len(numeros) > 11: return None
     return numeros
@@ -59,29 +58,26 @@ def validar_formatar_telefone(tel_raw):
 def validar_formatar_cep(cep_raw):
     numeros = limpar_apenas_numeros(cep_raw)
     if len(numeros) != 8: return None
-    return numeros # Retorna limpo para o banco
+    return numeros 
 
 def formatar_data_iso(data_str):
     if not data_str: return None
     try:
-        # Tenta formato brasileiro DD/MM/YYYY
         return datetime.strptime(data_str, '%d/%m/%Y').strftime('%Y-%m-%d')
     except:
         return None
 
 def registrar_erro_importacao(cpf, erro_msg):
-    """Grava o erro em arquivo TXT na pasta JSON conforme regra."""
     try:
         data_hora = datetime.now().strftime("%d-%m-%Y_%H-%M")
         nome_arq = f"ERROIMPORTAÇÃO_{cpf}_{data_hora}.txt"
         caminho = os.path.join(PASTA_JSON, nome_arq)
-        
         with open(caminho, "w", encoding="utf-8") as f:
             f.write(f"ERRO NA IMPORTAÇÃO FATOR CONFERI\n")
             f.write(f"CPF: {cpf}\n")
             f.write(f"DATA: {datetime.now()}\n")
             f.write(f"DETALHE DO ERRO:\n{str(erro_msg)}")
-    except: pass # Evita crash no log de erro
+    except: pass
 
 # =============================================================================
 # 2. PARSING DE XML/JSON
@@ -112,7 +108,6 @@ def parse_xml_to_dict(xml_string):
             dados['nascimento'] = get_tag_text(cad, 'nascto')
             dados['mae'] = get_tag_text(cad, 'nome_mae')
             dados['rg'] = get_tag_text(cad, 'rg')
-            # Mapear outros campos se a API retornar no XML
             dados['pai'] = get_tag_text(cad, 'nome_pai')
             dados['uf_rg'] = get_tag_text(cad, 'uf_rg')
             dados['sexo'] = get_tag_text(cad, 'sexo')
@@ -155,11 +150,10 @@ def parse_xml_to_dict(xml_string):
         return {"erro": f"Falha XML: {e}", "raw": xml_string}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO (SEM DEPENDÊNCIA EXTERNA)
+# 3. PROCESSO DE INSERÇÃO PRÓPRIO
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
-    """Detecta se a tabela usa 'cpf' ou 'cpf_ref'."""
     try:
         cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_schema = 'banco_pf' AND table_name = '{tabela}' AND column_name IN ('cpf', 'cpf_ref')")
         res = cur.fetchone()
@@ -171,7 +165,6 @@ def salvar_dados_fator_no_banco(dados_api):
     conn = get_conn()
     if not conn: return False, "Erro de conexão com o banco."
     
-    # 1. Tratamento CPF
     raw_cpf = str(dados_api.get('cpf', '')).strip()
     cpf_limpo = limpar_normalizar_cpf(raw_cpf)
     
@@ -181,8 +174,6 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         
-        # --- ETAPA 1: DADOS PESSOAIS (UPSERT) ---
-        # Tenta inserir ou atualizar se já existir
         campos = {
             'nome': dados_api.get('nome') or "CLIENTE IMPORTADO",
             'rg': dados_api.get('rg'),
@@ -190,7 +181,6 @@ def salvar_dados_fator_no_banco(dados_api):
             'nome_mae': dados_api.get('mae'),
             'nome_pai': dados_api.get('pai'),
             'uf_rg': dados_api.get('uf_rg'),
-            # Campos extras podem vir vazios se a API não fornecer
             'pis': dados_api.get('pis'),
             'cnh': dados_api.get('cnh'),
             'serie_ctps': dados_api.get('serie_ctps'),
@@ -198,7 +188,6 @@ def salvar_dados_fator_no_banco(dados_api):
             'cpf_procurador': limpar_normalizar_cpf(dados_api.get('cpf_procurador'))
         }
 
-        # Query de Inserção Inteligente (Atualiza se existir)
         sql_pf = """
             INSERT INTO banco_pf.pf_dados (
                 cpf, nome, rg, data_nascimento, nome_mae, nome_pai, uf_rg, 
@@ -219,25 +208,21 @@ def salvar_dados_fator_no_banco(dados_api):
             campos['nome_procurador'], campos['cpf_procurador']
         ))
 
-        # --- ETAPA 2: TELEFONES ---
         raw_telefones = dados_api.get('telefones', []) or []
         count_tel = 0
         col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
         
         for t in raw_telefones:
             val_bruto = str(t.get('numero', '')) if isinstance(t, dict) else str(t)
-            # Limpeza e Validação Local
             val_limpo = limpar_apenas_numeros(val_bruto)
             tel_validado = validar_formatar_telefone(val_limpo)
             
             if tel_validado:
-                # Verifica duplicidade
                 cur.execute(f"SELECT 1 FROM banco_pf.pf_telefones WHERE {col_tel}=%s AND numero=%s", (cpf_limpo, tel_validado))
                 if not cur.fetchone():
                     cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, tel_validado))
                     count_tel += 1
 
-        # --- ETAPA 3: EMAILS ---
         raw_emails = dados_api.get('emails', []) or []
         count_email = 0
         col_email = verificar_coluna_cpf(cur, 'pf_emails')
@@ -252,7 +237,6 @@ def salvar_dados_fator_no_banco(dados_api):
                     cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_email}, email) VALUES (%s, %s)", (cpf_limpo, val_limpo))
                     count_email += 1
 
-        # --- ETAPA 4: ENDEREÇOS ---
         raw_ends = dados_api.get('enderecos', []) or []
         count_end = 0
         col_end = verificar_coluna_cpf(cur, 'pf_enderecos')
@@ -261,20 +245,15 @@ def salvar_dados_fator_no_banco(dados_api):
             if isinstance(d, dict):
                 cep_val = validar_formatar_cep(d.get('cep'))
                 rua_val = d.get('rua')
-                
                 if cep_val or rua_val:
-                    # Evita duplicar endereço igual
                     cur.execute(f"SELECT 1 FROM banco_pf.pf_enderecos WHERE {col_end}=%s AND cep=%s AND rua=%s", (cpf_limpo, cep_val, rua_val))
                     if not cur.fetchone():
-                        cur.execute(f"""
-                            INSERT INTO banco_pf.pf_enderecos ({col_end}, cep, rua, bairro, cidade, uf) 
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (cpf_limpo, cep_val, rua_val, d.get('bairro'), d.get('cidade'), d.get('uf')))
+                        cur.execute(f"INSERT INTO banco_pf.pf_enderecos ({col_end}, cep, rua, bairro, cidade, uf) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_limpo, cep_val, rua_val, d.get('bairro'), d.get('cidade'), d.get('uf')))
                         count_end += 1
 
         conn.commit()
         conn.close()
-        return True, f"✅ Dados inseridos com sucesso! Cadastro atualizado. (+{count_tel} Tels, +{count_email} Emails)"
+        return True, f"✅ Dados inseridos com sucesso! (+{count_tel} Tels, +{count_email} Emails)"
 
     except Exception as e:
         if conn: conn.rollback(); conn.close()
@@ -282,7 +261,7 @@ def salvar_dados_fator_no_banco(dados_api):
         return False, f"Erro na importação: {str(e)} (Log salvo na pasta JSON)"
 
 # =============================================================================
-# 4. FUNÇÕES DE CONSULTA API
+# 4. FUNÇÕES DE CONSULTA API E GESTÃO DE SALDO
 # =============================================================================
 
 def buscar_credenciais():
@@ -361,34 +340,112 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
             if conn: conn.close()
     return cliente
 
+# --- NOVA FUNÇÃO DE VERIFICAÇÃO DE SALDO ---
+def verificar_saldo_suficiente(id_cliente, ambiente, valor_consulta):
+    """
+    Verifica se o cliente possui saldo suficiente na carteira correspondente à origem do ambiente.
+    """
+    if not id_cliente: 
+        return True, "Cliente não identificado (Teste ou Admin)." 
+    
+    conn = get_conn()
+    if not conn: return False, "Erro conexão DB"
+    
+    try:
+        cur = conn.cursor()
+        
+        # 1. Identificar a Origem baseada no Ambiente (Ex: API, WEB)
+        cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (ambiente,))
+        res_amb = cur.fetchone()
+        if not res_amb:
+            conn.close()
+            return False, f"Ambiente '{ambiente}' não configurado nas origens."
+        origem_ambiente = res_amb[0]
+        
+        # 2. Buscar CPF do cliente (Pois a carteira é vinculada ao CPF)
+        cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente,))
+        res_cli = cur.fetchone()
+        if not res_cli:
+            conn.close()
+            return False, "Cliente não encontrado na base admin."
+        cpf_cliente = res_cli[0]
+        cpf_limpo = re.sub(r'\D', '', str(cpf_cliente))
+
+        # 3. Encontrar Carteira e Tabela de Transações
+        query_cart = """
+            SELECT c.nome_tabela_transacoes, c.nome_carteira
+            FROM cliente.cliente_carteira_lista l
+            JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
+            WHERE l.origem_custo = %s 
+            AND regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g') = %s
+            LIMIT 1
+        """
+        cur.execute(query_cart, (origem_ambiente, cpf_limpo))
+        res_tab = cur.fetchone()
+        
+        if not res_tab:
+            conn.close()
+            return False, f"Cliente sem carteira ativa para origem '{origem_ambiente}'."
+            
+        tabela_transacoes = res_tab[0]
+        
+        # 4. Verificar Saldo na Tabela da Carteira
+        query_saldo = f"SELECT saldo_novo FROM {tabela_transacoes} WHERE regexp_replace(cpf_cliente, '[^0-9]', '', 'g') = %s ORDER BY id DESC LIMIT 1"
+        cur.execute(query_saldo, (cpf_limpo,))
+        res_saldo = cur.fetchone()
+        
+        saldo_atual = float(res_saldo[0]) if res_saldo else 0.0
+        
+        conn.close()
+        
+        if saldo_atual >= valor_consulta:
+            return True, f"Saldo OK (R$ {saldo_atual:.2f})"
+        else:
+            return False, f"Saldo insuficiente. Disponível: R$ {saldo_atual:.2f} | Custo: R$ {valor_consulta:.2f}"
+
+    except Exception as e:
+        if conn: conn.close()
+        return False, f"Erro ao verificar saldo: {str(e)}"
+
 def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
     if not id_cliente_pagador: return False, "ID Cliente ausente."
     conn = get_conn()
     if not conn: return False, "Erro DB."
     try:
         cur = conn.cursor()
+        
+        # 1. Busca Origem
         cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente_origem,))
         res_amb = cur.fetchone()
         if not res_amb:
             conn.close(); return False, "Ambiente não cadastrado."
         origem = res_amb[0]
 
+        # 2. Busca CPF do Cliente (Correção: usar CPF para buscar carteira, não ID direto na lista)
+        cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente_pagador,))
+        res_cpf = cur.fetchone()
+        if not res_cpf:
+            conn.close(); return False, "Cliente admin não encontrado."
+        cpf_limpo = re.sub(r'\D', '', str(res_cpf[0]))
+
+        # 3. Busca Carteira
         query = """SELECT l.cpf_cliente, l.nome_cliente, l.custo_carteira, l.origem_custo, c.nome_tabela_transacoes 
                    FROM cliente.cliente_carteira_lista l JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
-                   WHERE l.id_cliente = %s AND l.origem_custo = %s LIMIT 1"""
-        cur.execute(query, (id_cliente_pagador, origem))
+                   WHERE regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g') = %s AND l.origem_custo = %s LIMIT 1"""
+        cur.execute(query, (cpf_limpo, origem))
         dados = cur.fetchone()
-        if not dados: conn.close(); return False, "Carteira não encontrada."
+        if not dados: conn.close(); return False, "Carteira não encontrada para débito."
 
-        cpf_cli, nome_cli, custo, orig_custo, tabela = dados
+        cpf_cli_banco, nome_cli, custo, orig_custo, tabela = dados
         val = float(custo) if custo else 0.0
         
-        cur.execute(f"SELECT saldo_novo FROM {tabela} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cli,))
+        # 4. Aplica Débito
+        cur.execute(f"SELECT saldo_novo FROM {tabela} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cli_banco,))
         res_saldo = cur.fetchone()
         saldo_ant = float(res_saldo[0]) if res_saldo else 0.0
         
         cur.execute(f"INSERT INTO {tabela} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, %s, 'DEBITO', %s, %s, %s, NOW())",
-                    (cpf_cli, nome_cli, orig_custo, nome_ambiente_origem, val, saldo_ant, saldo_ant - val))
+                    (cpf_cli_banco, nome_cli, orig_custo, nome_ambiente_origem, val, saldo_ant, saldo_ant - val))
         conn.commit(); conn.close()
         return True, f"Débito R$ {val:.2f} OK."
     except Exception as e:
@@ -420,7 +477,8 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
 
     try:
         cur = conn.cursor()
-        # CACHE
+        
+        # --- VERIFICAÇÃO DE CACHE ---
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -429,7 +487,16 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # API
+        # --- BLOQUEIO POR SALDO INSUFICIENTE (Novo) ---
+        custo = buscar_valor_consulta_atual()
+        if id_cliente_final:
+            # Chama a função de verificação antes de gastar na API
+            saldo_ok, msg_saldo = verificar_saldo_suficiente(id_cliente_final, ambiente, custo)
+            if not saldo_ok:
+                conn.close()
+                return {"sucesso": False, "msg": f"BLOQUEIO: {msg_saldo}"}
+
+        # --- CHAMADA API ---
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
         
@@ -444,7 +511,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
-        custo = buscar_valor_consulta_atual()
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
                     (cpf_padrao, id_usuario, nome_usuario, custo, path, origem_real, id_cliente_final, nome_cliente_final, ambiente))
         conn.commit()
@@ -526,8 +592,14 @@ def app_fator_conferi():
         conn = get_conn()
         if conn:
             try:
-                df_clis = pd.read_sql("SELECT DISTINCT l.id_cliente, l.nome_cliente FROM cliente.cliente_carteira_lista l ORDER BY l.nome_cliente", conn)
-                opcoes_cli = {row['id_cliente']: row['nome_cliente'] for _, row in df_clis.iterrows()}
+                # Ajuste para listar clientes que possuem carteira configurada
+                df_clis = pd.read_sql("""
+                    SELECT DISTINCT c.id, c.nome 
+                    FROM admin.clientes c
+                    JOIN cliente.cliente_carteira_lista l ON regexp_replace(c.cpf, '[^0-9]', '', 'g') = regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g')
+                    ORDER BY c.nome
+                """, conn)
+                opcoes_cli = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
                 id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste Manual)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Usar Vínculo Automático")
             except: pass
             finally: conn.close()
