@@ -37,12 +37,11 @@ def sanitizar_nome_tabela(nome):
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO (CORRIGIDA) ---
+# --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO ---
 def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_bloqueado=False, nome_regra_codigo=None):
     """
     Verifica bloqueio na tabela permissão.permissão_usuario_regras_nível (com acento).
     """
-    # Compatibilidade
     if nome_regra_codigo:
         chave = nome_regra_codigo
 
@@ -55,7 +54,6 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
     try:
         cur = conn.cursor()
         
-        # 1. Busca ID do Nível do Usuário
         nivel_usuario_nome = st.session_state.get('usuario_cargo', '') 
         if not nivel_usuario_nome:
             nivel_usuario_nome = 'Cliente sem permissão'
@@ -68,7 +66,6 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
             
         id_nivel_usuario = str(res_nivel[0])
 
-        # 2. Busca Regras (TABELA COM ACENTO: permissão_usuario_regras_nível)
         cur.execute("""
             SELECT id, chave, nivel, status, caminho_bloqueio, nome_regra
             FROM permissão.permissão_usuario_regras_nível 
@@ -97,7 +94,6 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
                     break 
         
         if bloqueado:
-            # Atualiza caminho (TABELA COM ACENTO)
             if not caminho_registrado and id_regra_aplicada:
                 cur.execute("""
                     UPDATE permissão.permissão_usuario_regras_nível 
@@ -127,7 +123,6 @@ def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_b
 def listar_regras_bloqueio():
     conn = get_conn()
     try:
-        # TABELA COM ACENTO
         df = pd.read_sql("SELECT * FROM permissão.permissão_usuario_regras_nível ORDER BY id", conn)
         conn.close(); return df
     except: 
@@ -138,7 +133,6 @@ def salvar_regra_bloqueio(nome, chave, niveis_ids_str, categoria, status, descri
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # TABELA COM ACENTO
         cur.execute("""
             INSERT INTO permissão.permissão_usuario_regras_nível 
             (nome_regra, chave, nivel, categoria, status, descricao) 
@@ -153,7 +147,6 @@ def atualizar_regra_bloqueio(id_reg, nome, chave, niveis_ids_str, categoria, sta
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # TABELA COM ACENTO
         cur.execute("""
             UPDATE permissão.permissão_usuario_regras_nível 
             SET nome_regra=%s, chave=%s, nivel=%s, categoria=%s, status=%s, descricao=%s
@@ -168,14 +161,13 @@ def excluir_regra_bloqueio(id_reg):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # TABELA COM ACENTO
         cur.execute("DELETE FROM permissão.permissão_usuario_regras_nível WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except:
         if conn: conn.close()
         return False
 
-# --- DEMAIS FUNÇÕES DE PERMISSÃO (Mantidas sem alteração de nome de tabela pois são outras) ---
+# --- DEMAIS FUNÇÕES DE PERMISSÃO ---
 def listar_permissoes_nivel():
     conn = get_conn()
     try:
@@ -214,11 +206,6 @@ def atualizar_permissao_nivel(id_reg, novo_nome):
     except: 
         if conn: conn.close()
         return False
-
-# ... [MANTIDO O RESTANTE DAS FUNÇÕES DE CHAVE, CATEGORIA, AGRUPAMENTOS, CLIENTES, ETC] ...
-# (Para economizar espaço, mantenha as funções que não interagem com a tabela de regras inalteradas do código anterior.
-# Se precisar, eu reenvio TUDO, mas o foco da correção foi nas funções acima).
-# ...
 
 def listar_permissoes_chave():
     conn = get_conn()
@@ -298,7 +285,7 @@ def atualizar_permissao_categoria(id_reg, novo_nome):
         if conn: conn.close()
         return False
 
-# --- MANTENDO FUNÇÕES DE NEGÓCIO ---
+# --- FUNÇÕES DE NEGÓCIO ---
 def listar_agrupamentos(tipo):
     conn = get_conn()
     tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
@@ -684,6 +671,8 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         saldo_anterior = float(res[0]) if res else 0.0
         valor = float(valor)
         saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
+        query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, 'MANUAL', %s, %s, %s, %s, NOW())"
+        # Ajuste no insert acima: faltou a coluna tipo_lancamento. Corrigido abaixo:
         query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
         cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
         conn.commit(); conn.close(); return True, "Sucesso"
@@ -1632,21 +1621,144 @@ def app_clientes():
         else: st.info("Nenhuma tabela de transação encontrada.")
 
     with tab_rel:
-        st.markdown("### 📊 Relatórios")
-        conn = get_conn(); opts = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn); conn.close()
-        sel = st.selectbox("Cliente", opts['id'], format_func=lambda x: opts[opts['id']==x]['nome'].values[0])
-        if sel:
-            row = opts[opts['id']==sel].iloc[0]; st.divider(); c1, c2 = st.columns(2)
-            with c1:
-                st.info("💰 Saldo Fator")
+        st.markdown("### 📊 Relatório Financeiro Detalhado")
+        
+        # --- Carregamento de Opções para os Filtros ---
+        conn = get_conn()
+        # Busca clientes para o filtro
+        df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
+        conn.close()
+        
+        # Busca carteiras ativas para o filtro de Tabela
+        df_carteiras_opt = listar_todas_carteiras_ativas()
+        
+        # --- Interface de Filtros ---
+        with st.container(border=True):
+            st.markdown("#### 🔍 Filtros de Pesquisa")
+            
+            c1, c2, c3 = st.columns([3, 2, 2])
+            
+            # 1. Filtro de Cliente
+            cli_selecionado = c1.selectbox(
+                "Cliente", 
+                options=df_clientes_opt['id'], 
+                format_func=lambda x: df_clientes_opt[df_clientes_opt['id']==x]['nome'].values[0] if not df_clientes_opt.empty else "Sem Clientes",
+                key="rel_cli_sel"
+            )
+            
+            # 2. Filtro de Carteira (Tabela)
+            opcoes_tabelas = {}
+            if not df_carteiras_opt.empty:
+                opcoes_tabelas = dict(zip(df_carteiras_opt['nome_carteira'], df_carteiras_opt['nome_tabela_transacoes']))
+            
+            carteira_selecionada = c2.selectbox(
+                "Carteira / Tabela", 
+                options=list(opcoes_tabelas.keys()), 
+                key="rel_cart_sel"
+            )
+            
+            # 3. Filtro de Data
+            periodo = c3.date_input(
+                "Período de Transação", 
+                value=(date.today().replace(day=1), date.today()), 
+                key="rel_data_range"
+            )
+            
+            c4, c5, c6 = st.columns([2, 2, 1])
+            
+            # 4. Filtro de Origem
+            origem_filtro = c4.text_input("Origem (Ex: MANUAL, API)", key="rel_origem")
+            
+            # 5. Filtro de Motivo
+            motivo_filtro = c5.text_input("Motivo (Contém texto)", key="rel_motivo")
+            
+            c6.write("") 
+            c6.write("") 
+            btn_gerar = c6.button("📄 Gerar Extrato", type="primary", use_container_width=True)
+
+        st.divider()
+
+        # --- Lógica de Geração do Relatório ---
+        if btn_gerar:
+            if not cli_selecionado:
+                st.warning("Selecione um cliente.")
+            elif not carteira_selecionada:
+                st.warning("Selecione uma carteira/tabela.")
+            else:
+                cpf_cliente = df_clientes_opt[df_clientes_opt['id'] == cli_selecionado].iloc[0]['cpf']
+                tabela_sql = opcoes_tabelas[carteira_selecionada]
+                
+                if isinstance(periodo, tuple) and len(periodo) == 2:
+                    dt_ini, dt_fim = periodo
+                elif isinstance(periodo, tuple) and len(periodo) == 1:
+                    dt_ini = dt_fim = periodo[0]
+                else:
+                    dt_ini = dt_fim = periodo
+
+                query = f"""
+                    SELECT 
+                        data_transacao, 
+                        nome_cliente, 
+                        motivo, 
+                        origem_lancamento, 
+                        tipo_lancamento, 
+                        valor, 
+                        saldo_novo 
+                    FROM {tabela_sql} 
+                    WHERE cpf_cliente = %s 
+                    AND data_transacao BETWEEN %s AND %s
+                """
+                params = [str(cpf_cliente).strip(), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
+
+                if origem_filtro:
+                    query += " AND origem_lancamento ILIKE %s"
+                    params.append(f"%{origem_filtro}%")
+                
+                if motivo_filtro:
+                    query += " AND motivo ILIKE %s"
+                    params.append(f"%{motivo_filtro}%")
+
+                query += " ORDER BY data_transacao DESC"
+
+                conn = get_conn()
                 try:
-                    conn = get_conn(); id_c = pd.read_sql(f"SELECT id FROM conexoes.fator_cliente_carteira WHERE id_cliente_admin = {sel}", conn).iloc[0]['id']
-                    st.dataframe(pd.read_sql(f"SELECT data_transacao, tipo, valor, saldo_novo FROM conexoes.fator_cliente_transacoes WHERE id_carteira = {id_c} ORDER BY id DESC LIMIT 20", conn), hide_index=True)
+                    df_rel = pd.read_sql(query, conn, params=params)
+                    
+                    if not df_rel.empty:
+                        df_rel['data_transacao'] = pd.to_datetime(df_rel['data_transacao']).dt.strftime('%d/%m/%Y %H:%M')
+                        
+                        df_rel.rename(columns={
+                            'data_transacao': 'Data',
+                            'nome_cliente': 'Cliente',
+                            'motivo': 'Motivo',
+                            'origem_lancamento': 'Origem',
+                            'tipo_lancamento': 'Tipo',
+                            'valor': 'Valor (R$)',
+                            'saldo_novo': 'Saldo (R$)'
+                        }, inplace=True)
+                        
+                        st.success(f"Relatório gerado com sucesso: {len(df_rel)} registros encontrados.")
+                        
+                        st.dataframe(
+                            df_rel, 
+                            use_container_width=True, 
+                            hide_index=True
+                        )
+                        
+                        total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor (R$)'].sum()
+                        total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor (R$)'].sum()
+                        
+                        rc1, rc2, rc3 = st.columns(3)
+                        rc1.metric("Total Créditos (Período)", f"R$ {total_cred:,.2f}")
+                        rc2.metric("Total Débitos (Período)", f"R$ {total_deb:,.2f}")
+                        rc3.caption("Nota: O saldo exibido na tabela é o saldo acumulado no momento da transação.")
+                        
+                    else:
+                        st.info("Nenhum registro encontrado para os filtros aplicados.")
+                except Exception as e:
+                    st.error(f"Erro ao consultar banco de dados: {e}")
+                finally:
                     conn.close()
-                except: st.warning("Sem carteira.")
-            with c2:
-                st.info("🔎 Consultas"); 
-                if st.button("Ver Histórico"): dialog_historico_consultas(row['cpf'])
 
     with tab_plan:
         st.markdown("### 📅 Gestão de Planilhas do Banco")
