@@ -57,6 +57,16 @@ def init_db_structures():
                     UNIQUE(convenio, nome_planilha_sql)
                 );
             """)
+            
+            # Garante tabela de emails se não existir
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS banco_pf.pf_emails (
+                    id SERIAL PRIMARY KEY,
+                    cpf_ref VARCHAR(20) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE,
+                    email VARCHAR(150)
+                );
+            """)
+            
             conn.commit()
             conn.close()
         except: pass
@@ -377,28 +387,44 @@ def interface_cadastro_pf():
                     if st.button("Inserir", key=f"btn_{campo['key']}", type="primary", use_container_width=True): 
                         inserir_dado_staging(campo, val)
         
-        # --- BLOCO CONTATOS (REGRAS NOVAS) ---
+        # --- BLOCO CONTATOS (REGRAS DE INCLUSÃO) ---
         with st.expander("Contatos"):
+            # 1. TELEFONES E EMAILS (Regra: Apenas na Edição)
             if not is_edit:
-                st.warning("🚫 A inclusão de telefones deve ser feita apenas no modo 'Editar', após salvar o cadastro inicial.")
+                st.info("🚫 A inclusão de telefones e e-mails é permitida apenas no modo 'Editar', após salvar o cadastro inicial.")
             else:
+                # --- ÁREA DE TELEFONES ---
                 c_tel_in, c_tel_btn = st.columns([4, 2])
                 with c_tel_in: 
-                    tel = st.text_input("Número", key="in_tel_num", placeholder="Ex: (82)999025155 ou 82999025155")
+                    tel = st.text_input("Número", key="in_tel_num", placeholder="Ex: (82)999025155")
                 with c_tel_btn:
                     st.write(""); st.write("") 
                     if st.button("Inserir Telefone", type="primary", use_container_width=True):
                         cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
-                        inserir_dado_staging(cfg, tel, None) # Extras removidos
+                        inserir_dado_staging(cfg, tel, None)
                 
                 st.divider()
+
+                # --- ÁREA DE E-MAILS (NOVA REGRA APLICADA) ---
+                st.markdown("##### 📧 Cadastro de E-mail")
                 c_mail_in, c_mail_btn = st.columns([5, 2])
-                with c_mail_in: mail = st.text_input("E-mail", key="in_mail", placeholder="E-mail")
+                with c_mail_in: 
+                    mail = st.text_input("E-mail", key="in_mail", placeholder="exemplo@email.com")
                 with c_mail_btn:
                     st.write(""); st.write("")
                     if st.button("Inserir E-mail", type="primary", use_container_width=True):
-                        cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
-                        inserir_dado_staging(cfg, mail)
+                        # Validação de Formato (Regra 3 e 5 do fluxo)
+                        if validar_email(mail):
+                            # Validação Visual de Duplicidade (Regra: e-mail não repete para o mesmo CPF na lista atual)
+                            emails_atuais = [e['email'] for e in st.session_state['dados_staging'].get('emails', [])]
+                            if mail in emails_atuais:
+                                st.warning("⚠️ Este e-mail já está na lista deste cliente.") # Validação 6
+                            else:
+                                cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
+                                inserir_dado_staging(cfg, mail)
+                                st.success("E-mail validado e adicionado à lista temporária!") # Validação 7
+                        else:
+                            st.error("⚠️ Formato de e-mail inválido. Verifique se digitou corretamente.") # Validação 6
 
         with st.expander("Endereço"):
             c_rua, c_cep = st.columns([1, 1])
@@ -495,7 +521,7 @@ def interface_cadastro_pf():
                     cols[idx%2].text_input(k.replace('_', ' ').upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
                     idx += 1
         
-        st.warning("📞 Telefones")
+        st.warning("📞 Telefones e E-mails")
         tels = st.session_state['dados_staging'].get('telefones', [])
         if tels:
             for i, t in enumerate(tels):
@@ -505,7 +531,16 @@ def interface_cadastro_pf():
                 c1.write(f"📱 **{val_view}**")
                 if c2.button("🗑️", key=f"rm_tel_{i}"):
                     st.session_state['dados_staging']['telefones'].pop(i); st.rerun()
-        else: st.caption("Nenhum telefone.")
+        
+        mails = st.session_state['dados_staging'].get('emails', [])
+        if mails:
+            for i, m in enumerate(mails):
+                c1, c2 = st.columns([5, 1])
+                c1.write(f"📧 **{m.get('email')}**")
+                if c2.button("🗑️", key=f"rm_mail_{i}"):
+                    st.session_state['dados_staging']['emails'].pop(i); st.rerun()
+        
+        if not tels and not mails: st.caption("Nenhum contato.")
         
         st.warning("💼 Vínculos (Emprego)")
         emps = st.session_state['dados_staging'].get('empregos', [])
@@ -562,7 +597,7 @@ def interface_cadastro_pf():
 # --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     """
-    Realiza a inserção no banco pf_dados e pf_telefones (com regra de duplicação).
+    Realiza a inserção no banco pf_dados, pf_telefones e pf_emails com validações.
     """
     conn = get_conn()
     if conn:
@@ -587,27 +622,42 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 vals = list(dados_gerais.values()) + [cpf_original]
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
-            # 2. SALVAMENTO INTELIGENTE DE TELEFONES (pf_telefones)
-            # Apenas se estiver no modo editar e houver telefones na lista
+            # 2. SALVAMENTO DE TELEFONES
             if not df_tel.empty:
-                # Descobre nome da coluna FK (cpf ou cpf_ref)
-                col_fk = 'cpf_ref'
+                col_fk = 'cpf_ref' # Assume padrao cpf_ref
                 try: cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
                 except: col_fk = 'cpf'; conn.rollback(); cur = conn.cursor()
 
                 for _, r in df_tel.iterrows():
                     num_novo = r['numero']
                     if num_novo:
-                        # Verifica duplicidade
                         cur.execute(f"SELECT 1 FROM banco_pf.pf_telefones WHERE {col_fk} = %s AND numero = %s", (cpf_limpo, num_novo))
+                        if not cur.fetchone():
+                            cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, num_novo))
+
+            # 3. SALVAMENTO DE E-MAILS (COM VALIDAÇÃO DE DUPLICIDADE)
+            if not df_email.empty:
+                # Garante nome correto da coluna de ligação
+                col_fk_email = 'cpf_ref'
+                try: cur.execute("SELECT 1 FROM banco_pf.pf_emails WHERE cpf_ref = '1' LIMIT 1")
+                except: col_fk_email = 'cpf'; conn.rollback(); cur = conn.cursor()
+
+                for _, r in df_email.iterrows():
+                    email_novo = r['email']
+                    if email_novo:
+                        # REGRA: O e-mail não pode se repetir para o MESMO CPF
+                        cur.execute(f"SELECT 1 FROM banco_pf.pf_emails WHERE {col_fk_email} = %s AND email = %s", (cpf_limpo, email_novo))
                         existe = cur.fetchone()
                         
                         if not existe:
-                            cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, num_novo))
+                            cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_fk_email}, email) VALUES (%s, %s)", (cpf_limpo, email_novo))
 
-            conn.commit(); conn.close(); return True, "✅ Salvo com sucesso!"
-        except Exception as e: return False, str(e)
-    return False, "Erro conexão"
+            conn.commit(); conn.close()
+            return True, "✅ Dados salvos com sucesso!"
+        except Exception as e: 
+            if conn: conn.close()
+            return False, f"Erro ao salvar: {str(e)}"
+    return False, "Erro de conexão com o banco."
 
 def excluir_pf(cpf):
     conn = get_conn()
