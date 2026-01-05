@@ -12,9 +12,6 @@ except ImportError:
 
 # --- CONEXÃO E UTILS (BASE) ---
 def get_conn():
-    """
-    Estabelece conexão com o banco PostgreSQL usando as credenciais do arquivo conexao.py.
-    """
     try:
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database,
@@ -24,17 +21,13 @@ def get_conn():
         return None
 
 def init_db_structures():
-    """
-    Garante que o esquema e tabelas básicas existam no PostgreSQL.
-    """
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
             
-            # Garante que as novas colunas existam (Segurança extra caso o SQL manual não tenha sido rodado)
-            # Observação: O ideal é rodar o ALTER TABLE via SQL, mas isso evita erros de inserção.
+            # Garante colunas na tabela principal
             cols_extras = [
                 "uf_rg VARCHAR(2)", "pis VARCHAR(20)", "nome_procurador VARCHAR(150)", 
                 "cpf_procurador VARCHAR(14)", "dados_exp_rg VARCHAR(50)", 
@@ -46,6 +39,11 @@ def init_db_structures():
                     cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
                 except: pass
             
+            # Garante coluna numero como texto para aceitar formatação se necessário
+            try:
+                cur.execute("ALTER TABLE banco_pf.pf_telefones ALTER COLUMN numero TYPE VARCHAR(20)")
+            except: pass
+
             conn.commit()
             
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
@@ -81,11 +79,35 @@ def limpar_apenas_numeros(valor):
     if not valor: return ""
     return re.sub(r'\D', '', str(valor))
 
+# --- NOVA REGRA DE TELEFONE ---
+def formatar_telefone_visual(tel_raw):
+    """
+    Formato visual: (DD)999999999
+    """
+    if not tel_raw: return ""
+    nums = re.sub(r'\D', '', str(tel_raw))
+    if len(nums) >= 2:
+        return f"({nums[:2]}){nums[2:]}"
+    return nums
+
 def validar_formatar_telefone(tel_raw):
-    numeros = limpar_apenas_numeros(tel_raw)
-    if len(numeros) == 10 or len(numeros) == 11:
-        return numeros, None
-    return None, "Telefone deve ter 10 ou 11 dígitos."
+    """
+    Validação Rígida:
+    - Apenas números.
+    - Tamanho: 10 ou 11 dígitos.
+    - Se falhar: Retorna erro com exemplo.
+    """
+    s = str(tel_raw).strip()
+    # Verifica se tem letras ou caracteres inválidos (permitido apenas dígitos, espaço, parênteses e traço para limpeza)
+    if re.search(r'[a-zA-Z]', s):
+        return None, "Erro: Contém letras. Digite apenas números. Ex: (82)999025155"
+    
+    numeros = re.sub(r'\D', '', s)
+    
+    if len(numeros) < 10 or len(numeros) > 11:
+        return None, "⚠️ Erro: Formato inválido! Digite 10 ou 11 números.\nExemplos: 82999025155 ou (82)999025155"
+    
+    return numeros, None # Retorna o número limpo (DDD + Numero) para o banco
 
 def validar_formatar_cpf(cpf_raw):
     numeros = re.sub(r'\D', '', str(cpf_raw).strip())
@@ -145,12 +167,11 @@ def carregar_dados_completos(cpf):
             cpf_norm = limpar_normalizar_cpf(cpf)      
             params_busca = (cpf_norm,)
             
-            # 1. Dados Pessoais da tabela principal
-            # O SELECT * pegará automaticamente as novas colunas (pis, cnh, etc) se existirem no banco
+            # 1. Dados Pessoais
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=params_busca)
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # Visualização de dados legados de tabelas satélites (apenas leitura)
+            # Satélites (Visualização)
             col_fk = 'cpf_ref' 
             try:
                 pd.read_sql("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1", conn)
@@ -158,7 +179,7 @@ def carregar_dados_completos(cpf):
                 col_fk = 'cpf'
                 conn.rollback()
 
-            dados['telefones'] = pd.read_sql(f"SELECT numero, tag_whats, tag_qualificacao FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
+            dados['telefones'] = pd.read_sql(f"SELECT numero FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
@@ -237,30 +258,28 @@ def get_colunas_tabela(nome_tabela_completo):
         except: conn.close()
     return colunas
 
-# --- CONFIGURAÇÃO VISUAL (ATUALIZADA) ---
+# --- CONFIGURAÇÃO VISUAL ---
 CONFIG_CADASTRO = {
     "Dados Pessoais": [
-        # Campos Básicos
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
         {"label": "CPF", "key": "cpf", "tabela": "geral", "tipo": "cpf", "obrigatorio": True},
         {"label": "RG", "key": "rg", "tabela": "geral", "tipo": "texto"},
         {"label": "Data Nascimento", "key": "data_nascimento", "tabela": "geral", "tipo": "data"},
         {"label": "Nome da Mãe", "key": "nome_mae", "tabela": "geral", "tipo": "texto"},
-        
-        # Campos Adicionais Solicitados
+        # Novos Campos
         {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
         {"label": "UF do RG", "key": "uf_rg", "tabela": "geral", "tipo": "texto"},
         {"label": "Dados Exp. RG", "key": "dados_exp_rg", "tabela": "geral", "tipo": "texto"},
         {"label": "PIS", "key": "pis", "tabela": "geral", "tipo": "texto"},
         {"label": "CNH", "key": "cnh", "tabela": "geral", "tipo": "texto"},
         {"label": "Série CTPS", "key": "serie_ctps", "tabela": "geral", "tipo": "texto"},
-        
         # Procurador
         {"label": "Nome Procurador", "key": "nome_procurador", "tabela": "geral", "tipo": "texto"},
         {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"},
     ],
     "Contatos": [
-        {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True, "extras": ["tag_whats", "tag_qualificacao"]},
+        # Extras removidos (WhatsApp, Qualificação)
+        {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True},
         {"label": "E-mail", "key": "email", "tabela": "emails", "tipo": "email", "multiplo": True},
     ],
     "Endereços": [
@@ -273,9 +292,6 @@ CONFIG_CADASTRO = {
 }
 
 def inserir_dado_staging(campo_config, valor, extras=None):
-    """
-    Armazena os dados temporariamente na sessão (Staging) antes de confirmar.
-    """
     tabela = campo_config['tabela']
     chave = campo_config['key']
     
@@ -298,7 +314,7 @@ def inserir_dado_staging(campo_config, valor, extras=None):
         val, erro = validar_formatar_cep(valor)
         if not erro: valor_final = val
     
-    if erro: st.toast(f"❌ {erro}"); return
+    if erro: st.error(erro); return # Exibe erro na tela
     if not valor_final and campo_config.get('obrigatorio'): st.toast(f"❌ O campo {campo_config['label']} é obrigatório."); return
 
     if campo_config.get('multiplo'):
@@ -313,9 +329,7 @@ def inserir_dado_staging(campo_config, valor, extras=None):
 
 # --- INTERFACE PRINCIPAL ---
 def interface_cadastro_pf():
-    # Inicializa estruturas do banco se necessário
     init_db_structures()
-
     is_edit = st.session_state['pf_view'] == 'editar'
     
     cpf_formatado_titulo = ""
@@ -363,24 +377,28 @@ def interface_cadastro_pf():
                     if st.button("Inserir", key=f"btn_{campo['key']}", type="primary", use_container_width=True): 
                         inserir_dado_staging(campo, val)
         
+        # --- BLOCO CONTATOS (REGRAS NOVAS) ---
         with st.expander("Contatos"):
-            c_tel_in, c_whats, c_qualif, c_tel_btn = st.columns([3, 1.5, 1.5, 2])
-            with c_tel_in: tel = st.text_input("Número", key="in_tel_num", placeholder="Telefone")
-            with c_whats: whats = st.selectbox("WhatsApp", ["Não", "Sim"], key="in_tel_w")
-            with c_qualif: qualif = st.selectbox("Qualif.", ["NC", "CONFIRMADO"], key="in_tel_q")
-            with c_tel_btn:
-                st.write(""); st.write("") 
-                if st.button("Inserir Telefone", type="primary", use_container_width=True):
-                    cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
-                    inserir_dado_staging(cfg, tel, {'tag_whats': whats, 'tag_qualificacao': qualif})
-            st.divider()
-            c_mail_in, c_mail_btn = st.columns([5, 2])
-            with c_mail_in: mail = st.text_input("E-mail", key="in_mail", placeholder="E-mail")
-            with c_mail_btn:
-                st.write(""); st.write("")
-                if st.button("Inserir E-mail", type="primary", use_container_width=True):
-                    cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
-                    inserir_dado_staging(cfg, mail)
+            if not is_edit:
+                st.warning("🚫 A inclusão de telefones deve ser feita apenas no modo 'Editar', após salvar o cadastro inicial.")
+            else:
+                c_tel_in, c_tel_btn = st.columns([4, 2])
+                with c_tel_in: 
+                    tel = st.text_input("Número", key="in_tel_num", placeholder="Ex: (82)999025155 ou 82999025155")
+                with c_tel_btn:
+                    st.write(""); st.write("") 
+                    if st.button("Inserir Telefone", type="primary", use_container_width=True):
+                        cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
+                        inserir_dado_staging(cfg, tel, None) # Extras removidos
+                
+                st.divider()
+                c_mail_in, c_mail_btn = st.columns([5, 2])
+                with c_mail_in: mail = st.text_input("E-mail", key="in_mail", placeholder="E-mail")
+                with c_mail_btn:
+                    st.write(""); st.write("")
+                    if st.button("Inserir E-mail", type="primary", use_container_width=True):
+                        cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
+                        inserir_dado_staging(cfg, mail)
 
         with st.expander("Endereço"):
             c_rua, c_cep = st.columns([1, 1])
@@ -477,6 +495,18 @@ def interface_cadastro_pf():
                     cols[idx%2].text_input(k.replace('_', ' ').upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
                     idx += 1
         
+        st.warning("📞 Telefones")
+        tels = st.session_state['dados_staging'].get('telefones', [])
+        if tels:
+            for i, t in enumerate(tels):
+                c1, c2 = st.columns([5, 1])
+                # Exibe formatado: (82)999025155
+                val_view = formatar_telefone_visual(t.get('numero'))
+                c1.write(f"📱 **{val_view}**")
+                if c2.button("🗑️", key=f"rm_tel_{i}"):
+                    st.session_state['dados_staging']['telefones'].pop(i); st.rerun()
+        else: st.caption("Nenhum telefone.")
+        
         st.warning("💼 Vínculos (Emprego)")
         emps = st.session_state['dados_staging'].get('empregos', [])
         if emps:
@@ -504,13 +534,11 @@ def interface_cadastro_pf():
 
         st.divider()
         
-        # --- BOTÃO DE CONFIRMAÇÃO ---
         if st.button("💾 CONFIRMAR E SALVAR", type="primary", use_container_width=True):
             staging = st.session_state['dados_staging']
             if not staging['geral'].get('nome') or not staging['geral'].get('cpf'):
                 st.error("Nome e CPF são obrigatórios.")
             else:
-                # Dados coletados na interface são passados, mas a função salvar_pf filtrará o uso.
                 df_tel = pd.DataFrame(staging['telefones'])
                 df_email = pd.DataFrame(staging['emails'])
                 df_end = pd.DataFrame(staging['enderecos'])
@@ -534,8 +562,7 @@ def interface_cadastro_pf():
 # --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     """
-    Realiza a inserção final SOMENTE no banco PostgreSQL tabela banco_pf.pf_dados.
-    As tabelas satélites não são mais alimentadas.
+    Realiza a inserção no banco pf_dados e pf_telefones (com regra de duplicação).
     """
     conn = get_conn()
     if conn:
@@ -545,17 +572,12 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             dados_gerais['cpf'] = cpf_limpo
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
             
-            # Normaliza dados (Maiúsculas)
             dados_gerais = {k: (v.upper() if isinstance(v, str) else v) for k, v in dados_gerais.items()}
             
-            # Normaliza CPF Procurador se existir
             if 'cpf_procurador' in dados_gerais and dados_gerais['cpf_procurador']:
                 dados_gerais['cpf_procurador'] = limpar_normalizar_cpf(dados_gerais['cpf_procurador'])
 
             # 1. SALVAMENTO NA TABELA PRINCIPAL (pf_dados)
-            # Remove chaves que não sejam colunas reais da tabela (segurança)
-            # Aqui assumimos que todas as chaves em dados_gerais correspondem a colunas.
-            
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
                 placeholders = ", ".join(["%s"] * len(vals)); col_names = ", ".join(cols)
@@ -565,6 +587,24 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 vals = list(dados_gerais.values()) + [cpf_original]
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
+            # 2. SALVAMENTO INTELIGENTE DE TELEFONES (pf_telefones)
+            # Apenas se estiver no modo editar e houver telefones na lista
+            if not df_tel.empty:
+                # Descobre nome da coluna FK (cpf ou cpf_ref)
+                col_fk = 'cpf_ref'
+                try: cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
+                except: col_fk = 'cpf'; conn.rollback(); cur = conn.cursor()
+
+                for _, r in df_tel.iterrows():
+                    num_novo = r['numero']
+                    if num_novo:
+                        # Verifica duplicidade
+                        cur.execute(f"SELECT 1 FROM banco_pf.pf_telefones WHERE {col_fk} = %s AND numero = %s", (cpf_limpo, num_novo))
+                        existe = cur.fetchone()
+                        
+                        if not existe:
+                            cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, num_novo))
+
             conn.commit(); conn.close(); return True, "✅ Salvo com sucesso!"
         except Exception as e: return False, str(e)
     return False, "Erro conexão"
@@ -604,10 +644,8 @@ def dialog_visualizar_cliente(cpf_cliente):
         c1, c2 = st.columns(2)
         nasc = g.get('data_nascimento')
         txt_nasc = nasc.strftime('%d/%m/%Y') if nasc and isinstance(nasc, (date, datetime)) else safe_view(nasc)
-        
         c1.write(f"**Nascimento:** {txt_nasc}"); c1.write(f"**RG:** {safe_view(g.get('rg'))}"); c2.write(f"**Mãe:** {safe_view(g.get('nome_mae'))}")
         
-        # Exibe os novos campos se existirem
         demais_campos = {k: v for k, v in g.items() if k not in ['data_nascimento', 'rg', 'nome_mae', 'id', 'cpf', 'nome', 'importacao_id', 'id_campanha', 'data_criacao']}
         if demais_campos:
             st.markdown("---"); st.markdown("##### 📌 Outras Informações")
@@ -635,7 +673,9 @@ def dialog_visualizar_cliente(cpf_cliente):
                     st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
             else: st.caption(f"Sem contratos detalhados para {v['convenio']}.")
     with t3:
-        for t in dados.get('telefones', []): st.write(f"📱 {safe_view(t.get('numero'))} ({safe_view(t.get('tag_whats'))})")
+        # Visualização de telefones formatada
+        for t in dados.get('telefones', []): 
+            st.write(f"📱 {formatar_telefone_visual(t.get('numero'))}")
         for m in dados.get('emails', []): st.write(f"📧 {safe_view(m.get('email'))}")
     
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)

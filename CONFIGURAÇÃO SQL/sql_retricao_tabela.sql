@@ -9,4 +9,4 @@ FROM
       AND tc.table_schema = kcu.table_schema
 WHERE 
     tc.table_schema = 'banco_pf' -- Seu schema
-    AND tc.table_name = 'pf_dados'; -- Sua tabela
+    AND tc.table_name = 'pf_telefones'; -- Sua tabela
