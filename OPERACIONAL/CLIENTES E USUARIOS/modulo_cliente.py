@@ -39,9 +39,6 @@ def sanitizar_nome_tabela(nome):
 
 # --- FUNÇÃO DE VERIFICAÇÃO DE BLOQUEIO ---
 def verificar_bloqueio_de_acesso(chave, caminho_atual="Desconhecido", parar_se_bloqueado=False, nome_regra_codigo=None):
-    """
-    Verifica bloqueio na tabela permissão.permissão_usuario_regras_nível (com acento).
-    """
     if nome_regra_codigo:
         chave = nome_regra_codigo
 
@@ -671,8 +668,6 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         saldo_anterior = float(res[0]) if res else 0.0
         valor = float(valor)
         saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
-        query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, 'MANUAL', %s, %s, %s, %s, NOW())"
-        # Ajuste no insert acima: faltou a coluna tipo_lancamento. Corrigido abaixo:
         query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
         cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
         conn.commit(); conn.close(); return True, "Sucesso"
@@ -1625,11 +1620,9 @@ def app_clientes():
         
         # --- Carregamento de Opções para os Filtros ---
         conn = get_conn()
-        # Busca clientes para o filtro
         df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
         conn.close()
         
-        # Busca carteiras ativas para o filtro de Tabela
         df_carteiras_opt = listar_todas_carteiras_ativas()
         
         # --- Interface de Filtros ---
@@ -1638,7 +1631,6 @@ def app_clientes():
             
             c1, c2, c3 = st.columns([3, 2, 2])
             
-            # 1. Filtro de Cliente
             cli_selecionado = c1.selectbox(
                 "Cliente", 
                 options=df_clientes_opt['id'], 
@@ -1646,7 +1638,6 @@ def app_clientes():
                 key="rel_cli_sel"
             )
             
-            # 2. Filtro de Carteira (Tabela)
             opcoes_tabelas = {}
             if not df_carteiras_opt.empty:
                 opcoes_tabelas = dict(zip(df_carteiras_opt['nome_carteira'], df_carteiras_opt['nome_tabela_transacoes']))
@@ -1657,7 +1648,6 @@ def app_clientes():
                 key="rel_cart_sel"
             )
             
-            # 3. Filtro de Data
             periodo = c3.date_input(
                 "Período de Transação", 
                 value=(date.today().replace(day=1), date.today()), 
@@ -1665,11 +1655,7 @@ def app_clientes():
             )
             
             c4, c5, c6 = st.columns([2, 2, 1])
-            
-            # 4. Filtro de Origem
             origem_filtro = c4.text_input("Origem (Ex: MANUAL, API)", key="rel_origem")
-            
-            # 5. Filtro de Motivo
             motivo_filtro = c5.text_input("Motivo (Contém texto)", key="rel_motivo")
             
             c6.write("") 
@@ -1748,10 +1734,13 @@ def app_clientes():
                         total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor (R$)'].sum()
                         total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor (R$)'].sum()
                         
+                        # Pega o saldo da transação mais recente (DESC)
+                        saldo_periodo = df_rel.iloc[0]['Saldo (R$)']
+                        
                         rc1, rc2, rc3 = st.columns(3)
                         rc1.metric("Total Créditos (Período)", f"R$ {total_cred:,.2f}")
                         rc2.metric("Total Débitos (Período)", f"R$ {total_deb:,.2f}")
-                        rc3.caption("Nota: O saldo exibido na tabela é o saldo acumulado no momento da transação.")
+                        rc3.metric("Saldo Final (Atual)", f"R$ {saldo_periodo:,.2f}", help="Saldo acumulado após a última transação listada.")
                         
                     else:
                         st.info("Nenhum registro encontrado para os filtros aplicados.")
