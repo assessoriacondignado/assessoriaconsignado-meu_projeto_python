@@ -284,10 +284,10 @@ CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
         {"label": "CPF", "key": "cpf", "tabela": "geral", "tipo": "cpf", "obrigatorio": True},
+        # Campos abaixo só aparecem no modo EDITAR
         {"label": "RG", "key": "rg", "tabela": "geral", "tipo": "texto"},
         {"label": "Data Nascimento", "key": "data_nascimento", "tabela": "geral", "tipo": "data"},
         {"label": "Nome da Mãe", "key": "nome_mae", "tabela": "geral", "tipo": "texto"},
-        # Novos Campos
         {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
         {"label": "UF do RG", "key": "uf_rg", "tabela": "geral", "tipo": "texto"},
         {"label": "Dados Exp. RG", "key": "dados_exp_rg", "tabela": "geral", "tipo": "texto"},
@@ -296,7 +296,7 @@ CONFIG_CADASTRO = {
         {"label": "Série CTPS", "key": "serie_ctps", "tabela": "geral", "tipo": "texto"},
         # Procurador
         {"label": "Nome Procurador", "key": "nome_procurador", "tabela": "geral", "tipo": "texto"},
-        {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"},
+        {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"}, # Tipo CPF aplica a validação
     ],
     "Contatos": [
         {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True},
@@ -323,6 +323,7 @@ def inserir_dado_staging(campo_config, valor, extras=None):
     valor_final = valor
     
     if campo_config['tipo'] == 'cpf':
+        # Aplica regra de validação de CPF (para Titular e Procurador)
         val, erro = validar_formatar_cpf(valor)
         if not erro: valor_final = limpar_normalizar_cpf(val)
     elif campo_config['tipo'] == 'telefone':
@@ -375,7 +376,17 @@ def interface_cadastro_pf():
     with c_builder:
         st.markdown("#### 🏗️ Inserir Dados")
         with st.expander("Dados Pessoais", expanded=True):
+            
+            # MENSAGEM INFORMATIVA NO MODO NOVO
+            if not is_edit:
+                st.info("ℹ️ Para cadastrar dados complementares (RG, Filiação, Procurador, etc.), salve o Nome e CPF primeiro e depois edite o registro.")
+
             for campo in CONFIG_CADASTRO["Dados Pessoais"]:
+                # REGRA DE FLUXO: Se for novo cadastro, só mostra NOME e CPF
+                if not is_edit and campo['key'] not in ['nome', 'cpf']:
+                    continue
+
+                # Se estiver editando, bloqueia o CPF (chave primária)
                 if is_edit and campo['key'] == 'cpf':
                     c_lab, c_inp = st.columns([1.2, 3.5])
                     c_lab.markdown(f"**{campo['label']}:**")
@@ -387,9 +398,17 @@ def interface_cadastro_pf():
                 c_lbl.markdown(f"**{campo['label']}:**")
                 with c_inp:
                     if campo['tipo'] == 'data':
-                        val = st.date_input("Data", value=None, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}", label_visibility="collapsed")
+                        # VISUALIZAÇÃO: Calendário (DD/MM/YYYY)
+                        val_pre = st.session_state['dados_staging']['geral'].get(campo['key'])
+                        if isinstance(val_pre, str):
+                            # Tenta converter string YYYY-MM-DD para data object
+                            try: val_pre = datetime.strptime(val_pre, '%Y-%m-%d').date()
+                            except: val_pre = None
+                        
+                        val = st.date_input("Data", value=val_pre, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}", label_visibility="collapsed")
                     else:
-                        val = st.text_input("Texto", label_visibility="collapsed", key=f"in_{campo['key']}")
+                        val_pre = st.session_state['dados_staging']['geral'].get(campo['key'], '')
+                        val = st.text_input("Texto", value=val_pre, label_visibility="collapsed", key=f"in_{campo['key']}")
                 
                 with c_btn:
                     if st.button("Inserir", key=f"btn_{campo['key']}", type="primary", use_container_width=True): 
@@ -397,6 +416,7 @@ def interface_cadastro_pf():
         
         # --- BLOCO CONTATOS (REGRAS DE INCLUSÃO) ---
         with st.expander("Contatos"):
+            # 1. TELEFONES E EMAILS (Regra: Apenas na Edição)
             if not is_edit:
                 st.info("🚫 A inclusão de telefones e e-mails é permitida apenas no modo 'Editar', após salvar o cadastro inicial.")
             else:
@@ -467,7 +487,6 @@ def interface_cadastro_pf():
                         st.warning("O campo Logradouro é obrigatório.")
                     else:
                         # 3. VALIDAÇÃO DE DUPLICIDADE VISUAL
-                        # Verifica se CEP + Rua já existem na lista atual
                         ends_atuais = st.session_state['dados_staging'].get('enderecos', [])
                         duplicado = False
                         for e in ends_atuais:
@@ -478,7 +497,6 @@ def interface_cadastro_pf():
                         if duplicado:
                             st.warning("⚠️ Este endereço já está na lista deste cliente.")
                         else:
-                            # Adiciona objeto formatado
                             obj_end = {
                                 'cep': cep_num, # Salva só números (para o banco)
                                 'rua': rua, 
@@ -487,7 +505,6 @@ def interface_cadastro_pf():
                                 'uf': uf_digitada
                             }
                             
-                            # Inicializa lista se não existir
                             if 'enderecos' not in st.session_state['dados_staging']:
                                 st.session_state['dados_staging']['enderecos'] = []
                                 
@@ -681,6 +698,13 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             if 'cpf_procurador' in dados_gerais and dados_gerais['cpf_procurador']:
                 dados_gerais['cpf_procurador'] = limpar_normalizar_cpf(dados_gerais['cpf_procurador'])
 
+            # Tratamento de Data de Nascimento para o Banco
+            if 'data_nascimento' in dados_gerais:
+                if isinstance(dados_gerais['data_nascimento'], (date, datetime)):
+                     dados_gerais['data_nascimento'] = dados_gerais['data_nascimento'].strftime('%Y-%m-%d')
+                elif not dados_gerais['data_nascimento']:
+                     dados_gerais['data_nascimento'] = None
+
             # 1. SALVAMENTO NA TABELA PRINCIPAL (pf_dados)
             if modo == "novo":
                 cols = list(dados_gerais.keys()); vals = list(dados_gerais.values())
@@ -717,19 +741,17 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                         if not cur.fetchone():
                             cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_fk_email}, email) VALUES (%s, %s)", (cpf_limpo, email_novo))
             
-            # 4. SALVAMENTO DE ENDEREÇOS (COM VALIDAÇÃO DE DUPLICIDADE NO BANCO)
+            # 4. SALVAMENTO DE ENDEREÇOS
             if not df_end.empty:
                 col_fk_end = 'cpf_ref'
                 try: cur.execute("SELECT 1 FROM banco_pf.pf_enderecos WHERE cpf_ref = '1' LIMIT 1")
                 except: col_fk_end = 'cpf'; conn.rollback(); cur = conn.cursor()
 
                 for _, r in df_end.iterrows():
-                    # Salva apenas se tiver rua ou CEP
                     if r.get('rua') or r.get('cep'):
                         cep_limpo = limpar_apenas_numeros(r.get('cep'))
                         rua_val = r.get('rua')
                         
-                        # VERIFICA DUPLICIDADE: Mesmo CPF, Mesmo CEP e Mesma Rua
                         cur.execute(f"""
                             SELECT 1 FROM banco_pf.pf_enderecos 
                             WHERE {col_fk_end} = %s AND cep = %s AND rua = %s
