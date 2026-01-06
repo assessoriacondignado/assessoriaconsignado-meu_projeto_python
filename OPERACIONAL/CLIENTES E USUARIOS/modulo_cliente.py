@@ -20,8 +20,34 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES
+# 1. FUNÇÕES AUXILIARES E DE BANCO
 # =============================================================================
+
+def garantir_tabela_extrato_geral():
+    """Garante que a tabela unificada de extratos exista para evitar erros no relatório."""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cliente.extrato_carteira_por_produto (
+                    id SERIAL PRIMARY KEY,
+                    id_cliente INTEGER,
+                    data_lancamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    tipo_lancamento VARCHAR(50),
+                    produto_vinculado VARCHAR(255),
+                    origem_lancamento VARCHAR(100),
+                    valor_lancado NUMERIC(10, 2),
+                    saldo_anterior NUMERIC(10, 2),
+                    saldo_novo NUMERIC(10, 2),
+                    nome_usuario VARCHAR(255)
+                );
+            """)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            st.error(f"Erro ao criar tabela de extrato: {e}")
+            if conn: conn.close()
 
 def formatar_cnpj(v):
     v = re.sub(r'\D', '', str(v))
@@ -1089,6 +1115,8 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
 
 def app_clientes():
     garantir_tabela_config_carteiras()
+    garantir_tabela_extrato_geral() # <--- NOVA FUNÇÃO PARA GARANTIR A TABELA DE EXTRATO
+    
     st.markdown("## 👥 Central de Clientes e Usuários")
     
     tab_cli, tab_user, tab_param, tab_regras, tab_carteira, tab_rel, tab_plan = st.tabs(["🏢 Clientes", "👤 Usuários", "⚙️ Parâmetros", "🛡️ Regras (Vis)", "💼 Carteira", "📊 Relatórios", "📅 Planilhas"])
@@ -1624,14 +1652,12 @@ def app_clientes():
         
         # --- Carregamento de Opções ---
         conn = get_conn()
-        # Busca apenas ID e Nome, pois a tabela de extrato usa id_cliente
         df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
         conn.close()
         
         # --- Interface de Filtros ---
         with st.container(border=True):
             st.markdown("#### 🔍 Filtros de Pesquisa")
-            
             c1, c2, c3 = st.columns([3, 2, 2])
             
             cli_selecionado = c1.selectbox(
@@ -1641,26 +1667,17 @@ def app_clientes():
                 key="rel_cli_sel"
             )
             
-            periodo = c2.date_input(
-                "Período de Transação", 
-                value=(date.today().replace(day=1), date.today()), 
-                key="rel_data_range"
-            )
-
-            # Filtros opcionais
+            periodo = c2.date_input("Período de Transação", value=(date.today().replace(day=1), date.today()), key="rel_data_range")
             origem_filtro = c3.text_input("Origem (Ex: MANUAL, API)", key="rel_origem")
-            
             c4, c5 = st.columns([4, 2])
             btn_gerar = c5.button("📄 Gerar Extrato", type="primary", use_container_width=True)
 
         st.divider()
 
-        # --- Lógica de Geração do Relatório ---
         if btn_gerar:
             if not cli_selecionado:
                 st.warning("Selecione um cliente.")
             else:
-                # Ajuste de datas
                 if isinstance(periodo, tuple) and len(periodo) == 2:
                     dt_ini, dt_fim = periodo
                 elif isinstance(periodo, tuple) and len(periodo) == 1:
@@ -1668,7 +1685,6 @@ def app_clientes():
                 else:
                     dt_ini = dt_fim = periodo
 
-                # QUERY DIRECIONADA PARA A TABELA SOLICITADA
                 query = """
                     SELECT 
                         data_lancamento, 
@@ -1688,54 +1704,49 @@ def app_clientes():
                     query += " AND origem_lancamento ILIKE %s"
                     params.append(f"%{origem_filtro}%")
                 
-                query += " ORDER BY id DESC" # Ordenar por ID geralmente garante a ordem cronológica de inserção
+                query += " ORDER BY id DESC"
 
                 conn = get_conn()
                 try:
                     df_rel = pd.read_sql(query, conn, params=params)
                     
                     if not df_rel.empty:
-                        # Formatação para exibição
                         df_rel['data_lancamento'] = pd.to_datetime(df_rel['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
-                        
                         df_rel.rename(columns={
                             'data_lancamento': 'Data',
                             'produto_vinculado': 'Produto / Motivo',
                             'origem_lancamento': 'Origem',
                             'tipo_lancamento': 'Tipo',
-                            'valor_lancado': 'Valor (R$)',
-                            'saldo_novo': 'Saldo (R$)',
+                            'valor_lancado': 'Valor',
+                            'saldo_novo': 'Saldo',
                             'nome_usuario': 'Usuário'
                         }, inplace=True)
                         
                         st.success(f"Relatório gerado com sucesso: {len(df_rel)} registros encontrados.")
                         
+                        # Exibição Simplificada para evitar erro de formatação
                         st.dataframe(
                             df_rel, 
                             use_container_width=True, 
-                            hide_index=True,
-                            column_config={
-                                "Valor (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
-                                "Saldo (R$)": st.column_config.NumberColumn(format="R$ %.2f")
-                            }
+                            hide_index=True
                         )
                         
-                        # Totais do período
-                        total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor (R$)'].sum()
-                        total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor (R$)'].sum()
-                        
-                        # Pega o saldo do registro mais recente (primeira linha devido ao ORDER BY ID DESC)
-                        saldo_atual_real = df_rel.iloc[0]['Saldo (R$)']
+                        # Cálculo de totais
+                        total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor'].sum()
+                        total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor'].sum()
+                        saldo_atual_real = df_rel.iloc[0]['Saldo']
                         
                         rc1, rc2, rc3 = st.columns(3)
-                        rc1.metric("Total Créditos (Período)", f"R$ {total_cred:,.2f}")
-                        rc2.metric("Total Débitos (Período)", f"R$ {total_deb:,.2f}")
-                        rc3.metric("Saldo Atual (Final)", f"R$ {saldo_atual_real:,.2f}", help="Saldo acumulado do último registro encontrado.")
+                        rc1.metric("Total Créditos", f"R$ {total_cred:,.2f}")
+                        rc2.metric("Total Débitos", f"R$ {total_deb:,.2f}")
+                        rc3.metric("Saldo Atual", f"R$ {saldo_atual_real:,.2f}")
                         
                     else:
                         st.info("Nenhum registro encontrado para os filtros aplicados.")
                 except Exception as e:
+                    # AQUI VAI APARECER O ERRO SE ACONTECER NOVAMENTE
                     st.error(f"Erro ao consultar banco de dados: {e}")
+                    st.info("Dica: Verifique se a tabela 'cliente.extrato_carteira_por_produto' existe e tem as colunas corretas.")
                 finally:
                     conn.close()
 
