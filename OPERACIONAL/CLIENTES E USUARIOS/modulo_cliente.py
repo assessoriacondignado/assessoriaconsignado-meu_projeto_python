@@ -462,7 +462,6 @@ def excluir_relacao_pedido_carteira(id_reg):
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
-        # ATUALIZADO PARA A NOVA TABELA
         query = """
             SELECT 
                 l.id, l.cpf_cliente, l.nome_cliente, l.nome_carteira, 
@@ -492,7 +491,6 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
         res_v = cur.fetchone()
         cpf_u, nome_u = (res_v[0], res_v[1]) if res_v else (None, None)
         
-        # ATUALIZADO PARA A NOVA TABELA
         cur.execute("""
             INSERT INTO cliente.valor_custo_carteira_cliente (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -506,7 +504,6 @@ def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_u, 
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO PARA A NOVA TABELA
         cur.execute("""
             UPDATE cliente.valor_custo_carteira_cliente 
             SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
@@ -521,7 +518,6 @@ def excluir_cliente_carteira_lista(id_reg):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # ATUALIZADO PARA A NOVA TABELA
         cur.execute("DELETE FROM cliente.valor_custo_carteira_cliente WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except:
@@ -742,11 +738,12 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         res_cli = cur.fetchone()
         if res_cli:
             id_cliente = res_cli[0]
+            # Convertendo ID para STRING para evitar o erro de tipo (text vs integer)
             cur.execute("""
                 INSERT INTO cliente.extrato_carteira_por_produto 
                 (id_cliente, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo)
                 VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s)
-            """, (id_cliente, tipo_lanc, motivo, valor, saldo_anterior, saldo_novo))
+            """, (str(id_cliente), tipo_lanc, motivo, valor, saldo_anterior, saldo_novo))
 
         conn.commit(); conn.close(); return True, "Sucesso"
     except Exception as e:
@@ -1695,7 +1692,7 @@ def app_clientes():
         else: st.info("Nenhuma tabela de transação encontrada.")
 
     # =============================================================================
-    # 6. ABA RELATÓRIOS (ATUALIZADA COM FILTROS AVANÇADOS)
+    # 6. ABA RELATÓRIOS (ATUALIZADA COM FILTROS AVANÇADOS E CORREÇÃO DE ERRO DE TIPO)
     # =============================================================================
     with tab_rel:
         st.markdown("### 📊 Relatório Financeiro Detalhado")
@@ -1722,7 +1719,7 @@ def app_clientes():
             df_origens = pd.read_sql("SELECT DISTINCT origem_lancamento FROM cliente.extrato_carteira_por_produto ORDER BY origem_lancamento", conn)
             lista_origens = df_origens['origem_lancamento'].dropna().tolist()
         except Exception as e:
-            pass # Pode falhar se a tabela estiver vazia
+            pass 
         finally:
             if conn: conn.close()
         
@@ -1755,7 +1752,6 @@ def app_clientes():
             if not cli_selecionado:
                 st.warning("⚠️ Selecione um cliente para gerar o relatório.")
             else:
-                # Tratamento das datas
                 if isinstance(periodo, tuple) and len(periodo) == 2:
                     dt_ini, dt_fim = periodo
                 elif isinstance(periodo, tuple) and len(periodo) == 1:
@@ -1779,7 +1775,8 @@ def app_clientes():
                     WHERE id_cliente = %s 
                     AND data_lancamento BETWEEN %s AND %s
                 """
-                params = [int(cli_selecionado), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
+                # CORREÇÃO: Converter 'cli_selecionado' para str() pois o banco está acusando tipo texto
+                params = [str(cli_selecionado), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
 
                 if sel_produtos:
                     placeholders = ','.join(['%s'] * len(sel_produtos))
@@ -1807,7 +1804,8 @@ def app_clientes():
                         # Buscamos o último registro desse cliente no banco todo para mostrar o saldo real atual
                         try:
                             cur = conn.cursor()
-                            cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (int(cli_selecionado),))
+                            # CORREÇÃO: Também converter para str() aqui
+                            cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(cli_selecionado),))
                             res_saldo = cur.fetchone()
                             saldo_final_real_cliente = float(res_saldo[0]) if res_saldo else 0.0
                         except:
