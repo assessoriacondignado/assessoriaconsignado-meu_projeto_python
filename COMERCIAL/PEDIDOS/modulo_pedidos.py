@@ -61,7 +61,7 @@ def listar_tabelas_schema(schema_name):
 
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     """
-    Atualiza saldo nas carteiras quando status muda.
+    Atualiza saldo nas carteiras quando status muda e registra no extrato unificado.
     """
     try:
         cur = conn.cursor()
@@ -97,7 +97,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         
         nome_carteira = res_lista[0]
 
-        # Pega a tabela física
+        # Pega a tabela física da carteira
         cur.execute("""
             SELECT nome_tabela_transacoes 
             FROM cliente.carteiras_config 
@@ -113,7 +113,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         valor = float(dados_pedido['valor_total'])
         codigo_pedido = dados_pedido['codigo']
         
-        # Pega saldo anterior
+        # Pega saldo anterior na tabela específica da carteira
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
@@ -125,6 +125,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
             saldo_novo = saldo_anterior - valor
             motivo = f"Cobrança Pedido {codigo_pedido}"
 
+        # 1. Insere na tabela específica da carteira (Mantendo histórico detalhado por carteira)
         sql_insert = f"""
             INSERT INTO {tabela_sql} 
             (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
@@ -132,7 +133,20 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         """
         cur.execute(sql_insert, (cpf_cliente, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
         
-        return True, f"{tipo_lancamento} de R$ {valor:.2f} na carteira '{nome_carteira}'"
+        # 2. Insere na tabela UNIFICADA DE EXTRATO (Para aparecer no Relatório Financeiro Detalhado)
+        # Convertemos id_cliente para string para evitar erro de tipo no banco
+        id_cliente_str = str(dados_pedido.get('id_cliente', ''))
+        nome_produto = dados_pedido.get('nome_produto', 'Produto não identificado')
+        nome_usuario_atual = st.session_state.get('usuario_nome', 'Sistema') # Tenta pegar usuário logado
+
+        sql_insert_extrato = """
+            INSERT INTO cliente.extrato_carteira_por_produto 
+            (id_cliente, data_lancamento, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo, nome_usuario)
+            VALUES (%s, NOW(), %s, %s, 'PEDIDO', %s, %s, %s, %s)
+        """
+        cur.execute(sql_insert_extrato, (id_cliente_str, tipo_lancamento, f"{motivo} - {nome_produto}", 'PEDIDO', valor, saldo_anterior, saldo_novo, nome_usuario_atual))
+
+        return True, f"{tipo_lancamento} de R$ {valor:.2f} na carteira '{nome_carteira}' e Extrato Unificado."
 
     except Exception as e:
         return False, f"Erro financeiro: {str(e)}"
@@ -276,6 +290,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago":
                 coluna_data = ", data_pago = NOW()"
+                # Lança CRÉDITO
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
@@ -283,6 +298,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 coluna_data = ", data_pendente = NOW()"
             elif novo_status == "Cancelado":
                 coluna_data = ", data_cancelado = NOW()"
+                # Lança DÉBITO
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
