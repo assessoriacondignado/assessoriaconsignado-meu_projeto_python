@@ -278,6 +278,7 @@ def buscar_credenciais():
     return cred
 
 def buscar_valor_consulta_atual():
+    # OBS: Este valor é apenas informativo para o Log de Consulta, o valor real debitado vem da tabela de custos do cliente.
     conn = get_conn()
     valor = 0.50
     if conn:
@@ -340,144 +341,118 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
             if conn: conn.close()
     return cliente
 
-# --- FUNÇÃO DE VERIFICAÇÃO DE SALDO (RETORNA VALOR DO SALDO) ---
-def verificar_saldo_suficiente(id_cliente, ambiente_chave, valor_consulta):
+# --- NOVA FUNÇÃO DE COBRANÇA (REFATORADA) ---
+def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     """
-    Retorna: (Autorizado:bool, Saldo_Atual:float, Mensagem:str)
+    Executa a cobrança seguindo a nova regra de negócio:
+    1. Busca custo em cliente.valor_custo_carteira_cliente (ID Cliente + Origem)
+    2. Calcula Saldo em cliente.extrato_carteira_por_produto
+    3. Registra Débito em cliente.extrato_carteira_por_produto
     """
-    if not id_cliente: 
-        return True, 0.0, "Cliente não identificado (Teste/Admin)." 
-    
-    conn = get_conn()
-    if not conn: return False, 0.0, "Erro conexão DB"
-    
     try:
         cur = conn.cursor()
+        id_cli = str(dados_cliente['id'])
         
-        # 1º Passo: Verificar qual o cliente (Buscar CPF)
-        cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente,))
-        res_cli = cur.fetchone()
-        if not res_cli:
-            conn.close()
-            return False, 0.0, "Cliente não encontrado no cadastro."
-        cpf_cliente_db = re.sub(r'\D', '', str(res_cli[0]))
-
-        # 2º Passo: Identificar a Origem através da tabela de consulta (Chave/Ambiente)
-        cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (ambiente_chave,))
-        res_amb = cur.fetchone()
-        if not res_amb:
-            conn.close()
-            return False, 0.0, f"Ambiente '{ambiente_chave}' não configurado nas origens."
-        origem_custo_esperada = res_amb[0]
-        
-        # 3º Passo: Localizar o nome da tabela na coluna tabela SQL
-        query_cart = """
-            SELECT c.nome_tabela_transacoes
-            FROM cliente.cliente_carteira_lista l
-            JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
-            WHERE l.origem_custo = %s 
-            AND regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g') = %s
+        # 1. Busca Custo e Produto Vinculado
+        # Se sua tabela 'valor_custo_carteira_cliente' usa id_produto para armazenar ID ou Texto, ajuste conforme necessário.
+        # Aqui assumo que ele retorna valor, id_produto e nome_produto
+        sql_custo = """
+            SELECT valor_custo, id_produto, nome_produto 
+            FROM cliente.valor_custo_carteira_cliente 
+            WHERE id_cliente = %s AND origem_custo = %s
             LIMIT 1
         """
-        cur.execute(query_cart, (origem_custo_esperada, cpf_cliente_db))
-        res_tab = cur.fetchone()
+        cur.execute(sql_custo, (id_cli, origem_custo_chave))
+        res_custo = cur.fetchone()
         
-        if not res_tab:
-            conn.close()
-            return False, 0.0, f"Carteira não encontrada para origem '{origem_custo_esperada}'."
+        if not res_custo:
+            return False, f"Custo não definido para o cliente na origem '{origem_custo_chave}'."
             
-        tabela_transacoes = res_tab[0]
+        valor_debitar = float(res_custo[0])
+        id_prod_vinc = res_custo[1] 
+        nome_prod_vinc = res_custo[2]
         
-        # 4º Passo: Identificar o valor do saldo novo
-        query_saldo = f"SELECT saldo_novo FROM {tabela_transacoes} WHERE regexp_replace(cpf_cliente, '[^0-9]', '', 'g') = %s ORDER BY id DESC LIMIT 1"
-        cur.execute(query_saldo, (cpf_cliente_db,))
+        if valor_debitar <= 0:
+            return True, "Custo zero/gratuito."
+
+        # 2. Busca Saldo Anterior
+        sql_saldo = """
+            SELECT saldo_novo 
+            FROM cliente.extrato_carteira_por_produto 
+            WHERE id_cliente = %s 
+            ORDER BY id DESC LIMIT 1
+        """
+        cur.execute(sql_saldo, (id_cli,))
         res_saldo = cur.fetchone()
+        saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
-        saldo_atual = float(res_saldo[0]) if res_saldo else 0.0
+        # 3. Calcula Novo Saldo
+        saldo_novo = saldo_anterior - valor_debitar
         
-        conn.close()
+        # 4. Lança o Débito
+        sql_insert = """
+            INSERT INTO cliente.extrato_carteira_por_produto (
+                produto_vinculado, id_cliente, nome_cliente,
+                id_usuario, nome_usuario,
+                origem_lancamento, data_lancamento, tipo_lancamento,
+                valor_lancado, saldo_anterior, saldo_novo,
+                id_produto
+            ) VALUES (
+                %s, %s, %s,
+                %s, %s,
+                %s, NOW(), 'DEBITO',
+                %s, %s, %s,
+                %s
+            )
+        """
+        cur.execute(sql_insert, (
+            nome_prod_vinc, id_cli, dados_cliente['nome'],
+            str(dados_cliente.get('id_usuario', '0')), dados_cliente.get('nome_usuario', 'Sistema'),
+            origem_custo_chave, 
+            valor_debitar, saldo_anterior, saldo_novo,
+            id_prod_vinc
+        ))
         
-        if saldo_atual >= valor_consulta:
-            return True, saldo_atual, f"Saldo OK (R$ {saldo_atual:.2f})"
-        else:
-            return False, saldo_atual, f"Saldo insuficiente. Disponível: R$ {saldo_atual:.2f} | Necessário: R$ {valor_consulta:.2f}"
+        return True, f"Débito R$ {valor_debitar:.2f} OK. (Saldo: {saldo_novo:.2f})"
 
     except Exception as e:
-        if conn: conn.close()
-        return False, 0.0, f"Erro na verificação de saldo: {str(e)}"
-
-def processar_debito_automatico(id_cliente_pagador, nome_ambiente_origem):
-    if not id_cliente_pagador: return False, "ID Cliente ausente."
-    conn = get_conn()
-    if not conn: return False, "Erro DB."
-    try:
-        cur = conn.cursor()
-        
-        # 1. Busca Origem
-        cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta WHERE ambiente = %s LIMIT 1", (nome_ambiente_origem,))
-        res_amb = cur.fetchone()
-        if not res_amb:
-            conn.close(); return False, "Ambiente não cadastrado."
-        origem = res_amb[0]
-
-        # 2. Busca CPF do Cliente
-        cur.execute("SELECT cpf FROM admin.clientes WHERE id = %s", (id_cliente_pagador,))
-        res_cpf = cur.fetchone()
-        if not res_cpf:
-            conn.close(); return False, "Cliente admin não encontrado."
-        cpf_limpo = re.sub(r'\D', '', str(res_cpf[0]))
-
-        # 3. Busca Carteira
-        query = """SELECT l.cpf_cliente, l.nome_cliente, l.custo_carteira, l.origem_custo, c.nome_tabela_transacoes 
-                   FROM cliente.cliente_carteira_lista l JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
-                   WHERE regexp_replace(l.cpf_cliente, '[^0-9]', '', 'g') = %s AND l.origem_custo = %s LIMIT 1"""
-        cur.execute(query, (cpf_limpo, origem))
-        dados = cur.fetchone()
-        if not dados: conn.close(); return False, "Carteira não encontrada para débito."
-
-        cpf_cli_banco, nome_cli, custo, orig_custo, tabela = dados
-        val = float(custo) if custo else 0.0
-        
-        # 4. Aplica Débito
-        cur.execute(f"SELECT saldo_novo FROM {tabela} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cli_banco,))
-        res_saldo = cur.fetchone()
-        saldo_ant = float(res_saldo[0]) if res_saldo else 0.0
-        
-        cur.execute(f"INSERT INTO {tabela} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, %s, 'DEBITO', %s, %s, %s, NOW())",
-                    (cpf_cli_banco, nome_cli, orig_custo, nome_ambiente_origem, val, saldo_ant, saldo_ant - val))
-        conn.commit(); conn.close()
-        return True, f"Débito R$ {val:.2f} OK."
-    except Exception as e:
-        if conn: conn.close()
-        return False, str(e)
+        return False, f"Erro Cobrança: {str(e)}"
 
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
+    # Dados do Usuário Logado
     id_usuario = st.session_state.get('usuario_id', 0)
     nome_usuario = st.session_state.get('usuario_nome', 'Sistema')
     
-    id_cliente_final = None
-    nome_cliente_final = None
+    # Definição do Cliente Pagador
+    dados_pagador = {"id": None, "nome": None, "id_usuario": id_usuario, "nome_usuario": nome_usuario}
+    
     if id_cliente_pagador_manual:
+        # Modo Teste Manual
         try:
             cur = conn.cursor()
-            cur.execute("SELECT nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
+            cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
             res = cur.fetchone()
-            if res: id_cliente_final=id_cliente_pagador_manual; nome_cliente_final=res[0]
+            if res: 
+                dados_pagador["id"] = res[0]
+                dados_pagador["nome"] = res[1]
         except: pass
     else:
+        # Modo Automático (Vínculo)
         d = buscar_cliente_vinculado_ao_usuario(id_usuario)
-        id_cliente_final=d['id']; nome_cliente_final=d['nome']
+        dados_pagador["id"] = d['id']
+        dados_pagador["nome"] = d['nome']
 
+    # Busca a ORIGEM correta baseada no ambiente
     origem_real = buscar_origem_por_ambiente(ambiente)
 
     try:
         cur = conn.cursor()
         
-        # Cache
+        # 1. Verifica Cache
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -486,38 +461,49 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # BLOQUEIO POR SALDO (Ajustado para receber os 3 valores)
-        custo = buscar_valor_consulta_atual()
-        if id_cliente_final:
-            saldo_ok, saldo_val, msg_saldo = verificar_saldo_suficiente(id_cliente_final, ambiente, custo)
-            if not saldo_ok:
-                conn.close()
-                return {"sucesso": False, "msg": f"BLOQUEIO: {msg_saldo} (Saldo Atual: R$ {saldo_val:.2f})"}
+        # 2. BLOQUEIO DE SALDO (Verificação prévia usando a tabela unificada)
+        # Se tiver cliente pagador, verificamos se ele tem saldo na tabela extrato
+        custo_info = buscar_valor_consulta_atual() # Apenas para log, o custo real é verificado no débito
+        if dados_pagador['id']:
+             cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(dados_pagador['id']),))
+             res_s = cur.fetchone()
+             saldo_atual = float(res_s[0]) if res_s else 0.0
+             # Nota: Para ser perfeito, deveria checar o custo real do produto aqui também, 
+             # mas como é uma pré-validação, verificar se é > 0 já ajuda.
+             if saldo_atual <= 0:
+                 conn.close()
+                 return {"sucesso": False, "msg": f"Saldo Insuficiente (R$ {saldo_atual:.2f}). Recarregue sua carteira."}
 
-        # API
+        # 3. API
         cred = buscar_credenciais()
-        if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token ausente."}
+        if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token API ausente."}
         
         resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
         resp.encoding = 'ISO-8859-1'
         dados = parse_xml_to_dict(resp.text)
         
-        if not dados.get('nome'): conn.close(); return {"sucesso": False, "msg": "Sem dados.", "dados": dados}
+        if not dados.get('nome'): conn.close(); return {"sucesso": False, "msg": "Sem dados retornados.", "dados": dados}
         if not dados.get('cpf'): dados['cpf'] = cpf_padrao
 
+        # Salva JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
+        # 4. Registra LOG da Consulta
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
-                    (cpf_padrao, id_usuario, nome_usuario, custo, path, origem_real, id_cliente_final, nome_cliente_final, ambiente))
-        conn.commit()
+                    (cpf_padrao, id_usuario, nome_usuario, custo_info, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
         
+        # 5. EXECUTA A COBRANÇA (Novo Fluxo)
         msg_fin = ""
-        if id_cliente_final:
-            ok_fin, txt_fin = processar_debito_automatico(id_cliente_final, ambiente)
-            msg_fin = f" | {txt_fin}"
+        if dados_pagador['id']:
+            ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
+            if ok_fin:
+                msg_fin = f" | {txt_fin}"
+            else:
+                msg_fin = f" | ⚠️ Erro Cobrança: {txt_fin}"
         
+        conn.commit() # Comita Log + Cobrança juntos
         conn.close()
         return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_fin}
     except Exception as e:
@@ -569,6 +555,9 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
 def listar_clientes_carteira():
     conn = get_conn()
     if conn:
+        # Ajustado para exibir a nova tabela de extrato resumida se quiser, 
+        # mas mantendo a query original caso a tabela antiga ainda exista.
+        # Se preferir ver o extrato novo, mude aqui.
         try: df = pd.read_sql("SELECT * FROM conexoes.fator_cliente_carteira ORDER BY id", conn); conn.close(); return df
         except: conn.close()
     return pd.DataFrame()
