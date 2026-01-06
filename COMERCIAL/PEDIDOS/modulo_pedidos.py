@@ -37,28 +37,6 @@ def listar_modelos_mensagens():
         except: conn.close()
     return []
 
-def listar_carteiras_ativas():
-    conn = get_conn()
-    if conn:
-        try:
-            query = "SELECT nome_carteira FROM cliente.carteiras_config WHERE status = 'ATIVO' ORDER BY nome_carteira"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df['nome_carteira'].tolist()
-        except: conn.close()
-    return []
-
-def listar_tabelas_schema(schema_name):
-    conn = get_conn()
-    if conn:
-        try:
-            query = "SELECT table_name FROM information_schema.tables WHERE table_schema = %s ORDER BY table_name"
-            df = pd.read_sql(query, conn, params=(schema_name,))
-            conn.close()
-            return df['table_name'].tolist()
-        except: conn.close()
-    return []
-
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     """
     Atualiza saldo nas carteiras quando status muda.
@@ -69,14 +47,16 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         # Busca a origem do custo do produto
         cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
         res_prod = cur.fetchone()
-        if not res_prod or not res_prod[0]:
-            # Se não tiver origem no produto, tenta pegar do pedido se tiver sido gravado
-            origem = dados_pedido.get('origem_custo')
-            if not origem:
-                return False, "Produto sem 'Origem de Custo' definida."
-        else:
+        
+        origem = None
+        if res_prod and res_prod[0]:
             origem = res_prod[0]
-            
+        else:
+            origem = dados_pedido.get('origem_custo') # Tenta pegar do pedido gravado
+        
+        if not origem:
+            return False, "Produto sem 'Origem de Custo' definida."
+
         cpf_cliente = dados_pedido['cpf_cliente']
 
         # Busca qual carteira o cliente tem vinculada para essa origem
@@ -144,12 +124,10 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
     Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente
-    Agora grava a origem_custo (texto) corretamente.
     """
     try:
         cur = conn.cursor()
         
-        # Recupera dados do usuário vinculado ao cliente
         id_user = str(dados_cliente.get('id_usuario_vinculo', ''))
         nome_user = str(dados_cliente.get('nome_usuario_vinculo', ''))
         
@@ -190,7 +168,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
         try:
             cur = conn.cursor()
             
-            # 1. Cria o Pedido (Agora inserindo a origem_custo na tabela pedidos)
+            # Inserção principal
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
@@ -203,13 +181,13 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            # 2. Executa a regra do Passo 9 (Gravar na tabela de custos do cliente)
+            # Registro de Custo (Upsert)
             ok_custo, erro_custo = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
             
             conn.commit()
             conn.close()
             
-            # 3. Avisar WhatsApp (Passo 8)
+            # WhatsApp
             msg_whats = ""
             if avisar_cliente and cliente['telefone']:
                 try:
@@ -229,9 +207,10 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
     return False, "Erro conexão"
 
 # =============================================================================
-# 3. CRUD E FUNÇÕES GERAIS
+# 3. CRUD E FUNÇÕES DE LEITURA (COM CACHE)
 # =============================================================================
 
+@st.cache_data(ttl=60) # Cache de 60 segundos para agilizar o carregamento
 def buscar_clientes():
     conn = get_conn()
     if conn:
@@ -246,6 +225,7 @@ def buscar_clientes():
         return df
     return pd.DataFrame()
 
+@st.cache_data(ttl=60) # Cache de 60 segundos
 def buscar_produtos():
     conn = get_conn()
     if conn:
@@ -323,7 +303,6 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
     if conn:
         try:
             cur = conn.cursor()
-            # Atualiza também a origem se necessário, mas aqui estamos focando em qtd/valor
             cur.execute("""
                 UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
                 WHERE id=%s
@@ -386,7 +365,7 @@ def salvar_tabela_generica(schema, tabela, df_original, df_editado):
         if conn: conn.close()
         return False, str(e)
 
-# --- ESTADO (MODALS) ---
+# --- ESTADO ---
 def abrir_modal(tipo, pedido=None):
     st.session_state['modal_ativo'] = tipo
     st.session_state['pedido_ativo'] = pedido
@@ -396,11 +375,12 @@ def fechar_modal():
     st.session_state['pedido_ativo'] = None
 
 # =============================================================================
-# 4. DIALOGS
+# 4. DIALOGS (INTERFACES POP-UP)
 # =============================================================================
 
 @st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
+    # Uso de Cache para agilizar
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
@@ -408,17 +388,17 @@ def dialog_novo_pedido():
         st.warning("Cadastre clientes e produtos antes.")
         return
 
-    # 1. Cliente
+    # 1. Cliente (Com KEY para garantir reatividade)
     c1, c2 = st.columns(2)
-    ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
+    ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'], key="sel_cli_novo_pedido")
     cli = df_c.iloc[ic]
     c1.caption(f"🆔 **Ref:** CPF {cli['cpf']} | 📞 {cli['telefone']}")
     
-    # 2. Produto
-    ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
+    # 2. Produto (Com KEY para garantir reatividade)
+    ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'], key="sel_prod_novo_pedido")
     prod = df_p.iloc[ip]
     
-    # PEGA A ORIGEM DO PRODUTO (TEXTO)
+    # Pega Origem
     origem_produto_txt = prod.get('origem_custo', 'Geral')
     if not origem_produto_txt: origem_produto_txt = 'Geral'
     
@@ -441,7 +421,8 @@ def dialog_novo_pedido():
     
     st.divider()
     
-    # 5. Custo (Busca se já existe registro desse produto para o cliente)
+    # 5. Custo
+    # Lógica: Busca no banco. Se mudar o Cliente ou Produto, a query roda de novo.
     custo_sugerido = 0.0
     conn_chk = get_conn()
     if conn_chk:
@@ -453,12 +434,14 @@ def dialog_novo_pedido():
             conn_chk.close()
         except: conn_chk.close()
         
-    c_custo = st.number_input("7. Valor do Custo (Para Tabela Custo)", value=custo_sugerido, step=1.0)
+    # TRUQUE DO STREAMLIT: A key dinâmica força o componente a ser recriado com o novo valor sugerido
+    # quando mudamos o cliente ou o produto.
+    key_custo = f"input_custo_{cli['id']}_{prod['id']}"
+    c_custo = st.number_input("7. Valor do Custo (Para Tabela Custo)", value=custo_sugerido, step=1.0, key=key_custo)
     
     avisar = st.checkbox("8. Avisar WhatsApp?", value=True)
     
     if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
-        # Passa a origem_produto_txt para a função de criação
         ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, origem_produto_txt, avisar)
         if ok: 
             st.success(res)
@@ -575,6 +558,7 @@ def app_pedidos():
                     if row['status'] == 'Pago': cor = "🟢"
                     elif row['status'] == 'Pendente': cor = "🟠"
                     elif row['status'] == 'Solicitado': cor = "🔵"
+                    elif row['status'] == 'Cancelado': cor = "⚫"
                     
                     empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
                     
