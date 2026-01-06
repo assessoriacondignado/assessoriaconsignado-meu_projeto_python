@@ -61,16 +61,15 @@ def listar_tabelas_schema(schema_name):
 
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     """
-    Atualiza saldo nas carteiras quando status muda e registra no extrato unificado.
+    Atualiza saldo nas carteiras e na tabela unificada quando status muda.
     """
     try:
         cur = conn.cursor()
         
-        # Busca a origem do custo do produto
+        # 1. Identificar Origem de Custo
         cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
         res_prod = cur.fetchone()
         if not res_prod or not res_prod[0]:
-            # Se não tiver origem no produto, tenta pegar do pedido se tiver sido gravado
             origem = dados_pedido.get('origem_custo')
             if not origem:
                 return False, "Produto sem 'Origem de Custo' definida."
@@ -79,7 +78,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
             
         cpf_cliente = dados_pedido['cpf_cliente']
 
-        # Busca qual carteira o cliente tem vinculada para essa origem
+        # 2. Identificar Carteira Vinculada
         cur.execute("""
             SELECT nome_carteira 
             FROM cliente.cliente_carteira_lista 
@@ -89,7 +88,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         res_lista = cur.fetchone()
         
         if not res_lista:
-            # Fallback: Tenta pela configuração geral
+            # Fallback: Configuração geral
             cur.execute("SELECT nome_carteira FROM cliente.carteiras_config WHERE origem_custo = %s AND status='ATIVO' LIMIT 1", (origem,))
             res_lista = cur.fetchone()
             if not res_lista:
@@ -97,7 +96,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         
         nome_carteira = res_lista[0]
 
-        # Pega a tabela física da carteira
+        # 3. Identificar Tabela Física da Carteira
         cur.execute("""
             SELECT nome_tabela_transacoes 
             FROM cliente.carteiras_config 
@@ -113,19 +112,19 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         valor = float(dados_pedido['valor_total'])
         codigo_pedido = dados_pedido['codigo']
         
-        # Pega saldo anterior na tabela específica da carteira
+        # 4. Calcular Saldos
         cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
         if tipo_lancamento == 'CREDITO':
             saldo_novo = saldo_anterior + valor
-            motivo = f"Estorno/Pagamento Pedido {codigo_pedido}"
-        else: # DEBITO
+            motivo = f"Pagamento Pedido {codigo_pedido}"
+        else: # DEBITO (Cancelamento)
             saldo_novo = saldo_anterior - valor
-            motivo = f"Cobrança Pedido {codigo_pedido}"
+            motivo = f"Estorno/Cancelamento Pedido {codigo_pedido}"
 
-        # 1. Insere na tabela específica da carteira (Mantendo histórico detalhado por carteira)
+        # 5. Inserir na Tabela Específica da Carteira
         sql_insert = f"""
             INSERT INTO {tabela_sql} 
             (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
@@ -133,20 +132,31 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         """
         cur.execute(sql_insert, (cpf_cliente, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
         
-        # 2. Insere na tabela UNIFICADA DE EXTRATO (Para aparecer no Relatório Financeiro Detalhado)
-        # Convertemos id_cliente para string para evitar erro de tipo no banco
+        # 6. Inserir na Tabela Unificada (CORREÇÃO APLICADA AQUI)
+        # Convertemos id_cliente para string para evitar erro de tipo (text vs integer) no banco
         id_cliente_str = str(dados_pedido.get('id_cliente', ''))
-        nome_produto = dados_pedido.get('nome_produto', 'Produto não identificado')
-        nome_usuario_atual = st.session_state.get('usuario_nome', 'Sistema') # Tenta pegar usuário logado
+        nome_produto = str(dados_pedido.get('nome_produto', 'Produto'))
+        usuario_atual = st.session_state.get('nome_usuario') or "Sistema" # Tenta pegar usuário logado
 
-        sql_insert_extrato = """
+        sql_insert_uni = """
             INSERT INTO cliente.extrato_carteira_por_produto 
             (id_cliente, data_lancamento, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo, nome_usuario)
             VALUES (%s, NOW(), %s, %s, 'PEDIDO', %s, %s, %s, %s)
         """
-        cur.execute(sql_insert_extrato, (id_cliente_str, tipo_lancamento, f"{motivo} - {nome_produto}", 'PEDIDO', valor, saldo_anterior, saldo_novo, nome_usuario_atual))
-
-        return True, f"{tipo_lancamento} de R$ {valor:.2f} na carteira '{nome_carteira}' e Extrato Unificado."
+        # Monta descrição do produto/motivo
+        desc_produto = f"{motivo} - {nome_produto}"
+        
+        cur.execute(sql_insert_uni, (
+            id_cliente_str,         # ID como String
+            tipo_lancamento,        # CREDITO ou DEBITO
+            desc_produto,           # Descrição composta
+            valor,                  # Valor
+            saldo_anterior,         # Saldo Antes
+            saldo_novo,             # Saldo Depois
+            usuario_atual           # Usuário que fez a ação
+        ))
+        
+        return True, f"{tipo_lancamento} de R$ {valor:.2f} registrado (Carteira: {nome_carteira})"
 
     except Exception as e:
         return False, f"Erro financeiro: {str(e)}"
@@ -158,12 +168,10 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
     Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente
-    Agora grava a origem_custo (texto) corretamente.
     """
     try:
         cur = conn.cursor()
         
-        # Recupera dados do usuário vinculado ao cliente
         id_user = str(dados_cliente.get('id_usuario_vinculo', ''))
         nome_user = str(dados_cliente.get('nome_usuario_vinculo', ''))
         
@@ -204,7 +212,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
         try:
             cur = conn.cursor()
             
-            # 1. Cria o Pedido (Agora inserindo a origem_custo na tabela pedidos)
+            # 1. Cria o Pedido
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
@@ -223,7 +231,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             conn.commit()
             conn.close()
             
-            # 3. Avisar WhatsApp (Passo 8)
+            # 3. Avisar WhatsApp
             msg_whats = ""
             if avisar_cliente and cliente['telefone']:
                 try:
@@ -290,7 +298,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago":
                 coluna_data = ", data_pago = NOW()"
-                # Lança CRÉDITO
+                # Lança CRÉDITO na carteira e no extrato unificado
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
@@ -298,7 +306,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 coluna_data = ", data_pendente = NOW()"
             elif novo_status == "Cancelado":
                 coluna_data = ", data_cancelado = NOW()"
-                # Lança DÉBITO
+                # Lança DÉBITO na carteira e no extrato unificado
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
@@ -339,7 +347,6 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
     if conn:
         try:
             cur = conn.cursor()
-            # Atualiza também a origem se necessário, mas aqui estamos focando em qtd/valor
             cur.execute("""
                 UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
                 WHERE id=%s
@@ -474,7 +481,6 @@ def dialog_novo_pedido():
     avisar = st.checkbox("8. Avisar WhatsApp?", value=True)
     
     if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
-        # Passa a origem_produto_txt para a função de criação
         ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, origem_produto_txt, avisar)
         if ok: 
             st.success(res)
