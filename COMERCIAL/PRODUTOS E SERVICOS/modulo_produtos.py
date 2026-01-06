@@ -57,15 +57,19 @@ def sanitizar_nome_tabela(nome):
     return s.strip('_')
 
 def listar_origens_custo():
+    """Busca as origens de custo na tabela de ambiente de consulta."""
     conn = get_conn()
     lista = []
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator ORDER BY origem ASC")
+            # ATUALIZADO: Consulta na tabela fatorconferi_ambiente_consulta
+            cur.execute("SELECT origem FROM conexoes.fatorconferi_ambiente_consulta ORDER BY origem ASC")
             lista = [row[0] for row in cur.fetchall()]
             conn.close()
-        except:
+        except Exception as e:
+            # Em caso de erro (tabela não existe, etc), retorna lista vazia ou loga o erro se necessário
+            # st.error(f"Erro ao listar origens: {e}") 
             if conn: conn.close()
     return lista
 
@@ -248,6 +252,7 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
 def dialog_editar_produto(dados_atuais):
     st.write(f"Editando: **{dados_atuais['codigo']}**")
     
+    # Carrega opções de origem do banco
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
     
@@ -255,7 +260,7 @@ def dialog_editar_produto(dados_atuais):
     idx_origem = 0
     valor_atual_origem = dados_atuais.get('origem_custo')
     if valor_atual_origem and valor_atual_origem in lista_origens:
-        idx_origem = lista_origens.index(valor_atual_origem) + 1
+        idx_origem = lista_origens.index(valor_atual_origem) + 1 # +1 por causa do [""]
         
     # Busca carteira vinculada
     carteira_vinculada = None
@@ -280,10 +285,10 @@ def dialog_editar_produto(dados_atuais):
         c3, c4, c5 = st.columns(3)
         novo_preco = c3.number_input("Preço (R$)", value=float(dados_atuais['preco'] or 0.0), format="%.2f")
         
-        # Campo de Origem
+        # Campo de Origem atualizado para Selectbox
         novo_origem = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, index=idx_origem)
         
-        # [MUDANÇA AQUI] - Exibe carteira ou opção de criar
+        # Exibe carteira ou opção de criar
         criar_carteira_check = False
         if carteira_vinculada:
             c5.text_input("Carteira Vinculada", value=carteira_vinculada, disabled=True)
@@ -312,6 +317,8 @@ def dialog_editar_produto(dados_atuais):
 @st.dialog("📝 Novo Cadastro", width="large")
 def dialog_novo_cadastro():
     st.write("Novo item")
+    
+    # Carrega opções de origem do banco
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
 
@@ -322,6 +329,8 @@ def dialog_novo_cadastro():
         
         c3, c4 = st.columns(2)
         preco = c3.number_input("Preço (R$) (Opcional)", min_value=0.0, format="%.2f")
+        
+        # Campo de Origem atualizado para Selectbox
         origem_sel = c4.selectbox("Origem de Custo (Fator)", options=opcoes_origem, help="Vincula este produto a uma regra de cobrança.")
         
         arquivos = st.file_uploader("Arquivos", accept_multiple_files=True)
