@@ -80,71 +80,98 @@ def registrar_erro_importacao(cpf, erro_msg):
     except: pass
 
 # =============================================================================
-# 2. PARSING DE XML/JSON
+# 2. PARSING DE XML/JSON (CORRIGIDO PARA CASE-INSENSITIVE)
 # =============================================================================
 
-def get_tag_text(element, tag_name):
+def find_tag_insensitive(element, tag_name):
+    """Busca uma tag ignorando se é maiúscula ou minúscula"""
     if element is None: return None
-    res = element.find(tag_name)
-    if res is not None: return res.text
-    return None
-
-def find_tag(element, tag_name):
-    if element is None: return None
+    # Tenta busca exata primeiro (mais rápido)
     res = element.find(tag_name)
     if res is not None: return res
+    # Tenta maiúscula
+    res = element.find(tag_name.upper())
+    if res is not None: return res
+    # Tenta minúscula
+    res = element.find(tag_name.lower())
+    if res is not None: return res
+    
+    # Se falhar, itera (mais lento, mas garantido se tiver mistura de cases)
+    for child in element:
+        if child.tag.lower() == tag_name.lower():
+            return child
+    return None
+
+def get_tag_text_insensitive(element, tag_name):
+    """Pega o texto de uma tag ignorando case"""
+    node = find_tag_insensitive(element, tag_name)
+    if node is not None: return node.text
     return None
 
 def parse_xml_to_dict(xml_string):
     try:
+        # Tenta forçar UTF-8 se vier como ISO-8859-1 para evitar erros de parser
         xml_string = xml_string.replace('ISO-8859-1', 'UTF-8') 
         root = ET.fromstring(xml_string)
         dados = {}
         
-        cad = find_tag(root, 'cadastrais')
-        if cad is not None:
-            dados['nome'] = get_tag_text(cad, 'nome')
-            dados['cpf'] = get_tag_text(cad, 'cpf')
-            dados['nascimento'] = get_tag_text(cad, 'nascto')
-            dados['mae'] = get_tag_text(cad, 'nome_mae')
-            dados['rg'] = get_tag_text(cad, 'rg')
-            dados['pai'] = get_tag_text(cad, 'nome_pai')
-            dados['uf_rg'] = get_tag_text(cad, 'uf_rg')
-            dados['sexo'] = get_tag_text(cad, 'sexo')
+        # Busca CADASTRAIS (agora insensível a case)
+        cad = find_tag_insensitive(root, 'cadastrais')
         
+        if cad is not None:
+            dados['nome'] = get_tag_text_insensitive(cad, 'nome')
+            dados['cpf'] = get_tag_text_insensitive(cad, 'cpf')
+            dados['nascimento'] = get_tag_text_insensitive(cad, 'nascto') # API usa NASCTO
+            dados['mae'] = get_tag_text_insensitive(cad, 'nome_mae')
+            dados['rg'] = get_tag_text_insensitive(cad, 'rg')
+            dados['pai'] = get_tag_text_insensitive(cad, 'nome_pai')
+            
+            # Ajustado: API retorna UF_EMISSAO ou uf_rg dependendo da versão
+            uf_res = get_tag_text_insensitive(cad, 'uf_emissao')
+            if not uf_res:
+                uf_res = get_tag_text_insensitive(cad, 'uf_rg')
+            dados['uf_rg'] = uf_res
+            
+            dados['sexo'] = get_tag_text_insensitive(cad, 'sexo')
+        
+        # Telefones (Ajustado para estrutura TELEFONES_MOVEL e TELEFONES_FIXO)
         telefones = []
-        for tag_tipo in ['telefones_movel', 'telefones_fixo']:
-            node = find_tag(root, tag_tipo)
+        for tag_grupo in ['telefones_movel', 'telefones_fixo']:
+            node = find_tag_insensitive(root, tag_grupo)
             if node is not None:
                 for child in node:
+                    # Verifica se a tag filha contem "telefone" (ignora case)
                     if 'telefone' in child.tag.lower():
                         telefones.append({
-                            'numero': get_tag_text(child, 'numero'), 
-                            'prioridade': get_tag_text(child, 'prioridade')
+                            'numero': get_tag_text_insensitive(child, 'numero'), 
+                            'prioridade': get_tag_text_insensitive(child, 'prioridade')
                         })
         dados['telefones'] = telefones
 
+        # Emails
         emails = []
-        em_root = find_tag(root, 'emails')
+        em_root = find_tag_insensitive(root, 'emails')
         if em_root is not None:
             for em in em_root:
                 if 'email' in em.tag.lower() and em.text: 
                     emails.append(em.text)
         dados['emails'] = emails
 
+        # Endereços
         enderecos = []
-        end_root = find_tag(root, 'enderecos')
+        end_root = find_tag_insensitive(root, 'enderecos')
         if end_root is not None:
             for end in end_root:
                 if 'endereco' in end.tag.lower():
                     enderecos.append({
-                        'rua': f"{get_tag_text(end, 'logradouro') or ''}, {get_tag_text(end, 'numero') or ''}".strip(', '),
-                        'bairro': get_tag_text(end, 'bairro'),
-                        'cidade': get_tag_text(end, 'cidade'),
-                        'uf': get_tag_text(end, 'estado'),
-                        'cep': get_tag_text(end, 'cep')
+                        'rua': f"{get_tag_text_insensitive(end, 'logradouro') or ''}, {get_tag_text_insensitive(end, 'numero') or ''}".strip(', '),
+                        'bairro': get_tag_text_insensitive(end, 'bairro'),
+                        'cidade': get_tag_text_insensitive(end, 'cidade'),
+                        'uf': get_tag_text_insensitive(end, 'estado'),
+                        'cep': get_tag_text_insensitive(end, 'cep')
                     })
         dados['enderecos'] = enderecos
+        
         return dados
     except Exception as e:
         return {"erro": f"Falha XML: {e}", "raw": xml_string}
@@ -502,14 +529,26 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         resp.encoding = 'ISO-8859-1'
         dados = parse_xml_to_dict(resp.text)
         
-        if not dados.get('nome'): conn.close(); return {"sucesso": False, "msg": "Sem dados retornados.", "dados": dados}
-        if not dados.get('cpf'): dados['cpf'] = cpf_padrao
-
-        # Salva JSON
+        # --- ALTERAÇÃO: Salva o JSON ANTES da validação para debug ---
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
-        with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         
+        try:
+            with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
+        except Exception as e:
+            st.error(f"Erro ao salvar arquivo JSON de log: {e}")
+        # -------------------------------------------------------------
+
+        if not dados.get('nome'): 
+            conn.close()
+            return {
+                "sucesso": False, 
+                "msg": f"Sem dados retornados ou erro de estrutura. (Log: {nome_arq})", 
+                "dados": dados
+            }
+        
+        if not dados.get('cpf'): dados['cpf'] = cpf_padrao
+
         # 4. Registra LOG da Consulta
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
                     (cpf_padrao, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
