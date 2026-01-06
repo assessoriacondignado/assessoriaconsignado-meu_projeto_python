@@ -23,7 +23,7 @@ def get_conn():
         return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES E FINANCEIRAS (MANTIDAS DO ORIGINAL)
+# 1. FUNÇÕES AUXILIARES E FINANCEIRAS
 # =============================================================================
 
 def listar_modelos_mensagens():
@@ -61,7 +61,7 @@ def listar_tabelas_schema(schema_name):
 
 def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
     """
-    Lógica original para atualizar saldo nas carteiras quando status muda.
+    Atualiza saldo nas carteiras quando status muda.
     """
     try:
         cur = conn.cursor()
@@ -70,14 +70,16 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
         res_prod = cur.fetchone()
         if not res_prod or not res_prod[0]:
-            return False, "Produto sem 'Origem de Custo' definida."
-        
-        origem = res_prod[0]
+            # Se não tiver origem no produto, tenta pegar do pedido se tiver sido gravado
+            origem = dados_pedido.get('origem_custo')
+            if not origem:
+                return False, "Produto sem 'Origem de Custo' definida."
+        else:
+            origem = res_prod[0]
+            
         cpf_cliente = dados_pedido['cpf_cliente']
 
         # Busca qual carteira o cliente tem vinculada para essa origem
-        # OBS: Aqui mantivemos a lógica de buscar na 'cliente.cliente_carteira_lista' 
-        # para saber QUAL CARTEIRA (tabela) usar.
         cur.execute("""
             SELECT nome_carteira 
             FROM cliente.cliente_carteira_lista 
@@ -87,7 +89,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         res_lista = cur.fetchone()
         
         if not res_lista:
-            # Se não achar na lista antiga, tenta deduzir pela configuração geral (Fallback)
+            # Fallback: Tenta pela configuração geral
             cur.execute("SELECT nome_carteira FROM cliente.carteiras_config WHERE origem_custo = %s AND status='ATIVO' LIMIT 1", (origem,))
             res_lista = cur.fetchone()
             if not res_lista:
@@ -95,7 +97,7 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         
         nome_carteira = res_lista[0]
 
-        # Pega a tabela física onde grava as transações
+        # Pega a tabela física
         cur.execute("""
             SELECT nome_tabela_transacoes 
             FROM cliente.carteiras_config 
@@ -136,12 +138,13 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
         return False, f"Erro financeiro: {str(e)}"
 
 # =============================================================================
-# 2. LÓGICA DO NOVO FLUXO (SOLICITAÇÃO DO USUÁRIO)
+# 2. LÓGICA DO NOVO FLUXO DE PEDIDO
 # =============================================================================
 
-def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo):
+def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
     Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente
+    Agora grava a origem_custo (texto) corretamente.
     """
     try:
         cur = conn.cursor()
@@ -154,11 +157,6 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             id_user = '0'
             nome_user = 'Sem Vínculo'
 
-        # Garante valor numérico para origem (se sua tabela pede decimal)
-        # Se na tabela for texto, mude aqui. No seu pedido anterior era decimal (ex: 8 - Origem custo).
-        # Vou assumir que pode vir do produto ou ser padrão.
-        origem_val = 0.0 
-        
         sql = """
             INSERT INTO cliente.valor_custo_carteira_cliente (
                 id_cliente, nome_cliente,
@@ -170,6 +168,7 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             ON CONFLICT (id_cliente, id_produto)
             DO UPDATE SET
                 valor_custo = EXCLUDED.valor_custo,
+                origem_custo = EXCLUDED.origem_custo,
                 nome_usuario = EXCLUDED.nome_usuario,
                 id_usuario = EXCLUDED.id_usuario,
                 data_criacao = NOW()
@@ -178,34 +177,34 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             str(dados_cliente['id']), dados_cliente['nome'],
             id_user, nome_user,
             str(dados_produto['id']), dados_produto['nome'],
-            origem_val, float(valor_custo)
+            str(origem_custo_txt), float(valor_custo)
         ))
         return True, ""
     except Exception as e:
         return False, str(e)
 
-def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, avisar_cliente):
+def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, origem_custo_txt, avisar_cliente):
     codigo = f"PED-{datetime.now().strftime('%y%m%d%H%M')}"
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             
-            # 1. Cria o Pedido
+            # 1. Cria o Pedido (Agora inserindo a origem_custo na tabela pedidos)
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
-                                     custo_carteira, data_solicitacao)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
+                                     custo_carteira, origem_custo, data_solicitacao)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
             """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
                   int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total),
-                  float(valor_custo_informado)))
+                  float(valor_custo_informado), str(origem_custo_txt)))
             
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            # 2. Executa a regra do Passo 9 (Custo Carteira)
-            ok_custo, erro_custo = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado)
+            # 2. Executa a regra do Passo 9 (Gravar na tabela de custos do cliente)
+            ok_custo, erro_custo = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
             
             conn.commit()
             conn.close()
@@ -223,20 +222,19 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                             msg_whats = " (WhatsApp Enviado)"
                 except: pass
 
-            aviso_extra = "" if ok_custo else f" (⚠️ Erro ao gravar custo: {erro_custo})"
+            aviso_extra = "" if ok_custo else f" (⚠️ Erro ao gravar tabela custo: {erro_custo})"
             return True, f"Pedido {codigo} criado!{msg_whats}{aviso_extra}"
 
         except Exception as e: return False, str(e)
     return False, "Erro conexão"
 
 # =============================================================================
-# 3. CRUD E FUNÇÕES DE MANUTENÇÃO
+# 3. CRUD E FUNÇÕES GERAIS
 # =============================================================================
 
 def buscar_clientes():
     conn = get_conn()
     if conn:
-        # Traz também o usuário vinculado para usar no registro de custo
         query = """
             SELECT c.id, c.nome, c.cpf, c.telefone, c.email, c.id_usuario_vinculo, u.nome as nome_usuario_vinculo
             FROM admin.clientes c
@@ -266,9 +264,6 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, modelo_msg):
-    """
-    Mantém a regra: Se for Pago ou Cancelado, mexe no financeiro.
-    """
     conn = get_conn()
     if conn:
         try:
@@ -281,10 +276,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago":
                 coluna_data = ", data_pago = NOW()"
-                # REGRA: Pagamento confirmado -> Lança CRÉDITO na carteira (ou baixa o débito, dependendo da sua lógica)
-                # Assumindo que 'Pago' significa que o cliente pagou, então entra dinheiro? 
-                # Ou se for um empréstimo, 'Pago' significa que o dinheiro saiu para o cliente?
-                # Vou manter a lógica do seu código original: Pago = CREDITO
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
@@ -292,7 +283,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                 coluna_data = ", data_pendente = NOW()"
             elif novo_status == "Cancelado":
                 coluna_data = ", data_cancelado = NOW()"
-                # REGRA: Cancelado -> Estorna (DEBITO)
                 ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
                 if ok: obs_hist += f" | {msg_fin}"
                 else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
@@ -333,15 +323,11 @@ def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos,
     if conn:
         try:
             cur = conn.cursor()
+            # Atualiza também a origem se necessário, mas aqui estamos focando em qtd/valor
             cur.execute("""
                 UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
                 WHERE id=%s
             """, (nova_qtd, novo_valor, total, float(novo_custo_carteira), id_pedido))
-            
-            # Atualiza também na tabela nova de custos se necessário (Opcional, mas recomendado)
-            # Aqui mantive a lógica antiga de 'cliente.cliente_carteira_lista' caso ainda usem, 
-            # mas o ideal seria atualizar a 'valor_custo_carteira_cliente' também.
-            
             conn.commit(); conn.close()
             return True, ""
         except Exception as e: return False, str(e)
@@ -400,7 +386,7 @@ def salvar_tabela_generica(schema, tabela, df_original, df_editado):
         if conn: conn.close()
         return False, str(e)
 
-# --- FUNÇÕES DE ESTADO ---
+# --- ESTADO (MODALS) ---
 def abrir_modal(tipo, pedido=None):
     st.session_state['modal_ativo'] = tipo
     st.session_state['pedido_ativo'] = pedido
@@ -410,12 +396,11 @@ def fechar_modal():
     st.session_state['pedido_ativo'] = None
 
 # =============================================================================
-# 4. DIALOGS (INTERFACES POP-UP)
+# 4. DIALOGS
 # =============================================================================
 
-@st.dialog("➕ Novo Pedido (Fluxo Atualizado)", width="large")
+@st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
-    # Carregamento
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
@@ -427,37 +412,36 @@ def dialog_novo_pedido():
     c1, c2 = st.columns(2)
     ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
     cli = df_c.iloc[ic]
-    
-    # 2. Referência
     c1.caption(f"🆔 **Ref:** CPF {cli['cpf']} | 📞 {cli['telefone']}")
     
-    # 3. Produto
+    # 2. Produto
     ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
     prod = df_p.iloc[ip]
-    origem_produto = prod.get('origem_custo', 'Geral')
     
-    # 4. Resumo
+    # PEGA A ORIGEM DO PRODUTO (TEXTO)
+    origem_produto_txt = prod.get('origem_custo', 'Geral')
+    if not origem_produto_txt: origem_produto_txt = 'Geral'
+    
+    # 3. Resumo
     st.divider()
     st.markdown("##### 4. Resumo")
     rc1, rc2, rc3 = st.columns(3)
     rc1.metric("Cliente", cli['nome'].split()[0])
     rc2.metric("Item", prod['nome'])
-    rc3.metric("Origem", origem_produto)
+    rc3.metric("Origem", origem_produto_txt)
     
     st.divider()
     
-    # 5. Quantidade e Valor
+    # 4. Qtd e Valor
     c3, c4, c5 = st.columns(3)
     qtd = c3.number_input("5. Qtd", 1, value=1)
     val = c4.number_input("5. Valor Unit.", 0.0, value=float(prod['preco'] or 0.0))
-    
-    # 6. Cálculo Total
     total = qtd * val
     c5.metric("6. Total", f"R$ {total:.2f}")
     
     st.divider()
     
-    # 7. Valor do Custo (Com verificação se já existe)
+    # 5. Custo (Busca se já existe registro desse produto para o cliente)
     custo_sugerido = 0.0
     conn_chk = get_conn()
     if conn_chk:
@@ -469,13 +453,13 @@ def dialog_novo_pedido():
             conn_chk.close()
         except: conn_chk.close()
         
-    c_custo = st.number_input("7. Valor do Custo (Carteira)", value=custo_sugerido, step=1.0, help="Valor que será registrado na tabela de custos do cliente.")
+    c_custo = st.number_input("7. Valor do Custo (Para Tabela Custo)", value=custo_sugerido, step=1.0)
     
-    # 8. WhatsApp
     avisar = st.checkbox("8. Avisar WhatsApp?", value=True)
     
-    if st.button("✅ Criar Pedido (Passo 9)", type="primary", use_container_width=True):
-        ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, avisar)
+    if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
+        # Passa a origem_produto_txt para a função de criação
+        ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, origem_produto_txt, avisar)
         if ok: 
             st.success(res)
             time.sleep(1.5)
@@ -485,7 +469,6 @@ def dialog_novo_pedido():
 
 @st.dialog("✏️ Editar", width="large")
 def dialog_editar(ped):
-    # Lógica simplificada para edição
     with st.form("fe"):
         st.markdown(f"#### Editando: {ped['codigo']}")
         c_i1, c_i2 = st.columns(2)
@@ -597,6 +580,7 @@ def app_pedidos():
                     
                     with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}"):
                         st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
+                        st.caption(f"Origem Custo: {row.get('origem_custo', '-')}")
                             
                         c1, c2, c3, c4, c5, c6 = st.columns(6)
                         ts = int(time.time())
@@ -613,19 +597,19 @@ def app_pedidos():
         st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
         conn = get_conn()
         if conn:
-            df_pedidos_raw = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC", conn)
+            df_pedidos_raw = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC LIMIT 50", conn)
             st.markdown("**Tabela Pedidos:**")
             st.dataframe(df_pedidos_raw, height=200)
             
             st.markdown("---")
             st.markdown("**Tabela Custos (cliente.valor_custo_carteira_cliente):**")
             try:
-                df_custos = pd.read_sql("SELECT * FROM cliente.valor_custo_carteira_cliente ORDER BY id DESC", conn)
+                df_custos = pd.read_sql("SELECT * FROM cliente.valor_custo_carteira_cliente ORDER BY id DESC LIMIT 50", conn)
                 st.dataframe(df_custos, height=200)
             except: st.warning("Tabela de custos ainda não criada.")
             conn.close()
 
-    # ABA 3: TABELAS ADMIN (RESTAURADA)
+    # ABA 3: TABELAS ADMIN
     with tab_admin:
         st.markdown("#### 🗃️ Gestão de Tabelas (Schema: Admin)")
         tabelas = listar_tabelas_schema('admin')
