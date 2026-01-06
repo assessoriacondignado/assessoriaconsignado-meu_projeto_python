@@ -1615,15 +1615,18 @@ def app_clientes():
                 else: st.warning("Tabela sem dados.")
         else: st.info("Nenhuma tabela de transação encontrada.")
 
+    # =============================================================================
+    # 6. ABA RELATÓRIOS (AJUSTADA PARA EXTRATO UNIFICADO)
+    # =============================================================================
     with tab_rel:
         st.markdown("### 📊 Relatório Financeiro Detalhado")
+        st.caption("Fonte: `cliente.extrato_carteira_por_produto`")
         
-        # --- Carregamento de Opções para os Filtros ---
+        # --- Carregamento de Opções ---
         conn = get_conn()
+        # Busca apenas ID e Nome, pois a tabela de extrato usa id_cliente
         df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
         conn.close()
-        
-        df_carteiras_opt = listar_todas_carteiras_ativas()
         
         # --- Interface de Filtros ---
         with st.container(border=True):
@@ -1638,29 +1641,17 @@ def app_clientes():
                 key="rel_cli_sel"
             )
             
-            opcoes_tabelas = {}
-            if not df_carteiras_opt.empty:
-                opcoes_tabelas = dict(zip(df_carteiras_opt['nome_carteira'], df_carteiras_opt['nome_tabela_transacoes']))
-            
-            carteira_selecionada = c2.selectbox(
-                "Carteira / Tabela", 
-                options=list(opcoes_tabelas.keys()), 
-                key="rel_cart_sel"
-            )
-            
-            periodo = c3.date_input(
+            periodo = c2.date_input(
                 "Período de Transação", 
                 value=(date.today().replace(day=1), date.today()), 
                 key="rel_data_range"
             )
+
+            # Filtros opcionais
+            origem_filtro = c3.text_input("Origem (Ex: MANUAL, API)", key="rel_origem")
             
-            c4, c5, c6 = st.columns([2, 2, 1])
-            origem_filtro = c4.text_input("Origem (Ex: MANUAL, API)", key="rel_origem")
-            motivo_filtro = c5.text_input("Motivo (Contém texto)", key="rel_motivo")
-            
-            c6.write("") 
-            c6.write("") 
-            btn_gerar = c6.button("📄 Gerar Extrato", type="primary", use_container_width=True)
+            c4, c5 = st.columns([4, 2])
+            btn_gerar = c5.button("📄 Gerar Extrato", type="primary", use_container_width=True)
 
         st.divider()
 
@@ -1668,12 +1659,8 @@ def app_clientes():
         if btn_gerar:
             if not cli_selecionado:
                 st.warning("Selecione um cliente.")
-            elif not carteira_selecionada:
-                st.warning("Selecione uma carteira/tabela.")
             else:
-                cpf_cliente = df_clientes_opt[df_clientes_opt['id'] == cli_selecionado].iloc[0]['cpf']
-                tabela_sql = opcoes_tabelas[carteira_selecionada]
-                
+                # Ajuste de datas
                 if isinstance(periodo, tuple) and len(periodo) == 2:
                     dt_ini, dt_fim = periodo
                 elif isinstance(periodo, tuple) and len(periodo) == 1:
@@ -1681,46 +1668,44 @@ def app_clientes():
                 else:
                     dt_ini = dt_fim = periodo
 
-                query = f"""
+                # QUERY DIRECIONADA PARA A TABELA SOLICITADA
+                query = """
                     SELECT 
-                        data_transacao, 
-                        nome_cliente, 
-                        motivo, 
+                        data_lancamento, 
+                        produto_vinculado, 
                         origem_lancamento, 
                         tipo_lancamento, 
-                        valor, 
-                        saldo_novo 
-                    FROM {tabela_sql} 
-                    WHERE cpf_cliente = %s 
-                    AND data_transacao BETWEEN %s AND %s
+                        valor_lancado, 
+                        saldo_novo,
+                        nome_usuario
+                    FROM cliente.extrato_carteira_por_produto 
+                    WHERE id_cliente = %s 
+                    AND data_lancamento BETWEEN %s AND %s
                 """
-                params = [str(cpf_cliente).strip(), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
+                params = [int(cli_selecionado), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
 
                 if origem_filtro:
                     query += " AND origem_lancamento ILIKE %s"
                     params.append(f"%{origem_filtro}%")
                 
-                if motivo_filtro:
-                    query += " AND motivo ILIKE %s"
-                    params.append(f"%{motivo_filtro}%")
-
-                query += " ORDER BY data_transacao DESC"
+                query += " ORDER BY id DESC" # Ordenar por ID geralmente garante a ordem cronológica de inserção
 
                 conn = get_conn()
                 try:
                     df_rel = pd.read_sql(query, conn, params=params)
                     
                     if not df_rel.empty:
-                        df_rel['data_transacao'] = pd.to_datetime(df_rel['data_transacao']).dt.strftime('%d/%m/%Y %H:%M')
+                        # Formatação para exibição
+                        df_rel['data_lancamento'] = pd.to_datetime(df_rel['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
                         
                         df_rel.rename(columns={
-                            'data_transacao': 'Data',
-                            'nome_cliente': 'Cliente',
-                            'motivo': 'Motivo',
+                            'data_lancamento': 'Data',
+                            'produto_vinculado': 'Produto / Motivo',
                             'origem_lancamento': 'Origem',
                             'tipo_lancamento': 'Tipo',
-                            'valor': 'Valor (R$)',
-                            'saldo_novo': 'Saldo (R$)'
+                            'valor_lancado': 'Valor (R$)',
+                            'saldo_novo': 'Saldo (R$)',
+                            'nome_usuario': 'Usuário'
                         }, inplace=True)
                         
                         st.success(f"Relatório gerado com sucesso: {len(df_rel)} registros encontrados.")
@@ -1728,19 +1713,24 @@ def app_clientes():
                         st.dataframe(
                             df_rel, 
                             use_container_width=True, 
-                            hide_index=True
+                            hide_index=True,
+                            column_config={
+                                "Valor (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                                "Saldo (R$)": st.column_config.NumberColumn(format="R$ %.2f")
+                            }
                         )
                         
+                        # Totais do período
                         total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor (R$)'].sum()
                         total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor (R$)'].sum()
                         
-                        # Pega o saldo da transação mais recente (DESC)
-                        saldo_periodo = df_rel.iloc[0]['Saldo (R$)']
+                        # Pega o saldo do registro mais recente (primeira linha devido ao ORDER BY ID DESC)
+                        saldo_atual_real = df_rel.iloc[0]['Saldo (R$)']
                         
                         rc1, rc2, rc3 = st.columns(3)
                         rc1.metric("Total Créditos (Período)", f"R$ {total_cred:,.2f}")
                         rc2.metric("Total Débitos (Período)", f"R$ {total_deb:,.2f}")
-                        rc3.metric("Saldo Final (Atual)", f"R$ {saldo_periodo:,.2f}", help="Saldo acumulado após a última transação listada.")
+                        rc3.metric("Saldo Atual (Final)", f"R$ {saldo_atual_real:,.2f}", help="Saldo acumulado do último registro encontrado.")
                         
                     else:
                         st.info("Nenhum registro encontrado para os filtros aplicados.")
@@ -1768,9 +1758,7 @@ def app_clientes():
                         conn.close()
                         
                         cols_travadas = ["data_criacao", "data_registro"]
-                        if 'id' in df_tabela.columns:
-                            pass
-
+                        
                         df_editado = st.data_editor(
                             df_tabela,
                             key=f"editor_planilha_{tabela_selecionada}",
