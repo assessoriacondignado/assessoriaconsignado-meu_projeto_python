@@ -278,7 +278,7 @@ def buscar_credenciais():
     return cred
 
 def buscar_valor_consulta_atual():
-    # OBS: Este valor é apenas informativo para o Log de Consulta, o valor real debitado vem da tabela de custos do cliente.
+    # Valor padrão/genérico usado se não houver custo específico
     conn = get_conn()
     valor = 0.50
     if conn:
@@ -354,8 +354,6 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         id_cli = str(dados_cliente['id'])
         
         # 1. Busca Custo e Produto Vinculado
-        # Se sua tabela 'valor_custo_carteira_cliente' usa id_produto para armazenar ID ou Texto, ajuste conforme necessário.
-        # Aqui assumo que ele retorna valor, id_produto e nome_produto
         sql_custo = """
             SELECT valor_custo, id_produto, nome_produto 
             FROM cliente.valor_custo_carteira_cliente 
@@ -375,7 +373,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         if valor_debitar <= 0:
             return True, "Custo zero/gratuito."
 
-        # 2. Busca Saldo Anterior
+        # 2. Busca Saldo Anterior (na tabela unificada)
         sql_saldo = """
             SELECT saldo_novo 
             FROM cliente.extrato_carteira_por_produto 
@@ -418,6 +416,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     except Exception as e:
         return False, f"Erro Cobrança: {str(e)}"
 
+# --- FUNÇÃO PRINCIPAL DE CONSULTA (COM BLOQUEIO DE SALDO) ---
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
     conn = get_conn()
@@ -461,20 +460,41 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # 2. BLOQUEIO DE SALDO (Verificação prévia usando a tabela unificada)
-        # Se tiver cliente pagador, verificamos se ele tem saldo na tabela extrato
-        custo_info = buscar_valor_consulta_atual() # Apenas para log, o custo real é verificado no débito
+        # ---------------------------------------------------------------------
+        # 2. BLOQUEIO DE SALDO (VALIDAÇÃO DE LIMITE)
+        # ---------------------------------------------------------------------
+        custo_previsto = 0.0
+        
         if dados_pagador['id']:
-             cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(dados_pagador['id']),))
+             # A. Busca o Custo Específico do Cliente
+             sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
+             cur.execute(sql_custo, (str(dados_pagador['id']), origem_real))
+             res_custo = cur.fetchone()
+             
+             if res_custo:
+                 custo_previsto = float(res_custo[0])
+             else:
+                 # Se não tem custo negociado, pega o padrão para log (e talvez bloqueie ou não, dependendo da sua regra)
+                 # Aqui assumimos que ele tenta usar o padrão se não achar o específico
+                 custo_previsto = buscar_valor_consulta_atual()
+
+             # B. Busca o Saldo Atual na tabela de extrato
+             sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
+             cur.execute(sql_saldo, (str(dados_pagador['id']),))
              res_s = cur.fetchone()
              saldo_atual = float(res_s[0]) if res_s else 0.0
-             # Nota: Para ser perfeito, deveria checar o custo real do produto aqui também, 
-             # mas como é uma pré-validação, verificar se é > 0 já ajuda.
-             if saldo_atual <= 0:
-                 conn.close()
-                 return {"sucesso": False, "msg": f"Saldo Insuficiente (R$ {saldo_atual:.2f}). Recarregue sua carteira."}
 
-        # 3. API
+             # C. Validação: Bloqueia se Saldo < Custo
+             # (Isso impede que o saldo fique negativo)
+             if saldo_atual < custo_previsto:
+                 conn.close()
+                 return {
+                     "sucesso": False, 
+                     "msg": f"🚫 Bloqueio Financeiro: Saldo insuficiente. (Custo: R$ {custo_previsto:.2f} | Saldo: R$ {saldo_atual:.2f})"
+                 }
+        # ---------------------------------------------------------------------
+
+        # 3. API (Só executa se passou pelo bloqueio)
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token API ausente."}
         
@@ -492,9 +512,9 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         
         # 4. Registra LOG da Consulta
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
-                    (cpf_padrao, id_usuario, nome_usuario, custo_info, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
+                    (cpf_padrao, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
         
-        # 5. EXECUTA A COBRANÇA (Novo Fluxo)
+        # 5. EXECUTA A COBRANÇA (Debita o valor real)
         msg_fin = ""
         if dados_pagador['id']:
             ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
@@ -555,9 +575,6 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
 def listar_clientes_carteira():
     conn = get_conn()
     if conn:
-        # Ajustado para exibir a nova tabela de extrato resumida se quiser, 
-        # mas mantendo a query original caso a tabela antiga ainda exista.
-        # Se preferir ver o extrato novo, mude aqui.
         try: df = pd.read_sql("SELECT * FROM conexoes.fator_cliente_carteira ORDER BY id", conn); conn.close(); return df
         except: conn.close()
     return pd.DataFrame()
