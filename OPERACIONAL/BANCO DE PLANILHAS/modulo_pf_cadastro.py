@@ -23,8 +23,7 @@ def get_conn():
 
 def init_db_structures():
     """
-    Garante que as tabelas necessárias existam no banco.
-    Adicionado: Criação da tabela pf_emprego_renda se não existir.
+    Garante estruturas do banco e ATUALIZA tabelas antigas se faltar colunas.
     """
     conn = get_conn()
     if conn:
@@ -32,28 +31,23 @@ def init_db_structures():
             cur = conn.cursor()
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
             
-            # Garante colunas na tabela principal
-            cols_extras = [
+            # 1. Garante colunas na tabela PRINCIPAL (pf_dados)
+            cols_extras_dados = [
                 "uf_rg VARCHAR(2)", "pis VARCHAR(20)", "nome_procurador VARCHAR(150)", 
                 "cpf_procurador VARCHAR(14)", "dados_exp_rg VARCHAR(50)", 
                 "serie_ctps VARCHAR(20)", "cnh VARCHAR(20)", "nome_pai VARCHAR(150)"
             ]
-            for col_def in cols_extras:
+            for col_def in cols_extras_dados:
                 try:
                     col_name = col_def.split()[0]
                     cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
                 except: pass
             
-            # Garante coluna numero como texto
-            try:
-                cur.execute("ALTER TABLE banco_pf.pf_telefones ALTER COLUMN numero TYPE VARCHAR(20)")
-            except: pass
-
-            # --- CORREÇÃO: GARANTIR TABELAS DE VÍNCULO ---
+            # 2. Garante/Cria tabela PF_EMPREGO_RENDA
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emprego_renda (
                     id SERIAL PRIMARY KEY,
-                    cpf_ref VARCHAR(20) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE,
+                    cpf_ref VARCHAR(20), 
                     convenio VARCHAR(100),
                     matricula VARCHAR(100),
                     dados_extras TEXT,
@@ -61,7 +55,25 @@ def init_db_structures():
                     UNIQUE(matricula)
                 );
             """)
+            
+            # 3. CORREÇÃO DO ERRO: Adiciona cpf_ref se a tabela já existia sem ele
+            try:
+                cur.execute("ALTER TABLE banco_pf.pf_emprego_renda ADD COLUMN IF NOT EXISTS cpf_ref VARCHAR(20)")
+                # Tenta criar a FK se não existir (pode falhar se tiver dados órfãos, então ignoramos erro de FK por enquanto)
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pf_emprego_renda_cpf_ref_fkey') THEN
+                                ALTER TABLE banco_pf.pf_emprego_renda 
+                                ADD CONSTRAINT pf_emprego_renda_cpf_ref_fkey 
+                                FOREIGN KEY (cpf_ref) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE;
+                            END IF;
+                        END $$;
+                    """)
+                except: pass
+            except: pass
 
+            # 4. Outras tabelas
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             
             cur.execute("""
@@ -82,7 +94,6 @@ def init_db_structures():
                 );
             """)
             
-            # Endereços
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_enderecos (
                     id SERIAL PRIMARY KEY,
@@ -94,6 +105,10 @@ def init_db_structures():
                     cep VARCHAR(20)
                 );
             """)
+
+            # Ajuste de tipos
+            try: cur.execute("ALTER TABLE banco_pf.pf_telefones ALTER COLUMN numero TYPE VARCHAR(20)")
+            except: pass
 
             conn.commit()
             conn.close()
@@ -233,8 +248,9 @@ def carregar_dados_completos(cpf):
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
             # Busca Vínculos (Emprego e Renda)
-            query_emp = f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
+            # Tenta buscar. Se a coluna nao existir, vai dar erro e cair no except, retornando vazio sem quebrar
             try:
+                query_emp = f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
                 df_emp = pd.read_sql(query_emp, conn, params=params_busca)
             except:
                 conn.rollback()
@@ -268,7 +284,6 @@ def carregar_dados_completos(cpf):
                                         vinculo['contratos'].extend(df_contratos.to_dict('records'))
                             except: conn.rollback()
                     else:
-                        # Fallback para tabela padrao antiga se houver
                         try:
                             query_padrao = "SELECT * FROM banco_pf.pf_contratos WHERE matricula_ref = %s"
                             df_contratos = pd.read_sql(query_padrao, conn, params=(matricula,))
@@ -833,7 +848,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     col_names = ", ".join(cols)
                     
                     # Inserção direta (assumindo que o usuário quer adicionar novo registro)
-                    # Idealmente teria verificação de duplicidade, mas depende da chave da tabela destino
                     cur.execute(f"INSERT INTO {tabela_destino} ({col_names}) VALUES ({placeholders})", vals)
 
             # --- COMMIT FINAL ---
