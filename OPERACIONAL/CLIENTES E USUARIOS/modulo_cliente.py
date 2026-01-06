@@ -24,7 +24,7 @@ def get_conn():
 # =============================================================================
 
 def garantir_tabela_extrato_geral():
-    """Garante que a tabela unificada de extratos exista para evitar erros no relatório."""
+    """Garante que a tabela unificada de extratos exista."""
     conn = get_conn()
     if conn:
         try:
@@ -47,6 +47,31 @@ def garantir_tabela_extrato_geral():
             conn.close()
         except Exception as e:
             st.error(f"Erro ao criar tabela de extrato: {e}")
+            if conn: conn.close()
+
+def garantir_tabela_custo_carteira():
+    """Garante que a nova tabela de custo de carteira exista."""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cliente.valor_custo_carteira_cliente (
+                    id SERIAL PRIMARY KEY,
+                    cpf_cliente VARCHAR(20),
+                    nome_cliente VARCHAR(255),
+                    nome_carteira VARCHAR(255),
+                    custo_carteira NUMERIC(10, 2),
+                    cpf_usuario VARCHAR(20),
+                    nome_usuario VARCHAR(255),
+                    origem_custo VARCHAR(100),
+                    data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            st.error(f"Erro ao criar tabela valor_custo_carteira_cliente: {e}")
             if conn: conn.close()
 
 def formatar_cnpj(v):
@@ -430,15 +455,20 @@ def excluir_relacao_pedido_carteira(id_reg):
         if conn: conn.close()
         return False
 
+# =============================================================================
+# FUNÇÕES ATUALIZADAS PARA A NOVA TABELA: cliente.valor_custo_carteira_cliente
+# =============================================================================
+
 def listar_cliente_carteira_lista():
     conn = get_conn()
     try:
+        # ATUALIZADO PARA A NOVA TABELA
         query = """
             SELECT 
                 l.id, l.cpf_cliente, l.nome_cliente, l.nome_carteira, 
                 l.custo_carteira, l.cpf_usuario, l.nome_usuario, l.origem_custo,
                 c.nome_tabela_transacoes
-            FROM cliente.cliente_carteira_lista l
+            FROM cliente.valor_custo_carteira_cliente l
             LEFT JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
             ORDER BY l.nome_cliente
         """
@@ -461,8 +491,10 @@ def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
         cur.execute(query_vinculo, (cpf_limpo,))
         res_v = cur.fetchone()
         cpf_u, nome_u = (res_v[0], res_v[1]) if res_v else (None, None)
+        
+        # ATUALIZADO PARA A NOVA TABELA
         cur.execute("""
-            INSERT INTO cliente.cliente_carteira_lista (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
+            INSERT INTO cliente.valor_custo_carteira_cliente (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo))
         conn.commit(); conn.close(); return True
@@ -474,8 +506,9 @@ def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_u, 
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # ATUALIZADO PARA A NOVA TABELA
         cur.execute("""
-            UPDATE cliente.cliente_carteira_lista 
+            UPDATE cliente.valor_custo_carteira_cliente 
             SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
             WHERE id=%s
         """, (cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo, id_reg))
@@ -487,11 +520,15 @@ def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_u, 
 def excluir_cliente_carteira_lista(id_reg):
     conn = get_conn()
     try:
-        cur = conn.cursor(); cur.execute("DELETE FROM cliente.cliente_carteira_lista WHERE id=%s", (id_reg,))
+        cur = conn.cursor()
+        # ATUALIZADO PARA A NOVA TABELA
+        cur.execute("DELETE FROM cliente.valor_custo_carteira_cliente WHERE id=%s", (id_reg,))
         conn.commit(); conn.close(); return True
     except:
         if conn: conn.close()
         return False
+
+# =============================================================================
 
 def listar_origens_para_selecao():
     conn = get_conn()
@@ -694,8 +731,23 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         saldo_anterior = float(res[0]) if res else 0.0
         valor = float(valor)
         saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
+        
+        # Inserção na tabela individual da carteira
         query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
         cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
+        
+        # Opcional: Inserção na tabela unificada (para aparecer no relatório novo)
+        # É importante buscar o ID do cliente primeiro para a tabela unificada
+        cur.execute("SELECT id FROM admin.clientes WHERE cpf = %s LIMIT 1", (cpf_cliente,))
+        res_cli = cur.fetchone()
+        if res_cli:
+            id_cliente = res_cli[0]
+            cur.execute("""
+                INSERT INTO cliente.extrato_carteira_por_produto 
+                (id_cliente, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo)
+                VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s)
+            """, (id_cliente, tipo_lanc, motivo, valor, saldo_anterior, saldo_novo))
+
         conn.commit(); conn.close(); return True, "Sucesso"
     except Exception as e:
         if conn: conn.close()
@@ -1115,7 +1167,8 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
 
 def app_clientes():
     garantir_tabela_config_carteiras()
-    garantir_tabela_extrato_geral() # <--- NOVA FUNÇÃO PARA GARANTIR A TABELA DE EXTRATO
+    garantir_tabela_extrato_geral()
+    garantir_tabela_custo_carteira() # <--- NOVA FUNÇÃO PARA GARANTIR A TABELA DE CUSTOS
     
     st.markdown("## 👥 Central de Clientes e Usuários")
     
@@ -1438,7 +1491,8 @@ def app_clientes():
             else: st.info("Vazio.")
 
         with st.expander("📂 Lista de Carteiras", expanded=False):
-            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.cliente_carteira_lista</p>", unsafe_allow_html=True)
+            # ATUALIZADO
+            st.markdown("<p style='color: lightblue; font-size: 12px; margin-bottom: 5px;'>Tabela SQL: cliente.valor_custo_carteira_cliente</p>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.caption("Nova Carteira")
                 c1, c2, c3, c4, c5 = st.columns([1.5, 2, 1.5, 1, 1])
@@ -1644,25 +1698,28 @@ def app_clientes():
         else: st.info("Nenhuma tabela de transação encontrada.")
 
     # =============================================================================
-    # 6. ABA RELATÓRIOS (AJUSTADA PARA EXTRATO UNIFICADO)
+    # 6. ABA RELATÓRIOS (ATUALIZADA E CORRIGIDA)
     # =============================================================================
     with tab_rel:
         st.markdown("### 📊 Relatório Financeiro Detalhado")
         st.caption("Fonte: `cliente.extrato_carteira_por_produto`")
         
-        # --- Carregamento de Opções ---
         conn = get_conn()
-        df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
-        conn.close()
+        try:
+            df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
+        except Exception as e:
+            st.error(f"Erro ao carregar clientes: {e}")
+            df_clientes_opt = pd.DataFrame()
+        finally:
+            conn.close()
         
-        # --- Interface de Filtros ---
         with st.container(border=True):
             st.markdown("#### 🔍 Filtros de Pesquisa")
             c1, c2, c3 = st.columns([3, 2, 2])
             
             cli_selecionado = c1.selectbox(
                 "Cliente", 
-                options=df_clientes_opt['id'], 
+                options=df_clientes_opt['id'] if not df_clientes_opt.empty else [], 
                 format_func=lambda x: df_clientes_opt[df_clientes_opt['id']==x]['nome'].values[0] if not df_clientes_opt.empty else "Sem Clientes",
                 key="rel_cli_sel"
             )
@@ -1676,7 +1733,7 @@ def app_clientes():
 
         if btn_gerar:
             if not cli_selecionado:
-                st.warning("Selecione um cliente.")
+                st.warning("⚠️ Selecione um cliente para gerar o relatório.")
             else:
                 if isinstance(periodo, tuple) and len(periodo) == 2:
                     dt_ini, dt_fim = periodo
@@ -1687,11 +1744,13 @@ def app_clientes():
 
                 query = """
                     SELECT 
+                        id,
                         data_lancamento, 
                         produto_vinculado, 
                         origem_lancamento, 
                         tipo_lancamento, 
                         valor_lancado, 
+                        saldo_anterior,
                         saldo_novo,
                         nome_usuario
                     FROM cliente.extrato_carteira_por_produto 
@@ -1704,7 +1763,7 @@ def app_clientes():
                     query += " AND origem_lancamento ILIKE %s"
                     params.append(f"%{origem_filtro}%")
                 
-                query += " ORDER BY id DESC"
+                query += " ORDER BY data_lancamento DESC, id DESC"
 
                 conn = get_conn()
                 try:
@@ -1713,40 +1772,40 @@ def app_clientes():
                     if not df_rel.empty:
                         df_rel['data_lancamento'] = pd.to_datetime(df_rel['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
                         df_rel.rename(columns={
+                            'id': 'ID',
                             'data_lancamento': 'Data',
-                            'produto_vinculado': 'Produto / Motivo',
+                            'produto_vinculado': 'Produto / Carteira',
                             'origem_lancamento': 'Origem',
                             'tipo_lancamento': 'Tipo',
-                            'valor_lancado': 'Valor',
-                            'saldo_novo': 'Saldo',
-                            'nome_usuario': 'Usuário'
+                            'valor_lancado': 'Valor (R$)',
+                            'saldo_anterior': 'Saldo Anterior (R$)',
+                            'saldo_novo': 'Saldo Atual (R$)',
+                            'nome_usuario': 'Resp. Lançamento'
                         }, inplace=True)
                         
-                        st.success(f"Relatório gerado com sucesso: {len(df_rel)} registros encontrados.")
+                        st.success(f"✅ Relatório gerado: {len(df_rel)} registros encontrados.")
                         
-                        # Exibição Simplificada para evitar erro de formatação
+                        cols_order = ['ID', 'Data', 'Produto / Carteira', 'Origem', 'Tipo', 'Valor (R$)', 'Saldo Anterior (R$)', 'Saldo Atual (R$)', 'Resp. Lançamento']
                         st.dataframe(
-                            df_rel, 
+                            df_rel[cols_order], 
                             use_container_width=True, 
                             hide_index=True
                         )
                         
-                        # Cálculo de totais
-                        total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor'].sum()
-                        total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor'].sum()
-                        saldo_atual_real = df_rel.iloc[0]['Saldo']
+                        total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor (R$)'].sum()
+                        total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor (R$)'].sum()
+                        saldo_atual_real = df_rel.iloc[0]['Saldo Atual (R$)']
                         
+                        st.markdown("---")
                         rc1, rc2, rc3 = st.columns(3)
-                        rc1.metric("Total Créditos", f"R$ {total_cred:,.2f}")
-                        rc2.metric("Total Débitos", f"R$ {total_deb:,.2f}")
-                        rc3.metric("Saldo Atual", f"R$ {saldo_atual_real:,.2f}")
+                        rc1.metric("Total Entradas (Crédito)", f"R$ {total_cred:,.2f}")
+                        rc2.metric("Total Saídas (Débito)", f"R$ {total_deb:,.2f}")
+                        rc3.metric("Saldo Final no Período", f"R$ {saldo_atual_real:,.2f}")
                         
                     else:
-                        st.info("Nenhum registro encontrado para os filtros aplicados.")
+                        st.info("ℹ️ Nenhum registro encontrado para os filtros aplicados neste período.")
                 except Exception as e:
-                    # AQUI VAI APARECER O ERRO SE ACONTECER NOVAMENTE
                     st.error(f"Erro ao consultar banco de dados: {e}")
-                    st.info("Dica: Verifique se a tabela 'cliente.extrato_carteira_por_produto' existe e tem as colunas corretas.")
                 finally:
                     conn.close()
 
