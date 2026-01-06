@@ -5,6 +5,7 @@ from datetime import datetime, date
 import re
 import time
 
+# Tenta importar o módulo de conexão
 try:
     import conexao
 except ImportError:
@@ -21,6 +22,10 @@ def get_conn():
         return None
 
 def init_db_structures():
+    """
+    Garante que as tabelas necessárias existam no banco.
+    Adicionado: Criação da tabela pf_emprego_renda se não existir.
+    """
     conn = get_conn()
     if conn:
         try:
@@ -39,13 +44,24 @@ def init_db_structures():
                     cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
                 except: pass
             
-            # Garante coluna numero como texto para aceitar formatação se necessário
+            # Garante coluna numero como texto
             try:
                 cur.execute("ALTER TABLE banco_pf.pf_telefones ALTER COLUMN numero TYPE VARCHAR(20)")
             except: pass
 
-            conn.commit()
-            
+            # --- CORREÇÃO: GARANTIR TABELAS DE VÍNCULO ---
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS banco_pf.pf_emprego_renda (
+                    id SERIAL PRIMARY KEY,
+                    cpf_ref VARCHAR(20) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE,
+                    convenio VARCHAR(100),
+                    matricula VARCHAR(100),
+                    dados_extras TEXT,
+                    data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(matricula)
+                );
+            """)
+
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             
             cur.execute("""
@@ -58,12 +74,24 @@ def init_db_structures():
                 );
             """)
             
-            # Garante tabela de emails se não existir
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emails (
                     id SERIAL PRIMARY KEY,
                     cpf_ref VARCHAR(20) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE,
                     email VARCHAR(150)
+                );
+            """)
+            
+            # Endereços
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS banco_pf.pf_enderecos (
+                    id SERIAL PRIMARY KEY,
+                    cpf_ref VARCHAR(20) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE,
+                    rua VARCHAR(255),
+                    bairro VARCHAR(100),
+                    cidade VARCHAR(100),
+                    uf VARCHAR(5),
+                    cep VARCHAR(20)
                 );
             """)
 
@@ -204,15 +232,19 @@ def carregar_dados_completos(cpf):
             # Busca Endereços
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
-            # Busca Vínculos
-            query_emp = f"SELECT convenio, matricula FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
-            df_emp = pd.read_sql(query_emp, conn, params=params_busca)
+            # Busca Vínculos (Emprego e Renda)
+            query_emp = f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
+            try:
+                df_emp = pd.read_sql(query_emp, conn, params=params_busca)
+            except:
+                conn.rollback()
+                df_emp = pd.DataFrame()
             
             if not df_emp.empty:
                 for _, row_emp in df_emp.iterrows():
                     conv_nome = str(row_emp['convenio']).strip() 
                     matricula = str(row_emp['matricula']).strip()
-                    vinculo = {'convenio': conv_nome, 'matricula': matricula, 'dados_extras': '', 'contratos': []}
+                    vinculo = {'convenio': conv_nome, 'matricula': matricula, 'dados_extras': row_emp.get('dados_extras'), 'contratos': []}
 
                     query_map = "SELECT nome_planilha_sql, tipo_planilha FROM banco_pf.convenio_por_planilha WHERE convenio ILIKE %s"
                     cur = conn.cursor()
@@ -234,8 +266,9 @@ def carregar_dados_completos(cpf):
                                         df_contratos['origem_tabela'] = tabela_destino
                                         df_contratos['tipo_origem'] = tipo_destino 
                                         vinculo['contratos'].extend(df_contratos.to_dict('records'))
-                            except: pass
+                            except: conn.rollback()
                     else:
+                        # Fallback para tabela padrao antiga se houver
                         try:
                             query_padrao = "SELECT * FROM banco_pf.pf_contratos WHERE matricula_ref = %s"
                             df_contratos = pd.read_sql(query_padrao, conn, params=(matricula,))
@@ -296,7 +329,7 @@ CONFIG_CADASTRO = {
         {"label": "Série CTPS", "key": "serie_ctps", "tabela": "geral", "tipo": "texto"},
         # Procurador
         {"label": "Nome Procurador", "key": "nome_procurador", "tabela": "geral", "tipo": "texto"},
-        {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"}, # Tipo CPF aplica a validação
+        {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"}, 
     ],
     "Contatos": [
         {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True},
@@ -522,7 +555,7 @@ def interface_cadastro_pf():
                 st.write(""); st.write("")
                 if st.button("Inserir Vínculo", type="primary", use_container_width=True):
                     if conv and matr:
-                        obj_emp = {'convenio': conv, 'matricula': matr, 'dados_extras': ''}
+                        obj_emp = {'convenio': conv.upper(), 'matricula': matr, 'dados_extras': ''}
                         if 'empregos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['empregos'] = []
                         st.session_state['dados_staging']['empregos'].append(obj_emp)
                         st.toast("✅ Vínculo adicionado!")
@@ -571,10 +604,13 @@ def interface_cadastro_pf():
                     
                     if st.button(f"Inserir em {tipo_tabela or nome_tabela}", key=f"btn_save_{sufixo}", type="primary"):
                         nomes_cols_tabela = [c[0] for c in colunas_banco]
+                        # Ajuste flexível para chaves estrangeiras
                         if 'matricula' in nomes_cols_tabela: inputs_gerados['matricula'] = dados_vinc['matricula']
                         elif 'matricula_ref' in nomes_cols_tabela: inputs_gerados['matricula_ref'] = dados_vinc['matricula']
+                        
                         if 'convenio' in nomes_cols_tabela: inputs_gerados['convenio'] = dados_vinc['convenio']
                         if 'tipo_planilha' in nomes_cols_tabela and tipo_tabela: inputs_gerados['tipo_planilha'] = tipo_tabela
+                        
                         inputs_gerados['origem_tabela'] = nome_tabela
                         inputs_gerados['tipo_origem'] = tipo_tabela
                         
@@ -669,6 +705,7 @@ def interface_cadastro_pf():
                 modo_salvar = "editar" if is_edit else "novo"
                 cpf_orig = limpar_normalizar_cpf(st.session_state.get('pf_cpf_selecionado')) if is_edit else None
                 
+                # --- CHAMADA CORRIGIDA DA FUNÇÃO DE SALVAR ---
                 sucesso, msg = salvar_pf(staging['geral'], df_tel, df_email, df_end, df_emp, df_contr, modo_salvar, cpf_orig)
                 if sucesso:
                     st.success(msg)
@@ -680,15 +717,18 @@ def interface_cadastro_pf():
     
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 20px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
 
-# --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO ---
+# --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO (CORRIGIDA) ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
     """
-    Realiza a inserção no banco pf_dados, pf_telefones, pf_emails e pf_enderecos com validações.
+    Realiza a inserção no banco pf_dados e em TODAS as tabelas satélites.
+    CORREÇÃO: Incluída lógica para pf_emprego_renda e contratos dinâmicos.
     """
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
+            
+            # --- PREPARAÇÃO CPF ---
             cpf_limpo = limpar_normalizar_cpf(dados_gerais['cpf'])
             dados_gerais['cpf'] = cpf_limpo
             if cpf_original: cpf_original = limpar_normalizar_cpf(cpf_original)
@@ -716,11 +756,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                 cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
             
             # 2. SALVAMENTO DE TELEFONES
-            if not df_tel.empty:
-                col_fk = 'cpf_ref' # Assume padrao cpf_ref
-                try: cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
-                except: col_fk = 'cpf'; conn.rollback(); cur = conn.cursor()
+            col_fk = 'cpf_ref'
+            try: cur.execute("SELECT 1 FROM banco_pf.pf_telefones WHERE cpf_ref = '1' LIMIT 1")
+            except: col_fk = 'cpf'; conn.rollback(); cur = conn.cursor()
 
+            if not df_tel.empty:
                 for _, r in df_tel.iterrows():
                     num_novo = r['numero']
                     if num_novo:
@@ -729,11 +769,11 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                             cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_fk}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, num_novo))
 
             # 3. SALVAMENTO DE E-MAILS
-            if not df_email.empty:
-                col_fk_email = 'cpf_ref'
-                try: cur.execute("SELECT 1 FROM banco_pf.pf_emails WHERE cpf_ref = '1' LIMIT 1")
-                except: col_fk_email = 'cpf'; conn.rollback(); cur = conn.cursor()
+            col_fk_email = 'cpf_ref'
+            try: cur.execute("SELECT 1 FROM banco_pf.pf_emails WHERE cpf_ref = '1' LIMIT 1")
+            except: col_fk_email = 'cpf'; conn.rollback(); cur = conn.cursor()
 
+            if not df_email.empty:
                 for _, r in df_email.iterrows():
                     email_novo = r['email']
                     if email_novo:
@@ -742,33 +782,71 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                             cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_fk_email}, email) VALUES (%s, %s)", (cpf_limpo, email_novo))
             
             # 4. SALVAMENTO DE ENDEREÇOS
-            if not df_end.empty:
-                col_fk_end = 'cpf_ref'
-                try: cur.execute("SELECT 1 FROM banco_pf.pf_enderecos WHERE cpf_ref = '1' LIMIT 1")
-                except: col_fk_end = 'cpf'; conn.rollback(); cur = conn.cursor()
+            col_fk_end = 'cpf_ref'
+            try: cur.execute("SELECT 1 FROM banco_pf.pf_enderecos WHERE cpf_ref = '1' LIMIT 1")
+            except: col_fk_end = 'cpf'; conn.rollback(); cur = conn.cursor()
 
+            if not df_end.empty:
                 for _, r in df_end.iterrows():
                     if r.get('rua') or r.get('cep'):
-                        cep_limpo = limpar_apenas_numeros(r.get('cep'))
+                        cep_limpo_end = limpar_apenas_numeros(r.get('cep'))
                         rua_val = r.get('rua')
-                        
-                        cur.execute(f"""
-                            SELECT 1 FROM banco_pf.pf_enderecos 
-                            WHERE {col_fk_end} = %s AND cep = %s AND rua = %s
-                        """, (cpf_limpo, cep_limpo, rua_val))
-                        
+                        cur.execute(f"SELECT 1 FROM banco_pf.pf_enderecos WHERE {col_fk_end} = %s AND cep = %s AND rua = %s", (cpf_limpo, cep_limpo_end, rua_val))
                         if not cur.fetchone():
                             cur.execute(f"""
-                                INSERT INTO banco_pf.pf_enderecos 
-                                ({col_fk_end}, cep, rua, bairro, cidade, uf) 
+                                INSERT INTO banco_pf.pf_enderecos ({col_fk_end}, cep, rua, bairro, cidade, uf) 
                                 VALUES (%s, %s, %s, %s, %s, %s)
-                            """, (cpf_limpo, cep_limpo, rua_val, r.get('bairro'), r.get('cidade'), r.get('uf')))
+                            """, (cpf_limpo, cep_limpo_end, rua_val, r.get('bairro'), r.get('cidade'), r.get('uf')))
 
-            conn.commit(); conn.close()
+            # 5. SALVAMENTO DE EMPREGO E RENDA (NOVA IMPLEMENTAÇÃO)
+            if not df_emp.empty:
+                # Verifica a tabela pf_emprego_renda
+                try:
+                    for _, r in df_emp.iterrows():
+                        matr = r.get('matricula')
+                        conv = r.get('convenio')
+                        if matr and conv:
+                            # Tenta inserir se não existir a matrícula
+                            cur.execute("SELECT 1 FROM banco_pf.pf_emprego_renda WHERE matricula = %s", (matr,))
+                            if not cur.fetchone():
+                                cur.execute("""
+                                    INSERT INTO banco_pf.pf_emprego_renda (cpf_ref, convenio, matricula, dados_extras)
+                                    VALUES (%s, %s, %s, %s)
+                                """, (cpf_limpo, conv, matr, r.get('dados_extras', '')))
+                except Exception as e_emp:
+                    # Em caso de erro na tabela, não aborta tudo, mas loga. (Ou relança se crítico)
+                    raise e_emp
+
+            # 6. SALVAMENTO DE CONTRATOS (NOVA IMPLEMENTAÇÃO)
+            if not df_contr.empty:
+                for _, r in df_contr.iterrows():
+                    tabela_destino = r.get('origem_tabela')
+                    if not tabela_destino: continue
+                    
+                    # Limpa metadados do dict para ficar só com colunas do banco
+                    dados_clean = {k: v for k, v in r.items() if k not in ['origem_tabela', 'tipo_origem']}
+                    if not dados_clean: continue
+                    
+                    cols = list(dados_clean.keys())
+                    vals = list(dados_clean.values())
+                    placeholders = ", ".join(["%s"] * len(vals))
+                    col_names = ", ".join(cols)
+                    
+                    # Inserção direta (assumindo que o usuário quer adicionar novo registro)
+                    # Idealmente teria verificação de duplicidade, mas depende da chave da tabela destino
+                    cur.execute(f"INSERT INTO {tabela_destino} ({col_names}) VALUES ({placeholders})", vals)
+
+            # --- COMMIT FINAL ---
+            conn.commit() 
+            conn.close()
             return True, "✅ Dados salvos com sucesso!"
+            
         except Exception as e: 
-            if conn: conn.close()
-            return False, f"Erro ao salvar: {str(e)}"
+            if conn: 
+                conn.rollback()
+                conn.close()
+            # Retorna o erro real para o usuário ver
+            return False, f"❌ Erro ao salvar: {str(e)}"
     return False, "Erro de conexão com o banco."
 
 def excluir_pf(cpf):
