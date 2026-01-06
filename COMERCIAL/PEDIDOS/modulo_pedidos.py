@@ -210,7 +210,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
 # 3. CRUD E FUNÇÕES DE LEITURA (COM CACHE)
 # =============================================================================
 
-@st.cache_data(ttl=60) # Cache de 60 segundos para agilizar o carregamento
+@st.cache_data(ttl=60) # Cache de 60 segundos
 def buscar_clientes():
     conn = get_conn()
     if conn:
@@ -390,11 +390,13 @@ def dialog_novo_pedido():
 
     # 1. Cliente (Com KEY para garantir reatividade)
     c1, c2 = st.columns(2)
+    # >>> CORREÇÃO AQUI: key adicionada
     ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'], key="sel_cli_novo_pedido")
     cli = df_c.iloc[ic]
     c1.caption(f"🆔 **Ref:** CPF {cli['cpf']} | 📞 {cli['telefone']}")
     
     # 2. Produto (Com KEY para garantir reatividade)
+    # >>> CORREÇÃO AQUI: key adicionada
     ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'], key="sel_prod_novo_pedido")
     prod = df_p.iloc[ip]
     
@@ -434,8 +436,7 @@ def dialog_novo_pedido():
             conn_chk.close()
         except: conn_chk.close()
         
-    # TRUQUE DO STREAMLIT: A key dinâmica força o componente a ser recriado com o novo valor sugerido
-    # quando mudamos o cliente ou o produto.
+    # >>> CORREÇÃO AQUI: Key dinâmica para forçar recarga do valor sugerido
     key_custo = f"input_custo_{cli['id']}_{prod['id']}"
     c_custo = st.number_input("7. Valor do Custo (Para Tabela Custo)", value=custo_sugerido, step=1.0, key=key_custo)
     
