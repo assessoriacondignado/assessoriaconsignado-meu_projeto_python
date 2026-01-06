@@ -1131,9 +1131,6 @@ def dialog_excluir_lancamento_extrato(tabela_sql, id_transacao):
         else:
             st.error("Erro ao excluir.")
             
-    if col_nao.button("Cancelar", use_container_width=True):
-        st.rerun()
-        
 @st.dialog("✏️ Editar Agrupamento")
 def dialog_editar_agrupamento(tipo, id_agrup, nome_atual):
     st.caption(f"Editando: {nome_atual}")
@@ -1168,7 +1165,7 @@ def dialog_editar_relacao_ped_cart(id_reg, prod_atual, cart_atual):
 def app_clientes():
     garantir_tabela_config_carteiras()
     garantir_tabela_extrato_geral()
-    garantir_tabela_custo_carteira() # <--- NOVA FUNÇÃO PARA GARANTIR A TABELA DE CUSTOS
+    garantir_tabela_custo_carteira() 
     
     st.markdown("## 👥 Central de Clientes e Usuários")
     
@@ -1698,116 +1695,11 @@ def app_clientes():
         else: st.info("Nenhuma tabela de transação encontrada.")
 
     # =============================================================================
-    # 6. ABA RELATÓRIOS (ATUALIZADA E CORRIGIDA)
+    # 6. ABA RELATÓRIOS (DESATIVADA)
     # =============================================================================
     with tab_rel:
         st.markdown("### 📊 Relatório Financeiro Detalhado")
-        st.caption("Fonte: `cliente.extrato_carteira_por_produto`")
-        
-        conn = get_conn()
-        try:
-            df_clientes_opt = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
-        except Exception as e:
-            st.error(f"Erro ao carregar clientes: {e}")
-            df_clientes_opt = pd.DataFrame()
-        finally:
-            conn.close()
-        
-        with st.container(border=True):
-            st.markdown("#### 🔍 Filtros de Pesquisa")
-            c1, c2, c3 = st.columns([3, 2, 2])
-            
-            cli_selecionado = c1.selectbox(
-                "Cliente", 
-                options=df_clientes_opt['id'] if not df_clientes_opt.empty else [], 
-                format_func=lambda x: df_clientes_opt[df_clientes_opt['id']==x]['nome'].values[0] if not df_clientes_opt.empty else "Sem Clientes",
-                key="rel_cli_sel"
-            )
-            
-            periodo = c2.date_input("Período de Transação", value=(date.today().replace(day=1), date.today()), key="rel_data_range")
-            origem_filtro = c3.text_input("Origem (Ex: MANUAL, API)", key="rel_origem")
-            c4, c5 = st.columns([4, 2])
-            btn_gerar = c5.button("📄 Gerar Extrato", type="primary", use_container_width=True)
-
-        st.divider()
-
-        if btn_gerar:
-            if not cli_selecionado:
-                st.warning("⚠️ Selecione um cliente para gerar o relatório.")
-            else:
-                if isinstance(periodo, tuple) and len(periodo) == 2:
-                    dt_ini, dt_fim = periodo
-                elif isinstance(periodo, tuple) and len(periodo) == 1:
-                    dt_ini = dt_fim = periodo[0]
-                else:
-                    dt_ini = dt_fim = periodo
-
-                query = """
-                    SELECT 
-                        id,
-                        data_lancamento, 
-                        produto_vinculado, 
-                        origem_lancamento, 
-                        tipo_lancamento, 
-                        valor_lancado, 
-                        saldo_anterior,
-                        saldo_novo,
-                        nome_usuario
-                    FROM cliente.extrato_carteira_por_produto 
-                    WHERE id_cliente = %s 
-                    AND data_lancamento BETWEEN %s AND %s
-                """
-                params = [int(cli_selecionado), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
-
-                if origem_filtro:
-                    query += " AND origem_lancamento ILIKE %s"
-                    params.append(f"%{origem_filtro}%")
-                
-                query += " ORDER BY data_lancamento DESC, id DESC"
-
-                conn = get_conn()
-                try:
-                    df_rel = pd.read_sql(query, conn, params=params)
-                    
-                    if not df_rel.empty:
-                        df_rel['data_lancamento'] = pd.to_datetime(df_rel['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
-                        df_rel.rename(columns={
-                            'id': 'ID',
-                            'data_lancamento': 'Data',
-                            'produto_vinculado': 'Produto / Carteira',
-                            'origem_lancamento': 'Origem',
-                            'tipo_lancamento': 'Tipo',
-                            'valor_lancado': 'Valor (R$)',
-                            'saldo_anterior': 'Saldo Anterior (R$)',
-                            'saldo_novo': 'Saldo Atual (R$)',
-                            'nome_usuario': 'Resp. Lançamento'
-                        }, inplace=True)
-                        
-                        st.success(f"✅ Relatório gerado: {len(df_rel)} registros encontrados.")
-                        
-                        cols_order = ['ID', 'Data', 'Produto / Carteira', 'Origem', 'Tipo', 'Valor (R$)', 'Saldo Anterior (R$)', 'Saldo Atual (R$)', 'Resp. Lançamento']
-                        st.dataframe(
-                            df_rel[cols_order], 
-                            use_container_width=True, 
-                            hide_index=True
-                        )
-                        
-                        total_cred = df_rel[df_rel['Tipo'] == 'CREDITO']['Valor (R$)'].sum()
-                        total_deb = df_rel[df_rel['Tipo'] == 'DEBITO']['Valor (R$)'].sum()
-                        saldo_atual_real = df_rel.iloc[0]['Saldo Atual (R$)']
-                        
-                        st.markdown("---")
-                        rc1, rc2, rc3 = st.columns(3)
-                        rc1.metric("Total Entradas (Crédito)", f"R$ {total_cred:,.2f}")
-                        rc2.metric("Total Saídas (Débito)", f"R$ {total_deb:,.2f}")
-                        rc3.metric("Saldo Final no Período", f"R$ {saldo_atual_real:,.2f}")
-                        
-                    else:
-                        st.info("ℹ️ Nenhum registro encontrado para os filtros aplicados neste período.")
-                except Exception as e:
-                    st.error(f"Erro ao consultar banco de dados: {e}")
-                finally:
-                    conn.close()
+        st.warning("Este módulo está sem função no momento.")
 
     with tab_plan:
         st.markdown("### 📅 Gestão de Planilhas do Banco")
