@@ -34,30 +34,30 @@ except ImportError:
 
 # 3. Parâmetros
 try:
-    from OPERACIONAL.CLIENTES import modulo_parametros
+    from OPERACIONAL.CLIENTES import modulo_parametros_cliente
 except ImportError:
     try:
-        from OPERACIONAL.CLIENTES import modulo_parametros
+        from OPERACIONAL.CLIENTES import modulo_parametros_cliente
     except ImportError as e:
-        modulo_parametros = None
+        modulo_parametros_cliente = None
 
 # 4. Permissões (Regras)
 try:
-    from OPERACIONAL.CLIENTES import modulo_permissoes
+    from OPERACIONAL.CLIENTES import modulo_permissoes_cliente
 except ImportError:
     try:
-        from OPERACIONAL.CLIENTES import modulo_permissoes
+        from OPERACIONAL.CLIENTES import modulo_permissoes_cliente
     except ImportError as e:
-        modulo_permissoes = None
+        modulo_permissoes_cliente = None
 
 # 5. Financeiro
 try:
-    from OPERACIONAL.CLIENTES import modulo_financeiro
+    from OPERACIONAL.CLIENTES import modulo_financeiro_cliente
 except ImportError:
     try:
         from FINANCEIRO import modulo_financeiro
     except ImportError as e:
-        modulo_financeiro = None
+        modulo_financeiro_cliente = None
 
 # NOTA: O módulo "Gestão Tabelas" foi removido pois era o código antigo.
 
@@ -102,9 +102,9 @@ def app_clientes():
 
     # --- ABA 3: PARÂMETROS ---
     with tab_param:
-        if modulo_parametros:
+        if modulo_parametros_cliente:
             try:
-                modulo_parametros.app_parametros()
+                modulo_parametros_cliente.app_parametros()
             except Exception as e:
                 st.error(f"Erro em Parâmetros: {e}")
         else:
@@ -112,9 +112,9 @@ def app_clientes():
 
     # --- ABA 4: REGRAS / PERMISSÕES ---
     with tab_regras:
-        if modulo_permissoes:
+        if modulo_permissoes_cliente:
             try:
-                modulo_permissoes.app_permissoes()
+                modulo_permissoes_cliente.app_permissoes()
             except Exception as e:
                 st.error(f"Erro em Permissões: {e}")
         else:
@@ -122,9 +122,9 @@ def app_clientes():
 
     # --- ABA 5: FINANCEIRO ---
     with tab_financeiro:
-        if modulo_financeiro:
+        if modulo_financeiro_cliente:
             try:
-                modulo_financeiro.app_financeiro()
+                modulo_financeiro_cliente.app_financeiro()
             except Exception as e:
                 st.error(f"Erro em Financeiro: {e}")
         else:

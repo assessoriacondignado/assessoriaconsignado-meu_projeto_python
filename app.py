@@ -15,7 +15,7 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # Tenta importar o módulo principal (HUB) da estrutura OPERACIONAL/CLIENTE
 try:
-    from OPERACIONAL.CLIENTES import modulo_tela_cliente
+    from OPERACIONAL.CLIENTES import modulo_tela_cliente_cliente
 except ImportError as e:
     st.error(f"Erro Crítico de Importação: {e}")
     st.info("Dica: Verifique se existem arquivos vazios chamados '__init__.py' dentro das pastas 'OPERACIONAL' e 'OPERACIONAL/CLIENTES'.")
@@ -49,7 +49,7 @@ def main():
     elif escolha == "👥 Gestão Clientes":
         if 'modulo_tela_cliente' in locals():
             # Chama a função principal do módulo HUB que gerencia as Tabs (Cadastro, Financeiro, etc)
-            modulo_tela_cliente.app_clientes()
+            modulo_tela_cliente_cliente.app_clientes()
         else:
             st.warning("O módulo de clientes não foi carregado corretamente.")
 

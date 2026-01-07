@@ -48,9 +48,9 @@ try:
     except ImportError:
         try:
             # Tenta importar especificando o caminho da pasta caso a direta falhe
-            from OPERACIONAL.CLIENTES import modulo_tela_cliente
+            from OPERACIONAL.CLIENTES import modulo_tela_cliente_cliente
         except ImportError:
-            modulo_tela_cliente = None
+            modulo_tela_cliente_cliente = None
             print("Erro ao importar modulo_tela_cliente")
         
     try:
@@ -58,7 +58,7 @@ try:
         import modulo_permissoes
     except ImportError:
         try:
-             from OPERACIONAL.CLIENTES import modulo_permissoes
+             from OPERACIONAL.CLIENTES import modulo_permissoes_cliente
         except ImportError:
             OPERACIONAL.CLIENTES.modulo_permissoes = None
 
@@ -324,16 +324,16 @@ def main():
                 )
             
             # 2. Carregamento do Módulo
-            if modulo_tela_cliente:
+            if modulo_tela_cliente_cliente:
                 try:
-                    modulo_tela_cliente.app_clientes()
+                    modulo_tela_cliente_cliente.app_clientes()
                 except AttributeError:
                     st.error("Erro: A função 'app_clientes()' não foi encontrada no módulo 'modulo_tela_cliente'.")
             else:
                 st.error("Erro Crítico: O módulo 'modulo_tela_cliente.py' não foi carregado.")
                 st.info("Dica: Verifique se a pasta 'OPERACIONAL/CLIENTES' existe e contém o arquivo.")
                 
-        elif "Operacional/CLIENTES > CLIENTES ASSESSORIA" in pag and modulo_tela_cliente: modulo_tela_cliente.modulo_tela_cliente()    
+        elif "Operacional/CLIENTES > CLIENTES ASSESSORIA" in pag and modulo_tela_cliente_cliente: modulo_tela_cliente_cliente.modulo_tela_cliente()    
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
         elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
