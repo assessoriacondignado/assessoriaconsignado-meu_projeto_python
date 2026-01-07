@@ -12,8 +12,8 @@ try:
     # Exemplo: from assessoriacondignado.OPERACIONAL.CLIENTE.CLIENTE import modulo_cadastro_cliente
     # Para facilitar, estou usando imports assumindo que a pasta raiz está no path.
     
-    from OPERACIONAL.CLIENTE.CLIENTE import modulo_cadastro_cliente
-    from OPERACIONAL.CLIENTE.USUÁRIO import modulo_usuario
+    from OPERACIONAL.CLIENTE.CLIENTES import modulo_cadastro_cliente
+    from OPERACIONAL.CLIENTE.USUÁRIOS import modulo_usuario
     from OPERACIONAL.CLIENTE.PARAMETROS import modulo_parametros
     from OPERACIONAL.CLIENTE.PERMISSÕES import modulo_permissoes
     from OPERACIONAL.CLIENTE.FINANCEIRO import modulo_financeiro
