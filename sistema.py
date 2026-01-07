@@ -17,7 +17,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Lista de pastas onde o sistema deve procurar os módulos
 pastas_modulos = [
-    "OPERACIONAL/CLIENTES E USUARIOS",
     "OPERACIONAL/CLIENTES",           # <--- ADICIONADO: Pasta do novo módulo de clientes
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
@@ -64,7 +63,6 @@ try:
             modulo_permissoes = None
 
     # --- Importações dos Demais Módulos ---
-    modulo_usuario = __import__('modulo_usuario') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS/modulo_usuario.py")) else None
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
@@ -237,7 +235,7 @@ def renderizar_menu_lateral():
         icones = {
             "Operacional": "⚙️", "Comercial": "💼", "Conexões": "🔌",
             "CLIENTES ASSESSORIA": "👥", "Banco PF": "🏦",
-            "Campanhas": "📣", "WhatsApp": "💬", "Produtos": "📦",
+            "Campanhas": "", "WhatsApp": "💬", "Produtos": "📦",
             "Pedidos": "🛒", "Tarefas": "📝", "Renovação": "🔄"
         }
 
