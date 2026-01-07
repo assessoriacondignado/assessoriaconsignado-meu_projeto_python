@@ -15,7 +15,7 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # Tenta importar o módulo principal (HUB) da estrutura OPERACIONAL/CLIENTE
 try:
-    from OPERACIONAL.CLIENTE import modulo_tela_cliente
+    from OPERACIONAL.CLIENTES import modulo_tela_cliente
 except ImportError as e:
     st.error(f"Erro Crítico de Importação: {e}")
     st.info("Dica: Verifique se existem arquivos vazios chamados '__init__.py' dentro das pastas 'OPERACIONAL' e 'OPERACIONAL/CLIENTE'.")
