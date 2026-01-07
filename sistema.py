@@ -65,6 +65,7 @@ try:
             modulo_permissoes = None
 
     # --- Importações dos Demais Módulos ---
+    modulo_tela_cliente = __import__('modulo_conexoes') if os.path.exists(os.path.join(BASE_DIR, "CONEXÕES/OPERACIONAL/CLIENTES/odulo_tela_cliente.py")) else None
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
