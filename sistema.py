@@ -5,8 +5,6 @@ import psycopg2
 import bcrypt
 import pandas as pd
 from datetime import datetime, timedelta
-import random
-import string
 import time
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
@@ -17,7 +15,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Lista de pastas onde o sistema deve procurar os módulos
 pastas_modulos = [
-    "OPERACIONAL/CLIENTES",           # <--- Pasta do novo módulo de clientes
+    "OPERACIONAL/CLIENTES",
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
     "OPERACIONAL/MODULO_CHAT",
@@ -29,51 +27,38 @@ pastas_modulos = [
     "" 
 ]
 
-# Adiciona as pastas ao sys.path para permitir importações
+# Adiciona as pastas ao sys.path
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if caminho not in sys.path:
         sys.path.append(caminho)
 
-# --- 3. IMPORTAÇÕES DE MÓDULOS ---
+# --- 3. IMPORTAÇÕES DE MÓDULOS (COM TRATAMENTO DE ERROS) ---
 try:
     import conexao
     import modulo_wapi
     import modulo_whats_controlador
     
-    # --- MÓDULO DE CLIENTES (Refatorado - Com Correção) ---
+    # Módulo Clientes
     try:
-        # Tenta importar direto
         import modulo_tela_cliente
-    except ImportError as e1:
-        try:
-            # Tenta importar especificando o caminho
-            from OPERACIONAL.CLIENTES import modulo_tela_cliente
-        except ImportError as e2:
-            modulo_tela_cliente = None
-            # Mostra o erro na tela para facilitar o diagnóstico
-            st.error(f"Erro ao importar 'modulo_tela_cliente': {e1} | {e2}")
+    except ImportError:
+        modulo_tela_cliente = None
         
+    # Módulo Permissões
     try:
-        # Importa o módulo de permissões
         import modulo_permissoes
     except ImportError:
-        try:
-             from OPERACIONAL.CLIENTES import modulo_permissoes
-        except ImportError:
-            # CORREÇÃO: Define como None simples, sem tentar acessar namespace inexistente
-            modulo_permissoes = None
+        modulo_permissoes = None
 
-    # --- Importações dos Demais Módulos ---
-    # CORREÇÃO APLICADA: Linha que sobrescrevia modulo_tela_cliente foi removida aqui.
-    
+    # Demais Módulos (Carregamento Condicional)
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
+    modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
     modulo_pedidos = __import__('modulo_pedidos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS/modulo_pedidos.py")) else None
     modulo_tarefas = __import__('modulo_tarefas') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS/modulo_tarefas.py")) else None
     modulo_rf = __import__('modulo_renovacao_feedback') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py")) else None
-    modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
     modulo_conexoes = __import__('modulo_conexoes') if os.path.exists(os.path.join(BASE_DIR, "CONEXÕES/modulo_conexoes.py")) else None
 
 except Exception as e:
@@ -86,10 +71,9 @@ def iniciar_estado():
         st.session_state['ultima_atividade'] = datetime.now()
     if 'hora_login' not in st.session_state:
         st.session_state['hora_login'] = datetime.now()
-    if 'menu_aberto' not in st.session_state:
-        st.session_state['menu_aberto'] = None
-    if 'pagina_atual' not in st.session_state:
-        st.session_state['pagina_atual'] = "Início"
+    # Define a página inicial padrão
+    if 'pagina_central' not in st.session_state:
+        st.session_state['pagina_central'] = "Início"
     if 'logado' not in st.session_state:
         st.session_state['logado'] = False
 
@@ -154,7 +138,7 @@ def validar_login_db(usuario_input, senha_input):
     except: return None
     return None
 
-# --- 6. DIALOGS ---
+# --- 6. DIALOGS (MENSAGEM RÁPIDA) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
     try:
@@ -193,161 +177,207 @@ def dialog_mensagem_rapida():
     finally:
         if 'cur' in locals(): cur.close()
 
-@st.dialog("Recuperar Acesso")
-def dialog_reset_senha():
-    st.write("Receba uma nova senha via WhatsApp.")
-    identificador = st.text_input("E-mail ou CPF")
-    if st.button("Enviar Nova Senha", use_container_width=True, type="primary") and identificador:
-        st.info("Funcionalidade em manutenção.")
-
-# --- 7. RENDERIZAÇÃO DO MENU (LAYOUT + EMOJIS) ---
+# --- 7. MENU LATERAL (SIMPLIFICADO) ---
 def renderizar_menu_lateral():
+    # Estilização dos botões da sidebar para parecerem um menu moderno
     st.markdown("""
         <style>
         div.stButton > button {
-            width: 100%; border: 1px solid #000000 !important; border-radius: 0px !important;
-            color: black; background-color: #ffffff; font-weight: 500; margin-bottom: 5px;
-            justify-content: flex-start; padding-left: 15px;
+            width: 100%; 
+            border: none !important; 
+            text-align: left !important;
+            padding-left: 15px !important;
+            background-color: transparent;
+            color: #333;
+            font-size: 16px;
         }
         div.stButton > button:hover {
-            border-color: #FF4B4B !important; color: #FF4B4B; background-color: #f0f0f0;
+            background-color: #f0f2f6;
+            color: #FF4B4B;
+            font-weight: bold;
         }
-        section[data-testid="stSidebar"] { background-color: rgba(255, 224, 178, 0.3); }
-        #MainMenu {visibility: hidden;} footer {visibility: hidden;}
+        /* Destaque para o botão ativo */
+        div.stButton > button:focus {
+            background-color: #e0e0e0;
+            color: #FF4B4B;
+        }
+        section[data-testid="stSidebar"] { background-color: #f8f9fa; }
         </style>
     """, unsafe_allow_html=True)
 
     with st.sidebar:
         try: st.image("logo_assessoria.png", use_container_width=True)
-        except: st.warning("Logo não encontrada")
+        except: st.markdown("### Assessoria Consignado")
         
+        # Dados do Usuário
         nome_completo = st.session_state.get('usuario_nome', 'Visitante')
-        primeiro_nome = nome_completo.split()[0].title() if nome_completo else "Visitante"
-        email_user = st.session_state.get('usuario_email', 'sem_email')
+        primeiro_nome = nome_completo.split()[0].title()
         cargo_banco = st.session_state.get('usuario_cargo', '-')
         
         st.markdown(f"""
-            <div style="text-align: center; margin-bottom: 20px; line-height: 1.4;">
-                <strong style="font-size: 1.1em;">{primeiro_nome}</strong><br>
-                <span style="font-size: 0.85em; color: #333;">{email_user}</span><br>
-                <span style="font-size: 0.85em; color: gray;">{cargo_banco}</span>
+            <div style="margin-bottom: 20px; padding: 10px; background-color: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                <small style="color: gray;">Bem-vindo,</small><br>
+                <strong>{primeiro_nome}</strong><br>
+                <span style="font-size: 0.8em; color: #555;">{cargo_banco}</span>
             </div>
-            <hr style="margin-top: 5px; margin-bottom: 15px;">
         """, unsafe_allow_html=True)
-
-        # --- MENU PRINCIPAL ---
-        icones = {
-            "Operacional": "⚙️", "Comercial": "💼", "Conexões": "🔌",
-            "CLIENTES ASSESSORIA": "👥", "Banco PF": "🏦",
-            "Campanhas": "", "WhatsApp": "💬", "Produtos": "📦",
-            "Pedidos": "🛒", "Tarefas": "📝", "Renovação": "🔄"
-        }
-
-        cargo_normalizado = str(cargo_banco).strip().upper()
-        estrutura_menu = {}
         
-        if st.button("🏠 Início", key="btn_home", on_click=resetar_atividade):
-            st.session_state['pagina_atual'] = "Início"
-            st.session_state['menu_aberto'] = None
+        # --- BOTÕES DE NAVEGAÇÃO ---
+        st.markdown("---")
+        
+        if st.button("🏠 Início", use_container_width=True):
+            st.session_state['pagina_central'] = "Início"
+            resetar_atividade()
+            st.rerun()
+
+        st.caption("Módulos Principais")
+        
+        if st.button("👥 Clientes & Assessoria", use_container_width=True):
+            st.session_state['pagina_central'] = "Clientes"
+            resetar_atividade()
+            st.rerun()
             
-        if cargo_normalizado in ["ADMIN", "GERENTE", "ADMINISTRADOR"]:
-            estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "Banco PF", "Campanhas", "WhatsApp"]
-            estrutura_menu["Comercial"] = ["Produtos", "Pedidos", "Tarefas", "Renovação"]
-            estrutura_menu["Conexões"] = [] 
-        else:
-            estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "WhatsApp"]
-
-        for menu_pai, subitens in estrutura_menu.items():
-            icon_pai = icones.get(menu_pai, "📂")
-            if not subitens:
-                if st.button(f"{icon_pai} {menu_pai}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
-                    st.session_state['pagina_atual'] = menu_pai
-                    st.session_state['menu_aberto'] = None
-                continue
-
-            seta = "▼" if st.session_state['menu_aberto'] == menu_pai else "►"
-            if st.button(f"{icon_pai} {menu_pai} {seta}", key=f"pai_{menu_pai}", on_click=resetar_atividade):
-                st.session_state['menu_aberto'] = None if st.session_state['menu_aberto'] == menu_pai else menu_pai
+        if st.button("💼 Comercial", use_container_width=True):
+            st.session_state['pagina_central'] = "Comercial"
+            resetar_atividade()
+            st.rerun()
             
-            if st.session_state['menu_aberto'] == menu_pai:
-                for item in subitens:
-                    _, col_btn = st.columns([0.1, 0.9])
-                    with col_btn:
-                        icon_filho = icones.get(item, "↳")
-                        if st.button(f"{icon_filho} {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
-                            st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
+        if st.button("🏦 Banco de Dados & MKT", use_container_width=True):
+            st.session_state['pagina_central'] = "BancoDados"
+            resetar_atividade()
+            st.rerun()
 
-        st.markdown("<br>" * 10, unsafe_allow_html=True)
+        if st.button("💬 WhatsApp", use_container_width=True):
+            st.session_state['pagina_central'] = "WhatsApp"
+            resetar_atividade()
+            st.rerun()
+            
+        if st.button("🔌 Conexões", use_container_width=True):
+            st.session_state['pagina_central'] = "Conexoes"
+            resetar_atividade()
+            st.rerun()
+
+        # Rodapé
+        st.markdown("<br>" * 5, unsafe_allow_html=True)
         if st.button("🚪 Sair", key="btn_sair"):
             st.session_state.clear()
             st.rerun()
+        
+        st.markdown(f"<div style='text-align:center; margin-top:10px; font-size:0.8em; color:#888;'>Sessão: {gerenciar_sessao()}</div>", unsafe_allow_html=True)
 
-        st.markdown(f"<div style='text-align:center; margin-top:10px; font-size:0.9em; color:#444;'>sessão ativa: {gerenciar_sessao()}</div>", unsafe_allow_html=True)
-
-# --- 8. FUNÇÃO PRINCIPAL ---
+# --- 8. FUNÇÃO PRINCIPAL (ROTEADOR DE MÓDULOS) ---
 def main():
     iniciar_estado()
     
+    # TELA DE LOGIN
     if not st.session_state.get('logado'):
-        st.markdown("""<style>div.stButton > button {border: 1px solid black; border-radius: 0px;}</style>""", unsafe_allow_html=True)
-        st.markdown('<div style="text-align:center; padding:40px;"><h2>Assessoria Consignado</h2><p>Portal Integrado</p></div>', unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 2, 1])
+        st.markdown("""<style>div.stButton > button {width: 100%;}</style>""", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 1.5, 1])
         with col2:
+            st.markdown('<div style="text-align:center; padding-top:50px; padding-bottom:20px;"><h2>Assessoria Consignado</h2><p>Acesso ao Sistema</p></div>', unsafe_allow_html=True)
             u = st.text_input("E-mail ou CPF")
             s = st.text_input("Senha", type="password")
-            if st.button("ENTRAR", use_container_width=True, type="primary"):
+            if st.button("ENTRAR", type="primary"):
                 res = validar_login_db(u, s)
                 if res:
                     if res.get('status') == "sucesso":
-                        st.session_state.update({'logado': True, 'usuario_id': res['id'], 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo'], 'usuario_email': res.get('email', '')})
+                        st.session_state.update({
+                            'logado': True, 
+                            'usuario_id': res['id'], 
+                            'usuario_nome': res['nome'], 
+                            'usuario_cargo': res['cargo'], 
+                            'usuario_email': res.get('email', '')
+                        })
                         st.rerun()
                     elif res.get('status') == "bloqueado": st.error("🚨 USUÁRIO BLOQUEADO.")
                     else: st.error(f"Senha incorreta. Tentativas restantes: {res.get('restantes')}")
-                else: st.error("Acesso negado.")
-            if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
+                else: st.error("Usuário não encontrado.")
+    
+    # SISTEMA LOGADO
     else:
         renderizar_menu_lateral()
-        c1, c2 = st.columns([10, 2])
-        with c2:
-            if st.button("💬 Msg Rápida"): dialog_mensagem_rapida()
-
-        pag = st.session_state['pagina_atual']
         
-        if pag == "Início":
-            if modulo_chat: modulo_chat.app_chat_screen()
-            else: st.info("Módulo Chat não carregado.")
-            
-        # --- ROTA: CLIENTES ASSESSORIA (CORRIGIDA) ---
-        elif "Operacional > CLIENTES ASSESSORIA" in pag: 
-            # 1. Verificação de Permissão (CORRIGIDO)
-            if 'modulo_permissoes' in locals() and modulo_permissoes:
+        # Layout da área principal
+        # Botão de ação rápida no topo direito
+        c_topo1, c_topo2 = st.columns([8, 2])
+        with c_topo2:
+             if st.button("💬 Msg Rápida", use_container_width=True): 
+                 dialog_mensagem_rapida()
+        
+        pagina = st.session_state['pagina_central']
+
+        # --- ROTEAMENTO DO CONTEÚDO ---
+        
+        # 1. INÍCIO
+        if pagina == "Início":
+            if modulo_chat: 
+                modulo_chat.app_chat_screen()
+            else: 
+                st.info("Bem-vindo ao Sistema. (Módulo Chat não carregado)")
+
+        # 2. CLIENTES
+        elif pagina == "Clientes":
+            # Verifica bloqueio (mantido do original)
+            if modulo_permissoes:
                  modulo_permissoes.verificar_bloqueio_de_acesso(
                     chave="bloqueio_menu_cliente", 
-                    caminho_atual="Operacional > Clientes Assessoria", 
+                    caminho_atual="Clientes", 
                     parar_se_bloqueado=True
                 )
             
-            # 2. Carregamento do Módulo (CORRIGIDO)
             if modulo_tela_cliente:
-                try:
-                    modulo_tela_cliente.app_clientes()
-                except AttributeError:
-                    st.error("Erro: A função 'app_clientes()' não foi encontrada no módulo 'modulo_tela_cliente'.")
+                # Se houver sub-funções no futuro, transforme em abas aqui
+                modulo_tela_cliente.app_clientes()
             else:
-                st.error("Erro Crítico: O módulo 'modulo_tela_cliente.py' não foi carregado.")
-                st.info("Dica: Verifique se a pasta 'OPERACIONAL/CLIENTES' existe e contém o arquivo 'modulo_tela_cliente.py'.")
+                st.error("Módulo de Clientes não encontrado.")
+
+        # 3. COMERCIAL (COM ABAS)
+        elif pagina == "Comercial":
+            st.title("💼 Comercial")
+            tab_prod, tab_ped, tab_tar, tab_ren = st.tabs(["📦 Produtos", "🛒 Pedidos", "📝 Tarefas", "🔄 Renovação"])
+            
+            with tab_prod:
+                if modulo_produtos: modulo_produtos.app_produtos()
+                else: st.warning("Módulo Produtos indisponível.")
+            
+            with tab_ped:
+                if modulo_pedidos: modulo_pedidos.app_pedidos()
+                else: st.warning("Módulo Pedidos indisponível.")
                 
-        elif "Operacional/CLIENTES > CLIENTES ASSESSORIA" in pag and modulo_tela_cliente: modulo_tela_cliente.modulo_tela_cliente()    
-        elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
-        elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
-        elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
-        elif "Comercial > Produtos" in pag and modulo_produtos: modulo_produtos.app_produtos()
-        elif "Comercial > Pedidos" in pag and modulo_pedidos: modulo_pedidos.app_pedidos()
-        elif "Comercial > Tarefas" in pag and modulo_tarefas: modulo_tarefas.app_tarefas()
-        elif "Comercial > Renovação" in pag and modulo_rf: modulo_rf.app_renovacao_feedback()
-        elif pag == "Conexões" and modulo_conexoes: modulo_conexoes.app_conexoes()
-        else:
-            st.warning(f"Página '{pag}' não encontrada ou módulo indisponível.")
+            with tab_tar:
+                if modulo_tarefas: modulo_tarefas.app_tarefas()
+                else: st.warning("Módulo Tarefas indisponível.")
+                
+            with tab_ren:
+                if modulo_rf: modulo_rf.app_renovacao_feedback()
+                else: st.warning("Módulo Renovação indisponível.")
+
+        # 4. BANCO DE DADOS & MKT (COM ABAS)
+        elif pagina == "BancoDados":
+            st.title("🏦 Banco de Dados & Marketing")
+            tab_pf, tab_camp = st.tabs(["👥 Banco Pessoa Física", "📢 Campanhas MKT"])
+            
+            with tab_pf:
+                if modulo_pf: modulo_pf.app_pessoa_fisica()
+                else: st.warning("Módulo Banco PF indisponível.")
+            
+            with tab_camp:
+                if modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
+                else: st.warning("Módulo Campanhas indisponível.")
+
+        # 5. WHATSAPP
+        elif pagina == "WhatsApp":
+            if modulo_whats_controlador:
+                modulo_whats_controlador.app_wapi()
+            else:
+                st.error("Módulo WhatsApp indisponível.")
+
+        # 6. CONEXÕES
+        elif pagina == "Conexoes":
+            if modulo_conexoes:
+                modulo_conexoes.app_conexoes()
+            else:
+                st.error("Módulo Conexões indisponível.")
 
 if __name__ == "__main__":
     main()
