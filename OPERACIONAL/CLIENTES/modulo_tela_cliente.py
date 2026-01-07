@@ -73,7 +73,7 @@ def app_clientes():
 
     # --- DEFINIÇÃO DAS 5 ABAS (SEM O MÓDULO ANTIGO) ---
     tab_cli, tab_user, tab_param, tab_regras, tab_financeiro = st.tabs([
-        "🏢 Clientes", 
+        "🏢 Clientes ", 
         "👤 Usuários", 
         "⚙️ Parâmetros", 
         "🛡️ Regras (Vis)", 
