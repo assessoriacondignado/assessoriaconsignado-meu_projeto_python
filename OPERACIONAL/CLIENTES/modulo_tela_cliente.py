@@ -1,17 +1,8 @@
 import streamlit as st
 import time
 
-# Tenta importar os submódulos. 
-# Nota: Você precisará ajustar os caminhos de importação dependendo de como 
-# o Python reconhece a pasta raiz do seu projeto.
-# Se todos estiverem acessíveis como pacotes, os imports abaixo funcionarão.
-# Caso contrário, pode ser necessário ajustar sys.path ou usar imports relativos.
-
 try:
-    # Ajuste os imports conforme a estrutura de pastas exata do seu projeto
-    # Exemplo: from assessoriacondignado.OPERACIONAL.CLIENTE.CLIENTE import modulo_cadastro_cliente
-    # Para facilitar, estou usando imports assumindo que a pasta raiz está no path.
-    
+    # AJUSTE AQUI: Adicionado "S" em CLIENTES para bater com o nome da pasta real
     from OPERACIONAL.CLIENTES.CLIENTES import modulo_cadastro_cliente
     from OPERACIONAL.CLIENTES.USUÁRIOS import modulo_usuario
     from OPERACIONAL.CLIENTES.PARAMETROS import modulo_parametros
@@ -19,13 +10,13 @@ try:
     from OPERACIONAL.CLIENTES.FINANCEIRO import modulo_financeiro
     from OPERACIONAL.CLIENTES.GESTAOTABELAS import modulo_gestao_tabelas
 except ImportError as e:
-    # Isso serve apenas para não quebrar o código enquanto você ainda não criou os outros arquivos
-    print(f"Alerta de Importação (normal durante a refatoração): {e}")
+    # Se der erro, ele avisa aqui
+    print(f"Alerta de Importação: {e}")
 
 def app_clientes():
     st.markdown("## 👥 Central de Clientes e Usuários")
     
-    # Definição das Abas Principais
+    # Definição das Abas
     tab_cli, tab_user, tab_param, tab_regras, tab_financeiro, tab_plan = st.tabs([
         "🏢 Clientes", 
         "👤 Usuários", 
@@ -38,54 +29,60 @@ def app_clientes():
     # --- ABA 1: CLIENTES ---
     with tab_cli:
         try:
-            modulo_cadastro_cliente.app_cadastro_cliente()
-        except NameError:
-            st.warning("Módulo 'modulo_cadastro_cliente' ainda não carregado ou não encontrado.")
+            if 'modulo_cadastro_cliente' in locals():
+                modulo_cadastro_cliente.app_cadastro_cliente()
+            else:
+                st.warning("Módulo 'Cadastro Cliente' não foi importado corretamente.")
         except Exception as e:
             st.error(f"Erro no módulo Clientes: {e}")
 
     # --- ABA 2: USUÁRIOS ---
     with tab_user:
         try:
-            modulo_usuario.app_usuario()
-        except NameError:
-            st.warning("Módulo 'modulo_usuario' ainda não carregado.")
+            if 'modulo_usuario' in locals():
+                modulo_usuario.app_usuario()
+            else:
+                st.warning("Módulo 'Usuário' não foi importado corretamente.")
         except Exception as e:
             st.error(f"Erro no módulo Usuários: {e}")
 
     # --- ABA 3: PARÂMETROS ---
     with tab_param:
         try:
-            modulo_parametros.app_parametros()
-        except NameError:
-            st.warning("Módulo 'modulo_parametros' ainda não carregado.")
+            if 'modulo_parametros' in locals():
+                modulo_parametros.app_parametros()
+            else:
+                st.warning("Módulo 'Parâmetros' não foi importado corretamente.")
         except Exception as e:
             st.error(f"Erro no módulo Parâmetros: {e}")
 
     # --- ABA 4: REGRAS / PERMISSÕES ---
     with tab_regras:
         try:
-            modulo_permissoes.app_permissoes()
-        except NameError:
-            st.warning("Módulo 'modulo_permissoes' ainda não carregado.")
+            if 'modulo_permissoes' in locals():
+                modulo_permissoes.app_permissoes()
+            else:
+                st.warning("Módulo 'Permissões' não foi importado corretamente.")
         except Exception as e:
             st.error(f"Erro no módulo Permissões: {e}")
 
-    # --- ABA 5: FINANCEIRO (Carteira + Relatórios) ---
+    # --- ABA 5: FINANCEIRO ---
     with tab_financeiro:
         try:
-            modulo_financeiro.app_financeiro()
-        except NameError:
-            st.warning("Módulo 'modulo_financeiro' ainda não carregado.")
+            if 'modulo_financeiro' in locals():
+                modulo_financeiro.app_financeiro()
+            else:
+                st.warning("Módulo 'Financeiro' não foi importado corretamente.")
         except Exception as e:
             st.error(f"Erro no módulo Financeiro: {e}")
 
-    # --- ABA 6: GESTÃO DE TABELAS (PLANILHAS) ---
+    # --- ABA 6: GESTÃO DE TABELAS ---
     with tab_plan:
         try:
-            modulo_gestao_tabelas.app_gestao_tabelas()
-        except NameError:
-            st.warning("Módulo 'modulo_gestao_tabelas' ainda não carregado.")
+            if 'modulo_gestao_tabelas' in locals():
+                modulo_gestao_tabelas.app_gestao_tabelas()
+            else:
+                st.warning("Módulo 'Gestão Tabelas' não foi importado corretamente.")
         except Exception as e:
             st.error(f"Erro no módulo Gestão Tabelas: {e}")
 
