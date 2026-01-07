@@ -18,7 +18,7 @@ try:
     from OPERACIONAL.CLIENTES import modulo_tela_cliente
 except ImportError as e:
     st.error(f"Erro Crítico de Importação: {e}")
-    st.info("Dica: Verifique se existem arquivos vazios chamados '__init__.py' dentro das pastas 'OPERACIONAL' e 'OPERACIONAL/CLIENTE'.")
+    st.info("Dica: Verifique se existem arquivos vazios chamados '__init__.py' dentro das pastas 'OPERACIONAL' e 'OPERACIONAL/CLIENTES'.")
 
 # -----------------------------------------------------------------------------
 # MENU LATERAL E NAVEGAÇÃO
