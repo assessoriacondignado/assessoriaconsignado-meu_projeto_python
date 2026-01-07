@@ -24,7 +24,7 @@ except ImportError:
 
 # 2. Usuários
 try:
-    from OPERACIONAL.CLIENTES.USUÁRIOS import modulo_usuario
+    from OPERACIONAL.CLIENTES import modulo_usuario
 except ImportError:
     try:
         from USUÁRIOS import modulo_usuario
@@ -73,7 +73,7 @@ def app_clientes():
 
     # --- DEFINIÇÃO DAS 5 ABAS (SEM O MÓDULO ANTIGO) ---
     tab_cli, tab_user, tab_param, tab_regras, tab_financeiro = st.tabs([
-        "🏢 Clientes ", 
+        "🏢 Clientes 2", 
         "👤 Usuários", 
         "⚙️ Parâmetros", 
         "🛡️ Regras (Vis)", 
