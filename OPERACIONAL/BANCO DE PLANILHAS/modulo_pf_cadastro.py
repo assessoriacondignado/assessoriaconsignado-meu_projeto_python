@@ -23,7 +23,7 @@ def get_conn():
 
 def init_db_structures():
     """
-    Garante estruturas do banco e ATUALIZA tabelas antigas se faltar colunas.
+    Verifica e recria tabelas se a estrutura estiver incorreta.
     """
     conn = get_conn()
     if conn:
@@ -31,19 +31,33 @@ def init_db_structures():
             cur = conn.cursor()
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
             
-            # 1. Garante colunas na tabela PRINCIPAL (pf_dados)
-            cols_extras_dados = [
-                "uf_rg VARCHAR(2)", "pis VARCHAR(20)", "nome_procurador VARCHAR(150)", 
-                "cpf_procurador VARCHAR(14)", "dados_exp_rg VARCHAR(50)", 
-                "serie_ctps VARCHAR(20)", "cnh VARCHAR(20)", "nome_pai VARCHAR(150)"
-            ]
-            for col_def in cols_extras_dados:
+            # --- 1. VERIFICAÇÃO E CORREÇÃO DA TABELA EMPREGO_RENDA ---
+            # Verifica se a tabela existe e se tem a coluna cpf_ref
+            tabela_ok = False
+            try:
+                cur.execute("""
+                    SELECT 1 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'banco_pf' 
+                    AND table_name = 'pf_emprego_renda' 
+                    AND column_name = 'cpf_ref'
+                """)
+                if cur.fetchone():
+                    tabela_ok = True
+            except: pass
+
+            # Se a tabela existe mas está errada (sem cpf_ref), APAGA para recriar
+            if not tabela_ok:
                 try:
-                    col_name = col_def.split()[0]
-                    cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
-                except: pass
-            
-            # 2. Garante/Cria tabela PF_EMPREGO_RENDA
+                    # Verifica se a tabela existe antes de tentar dropar para evitar erro de tabela inexistente
+                    cur.execute("SELECT to_regclass('banco_pf.pf_emprego_renda')")
+                    if cur.fetchone()[0]:
+                        cur.execute("DROP TABLE banco_pf.pf_emprego_renda CASCADE")
+                        print("Tabela pf_emprego_renda antiga removida para recriação.")
+                except Exception as e:
+                    print(f"Aviso ao tentar limpar tabela antiga: {e}")
+
+            # Cria a tabela CORRETA (agora vai criar pois se existia errada, foi apagada acima)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emprego_renda (
                     id SERIAL PRIMARY KEY,
@@ -56,24 +70,34 @@ def init_db_structures():
                 );
             """)
             
-            # 3. CORREÇÃO DO ERRO: Adiciona cpf_ref se a tabela já existia sem ele
+            # Garante a FK (Foreign Key)
             try:
-                cur.execute("ALTER TABLE banco_pf.pf_emprego_renda ADD COLUMN IF NOT EXISTS cpf_ref VARCHAR(20)")
-                # Tenta criar a FK se não existir (pode falhar se tiver dados órfãos, então ignoramos erro de FK por enquanto)
-                try:
-                    cur.execute("""
-                        DO $$ BEGIN
-                            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pf_emprego_renda_cpf_ref_fkey') THEN
-                                ALTER TABLE banco_pf.pf_emprego_renda 
-                                ADD CONSTRAINT pf_emprego_renda_cpf_ref_fkey 
-                                FOREIGN KEY (cpf_ref) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE;
-                            END IF;
-                        END $$;
-                    """)
-                except: pass
+                cur.execute("""
+                    DO $$ BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pf_emprego_renda_cpf_ref_fkey') THEN
+                            ALTER TABLE banco_pf.pf_emprego_renda 
+                            ADD CONSTRAINT pf_emprego_renda_cpf_ref_fkey 
+                            FOREIGN KEY (cpf_ref) REFERENCES banco_pf.pf_dados(cpf) ON DELETE CASCADE;
+                        END IF;
+                    END $$;
+                """)
             except: pass
+            
+            # --- 2. DEMAIS TABELAS E COLUNAS ---
+            
+            # Colunas extras na tabela PRINCIPAL (pf_dados)
+            cols_extras_dados = [
+                "uf_rg VARCHAR(2)", "pis VARCHAR(20)", "nome_procurador VARCHAR(150)", 
+                "cpf_procurador VARCHAR(14)", "dados_exp_rg VARCHAR(50)", 
+                "serie_ctps VARCHAR(20)", "cnh VARCHAR(20)", "nome_pai VARCHAR(150)"
+            ]
+            for col_def in cols_extras_dados:
+                try:
+                    col_name = col_def.split()[0]
+                    cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
+                except: pass
 
-            # 4. Outras tabelas
+            # Outras tabelas satélites
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             
             cur.execute("""
@@ -106,13 +130,15 @@ def init_db_structures():
                 );
             """)
 
-            # Ajuste de tipos
+            # Ajuste de tipos se necessário
             try: cur.execute("ALTER TABLE banco_pf.pf_telefones ALTER COLUMN numero TYPE VARCHAR(20)")
             except: pass
 
             conn.commit()
             conn.close()
-        except: pass
+        except Exception as e:
+            print(f"Erro no init_db: {e}")
+            pass
 
 # --- HELPERS DE FORMATAÇÃO E CÁLCULO ---
 
@@ -248,7 +274,7 @@ def carregar_dados_completos(cpf):
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
             # Busca Vínculos (Emprego e Renda)
-            # Tenta buscar. Se a coluna nao existir, vai dar erro e cair no except, retornando vazio sem quebrar
+            # Tenta buscar. Se a tabela nao existir ou estiver quebrada, retorna vazio sem erro
             try:
                 query_emp = f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
                 df_emp = pd.read_sql(query_emp, conn, params=params_busca)
