@@ -15,7 +15,7 @@ st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon=
 # --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# AJUSTE 1: Correção do nome da pasta para 'OPERACIONAL/CLIENTES' (Plural e sem 'E USUARIOS')
+# [CORREÇÃO 1] Caminho ajustado para a pasta real 'OPERACIONAL/CLIENTES'
 pastas_modulos = [
     "OPERACIONAL/CLIENTES", 
     "OPERACIONAL/BANCO DE PLANILHAS",
@@ -40,30 +40,31 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # --- NOVOS MÓDULOS REFATORADOS (AJUSTE 2) ---
+    # --- [CORREÇÃO 2] Importação Ajustada para modulo_tela_cliente ---
     try:
-        # Tenta importar diretamente pois a pasta OPERACIONAL/CLIENTES está no sys.path
+        # Tenta importar direto (pois adicionamos 'OPERACIONAL/CLIENTES' ao sys.path)
         import modulo_tela_cliente
     except ImportError:
         try:
-            # Tenta importar via caminho completo caso falhe (usando CLIENTES no plural)
+            # Se falhar, tenta o caminho completo com o nome correto da pasta (CLIENTES plural)
             from OPERACIONAL.CLIENTES import modulo_tela_cliente
         except ImportError:
             modulo_tela_cliente = None
         
     try:
-        # Importa o novo módulo de permissões (Caminho corrigido para CLIENTES)
+        # [CORREÇÃO 3] Caminho de permissões ajustado para CLIENTES (plural)
         from OPERACIONAL.CLIENTES.PERMISSÕES import modulo_permissoes
     except ImportError:
-        try:
-             # Tenta importar direto se PERMISSÕES estiver acessível
-             import modulo_permissoes
-        except:
-             modulo_permissoes = None
+        modulo_permissoes = None
 
     # Importações condicionais (Módulos Legados/Outros)
-    # Verifica caminho antigo por compatibilidade, mas foca nos novos
-    modulo_usuario = __import__('modulo_usuario') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES/USUÁRIOS/modulo_usuario.py")) else None
+    # Ajuste opcional: verifica se o módulo legado existe no caminho novo ou antigo
+    caminho_usuario_novo = os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES/USUÁRIOS/modulo_usuario.py")
+    modulo_usuario = None
+    if os.path.exists(caminho_usuario_novo):
+         # Se precisar importar manualmente
+         pass 
+
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
@@ -248,12 +249,10 @@ def renderizar_menu_lateral():
             st.session_state['menu_aberto'] = None
             
         if cargo_normalizado in ["ADMIN", "GERENTE", "ADMINISTRADOR"]:
-            # Menu completo para Admins
             estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "Banco PF", "Campanhas", "WhatsApp"]
             estrutura_menu["Comercial"] = ["Produtos", "Pedidos", "Tarefas", "Renovação"]
             estrutura_menu["Conexões"] = [] 
         else:
-            # Menu restrito
             estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "WhatsApp"]
 
         for menu_pai, subitens in estrutura_menu.items():
@@ -331,7 +330,7 @@ def main():
                 modulo_tela_cliente.app_clientes()
             else:
                 st.error("Erro: Módulo Refatorado 'OPERACIONAL.CLIENTES' não carregado.")
-                st.info("Verifique se as pastas e arquivos __init__.py foram criados.")
+                st.info("Verifique se as pastas e arquivos __init__.py foram criados na pasta OPERACIONAL/CLIENTES.")
             
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
