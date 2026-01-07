@@ -17,7 +17,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Lista de pastas onde o sistema deve procurar os módulos
 pastas_modulos = [
-    "OPERACIONAL/CLIENTES",           # <--- ADICIONADO: Pasta do novo módulo de clientes
+    "OPERACIONAL/CLIENTES",           # <--- Pasta do novo módulo de clientes
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
     "OPERACIONAL/MODULO_CHAT",
@@ -41,26 +41,28 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # --- MÓDULO DE CLIENTES (Refatorado) ---
+    # --- MÓDULO DE CLIENTES (Refatorado - Com Correção) ---
     try:
-        # Tenta importar direto (já que a pasta foi adicionada ao sys.path)
+        # Tenta importar direto
         import modulo_tela_cliente
-    except ImportError:
+    except ImportError as e1:
         try:
-            # Tenta importar especificando o caminho da pasta caso a direta falhe
-            from OPERACIONAL.CLIENTES import modulo_tela_cliente_cliente
-        except ImportError:
-            modulo_tela_cliente_cliente = None
-            print("Erro ao importar modulo_tela_cliente")
+            # Tenta importar especificando o caminho
+            from OPERACIONAL.CLIENTES import modulo_tela_cliente
+        except ImportError as e2:
+            modulo_tela_cliente = None
+            # Mostra o erro na tela para facilitar o diagnóstico
+            st.error(f"Erro ao importar 'modulo_tela_cliente': {e1} | {e2}")
         
     try:
         # Importa o módulo de permissões
         import modulo_permissoes
     except ImportError:
         try:
-             from OPERACIONAL.CLIENTES import modulo_permissoes_cliente
+             from OPERACIONAL.CLIENTES import modulo_permissoes
         except ImportError:
-            OPERACIONAL.CLIENTES.modulo_permissoes = None
+            # CORREÇÃO: Define como None simples, sem tentar acessar namespace inexistente
+            modulo_permissoes = None
 
     # --- Importações dos Demais Módulos ---
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
@@ -313,27 +315,27 @@ def main():
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Módulo Chat não carregado.")
             
-        # --- ROTA: CLIENTES ASSESSORIA ---
+        # --- ROTA: CLIENTES ASSESSORIA (CORRIGIDA) ---
         elif "Operacional > CLIENTES ASSESSORIA" in pag: 
-            # 1. Verificação de Permissão (Opcional)
-            if OPERACIONAL.CLIENTES.modulo_permissoes:
-                 OPERACIONAL.CLIENTES.modulo_permissoes.verificar_bloqueio_de_acesso(
+            # 1. Verificação de Permissão (CORRIGIDO)
+            if 'modulo_permissoes' in locals() and modulo_permissoes:
+                 modulo_permissoes.verificar_bloqueio_de_acesso(
                     chave="bloqueio_menu_cliente", 
                     caminho_atual="Operacional > Clientes Assessoria", 
                     parar_se_bloqueado=True
                 )
             
-            # 2. Carregamento do Módulo
-            if modulo_tela_cliente_cliente:
+            # 2. Carregamento do Módulo (CORRIGIDO)
+            if modulo_tela_cliente:
                 try:
-                    modulo_tela_cliente_cliente.app_clientes()
+                    modulo_tela_cliente.app_clientes()
                 except AttributeError:
                     st.error("Erro: A função 'app_clientes()' não foi encontrada no módulo 'modulo_tela_cliente'.")
             else:
                 st.error("Erro Crítico: O módulo 'modulo_tela_cliente.py' não foi carregado.")
-                st.info("Dica: Verifique se a pasta 'OPERACIONAL/CLIENTES' existe e contém o arquivo.")
+                st.info("Dica: Verifique se a pasta 'OPERACIONAL/CLIENTES' existe e contém o arquivo 'modulo_tela_cliente.py'.")
                 
-        elif "Operacional/CLIENTES > CLIENTES ASSESSORIA" in pag and modulo_tela_cliente_cliente: modulo_tela_cliente_cliente.modulo_tela_cliente()    
+        elif "Operacional/CLIENTES > CLIENTES ASSESSORIA" in pag and modulo_tela_cliente: modulo_tela_cliente.modulo_tela_cliente()    
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
         elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
