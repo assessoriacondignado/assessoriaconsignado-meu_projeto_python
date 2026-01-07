@@ -334,7 +334,8 @@ def main():
             else:
                 st.error("Erro Crítico: O módulo 'modulo_tela_cliente.py' não foi carregado.")
                 st.info("Dica: Verifique se a pasta 'OPERACIONAL/CLIENTES' existe e contém o arquivo.")
-            
+                
+        elif "Operacional/CLIENTES > CLIENTES ASSESSORIA" in pag and modulo_tela_cliente: modulo_tela_cliente.modulo_tela_cliente()    
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
         elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
