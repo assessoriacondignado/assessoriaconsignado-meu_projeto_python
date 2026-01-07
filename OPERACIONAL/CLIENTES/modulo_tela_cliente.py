@@ -14,10 +14,10 @@ erros_importacao = []
 
 # 1. Clientes
 try:
-    from OPERACIONAL.CLIENTES.CLIENTES import modulo_cadastro_cliente
+    from OPERACIONAL.CLIENTES import modulo_cadastro_cliente
 except ImportError:
     try:
-        from CLIENTES import modulo_cadastro_cliente
+        from OPERACIONAL.CLIENTES import modulo_cadastro_cliente
     except ImportError as e:
         modulo_cadastro_cliente = None
         erros_importacao.append(f"Cadastro Clientes: {e}")
@@ -34,25 +34,25 @@ except ImportError:
 
 # 3. Parâmetros
 try:
-    from OPERACIONAL.CLIENTES.PARAMETROS import modulo_parametros
+    from OPERACIONAL.CLIENTES import modulo_parametros
 except ImportError:
     try:
-        from PARAMETROS import modulo_parametros
+        from OPERACIONAL.CLIENTES import modulo_parametros
     except ImportError as e:
         modulo_parametros = None
 
 # 4. Permissões (Regras)
 try:
-    from OPERACIONAL.CLIENTES.PERMISSÕES import modulo_permissoes
+    from OPERACIONAL.CLIENTES import modulo_permissoes
 except ImportError:
     try:
-        from PERMISSÕES import modulo_permissoes
+        from OPERACIONAL.CLIENTES import modulo_permissoes
     except ImportError as e:
         modulo_permissoes = None
 
 # 5. Financeiro
 try:
-    from OPERACIONAL.CLIENTES.FINANCEIRO import modulo_financeiro
+    from OPERACIONAL.CLIENTES import modulo_financeiro
 except ImportError:
     try:
         from FINANCEIRO import modulo_financeiro

@@ -58,9 +58,9 @@ try:
         import modulo_permissoes
     except ImportError:
         try:
-             from OPERACIONAL.CLIENTES.PERMISSÕES import modulo_permissoes
+             from OPERACIONAL.CLIENTES import modulo_permissoes
         except ImportError:
-            modulo_permissoes = None
+            OPERACIONAL.CLIENTES.modulo_permissoes = None
 
     # --- Importações dos Demais Módulos ---
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
@@ -316,8 +316,8 @@ def main():
         # --- ROTA: CLIENTES ASSESSORIA ---
         elif "Operacional > CLIENTES ASSESSORIA" in pag: 
             # 1. Verificação de Permissão (Opcional)
-            if modulo_permissoes:
-                 modulo_permissoes.verificar_bloqueio_de_acesso(
+            if OPERACIONAL.CLIENTES.modulo_permissoes:
+                 OPERACIONAL.CLIENTES.modulo_permissoes.verificar_bloqueio_de_acesso(
                     chave="bloqueio_menu_cliente", 
                     caminho_atual="Operacional > Clientes Assessoria", 
                     parar_se_bloqueado=True
