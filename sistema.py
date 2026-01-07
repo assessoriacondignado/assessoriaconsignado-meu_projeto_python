@@ -32,20 +32,25 @@ for pasta in pastas_modulos:
     if caminho not in sys.path:
         sys.path.append(caminho)
 
-# --- 3. IMPORTAÇÕES DE MÓDULOS (Com tratamento de erro) ---
+# --- 3. IMPORTAÇÕES DE MÓDULOS ---
 try:
     import conexao
-    import modulo_cliente 
     import modulo_wapi
     import modulo_whats_controlador
     
-    # --- Importação do Módulo Refatorado (Hub de Clientes) ---
+    # --- NOVOS MÓDULOS REFATORADOS ---
     try:
         from OPERACIONAL.CLIENTE import modulo_tela_cliente
     except ImportError:
         modulo_tela_cliente = None
+        
+    try:
+        # Importa o novo módulo de permissões para substituir a segurança do antigo modulo_cliente
+        from OPERACIONAL.CLIENTE.PERMISSÕES import modulo_permissoes
+    except ImportError:
+        modulo_permissoes = None
 
-    # Importações condicionais
+    # Importações condicionais (Módulos Legados/Outros)
     modulo_usuario = __import__('modulo_usuario') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES E USUARIOS/modulo_usuario.py")) else None
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
@@ -215,10 +220,10 @@ def renderizar_menu_lateral():
             <hr style="margin-top: 5px; margin-bottom: 15px;">
         """, unsafe_allow_html=True)
 
-        # --- MENU PRINCIPAL (ATUALIZADO PARA CLIENTES ASSESSORIA) ---
+        # --- MENU PRINCIPAL ---
         icones = {
             "Operacional": "⚙️", "Comercial": "💼", "Conexões": "🔌",
-            "CLIENTES ASSESSORIA": "👥", "Usuários": "🛡️", "Banco PF": "🏦", # Atualizado aqui
+            "CLIENTES ASSESSORIA": "👥", "Banco PF": "🏦",
             "Campanhas": "📣", "WhatsApp": "💬", "Produtos": "📦",
             "Pedidos": "🛒", "Tarefas": "📝", "Renovação": "🔄"
         }
@@ -231,12 +236,13 @@ def renderizar_menu_lateral():
             st.session_state['menu_aberto'] = None
             
         if cargo_normalizado in ["ADMIN", "GERENTE", "ADMINISTRADOR"]:
-            # ATUALIZADO: Nome do menu alterado para "CLIENTES ASSESSORIA"
-            estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "Usuários", "Banco PF", "Campanhas", "WhatsApp"]
+            # REMOVIDO "Usuários" conforme solicitado
+            estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "Banco PF", "Campanhas", "WhatsApp"]
             estrutura_menu["Comercial"] = ["Produtos", "Pedidos", "Tarefas", "Renovação"]
             estrutura_menu["Conexões"] = [] 
         else:
-            estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "Usuários", "WhatsApp"]
+            # REMOVIDO "Usuários" conforme solicitado
+            estrutura_menu["Operacional"] = ["CLIENTES ASSESSORIA", "WhatsApp"]
 
         for menu_pai, subitens in estrutura_menu.items():
             icon_pai = icones.get(menu_pai, "📂")
@@ -298,21 +304,22 @@ def main():
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Módulo Chat não carregado.")
             
-        # --- ATUALIZADO: Rota para o novo nome ---
+        # --- ROTA ATUALIZADA: CLIENTES ASSESSORIA ---
         elif "Operacional > CLIENTES ASSESSORIA" in pag: 
-            if modulo_cliente:
-                modulo_cliente.verificar_bloqueio_de_acesso(chave="bloqueio_menu_cliente", caminho_atual="Operacional > Clientes", parar_se_bloqueado=True)
+            # 1. Verificação de Permissão usando o NOVO módulo de permissões
+            if modulo_permissoes:
+                 modulo_permissoes.verificar_bloqueio_de_acesso(
+                    chave="bloqueio_menu_cliente", 
+                    caminho_atual="Operacional > Clientes Assessoria", 
+                    parar_se_bloqueado=True
+                )
             
+            # 2. Carregamento do NOVO Hub de Clientes
             if modulo_tela_cliente:
                 modulo_tela_cliente.app_clientes()
             else:
                 st.error("Erro: Módulo Refatorado 'OPERACIONAL.CLIENTE' não carregado.")
                 st.info("Verifique se as pastas e arquivos __init__.py foram criados.")
-                if modulo_cliente: st.warning("Carregando módulo antigo de segurança..."); modulo_cliente.app_clientes()
-            
-        elif "Operacional > Usuários" in pag:
-            if modulo_usuario: modulo_usuario.app_usuarios()
-            else: st.error("Módulo de Usuários não encontrado.")
             
         elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
         elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
