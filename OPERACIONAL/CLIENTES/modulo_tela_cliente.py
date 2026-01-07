@@ -12,12 +12,12 @@ try:
     # Exemplo: from assessoriacondignado.OPERACIONAL.CLIENTE.CLIENTE import modulo_cadastro_cliente
     # Para facilitar, estou usando imports assumindo que a pasta raiz está no path.
     
-    from OPERACIONAL.CLIENTE.CLIENTES import modulo_cadastro_cliente
-    from OPERACIONAL.CLIENTE.USUÁRIOS import modulo_usuario
-    from OPERACIONAL.CLIENTE.PARAMETROS import modulo_parametros
-    from OPERACIONAL.CLIENTE.PERMISSÕES import modulo_permissoes
-    from OPERACIONAL.CLIENTE.FINANCEIRO import modulo_financeiro
-    from OPERACIONAL.CLIENTE.GESTAOTABELAS import modulo_gestao_tabelas
+    from OPERACIONAL.CLIENTES.CLIENTES import modulo_cadastro_cliente
+    from OPERACIONAL.CLIENTES.USUÁRIOS import modulo_usuario
+    from OPERACIONAL.CLIENTES.PARAMETROS import modulo_parametros
+    from OPERACIONAL.CLIENTES.PERMISSÕES import modulo_permissoes
+    from OPERACIONAL.CLIENTES.FINANCEIRO import modulo_financeiro
+    from OPERACIONAL.CLIENTES.GESTAOTABELAS import modulo_gestao_tabelas
 except ImportError as e:
     # Isso serve apenas para não quebrar o código enquanto você ainda não criou os outros arquivos
     print(f"Alerta de Importação (normal durante a refatoração): {e}")
