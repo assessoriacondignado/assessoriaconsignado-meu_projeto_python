@@ -15,9 +15,9 @@ st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon=
 # --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# [CORREÇÃO 1] Caminho ajustado para a pasta real 'OPERACIONAL/CLIENTES'
+# LISTA DE PASTAS CORRIGIDA (Adicionado 'OPERACIONAL/CLIENTES' corretamente)
 pastas_modulos = [
-    "OPERACIONAL/CLIENTES", 
+    "OPERACIONAL/CLIENTES",            # <--- Caminho correto da nova pasta
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
     "OPERACIONAL/MODULO_CHAT",
@@ -37,34 +37,35 @@ for pasta in pastas_modulos:
 # --- 3. IMPORTAÇÕES DE MÓDULOS ---
 try:
     import conexao
-    import modulo_wapi
-    import modulo_whats_controlador
+    # Tenta importar módulos que podem não existir ainda
+    try: import modulo_wapi
+    except: modulo_wapi = None
     
-    # --- [CORREÇÃO 2] Importação Ajustada para modulo_tela_cliente ---
+    try: import modulo_whats_controlador
+    except: modulo_whats_controlador = None
+    
+    # --- IMPORTAÇÃO CORRIGIDA DO MÓDULO DE CLIENTES ---
     try:
-        # Tenta importar direto (pois adicionamos 'OPERACIONAL/CLIENTES' ao sys.path)
+        # Tenta importar direto (pois a pasta OPERACIONAL/CLIENTES está no sys.path)
         import modulo_tela_cliente
     except ImportError:
         try:
-            # Se falhar, tenta o caminho completo com o nome correto da pasta (CLIENTES plural)
+            # Fallback: Tenta caminho completo
             from OPERACIONAL.CLIENTES import modulo_tela_cliente
         except ImportError:
             modulo_tela_cliente = None
         
     try:
-        # [CORREÇÃO 3] Caminho de permissões ajustado para CLIENTES (plural)
+        # Importação de Permissões (Caminho corrigido)
         from OPERACIONAL.CLIENTES.PERMISSÕES import modulo_permissoes
     except ImportError:
-        modulo_permissoes = None
+        try:
+             import modulo_permissoes
+        except:
+             modulo_permissoes = None
 
     # Importações condicionais (Módulos Legados/Outros)
-    # Ajuste opcional: verifica se o módulo legado existe no caminho novo ou antigo
-    caminho_usuario_novo = os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES/USUÁRIOS/modulo_usuario.py")
-    modulo_usuario = None
-    if os.path.exists(caminho_usuario_novo):
-         # Se precisar importar manualmente
-         pass 
-
+    modulo_usuario = __import__('modulo_usuario') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/CLIENTES/USUÁRIOS/modulo_usuario.py")) else None
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
@@ -184,10 +185,13 @@ def dialog_mensagem_rapida():
 
         msg = st.text_area("Mensagem")
         if st.button("Enviar Agora", type="primary") and destino and msg:
-            res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
-            if res.get('success') or res.get('messageId'):
-                st.success("Enviado!"); time.sleep(1); st.rerun()
-            else: st.error("Erro no envio.")
+            if modulo_wapi:
+                res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
+                if res.get('success') or res.get('messageId'):
+                    st.success("Enviado!"); time.sleep(1); st.rerun()
+                else: st.error("Erro no envio.")
+            else:
+                st.error("Módulo WhatsApp não carregado.")
     finally:
         if 'cur' in locals(): cur.close()
 
@@ -272,7 +276,9 @@ def renderizar_menu_lateral():
                     _, col_btn = st.columns([0.1, 0.9])
                     with col_btn:
                         icon_filho = icones.get(item, "↳")
+                        # Botão que define a página atual
                         if st.button(f"{icon_filho} {item}", key=f"sub_{menu_pai}_{item}", on_click=resetar_atividade):
+                            # Monta o nome da página (Ex: Operacional > CLIENTES ASSESSORIA)
                             st.session_state['pagina_atual'] = f"{menu_pai} > {item}"
 
         st.markdown("<br>" * 10, unsafe_allow_html=True)
@@ -286,6 +292,7 @@ def renderizar_menu_lateral():
 def main():
     iniciar_estado()
     
+    # --- TELA DE LOGIN ---
     if not st.session_state.get('logado'):
         st.markdown("""<style>div.stButton > button {border: 1px solid black; border-radius: 0px;}</style>""", unsafe_allow_html=True)
         st.markdown('<div style="text-align:center; padding:40px;"><h2>Assessoria Consignado</h2><p>Portal Integrado</p></div>', unsafe_allow_html=True)
@@ -303,6 +310,8 @@ def main():
                     else: st.error(f"Senha incorreta. Tentativas restantes: {res.get('restantes')}")
                 else: st.error("Acesso negado.")
             if st.button("Esqueci minha senha", use_container_width=True): dialog_reset_senha()
+    
+    # --- SISTEMA LOGADO ---
     else:
         renderizar_menu_lateral()
         c1, c2 = st.columns([10, 2])
@@ -315,34 +324,42 @@ def main():
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Módulo Chat não carregado.")
             
-        # --- ROTA ATUALIZADA: CLIENTES ASSESSORIA ---
-        elif "Operacional > CLIENTES ASSESSORIA" in pag: 
-            # 1. Verificação de Permissão usando o NOVO módulo de permissões
+        # --- ROTA: CLIENTES ASSESSORIA (CORRIGIDA) ---
+        elif "CLIENTES ASSESSORIA" in pag: 
+            # 1. Verificação de Permissão
             if modulo_permissoes:
-                 modulo_permissoes.verificar_bloqueio_de_acesso(
-                    chave="bloqueio_menu_cliente", 
-                    caminho_atual="Operacional > Clientes Assessoria", 
-                    parar_se_bloqueado=True
-                )
+                 # Chama a função de bloqueio (se existir no módulo)
+                 try:
+                     modulo_permissoes.verificar_bloqueio_de_acesso(
+                        chave="bloqueio_menu_cliente", 
+                        caminho_atual="Operacional > Clientes Assessoria", 
+                        parar_se_bloqueado=True
+                    )
+                 except AttributeError:
+                     pass # Se a função não existir, segue o fluxo
             
-            # 2. Carregamento do NOVO Hub de Clientes
+            # 2. Carregamento do Módulo
             if modulo_tela_cliente:
-                modulo_tela_cliente.app_clientes()
+                try:
+                    modulo_tela_cliente.app_clientes()
+                except Exception as e:
+                    st.error(f"Erro ao abrir Tela de Clientes: {e}")
             else:
                 st.error("Erro: Módulo Refatorado 'OPERACIONAL.CLIENTES' não carregado.")
-                st.info("Verifique se as pastas e arquivos __init__.py foram criados na pasta OPERACIONAL/CLIENTES.")
+                st.info("Verifique se as pastas e arquivos __init__.py foram criados.")
             
-        elif "Operacional > Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
-        elif "Operacional > Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
-        elif "Operacional > WhatsApp" in pag: modulo_whats_controlador.app_wapi()
-        elif "Comercial > Produtos" in pag and modulo_produtos: modulo_produtos.app_produtos()
-        elif "Comercial > Pedidos" in pag and modulo_pedidos: modulo_pedidos.app_pedidos()
-        elif "Comercial > Tarefas" in pag and modulo_tarefas: modulo_tarefas.app_tarefas()
-        elif "Comercial > Renovação" in pag and modulo_rf: modulo_rf.app_renovacao_feedback()
+        # --- OUTRAS ROTAS ---
+        elif "Banco PF" in pag and modulo_pf: modulo_pf.app_pessoa_fisica()
+        elif "Campanhas" in pag and modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
+        elif "WhatsApp" in pag and modulo_whats_controlador: modulo_whats_controlador.app_wapi()
+        elif "Produtos" in pag and modulo_produtos: modulo_produtos.app_produtos()
+        elif "Pedidos" in pag and modulo_pedidos: modulo_pedidos.app_pedidos()
+        elif "Tarefas" in pag and modulo_tarefas: modulo_tarefas.app_tarefas()
+        elif "Renovação" in pag and modulo_rf: modulo_rf.app_renovacao_feedback()
         elif pag == "Conexões" and modulo_conexoes: modulo_conexoes.app_conexoes()
         else:
-            st.warning(f"Página '{pag}' não encontrada ou módulo indisponível.")
+            if pag != "Início":
+                st.warning(f"Página '{pag}' não encontrada ou módulo indisponível.")
 
 if __name__ == "__main__":
     main()
-    
