@@ -53,6 +53,11 @@ def listar_tabelas_schema(schema_name):
 # =============================================================================
 
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
+    """
+    Verifica se já existe custo para este Cliente + Produto.
+    Se existir -> Atualiza.
+    Se não existir -> Insere.
+    """
     try:
         cur = conn.cursor()
         
@@ -63,30 +68,52 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             id_user = '0'
             nome_user = 'Sem Vínculo'
 
-        sql = """
-            INSERT INTO cliente.valor_custo_carteira_cliente (
-                id_cliente, nome_cliente,
-                id_usuario, nome_usuario,
-                id_produto, nome_produto,
-                origem_custo, valor_custo,
-                data_criacao
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (id) DO UPDATE SET
-                valor_custo = EXCLUDED.valor_custo,
-                origem_custo = EXCLUDED.origem_custo,
-                nome_usuario = EXCLUDED.nome_usuario,
-                id_usuario = EXCLUDED.id_usuario,
-                data_criacao = NOW()
+        # 1. Verifica se já existe registro para este par Cliente/Produto
+        sql_check = """
+            SELECT id FROM cliente.valor_custo_carteira_cliente 
+            WHERE id_cliente = %s AND id_produto = %s
         """
-        
-        cur.execute(sql, (
-            str(dados_cliente['id']), dados_cliente['nome'],
-            id_user, nome_user,
-            str(dados_produto['id']), dados_produto['nome'],
-            str(origem_custo_txt), float(valor_custo)
-        ))
+        cur.execute(sql_check, (str(dados_cliente['id']), str(dados_produto['id'])))
+        resultado = cur.fetchone()
+
+        if resultado:
+            # --- ATUALIZAR (UPDATE) ---
+            id_existente = resultado[0]
+            sql_update = """
+                UPDATE cliente.valor_custo_carteira_cliente SET
+                    valor_custo = %s,
+                    origem_custo = %s,
+                    nome_usuario = %s,
+                    id_usuario = %s,
+                    data_criacao = NOW()
+                WHERE id = %s
+            """
+            cur.execute(sql_update, (
+                float(valor_custo), str(origem_custo_txt),
+                nome_user, id_user,
+                id_existente
+            ))
+        else:
+            # --- INSERIR (INSERT) ---
+            sql_insert = """
+                INSERT INTO cliente.valor_custo_carteira_cliente (
+                    id_cliente, nome_cliente,
+                    id_usuario, nome_usuario,
+                    id_produto, nome_produto,
+                    origem_custo, valor_custo,
+                    data_criacao
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """
+            cur.execute(sql_insert, (
+                str(dados_cliente['id']), dados_cliente['nome'],
+                id_user, nome_user,
+                str(dados_produto['id']), dados_produto['nome'],
+                str(origem_custo_txt), float(valor_custo)
+            ))
+            
         return True, ""
     except Exception as e:
+        print(f"Erro ao salvar custo carteira: {e}") # Log no terminal
         return False, str(e)
 
 def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, origem_custo_txt, avisar_cliente, observacao):
@@ -108,9 +135,10 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            try:
-                registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
-            except: pass 
+            # Tenta registrar o custo, mas reporta erro no console se falhar
+            res_upsert = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
+            if not res_upsert[0]:
+                print(f"⚠️ Aviso: Custo não salvo na carteira. Erro: {res_upsert[1]}")
             
             conn.commit()
             conn.close()
