@@ -345,7 +345,7 @@ def dialog_nova_tarefa():
                     time.sleep(1); st.rerun()
 
 # --- APP PRINCIPAL ---
-def app_tarefas():
+def app_produtos():
     st.markdown("## ✅ Módulo de Tarefas")
 
     # --- CRIAÇÃO DAS ABAS (SUBMENUS) ---
