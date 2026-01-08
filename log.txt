@@ -1,2 +1,5 @@
 nohup: ignoring input
-nohup: failed to run command 'streamlit': No such file or directory
+
+Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+
+2026-01-08 14:55:07.558 Port 8501 is already in use

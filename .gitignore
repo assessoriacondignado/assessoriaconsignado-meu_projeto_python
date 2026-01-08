@@ -6,3 +6,7 @@ __pycache__/
 # Ignorar logs de consulta JSON
 *.json
 assessoriacondignado/assessoriaconsignado-meu_projeto_python/assessoriaconsignado-meu_projeto_python-cfaa1ac0e2035e9fd543e9ea8d002a38575c300e/CONEXÕES/JSON/
+log.txt
+*.pyc
+.vscode/
+*.session.sql
