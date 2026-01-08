@@ -13,16 +13,17 @@ st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon=
 # --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Pastas dos módulos
+# Pastas dos módulos (ATUALIZADO PARA _ NAS PASTAS COMERCIAIS)
 pastas_modulos = [
     "OPERACIONAL/CLIENTES",
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
     "OPERACIONAL/MODULO_CHAT",
-    "COMERCIAL/PRODUTOS E SERVICOS",
+    "COMERCIAL",  # Adicionado para importar o modulo_comercial_geral.py
+    "COMERCIAL/PRODUTOS_E_SERVICOS", # Atualizado
     "COMERCIAL/PEDIDOS",
     "COMERCIAL/TAREFAS",
-    "COMERCIAL/RENOVACAO E FEEDBACK",
+    "COMERCIAL/RENOVACAO_E_FEEDBACK", # Atualizado
     "CONEXÕES",
     "" 
 ]
@@ -55,10 +56,16 @@ try:
     modulo_chat = carregar_modulo("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
     modulo_pf = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
     modulo_pf_campanhas = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
-    modulo_produtos = carregar_modulo("COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py", "modulo_produtos")
+    
+    # Módulos Individuais (Ainda carregados caso precise, mas o acesso principal será pelo Geral)
+    modulo_produtos = carregar_modulo("COMERCIAL/PRODUTOS_E_SERVICOS/modulo_produtos.py", "modulo_produtos")
     modulo_pedidos = carregar_modulo("COMERCIAL/PEDIDOS/modulo_pedidos.py", "modulo_pedidos")
     modulo_tarefas = carregar_modulo("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
-    modulo_rf = carregar_modulo("COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
+    modulo_rf = carregar_modulo("COMERCIAL/RENOVACAO_E_FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
+    
+    # NOVO MÓDULO GERAL COMERCIAL
+    modulo_comercial_geral = carregar_modulo("COMERCIAL/modulo_comercial_geral.py", "modulo_comercial_geral")
+
     modulo_conexoes = carregar_modulo("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
 
 except Exception as e:
@@ -261,11 +268,11 @@ def main():
             if modulo_tela_cliente: modulo_tela_cliente.app_clientes()
             
         elif pagina == "Comercial":
-            t1, t2, t3, t4 = st.tabs(["Produtos", "Pedidos", "Tarefas", "Renovação"])
-            with t1: modulo_produtos.app_produtos() if modulo_produtos else st.warning("N/A")
-            with t2: modulo_pedidos.app_pedidos() if modulo_pedidos else st.warning("N/A")
-            with t3: modulo_tarefas.app_tarefas() if modulo_tarefas else st.warning("N/A")
-            with t4: modulo_rf.app_renovacao_feedback() if modulo_rf else st.warning("N/A")
+            # ATUALIZAÇÃO: Redireciona para o novo Hub Comercial
+            if modulo_comercial_geral:
+                modulo_comercial_geral.app_comercial_geral()
+            else:
+                st.warning("⚠️ Módulo Comercial Geral não encontrado ou erro na importação.")
 
         elif pagina == "BancoDados":
             t1, t2 = st.tabs(["Pessoa Física", "Campanhas"])
