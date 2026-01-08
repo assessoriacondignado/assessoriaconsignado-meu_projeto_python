@@ -2,7 +2,6 @@ streamlit>=1.37.0
 streamlit-option-menu
 psycopg2-binary
 pandas
-Flask
 requests
 sqlalchemy
 bcrypt

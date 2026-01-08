@@ -40,35 +40,49 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # Imports com tratamento de erro específico
-    try: import modulo_tela_cliente
-    except ImportError: modulo_tela_cliente = None
-        
-    try: import modulo_permissoes
-    except ImportError: modulo_permissoes = None
-
-    # Verificação de existência antes de importar (Evita quebrar o sistema se faltar arquivo)
-    def carregar_modulo(caminho_relativo, nome_modulo):
-        if os.path.exists(os.path.join(BASE_DIR, caminho_relativo)):
+    # Função auxiliar para carregar módulos e MOSTRAR o erro se falhar
+    def importar_seguro(nome_modulo):
+        try:
             return __import__(nome_modulo)
+        except ImportError:
+            return None
+        except Exception as e:
+            # Isso vai mostrar o erro real na tela (ex: erro de sintaxe)
+            st.error(f"⚠️ Erro grave ao carregar módulo '{nome_modulo}': {e}")
+            return None
+
+    modulo_tela_cliente = importar_seguro("modulo_tela_cliente")
+    modulo_permissoes = importar_seguro("modulo_permissoes")
+
+    # Verificação de existência antes de importar
+    def carregar_modulo_por_caminho(caminho_relativo, nome_modulo):
+        caminho_completo = os.path.join(BASE_DIR, caminho_relativo)
+        if os.path.exists(caminho_completo):
+            try:
+                return __import__(nome_modulo)
+            except Exception as e:
+                st.error(f"⚠️ Erro no arquivo '{caminho_relativo}': {e}")
+                return None
         return None
 
-    modulo_chat = carregar_modulo("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
-    modulo_pf = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
-    modulo_pf_campanhas = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
+    # Carregamento dos módulos com feedback de erro
+    modulo_chat = carregar_modulo_por_caminho("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
+    modulo_pf = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
+    modulo_pf_campanhas = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
     
-    # Módulos Individuais (Ainda carregados caso precise, mas o acesso principal será pelo Geral)
-    modulo_produtos = carregar_modulo("COMERCIAL/PRODUTOS_E_SERVICOS/modulo_produtos.py", "modulo_produtos")
-    modulo_pedidos = carregar_modulo("COMERCIAL/PEDIDOS/modulo_pedidos.py", "modulo_pedidos")
-    modulo_tarefas = carregar_modulo("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
-    modulo_rf = carregar_modulo("COMERCIAL/RENOVACAO_E_FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
+    # Módulos Comerciais
+    modulo_produtos = carregar_modulo_por_caminho("COMERCIAL/PRODUTOS_E_SERVICOS/modulo_produtos.py", "modulo_produtos")
+    modulo_pedidos = carregar_modulo_por_caminho("COMERCIAL/PEDIDOS/modulo_pedidos.py", "modulo_pedidos")
+    modulo_tarefas = carregar_modulo_por_caminho("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
+    modulo_rf = carregar_modulo_por_caminho("COMERCIAL/RENOVACAO_E_FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
     
     # NOVO MÓDULO GERAL COMERCIAL
-    modulo_comercial_geral = carregar_modulo("COMERCIAL/modulo_comercial_geral.py", "modulo_comercial_geral")
+    modulo_comercial_geral = carregar_modulo_por_caminho("COMERCIAL/modulo_comercial_geral.py", "modulo_comercial_geral")
 
-    modulo_conexoes = carregar_modulo("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
+    modulo_conexoes = carregar_modulo_por_caminho("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
 
 except Exception as e:
+    st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
     st.error(f"Erro Crítico ao carregar módulos: {e}")
 
 # --- 4. FUNÇÕES DE ESTADO ---
