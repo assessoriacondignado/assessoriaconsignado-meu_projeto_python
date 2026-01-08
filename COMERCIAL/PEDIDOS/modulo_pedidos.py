@@ -53,9 +53,6 @@ def listar_tabelas_schema(schema_name):
 # =============================================================================
 
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
-    """
-    Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente.
-    """
     try:
         cur = conn.cursor()
         
@@ -300,6 +297,7 @@ def fechar_modal():
 
 @st.dialog("➕ Novo Pedido", width="large")
 def dialog_novo_pedido():
+    # Carregar dados iniciais
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
@@ -307,58 +305,112 @@ def dialog_novo_pedido():
         st.warning("Cadastre clientes e produtos antes.")
         return
 
-    # 1. Cliente
+    # --- INICIALIZAÇÃO DE ESTADO ---
+    # Garante que as chaves existam e tenham valores padrão coerentes na primeira execução
+    if 'np_cli_idx' not in st.session_state: st.session_state.np_cli_idx = 0
+    if 'np_prod_idx' not in st.session_state: st.session_state.np_prod_idx = 0
+    
+    # Define valores iniciais baseados no primeiro produto se ainda não definidos
+    prod_inicial = df_p.iloc[st.session_state.np_prod_idx]
+    if 'np_val' not in st.session_state: st.session_state.np_val = float(prod_inicial['preco'] or 0.0)
+    if 'np_qtd' not in st.session_state: st.session_state.np_qtd = 1
+    if 'np_origem' not in st.session_state: st.session_state.np_origem = prod_inicial.get('origem_custo', 'Geral') or 'Geral'
+    if 'np_custo' not in st.session_state: st.session_state.np_custo = 0.0
+    
+    # --- HELPER DE CUSTO ---
+    def buscar_custo_referencia(id_cliente, id_produto):
+        custo = 0.0
+        conn_chk = get_conn()
+        if conn_chk:
+            try:
+                cur = conn_chk.cursor()
+                cur.execute("SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND id_produto = %s", (str(id_cliente), str(id_produto)))
+                chk = cur.fetchone()
+                if chk: custo = float(chk[0])
+                conn_chk.close()
+            except: conn_chk.close()
+        return custo
+
+    # --- CALLBACKS ---
+    # Funções chamadas automaticamente quando os selects mudam
+    
+    def on_change_produto():
+        idx = st.session_state.np_prod_idx # Índice selecionado
+        prod = df_p.iloc[idx]
+        
+        # Atualiza o preço e a origem no estado
+        st.session_state.np_val = float(prod['preco'] or 0.0)
+        origem = prod.get('origem_custo', 'Geral')
+        st.session_state.np_origem = origem if origem else 'Geral'
+        
+        # Recalcula custo
+        idx_c = st.session_state.np_cli_idx
+        cli = df_c.iloc[idx_c]
+        st.session_state.np_custo = buscar_custo_referencia(cli['id'], prod['id'])
+
+    def on_change_cliente():
+        # Apenas recalcula o custo, mantém o resto
+        idx_c = st.session_state.np_cli_idx
+        idx_p = st.session_state.np_prod_idx
+        
+        cli = df_c.iloc[idx_c]
+        prod = df_p.iloc[idx_p]
+        st.session_state.np_custo = buscar_custo_referencia(cli['id'], prod['id'])
+
+    # Se for a primeira vez que abrimos e o custo está zerado, tenta buscar
+    # (Caso o callback não tenha rodado ainda)
+    if st.session_state.np_custo == 0.0:
+        cli_atual = df_c.iloc[st.session_state.np_cli_idx]
+        prod_atual = df_p.iloc[st.session_state.np_prod_idx]
+        st.session_state.np_custo = buscar_custo_referencia(cli_atual['id'], prod_atual['id'])
+
+    # --- INTERFACE ---
     c1, c2 = st.columns(2)
-    # AJUSTE: Visualização concatenada no selectbox
-    ic = c1.selectbox(
+    
+    # 1. Cliente
+    # Usamos o INDEX e KEY para controlar o estado
+    st.session_state.np_cli_idx = c1.selectbox(
         "1. Cliente", 
         range(len(df_c)), 
+        index=st.session_state.np_cli_idx,
         format_func=lambda x: f"{df_c.iloc[x]['nome']} / {df_c.iloc[x]['cpf']} / {df_c.iloc[x]['telefone']}", 
-        key="sel_cli_novo_ped"
+        key="np_cli_selector", # Key diferente da variavel de estado interno para evitar conflito direto no render
+        on_change=lambda: st.session_state.update({'np_cli_idx': st.session_state.np_cli_selector}) or on_change_cliente()
     )
-    cli = df_c.iloc[ic]
-    # AJUSTE: Removida a linha de referência (caption) que existia aqui
     
-    # 2. Produto e Origem
-    ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'], key="sel_prod_novo_ped")
-    prod = df_p.iloc[ip]
+    # 2. Produto
+    st.session_state.np_prod_idx = c2.selectbox(
+        "3. Produto", 
+        range(len(df_p)), 
+        index=st.session_state.np_prod_idx,
+        format_func=lambda x: df_p.iloc[x]['nome'], 
+        key="np_prod_selector",
+        on_change=lambda: st.session_state.update({'np_prod_idx': st.session_state.np_prod_selector}) or on_change_produto()
+    )
     
-    # A origem é atualizada automaticamente quando o produto muda (re-execução do script pelo key do selectbox)
-    origem_produto_txt = prod.get('origem_custo', 'Geral')
-    if not origem_produto_txt: origem_produto_txt = 'Geral'
-    
-    c2.info(f"📍 **Origem:** {origem_produto_txt}")
+    # Exibe origem do estado atualizado
+    c2.info(f"📍 **Origem:** {st.session_state.np_origem}")
     
     st.divider()
     
     # 4. Qtd e Valor
     c3, c4, c5 = st.columns(3)
-    qtd = c3.number_input("Qtd", 1, value=1, key=f"qtd_{prod['id']}") # Reset ao mudar produto
     
-    # Valor Unitário atualiza dinamicamente se trocar o produto
-    val = c4.number_input("Valor Unit.", 0.0, value=float(prod['preco'] or 0.0), key=f"val_unit_{prod['id']}")
+    # Number inputs ligados diretamente ao st.session_state
+    qtd = c3.number_input("Qtd", min_value=1, key="np_qtd")
+    val = c4.number_input("Valor Unit.", min_value=0.0, format="%.2f", step=1.0, key="np_val")
     
-    # Cálculo em tempo real (acontece a cada interação que dispara rerun)
-    total = qtd * val
+    # Cálculo SEMPRE atualizado (pois qtd e val vêm do session_state atual)
+    total = st.session_state.np_qtd * st.session_state.np_val
     c5.metric("Total", f"R$ {total:.2f}")
     
     st.divider()
     
     # 5. Custo
-    custo_sugerido = 0.0
-    conn_chk = get_conn()
-    if conn_chk:
-        try:
-            cur = conn_chk.cursor()
-            cur.execute("SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND id_produto = %s", (str(cli['id']), str(prod['id'])))
-            chk = cur.fetchone()
-            if chk: custo_sugerido = float(chk[0])
-            conn_chk.close()
-        except: conn_chk.close()
-        
-    c_custo = st.number_input("Valor de Custo (Referência)", value=custo_sugerido, step=1.0, 
+    c_custo = st.number_input("Valor de Custo (Referência)", 
+                              step=1.0, 
                               help="Valor registrado para controle de custo deste cliente.",
-                              key=f"custo_{cli['id']}_{prod['id']}")
+                              key="np_custo")
     
     # 6. Observação
     obs = st.text_area("Observação do Pedido", placeholder="Detalhes adicionais...")
@@ -366,7 +418,16 @@ def dialog_novo_pedido():
     avisar = st.checkbox("Avisar WhatsApp?", value=True)
     
     if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
-        ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, origem_produto_txt, avisar, obs)
+        # Recupera objetos reais para salvar
+        cli_final = df_c.iloc[st.session_state.np_cli_idx]
+        prod_final = df_p.iloc[st.session_state.np_prod_idx]
+        
+        ok, res = criar_pedido_novo_fluxo(
+            cli_final, prod_final, 
+            st.session_state.np_qtd, st.session_state.np_val, total, 
+            st.session_state.np_custo, st.session_state.np_origem, 
+            avisar, obs
+        )
         if ok: 
             st.success(res)
             time.sleep(1.5)
