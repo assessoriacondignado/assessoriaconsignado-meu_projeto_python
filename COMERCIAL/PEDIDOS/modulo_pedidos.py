@@ -55,7 +55,6 @@ def listar_tabelas_schema(schema_name):
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
     Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente.
-    Define o preço/custo acordado para este cliente neste produto.
     """
     try:
         cur = conn.cursor()
@@ -75,7 +74,7 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
                 origem_custo, valor_custo,
                 data_criacao
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (id) DO UPDATE SET -- Fallback simples se houver conflito de ID
+            ON CONFLICT (id) DO UPDATE SET
                 valor_custo = EXCLUDED.valor_custo,
                 origem_custo = EXCLUDED.origem_custo,
                 nome_usuario = EXCLUDED.nome_usuario,
@@ -100,7 +99,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
         try:
             cur = conn.cursor()
             
-            # 1. Cria o Pedido (Incluindo Observação)
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
@@ -113,7 +111,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            # 2. Registra Custo
             try:
                 registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
             except: pass 
@@ -121,7 +118,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             conn.commit()
             conn.close()
             
-            # 3. Avisar WhatsApp
             msg_whats = ""
             if avisar_cliente and cliente['telefone']:
                 try:
@@ -313,33 +309,37 @@ def dialog_novo_pedido():
 
     # 1. Cliente
     c1, c2 = st.columns(2)
-    ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'])
+    # KEY adicionada para garantir estado
+    ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'], key="sel_cli_novo_ped")
     cli = df_c.iloc[ic]
     c1.caption(f"🆔 **Ref:** CPF {cli['cpf']} | 📞 {cli['telefone']}")
     
     # 2. Produto e Origem
-    ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
+    # KEY adicionada para garantir estado
+    ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'], key="sel_prod_novo_ped")
     prod = df_p.iloc[ip]
     
-    # PEGA A ORIGEM DO PRODUTO (TEXTO)
     origem_produto_txt = prod.get('origem_custo', 'Geral')
     if not origem_produto_txt: origem_produto_txt = 'Geral'
     
-    # Exibe a origem logo abaixo do produto (Solução Solicitada)
     c2.info(f"📍 **Origem:** {origem_produto_txt}")
     
     st.divider()
     
-    # 4. Qtd e Valor (Ajustado layout para 2 colunas)
+    # 4. Qtd e Valor
     c3, c4, c5 = st.columns(3)
-    qtd = c3.number_input("Qtd", 1, value=1)
-    val = c4.number_input("Valor Unit.", 0.0, value=float(prod['preco'] or 0.0))
+    qtd = c3.number_input("Qtd", 1, value=1, key=f"qtd_{prod['id']}") # Reset ao mudar produto
+    
+    # CORREÇÃO PRINCIPAL: KEY Dinâmica no Valor Unitário
+    # Isso força o widget a recriar e pegar o novo 'value' (prod['preco']) quando o produto muda.
+    val = c4.number_input("Valor Unit.", 0.0, value=float(prod['preco'] or 0.0), key=f"val_unit_{prod['id']}")
+    
     total = qtd * val
     c5.metric("Total", f"R$ {total:.2f}")
     
     st.divider()
     
-    # 5. Custo (Busca se já existe registro desse produto para o cliente)
+    # 5. Custo
     custo_sugerido = 0.0
     conn_chk = get_conn()
     if conn_chk:
@@ -351,9 +351,13 @@ def dialog_novo_pedido():
             conn_chk.close()
         except: conn_chk.close()
         
-    c_custo = st.number_input("Valor de Custo (Referência)", value=custo_sugerido, step=1.0, help="Valor registrado para controle de custo deste cliente.")
+    # CORREÇÃO PRINCIPAL: KEY Dinâmica no Custo
+    # Atualiza o custo sugerido quando muda Cliente OU Produto
+    c_custo = st.number_input("Valor de Custo (Referência)", value=custo_sugerido, step=1.0, 
+                              help="Valor registrado para controle de custo deste cliente.",
+                              key=f"custo_{cli['id']}_{prod['id']}")
     
-    # 6. Observação (Novo Campo)
+    # 6. Observação
     obs = st.text_area("Observação do Pedido", placeholder="Detalhes adicionais...")
 
     avisar = st.checkbox("Avisar WhatsApp?", value=True)
@@ -562,4 +566,4 @@ def app_pedidos():
     elif m == 'tarefa' and p is not None: dialog_tarefa(p)
 
 if __name__ == "__main__":
-    app_pedidos() 
+    app_pedidos()
