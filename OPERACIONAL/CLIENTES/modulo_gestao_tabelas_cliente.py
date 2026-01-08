@@ -1,3 +1,5 @@
+# ARQUIVO: OPERACIONAL/CLIENTES/modulo_gestao_tabelas_cliente.py
+
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -10,7 +12,7 @@ import os
 try:
     import conexao
 except ImportError:
-    # Fallback para permitir testes isolados se necessário
+    # Tenta adicionar o diretório raiz ao path se a importação direta falhar
     sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     try:
         import conexao
@@ -31,26 +33,32 @@ def obter_lista_completa_tabelas(schemas):
     """
     Busca todas as tabelas dos schemas permitidos e retorna uma lista de tuplas (schema, tabela).
     """
-    conn = psycopg2.connect(
-        host=conexao.host, port=conexao.port, database=conexao.database,
-        user=conexao.user, password=conexao.password
-    )
-    cursor = conn.cursor()
+    if not conexao: return []
     
-    # Formata a lista para o SQL
-    schemas_str = "', '".join(schemas)
-    query = f"""
-        SELECT table_schema, table_name 
-        FROM information_schema.tables 
-        WHERE table_schema IN ('{schemas_str}')
-        ORDER BY table_schema, table_name;
-    """
-    
-    cursor.execute(query)
-    resultados = cursor.fetchall()
-    conn.close()
-    
-    return results # Retorna lista de tuplas ex: [('admin', 'clientes'), ('cliente', 'vendas')]
+    try:
+        conn = psycopg2.connect(
+            host=conexao.host, port=conexao.port, database=conexao.database,
+            user=conexao.user, password=conexao.password
+        )
+        cursor = conn.cursor()
+        
+        # Formata a lista para o SQL
+        schemas_str = "', '".join(schemas)
+        query = f"""
+            SELECT table_schema, table_name 
+            FROM information_schema.tables 
+            WHERE table_schema IN ('{schemas_str}')
+            ORDER BY table_schema, table_name;
+        """
+        
+        cursor.execute(query)
+        resultados = cursor.fetchall() 
+        conn.close()
+        
+        return resultados # Retorna a variável correta 'resultados'
+    except Exception as e:
+        st.error(f"Erro ao buscar lista de tabelas: {e}")
+        return []
 
 def carregar_dados(schema, tabela):
     """Lê os dados da tabela para um DataFrame"""
@@ -84,22 +92,15 @@ def salvar_alteracoes(df, schema, tabela):
 
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 def app_tabelas():
-    # (Titulo removido conforme solicitado)
-
     if not conexao:
         st.warning("Sem conexão configurada.")
         return
 
     # 1. Busca a lista bruta de todas as tabelas disponíveis
-    try:
-        # Pega todas as tabelas primeiro (cache simples poderia ser aplicado aqui se fosse muito pesado)
-        todos_dados = obter_lista_completa_tabelas(SCHEMAS_PERMITIDOS)
-    except Exception as e:
-        st.error(f"Erro ao listar tabelas: {e}")
-        todos_dados = []
+    todos_dados = obter_lista_completa_tabelas(SCHEMAS_PERMITIDOS)
 
     if not todos_dados:
-        st.info("Nenhuma tabela encontrada.")
+        st.info("Nenhuma tabela encontrada ou erro na conexão.")
         return
 
     # 2. Área de Filtros (Duas Colunas)
@@ -134,7 +135,7 @@ def app_tabelas():
     else:
         tabela_selecionada = st.selectbox("Selecione a Tabela para Editar:", lista_opcoes)
 
-    # 5. Lógica de Edição (Mantida igual)
+    # 5. Lógica de Edição
     if tabela_selecionada:
         schema_atual, nome_tabela_atual = tabela_selecionada.split('.')
         
@@ -170,26 +171,6 @@ def app_tabelas():
                                 st.session_state['df_base'] = df_editado
                             else:
                                 st.error(f"Falha ao salvar: {msg}")
-
-# Correção na função obter_lista_completa_tabelas para garantir retorno correto da variável
-# (Reescrevendo a função auxiliar aqui para garantir que o código acima funcione sem erro de variável 'results')
-def obter_lista_completa_tabelas(schemas):
-    conn = psycopg2.connect(
-        host=conexao.host, port=conexao.port, database=conexao.database,
-        user=conexao.user, password=conexao.password
-    )
-    cursor = conn.cursor()
-    schemas_str = "', '".join(schemas)
-    query = f"""
-        SELECT table_schema, table_name 
-        FROM information_schema.tables 
-        WHERE table_schema IN ('{schemas_str}')
-        ORDER BY table_schema, table_name;
-    """
-    cursor.execute(query)
-    resultados = cursor.fetchall()
-    conn.close()
-    return resultados
 
 if __name__ == "__main__":
     app_tabelas()
