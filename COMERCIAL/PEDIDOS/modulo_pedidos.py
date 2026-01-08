@@ -562,4 +562,4 @@ def app_pedidos():
     elif m == 'tarefa' and p is not None: dialog_tarefa(p)
 
 if __name__ == "__main__":
-    app_pedidos()
+    app_pedidos() 
