@@ -48,9 +48,6 @@ def listar_tabelas_schema(schema_name):
         except: conn.close()
     return []
 
-# A função 'processar_movimentacao_automatica' foi removida (Opção B - Remover Financeiro)
-# A função 'listar_carteiras_ativas' foi removida (Opção B - Remover Financeiro)
-
 # =============================================================================
 # 2. LÓGICA DO NOVO FLUXO DE PEDIDO
 # =============================================================================
@@ -70,8 +67,6 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             id_user = '0'
             nome_user = 'Sem Vínculo'
 
-        # Nota: Para que o ON CONFLICT funcione perfeitamente, é recomendável ter uma constraint UNIQUE(id_cliente, id_produto) no banco.
-        # Se não houver, pode gerar duplicidade, mas não trava o sistema de pedidos.
         sql = """
             INSERT INTO cliente.valor_custo_carteira_cliente (
                 id_cliente, nome_cliente,
@@ -80,15 +75,13 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
                 origem_custo, valor_custo,
                 data_criacao
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (id) DO UPDATE SET -- Fallback simples se houver conflito de ID, idealmente seria (id_cliente, id_produto)
+            ON CONFLICT (id) DO UPDATE SET -- Fallback simples se houver conflito de ID
                 valor_custo = EXCLUDED.valor_custo,
                 origem_custo = EXCLUDED.origem_custo,
                 nome_usuario = EXCLUDED.nome_usuario,
                 id_usuario = EXCLUDED.id_usuario,
                 data_criacao = NOW()
         """
-        # Ajuste preventivo: Se não tiver a constraint UNIQUE configurada no banco, o ON CONFLICT pode falhar ou não fazer nada útil.
-        # Por enquanto, mantemos a inserção para registrar o custo histórico.
         
         cur.execute(sql, (
             str(dados_cliente['id']), dados_cliente['nome'],
@@ -98,33 +91,32 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
         ))
         return True, ""
     except Exception as e:
-        # Erro de banco aqui não deve impedir a criação do pedido, apenas loga ou ignora
         return False, str(e)
 
-def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, origem_custo_txt, avisar_cliente):
+def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, origem_custo_txt, avisar_cliente, observacao):
     codigo = f"PED-{datetime.now().strftime('%y%m%d%H%M')}"
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             
-            # 1. Cria o Pedido
+            # 1. Cria o Pedido (Incluindo Observação)
             cur.execute("""
                 INSERT INTO pedidos (codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
                                      id_produto, nome_produto, categoria_produto, quantidade, valor_unitario, valor_total,
-                                     custo_carteira, origem_custo, data_solicitacao)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
+                                     custo_carteira, origem_custo, data_solicitacao, observacao)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s) RETURNING id
             """, (codigo, int(cliente['id']), cliente['nome'], cliente['cpf'], cliente['telefone'],
                   int(produto['id']), produto['nome'], produto['tipo'], int(qtd), float(valor_unitario), float(valor_total),
-                  float(valor_custo_informado), str(origem_custo_txt)))
+                  float(valor_custo_informado), str(origem_custo_txt), observacao))
             
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            # 2. Registra Custo (Apenas informativo/CRM, sem lógica de carteira financeira complexa)
+            # 2. Registra Custo
             try:
                 registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
-            except: pass # Não bloqueante
+            except: pass 
             
             conn.commit()
             conn.close()
@@ -190,17 +182,14 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             obs_hist = obs
             coluna_data = ""
             
-            # Lógica de Datas apenas
             if novo_status == "Solicitado":
                 coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago":
                 coluna_data = ", data_pago = NOW()"
-                # REMOVIDO: Lógica financeira de crédito automática
             elif novo_status == "Pendente":
                 coluna_data = ", data_pendente = NOW()"
             elif novo_status == "Cancelado":
                 coluna_data = ", data_cancelado = NOW()"
-                # REMOVIDO: Lógica financeira de débito automática
 
             sql_update = f"UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW(){coluna_data} WHERE id=%s"
             cur.execute(sql_update, (novo_status, obs, id_pedido))
@@ -328,7 +317,7 @@ def dialog_novo_pedido():
     cli = df_c.iloc[ic]
     c1.caption(f"🆔 **Ref:** CPF {cli['cpf']} | 📞 {cli['telefone']}")
     
-    # 2. Produto
+    # 2. Produto e Origem
     ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'])
     prod = df_p.iloc[ip]
     
@@ -336,22 +325,17 @@ def dialog_novo_pedido():
     origem_produto_txt = prod.get('origem_custo', 'Geral')
     if not origem_produto_txt: origem_produto_txt = 'Geral'
     
-    # 3. Resumo
-    st.divider()
-    st.markdown("##### 4. Resumo")
-    rc1, rc2, rc3 = st.columns(3)
-    rc1.metric("Cliente", cli['nome'].split()[0])
-    rc2.metric("Item", prod['nome'])
-    rc3.metric("Origem", origem_produto_txt)
+    # Exibe a origem logo abaixo do produto (Solução Solicitada)
+    c2.info(f"📍 **Origem:** {origem_produto_txt}")
     
     st.divider()
     
-    # 4. Qtd e Valor
+    # 4. Qtd e Valor (Ajustado layout para 2 colunas)
     c3, c4, c5 = st.columns(3)
-    qtd = c3.number_input("5. Qtd", 1, value=1)
-    val = c4.number_input("5. Valor Unit.", 0.0, value=float(prod['preco'] or 0.0))
+    qtd = c3.number_input("Qtd", 1, value=1)
+    val = c4.number_input("Valor Unit.", 0.0, value=float(prod['preco'] or 0.0))
     total = qtd * val
-    c5.metric("6. Total", f"R$ {total:.2f}")
+    c5.metric("Total", f"R$ {total:.2f}")
     
     st.divider()
     
@@ -367,12 +351,15 @@ def dialog_novo_pedido():
             conn_chk.close()
         except: conn_chk.close()
         
-    c_custo = st.number_input("7. Valor do Custo (Para Tabela Custo)", value=custo_sugerido, step=1.0)
+    c_custo = st.number_input("Valor de Custo (Referência)", value=custo_sugerido, step=1.0, help="Valor registrado para controle de custo deste cliente.")
     
-    avisar = st.checkbox("8. Avisar WhatsApp?", value=True)
+    # 6. Observação (Novo Campo)
+    obs = st.text_area("Observação do Pedido", placeholder="Detalhes adicionais...")
+
+    avisar = st.checkbox("Avisar WhatsApp?", value=True)
     
     if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
-        ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, origem_produto_txt, avisar)
+        ok, res = criar_pedido_novo_fluxo(cli, prod, qtd, val, total, c_custo, origem_produto_txt, avisar, obs)
         if ok: 
             st.success(res)
             time.sleep(1.5)
