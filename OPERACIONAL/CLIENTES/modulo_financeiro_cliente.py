@@ -364,7 +364,7 @@ def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc,
         saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
         
         # Inserção na tabela individual
-        query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
+        query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, 'MANUAL', tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
         cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
         
         # Inserção na tabela unificada
@@ -517,12 +517,10 @@ def app_financeiro():
     garantir_tabela_extrato_geral()
     garantir_tabela_custo_carteira()
 
-    st.markdown("## 💰 Módulo Financeiro")
-    
-    tab_custos, tab_config, tab_edit_tab, tab_rel = st.tabs([
+    # Título removido conforme solicitado
+
+    tab_custos, tab_rel = st.tabs([
         "💼 Custos de Carteira", 
-        "⚙️ Config. Carteiras", 
-        "📝 Editar Transações",
         "📊 Relatórios"
     ])
 
@@ -567,56 +565,6 @@ def app_financeiro():
                 with c6:
                     if st.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
                     if st.button("🗑️", key=f"de_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
-
-    # --- ABA CONFIGURAÇÃO DE CARTEIRAS ---
-    with tab_config:
-        with st.expander("🆕 Criar Nova Carteira (Sistema)", expanded=False):
-            st.info("Cria uma nova tabela SQL para armazenar as transações desta carteira.")
-            df_pds = listar_produtos_para_selecao()
-            if not df_pds.empty:
-                with st.container(border=True):
-                    cc1, cc2, cc3, cc4, cc5 = st.columns([2, 2, 2, 2, 2])
-                    idx_p = cc1.selectbox("Produto Vinculado", range(len(df_pds)), format_func=lambda x: df_pds.iloc[x]['nome'])
-                    n_cart_in = cc2.text_input("Nome Carteira", key="n_c_n")
-                    orgs = listar_origens_para_selecao()
-                    origem_cart_in = cc3.selectbox("Origem Custo", options=[""] + orgs, key="org_c_new")
-                    stt_in = cc4.selectbox("Status", ["ATIVO", "INATIVO"], key="s_c_n")
-                    
-                    if cc5.button("Criar Carteira", key="b_c_c"):
-                        if n_cart_in: 
-                            if salvar_nova_carteira_sistema(int(df_pds.iloc[idx_p]['id']), df_pds.iloc[idx_p]['nome'], n_cart_in, stt_in, origem_cart_in):
-                                st.success("Carteira Criada!"); time.sleep(1); st.rerun()
-
-        st.divider()
-        df_configs = listar_carteiras_config()
-        if not df_configs.empty:
-            st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.9em;">
-            <div style="flex: 2;">Produto</div><div style="flex: 2;">Carteira</div><div style="flex: 2;">Tabela SQL</div>
-            <div style="flex: 2;">Origem</div><div style="flex: 1;">Status</div><div style="flex: 1;">Ações</div></div>""", unsafe_allow_html=True)
-            
-            for _, row in df_configs.iterrows():
-                c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 2, 2, 1, 1])
-                c1.write(row['nome_produto']); c2.write(row['nome_carteira']); c3.code(row['nome_tabela_transacoes'])
-                c4.write(row.get('origem_custo', '-')); c5.write(row['status'])
-                with c6:
-                    if st.button("✏️", key=f"ed_cc_{row['id']}"): dialog_editar_carteira_config(row)
-                    if st.button("🗑️", key=f"del_cc_{row['id']}"): 
-                        if excluir_carteira_config(row['id'], row['nome_tabela_transacoes']): st.rerun()
-
-    # --- ABA EDIÇÃO DE TABELAS REAIS ---
-    with tab_edit_tab:
-        st.caption("Edição direta de lançamentos nas tabelas físicas das carteiras.")
-        l_tabs = listar_tabelas_transacao_reais()
-        if l_tabs:
-            t_sel = st.selectbox("Selecione a Tabela", options=l_tabs, key="s_t_e_r")
-            if t_sel:
-                df_e = carregar_dados_tabela_dinamica(t_sel)
-                if not df_e.empty:
-                    df_res = st.data_editor(df_e, key=f"ed_{t_sel}", use_container_width=True, hide_index=True, num_rows="dynamic", disabled=["id", "data_transacao"])
-                    if st.button("💾 Salvar Alterações na Tabela", key="b_s_p"):
-                        if salvar_alteracoes_tabela_dinamica(t_sel, df_e, df_res): st.success("Atualizado!"); time.sleep(1); st.rerun()
-                else: st.warning("Tabela vazia.")
-        else: st.info("Nenhuma tabela de carteira encontrada.")
 
     # --- ABA RELATÓRIOS ---
     with tab_rel:
