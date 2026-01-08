@@ -49,8 +49,54 @@ def listar_tabelas_schema(schema_name):
     return []
 
 # =============================================================================
-# 2. LÓGICA DO NOVO FLUXO DE PEDIDO
+# 2. LÓGICA FINANCEIRA E DE PEDIDOS
 # =============================================================================
+
+def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor):
+    """
+    Registra movimentação no extrato financeiro (CREDITO ou DEBITO).
+    """
+    try:
+        cur = conn.cursor()
+        id_cliente = dados_pedido['id_cliente']
+        
+        # 1. Buscar Saldo Anterior do Cliente
+        cur.execute("""
+            SELECT saldo_novo 
+            FROM cliente.extrato_carteira_por_produto 
+            WHERE id_cliente = %s 
+            ORDER BY id DESC LIMIT 1
+        """, (str(id_cliente),))
+        res = cur.fetchone()
+        saldo_anterior = float(res[0]) if res else 0.0
+        
+        # 2. Calcular Novo Saldo
+        valor_float = float(valor)
+        if tipo_lancamento == 'CREDITO':
+            saldo_novo = saldo_anterior + valor_float
+        else: # DEBITO
+            saldo_novo = saldo_anterior - valor_float
+            
+        # 3. Inserir no Extrato
+        # Usamos 'PEDIDOS' como origem fixa para rastreabilidade
+        cur.execute("""
+            INSERT INTO cliente.extrato_carteira_por_produto (
+                id_cliente, data_lancamento, tipo_lancamento, 
+                produto_vinculado, origem_lancamento, 
+                valor_lancado, saldo_anterior, saldo_novo, nome_usuario
+            ) VALUES (%s, NOW(), %s, %s, 'PEDIDOS', %s, %s, %s, 'Sistema')
+        """, (
+            str(id_cliente), 
+            tipo_lancamento, 
+            f"Pedido {dados_pedido['codigo']} - {dados_pedido['nome_produto']}", 
+            valor_float, 
+            saldo_anterior, 
+            saldo_novo
+        ))
+        return True
+    except Exception as e:
+        print(f"Erro ao registrar financeiro: {e}")
+        return False
 
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
@@ -69,7 +115,6 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             nome_user = 'Sem Vínculo'
 
         # 1. Verifica se já existe registro para este Cliente e esta ORIGEM
-        # (Alterado para validar por origem_custo e não mais por id_produto)
         sql_check = """
             SELECT id FROM cliente.valor_custo_carteira_cliente 
             WHERE id_cliente = %s AND origem_custo = %s
@@ -79,7 +124,6 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
 
         if resultado:
             # --- ATUALIZAR (UPDATE) ---
-            # Atualiza o valor, quem fez a alteração e a data, mantendo o ID.
             id_existente = resultado[0]
             sql_update = """
                 UPDATE cliente.valor_custo_carteira_cliente SET
@@ -96,7 +140,6 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             ))
         else:
             # --- INSERIR (INSERT) ---
-            # Caso não exista registro para essa origem, cria um novo.
             sql_insert = """
                 INSERT INTO cliente.valor_custo_carteira_cliente (
                     id_cliente, nome_cliente,
@@ -218,6 +261,14 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             cur.execute(sql_update, (novo_status, obs, id_pedido))
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
             
+            # --- REGRA FINANCEIRA ---
+            # Pago = CRÉDITO | Cancelado = DÉBITO
+            if novo_status == "Pago":
+                registrar_movimentacao_financeira(conn, dados_pedido, "CREDITO", dados_pedido['valor_total'])
+            elif novo_status == "Cancelado":
+                registrar_movimentacao_financeira(conn, dados_pedido, "DEBITO", dados_pedido['valor_total'])
+            # ------------------------
+
             conn.commit(); conn.close()
             
             if avisar and dados_pedido['telefone_cliente']:
