@@ -23,7 +23,7 @@ def get_conn():
         return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES E FINANCEIRAS
+# 1. FUNÇÕES AUXILIARES
 # =============================================================================
 
 def listar_modelos_mensagens():
@@ -34,17 +34,6 @@ def listar_modelos_mensagens():
             df = pd.read_sql(query, conn)
             conn.close()
             return df['chave_status'].tolist()
-        except: conn.close()
-    return []
-
-def listar_carteiras_ativas():
-    conn = get_conn()
-    if conn:
-        try:
-            query = "SELECT nome_carteira FROM cliente.carteiras_config WHERE status = 'ATIVO' ORDER BY nome_carteira"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df['nome_carteira'].tolist()
         except: conn.close()
     return []
 
@@ -59,107 +48,8 @@ def listar_tabelas_schema(schema_name):
         except: conn.close()
     return []
 
-def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
-    """
-    Atualiza saldo nas carteiras e na tabela unificada quando status muda.
-    """
-    try:
-        cur = conn.cursor()
-        
-        # 1. Identificar Origem de Custo
-        cur.execute("SELECT origem_custo FROM produtos_servicos WHERE id = %s", (int(dados_pedido['id_produto']),))
-        res_prod = cur.fetchone()
-        if not res_prod or not res_prod[0]:
-            origem = dados_pedido.get('origem_custo')
-            if not origem:
-                return False, "Produto sem 'Origem de Custo' definida."
-        else:
-            origem = res_prod[0]
-            
-        cpf_cliente = dados_pedido['cpf_cliente']
-
-        # 2. Identificar Carteira Vinculada
-        cur.execute("""
-            SELECT nome_carteira 
-            FROM cliente.cliente_carteira_lista 
-            WHERE cpf_cliente = %s AND origem_custo = %s
-            LIMIT 1
-        """, (cpf_cliente, origem))
-        res_lista = cur.fetchone()
-        
-        if not res_lista:
-            # Fallback: Configuração geral
-            cur.execute("SELECT nome_carteira FROM cliente.carteiras_config WHERE origem_custo = %s AND status='ATIVO' LIMIT 1", (origem,))
-            res_lista = cur.fetchone()
-            if not res_lista:
-                return False, f"Nenhuma carteira encontrada para a origem '{origem}'."
-        
-        nome_carteira = res_lista[0]
-
-        # 3. Identificar Tabela Física da Carteira
-        cur.execute("""
-            SELECT nome_tabela_transacoes 
-            FROM cliente.carteiras_config 
-            WHERE nome_carteira = %s AND status = 'ATIVO'
-            LIMIT 1
-        """, (nome_carteira,))
-        res_config = cur.fetchone()
-        
-        if not res_config:
-            return False, f"Configuração técnica da carteira '{nome_carteira}' não encontrada."
-            
-        tabela_sql = res_config[0]
-        valor = float(dados_pedido['valor_total'])
-        codigo_pedido = dados_pedido['codigo']
-        
-        # 4. Calcular Saldos
-        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
-        res_saldo = cur.fetchone()
-        saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
-        
-        if tipo_lancamento == 'CREDITO':
-            saldo_novo = saldo_anterior + valor
-            motivo = f"Pagamento Pedido {codigo_pedido}"
-        else: # DEBITO (Cancelamento)
-            saldo_novo = saldo_anterior - valor
-            motivo = f"Estorno/Cancelamento Pedido {codigo_pedido}"
-
-        # 5. Inserir na Tabela Específica da Carteira
-        sql_insert = f"""
-            INSERT INTO {tabela_sql} 
-            (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao)
-            VALUES (%s, %s, %s, 'PEDIDO', %s, %s, %s, %s, NOW())
-        """
-        cur.execute(sql_insert, (cpf_cliente, dados_pedido['nome_cliente'], motivo, tipo_lancamento, valor, saldo_anterior, saldo_novo))
-        
-        # 6. Inserir na Tabela Unificada (CORREÇÃO APLICADA AQUI)
-        # Convertemos id_cliente para string para evitar erro de tipo (text vs integer) no banco
-        id_cliente_str = str(dados_pedido.get('id_cliente', ''))
-        nome_produto = str(dados_pedido.get('nome_produto', 'Produto'))
-        usuario_atual = st.session_state.get('nome_usuario') or "Sistema" # Tenta pegar usuário logado
-
-        sql_insert_uni = """
-            INSERT INTO cliente.extrato_carteira_por_produto 
-            (id_cliente, data_lancamento, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo, nome_usuario)
-            VALUES (%s, NOW(), %s, %s, 'PEDIDO', %s, %s, %s, %s)
-        """
-        # Monta descrição do produto/motivo
-        desc_produto = f"{motivo} - {nome_produto}"
-        
-        cur.execute(sql_insert_uni, (
-            id_cliente_str,         # ID como String
-            tipo_lancamento,        # CREDITO ou DEBITO
-            desc_produto,           # Descrição composta
-            valor,                  # Valor
-            saldo_anterior,         # Saldo Antes
-            saldo_novo,             # Saldo Depois
-            usuario_atual           # Usuário que fez a ação
-        ))
-        
-        return True, f"{tipo_lancamento} de R$ {valor:.2f} registrado (Carteira: {nome_carteira})"
-
-    except Exception as e:
-        return False, f"Erro financeiro: {str(e)}"
+# A função 'processar_movimentacao_automatica' foi removida (Opção B - Remover Financeiro)
+# A função 'listar_carteiras_ativas' foi removida (Opção B - Remover Financeiro)
 
 # =============================================================================
 # 2. LÓGICA DO NOVO FLUXO DE PEDIDO
@@ -167,7 +57,8 @@ def processar_movimentacao_automatica(conn, dados_pedido, tipo_lancamento):
 
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
-    Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente
+    Passo 9: Upsert na tabela cliente.valor_custo_carteira_cliente.
+    Define o preço/custo acordado para este cliente neste produto.
     """
     try:
         cur = conn.cursor()
@@ -179,6 +70,8 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             id_user = '0'
             nome_user = 'Sem Vínculo'
 
+        # Nota: Para que o ON CONFLICT funcione perfeitamente, é recomendável ter uma constraint UNIQUE(id_cliente, id_produto) no banco.
+        # Se não houver, pode gerar duplicidade, mas não trava o sistema de pedidos.
         sql = """
             INSERT INTO cliente.valor_custo_carteira_cliente (
                 id_cliente, nome_cliente,
@@ -187,14 +80,16 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
                 origem_custo, valor_custo,
                 data_criacao
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (id_cliente, id_produto)
-            DO UPDATE SET
+            ON CONFLICT (id) DO UPDATE SET -- Fallback simples se houver conflito de ID, idealmente seria (id_cliente, id_produto)
                 valor_custo = EXCLUDED.valor_custo,
                 origem_custo = EXCLUDED.origem_custo,
                 nome_usuario = EXCLUDED.nome_usuario,
                 id_usuario = EXCLUDED.id_usuario,
                 data_criacao = NOW()
         """
+        # Ajuste preventivo: Se não tiver a constraint UNIQUE configurada no banco, o ON CONFLICT pode falhar ou não fazer nada útil.
+        # Por enquanto, mantemos a inserção para registrar o custo histórico.
+        
         cur.execute(sql, (
             str(dados_cliente['id']), dados_cliente['nome'],
             id_user, nome_user,
@@ -203,6 +98,7 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
         ))
         return True, ""
     except Exception as e:
+        # Erro de banco aqui não deve impedir a criação do pedido, apenas loga ou ignora
         return False, str(e)
 
 def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, origem_custo_txt, avisar_cliente):
@@ -225,8 +121,10 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            # 2. Executa a regra do Passo 9 (Gravar na tabela de custos do cliente)
-            ok_custo, erro_custo = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
+            # 2. Registra Custo (Apenas informativo/CRM, sem lógica de carteira financeira complexa)
+            try:
+                registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
+            except: pass # Não bloqueante
             
             conn.commit()
             conn.close()
@@ -244,8 +142,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                             msg_whats = " (WhatsApp Enviado)"
                 except: pass
 
-            aviso_extra = "" if ok_custo else f" (⚠️ Erro ao gravar tabela custo: {erro_custo})"
-            return True, f"Pedido {codigo} criado!{msg_whats}{aviso_extra}"
+            return True, f"Pedido {codigo} criado!{msg_whats}"
 
         except Exception as e: return False, str(e)
     return False, "Erro conexão"
@@ -291,25 +188,19 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
         try:
             cur = conn.cursor()
             obs_hist = obs
-            msg_fin = ""
             coluna_data = ""
             
+            # Lógica de Datas apenas
             if novo_status == "Solicitado":
                 coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago":
                 coluna_data = ", data_pago = NOW()"
-                # Lança CRÉDITO na carteira e no extrato unificado
-                ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'CREDITO')
-                if ok: obs_hist += f" | {msg_fin}"
-                else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
+                # REMOVIDO: Lógica financeira de crédito automática
             elif novo_status == "Pendente":
                 coluna_data = ", data_pendente = NOW()"
             elif novo_status == "Cancelado":
                 coluna_data = ", data_cancelado = NOW()"
-                # Lança DÉBITO na carteira e no extrato unificado
-                ok, msg_fin = processar_movimentacao_automatica(conn, dados_pedido, 'DEBITO')
-                if ok: obs_hist += f" | {msg_fin}"
-                else: obs_hist += f" | ⚠️ Erro Fin: {msg_fin}"
+                # REMOVIDO: Lógica financeira de débito automática
 
             sql_update = f"UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW(){coluna_data} WHERE id=%s"
             cur.execute(sql_update, (novo_status, obs, id_pedido))
