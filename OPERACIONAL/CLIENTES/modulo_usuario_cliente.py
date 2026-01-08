@@ -85,7 +85,8 @@ def dialog_criar_usuario():
         nivel = st.selectbox("Nível de Acesso", lista_niveis)
         ativo = st.checkbox("Ativo?", value=True)
         
-        if st.form_submit_button("Salvar Usuário"):
+        # Adicionado key única para evitar conflito
+        if st.form_submit_button("Salvar Usuário", key="btn_save_new_user"):
             if nome and email and senha:
                 novo_id = salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo)
                 if novo_id:
@@ -148,7 +149,8 @@ def app_usuario():
                     n_senha = c_s.text_input("Nova Senha (deixe em branco para manter)", type="password")
                     n_ativo = c_a.checkbox("Ativo", value=u['ativo'])
                     
-                    if st.form_submit_button("Atualizar Dados"):
+                    # CORREÇÃO AQUI: Adicionado key única baseada no ID do usuário
+                    if st.form_submit_button("Atualizar Dados", key=f"btn_upd_{u['id']}"):
                         conn = get_conn()
                         if conn:
                             cur = conn.cursor()
