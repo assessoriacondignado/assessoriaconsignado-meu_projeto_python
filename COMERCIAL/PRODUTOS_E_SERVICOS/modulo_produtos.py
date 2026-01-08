@@ -493,4 +493,4 @@ def app_produtos():
             st.info(f"Nenhuma tabela encontrada no schema '{schema_sel}'.")
 
 if __name__ == "__main__":
-    app_produtos()
+    app_produtos() 
