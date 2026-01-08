@@ -102,8 +102,11 @@ def app_usuario():
     # --- Header e Botão Novo ---
     if st.session_state['view_usuario'] == 'lista':
         c1, c2 = st.columns([6, 1])
-        busca_user = c1.text_input("🔍 Buscar Usuário", placeholder="Nome ou Email")
-        if c2.button("➕ Novo", type="primary"):
+        # KEY ADICIONADA: garante unicidade do input de busca
+        busca_user = c1.text_input("🔍 Buscar Usuário", placeholder="Nome ou Email", key="input_busca_usuario_main")
+        
+        # KEY ADICIONADA: garante unicidade do botão novo
+        if c2.button("➕ Novo", type="primary", key="btn_novo_usuario_main"):
             st.session_state['view_usuario'] = 'novo'
             st.rerun()
 
@@ -125,7 +128,7 @@ def app_usuario():
         finally:
             conn.close()
 
-        # --- Tabela Visual (Padrão Modulo Cliente) ---
+        # --- Tabela Visual ---
         if not df_users.empty:
             st.markdown("""
             <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
@@ -137,7 +140,8 @@ def app_usuario():
             </div>
             """, unsafe_allow_html=True)
 
-            for _, row in df_users.iterrows():
+            # Iterrows com enumerate para garantir índice único
+            for idx, row in df_users.iterrows():
                 with st.container():
                     c1, c2, c3, c4, c5 = st.columns([3, 3, 2, 1, 1])
                     c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
@@ -149,7 +153,8 @@ def app_usuario():
                     c4.markdown(f":{cor_st}[{status_txt}]")
                     
                     with c5:
-                        if st.button("✏️", key=f"edit_{row['id']}", help="Editar Usuário"):
+                        # KEY COMPOSTA ADICIONADA: id + índice do loop para evitar duplicação absoluta
+                        if st.button("✏️", key=f"btn_edit_user_{row['id']}_{idx}", help="Editar Usuário"):
                             st.session_state['view_usuario'] = 'editar'
                             st.session_state['user_id'] = row['id']
                             st.rerun()
@@ -178,10 +183,7 @@ def app_usuario():
             nome = c1.text_input("Nome Completo *", value=dados.get('nome', ''))
             email = c2.text_input("Login (Email) *", value=dados.get('email', ''))
 
-            # Campos adicionais apenas no 'Novo' para manter consistência com o banco antigo ou se desejar expandir
             c3, c4 = st.columns(2)
-            # No modo edição, mantemos o foco nos campos principais, mas CPF/Tel podem ser adicionados se necessário.
-            # Aqui focamos na estrutura padrão visualizada anteriormente.
             cpf = c3.text_input("CPF", value=dados.get('cpf', '')) 
             tel = c4.text_input("Telefone", value=dados.get('telefone', ''))
 
@@ -200,6 +202,7 @@ def app_usuario():
             st.markdown("<br>", unsafe_allow_html=True)
             b_col1, b_col2, _ = st.columns([1, 1, 4])
             
+            # KEYS ADICIONADAS para os botões do formulário
             submitted = b_col1.form_submit_button("💾 Salvar")
             cancelled = b_col2.form_submit_button("Cancelar")
 
@@ -220,9 +223,6 @@ def app_usuario():
                             else:
                                 st.error("Erro ao criar (verifique se email já existe).")
                     else:
-                        # Edição
-                        # Nota: A função atualizar não atualiza CPF/Tel no SQL original fornecido, 
-                        # mas pode ser ajustada. Aqui mantemos a compatibilidade com a função update criada.
                         res = atualizar_usuario_existente(st.session_state['user_id'], nome, email, nivel, senha, ativo)
                         if res:
                             st.success("Usuário atualizado!")
