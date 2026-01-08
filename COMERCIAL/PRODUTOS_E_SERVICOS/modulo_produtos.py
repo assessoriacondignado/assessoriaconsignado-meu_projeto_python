@@ -231,58 +231,6 @@ def alternar_status(id_prod, status_atual):
             if conn: conn.close()
     return False
 
-def criar_carteira_automatica(id_prod, nome_prod, origem_custo):
-    conn = get_conn()
-    if not conn: return False, "Erro conexão"
-    try:
-        cur = conn.cursor()
-        # Cria a tabela de configuração de carteiras se não existir
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
-                id SERIAL PRIMARY KEY,
-                id_produto INTEGER,
-                nome_produto VARCHAR(255),
-                nome_carteira VARCHAR(255),
-                nome_tabela_transacoes VARCHAR(255),
-                status VARCHAR(50) DEFAULT 'ATIVO',
-                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                origem_custo VARCHAR(100)
-            );
-        """)
-        
-        nome_carteira = nome_prod
-        sufixo = sanitizar_nome_tabela(nome_carteira)
-        nome_tabela_dinamica = f"cliente.transacoes_{sufixo}"
-        
-        # Cria a tabela dinâmica de transações
-        cur.execute(f"""
-            CREATE TABLE IF NOT EXISTS {nome_tabela_dinamica} (
-                id SERIAL PRIMARY KEY,
-                cpf_cliente VARCHAR(20),
-                nome_cliente VARCHAR(255),
-                motivo VARCHAR(255),
-                origem_lancamento VARCHAR(100),
-                data_transacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                tipo_lancamento VARCHAR(50),
-                valor NUMERIC(10, 2),
-                saldo_anterior NUMERIC(10, 2),
-                saldo_novo NUMERIC(10, 2)
-            );
-        """)
-        
-        cur.execute("""
-            INSERT INTO cliente.carteiras_config 
-            (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status, origem_custo)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (id_prod, nome_prod, nome_carteira, nome_tabela_dinamica, 'ATIVO', origem_custo))
-        
-        conn.commit()
-        conn.close()
-        return True, "Carteira criada"
-    except Exception as e:
-        if conn: conn.close()
-        return False, str(e)
-
 # --- DIALOGS ---
 
 @st.dialog("📂 Arquivos do Item")
@@ -403,10 +351,11 @@ def app_produtos():
                 resumo = st.text_area("Resumo", value=dados.get('resumo', ''))
                 
                 arquivos = None
-                criar_cart = False
+                
+                # Checkbox de carteira removido
+                
                 if st.session_state['view_prod'] == 'novo':
                     arquivos = st.file_uploader("Arquivos Iniciais", accept_multiple_files=True)
-                    criar_cart = st.checkbox("Criar Carteira Financeira?", value=True)
 
                 st.divider()
                 col_save, col_cancel = st.columns([1, 6])
@@ -418,9 +367,8 @@ def app_produtos():
                             caminho = criar_pasta_produto(codigo, nome)
                             if arquivos: salvar_arquivos(arquivos, caminho)
                             
-                            nid = cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem)
-                            if nid and criar_cart:
-                                criar_carteira_automatica(nid, nome, origem)
+                            # Cadastro simples, sem criação automática de carteira
+                            cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem)
                             st.success("Cadastrado!")
                         else:
                             atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem)
@@ -493,4 +441,4 @@ def app_produtos():
             st.info(f"Nenhuma tabela encontrada no schema '{schema_sel}'.")
 
 if __name__ == "__main__":
-    app_produtos() 
+    app_produtos()
