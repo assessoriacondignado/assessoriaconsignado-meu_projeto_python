@@ -3,7 +3,7 @@ import pandas as pd
 import psycopg2
 import time
 import re
-from datetime import datetime
+from datetime import datetime, date
 import modulo_wapi
 
 try:
@@ -242,11 +242,9 @@ def buscar_historico_pedido(id_pedido):
 
 def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, modelo_msg):
     # --- REGRA DE VALIDAÇÃO ---
-    # Impede atualização para o mesmo status
     if dados_pedido['status'] == novo_status:
         return False, f"⚠️ O pedido já está com o status '{novo_status}'. Nenhuma alteração realizada."
-    # --------------------------
-
+    
     conn = get_conn()
     if conn:
         try:
@@ -268,13 +266,11 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
             
             # --- REGRA FINANCEIRA ---
-            # Pago = CRÉDITO | Cancelado = DÉBITO
             if novo_status == "Pago":
                 registrar_movimentacao_financeira(conn, dados_pedido, "CREDITO", dados_pedido['valor_total'])
             elif novo_status == "Cancelado":
                 registrar_movimentacao_financeira(conn, dados_pedido, "DEBITO", dados_pedido['valor_total'])
-            # ------------------------
-
+            
             conn.commit(); conn.close()
             
             if avisar and dados_pedido['telefone_cliente']:
@@ -379,11 +375,12 @@ def fechar_modal():
     st.session_state['pedido_ativo'] = None
 
 # =============================================================================
-# 4. DIALOGS
+# 4. COMPONENTE DE NOVO PEDIDO (AGORA UMA FUNÇÃO DE ABA)
 # =============================================================================
 
-@st.dialog("➕ Novo Pedido", width="large")
-def dialog_novo_pedido():
+def renderizar_novo_pedido_tab():
+    st.markdown("### ➕ Novo Pedido")
+    
     # Carregar dados iniciais
     df_c = buscar_clientes()
     df_p = buscar_produtos()
@@ -438,7 +435,6 @@ def dialog_novo_pedido():
         st.session_state.np_custo = buscar_custo_referencia(cli['id'], prod['id'])
 
     def atualizar_calculo():
-        # Gatilho simples para forçar o rerun e atualizar o Total visualmente ao sair do campo
         pass
 
     if st.session_state.np_custo == 0.0:
@@ -446,71 +442,75 @@ def dialog_novo_pedido():
         prod_atual = df_p.iloc[st.session_state.np_prod_idx]
         st.session_state.np_custo = buscar_custo_referencia(cli_atual['id'], prod_atual['id'])
 
-    # --- INTERFACE ---
-    c1, c2 = st.columns(2)
-    
-    # 1. Cliente
-    st.session_state.np_cli_idx = c1.selectbox(
-        "1. Cliente", 
-        range(len(df_c)), 
-        index=st.session_state.np_cli_idx,
-        format_func=lambda x: f"{df_c.iloc[x]['nome']} / {df_c.iloc[x]['cpf']} / {df_c.iloc[x]['telefone']}", 
-        key="np_cli_selector", 
-        on_change=lambda: st.session_state.update({'np_cli_idx': st.session_state.np_cli_selector}) or on_change_cliente()
-    )
-    
-    # 2. Produto
-    st.session_state.np_prod_idx = c2.selectbox(
-        "3. Produto", 
-        range(len(df_p)), 
-        index=st.session_state.np_prod_idx,
-        format_func=lambda x: df_p.iloc[x]['nome'], 
-        key="np_prod_selector",
-        on_change=lambda: st.session_state.update({'np_prod_idx': st.session_state.np_prod_selector}) or on_change_produto()
-    )
-    
-    c2.info(f"📍 **Origem:** {st.session_state.np_origem}")
-    
-    st.divider()
-    
-    # 4. Qtd e Valor (COM CALLBACK PARA ATUALIZAÇÃO IMEDIATA)
-    c3, c4, c5 = st.columns(3)
-    
-    qtd = c3.number_input("Qtd", min_value=1, key="np_qtd", on_change=atualizar_calculo)
-    val = c4.number_input("Valor Unit.", min_value=0.0, format="%.2f", step=1.0, key="np_val", on_change=atualizar_calculo)
-    
-    total = st.session_state.np_qtd * st.session_state.np_val
-    c5.metric("Total", f"R$ {total:.2f}")
-    
-    st.divider()
-    
-    # 5. Custo
-    c_custo = st.number_input("Valor de Custo (Referência)", 
-                              step=1.0, 
-                              help="Valor registrado para controle de custo deste cliente.",
-                              key="np_custo")
-    
-    # 6. Observação
-    obs = st.text_area("Observação do Pedido", placeholder="Detalhes adicionais...")
-
-    avisar = st.checkbox("Avisar WhatsApp?", value=True)
-    
-    if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
-        cli_final = df_c.iloc[st.session_state.np_cli_idx]
-        prod_final = df_p.iloc[st.session_state.np_prod_idx]
+    with st.container(border=True):
+        # --- INTERFACE ---
+        c1, c2 = st.columns(2)
         
-        ok, res = criar_pedido_novo_fluxo(
-            cli_final, prod_final, 
-            st.session_state.np_qtd, st.session_state.np_val, total, 
-            st.session_state.np_custo, st.session_state.np_origem, 
-            avisar, obs
+        # 1. Cliente
+        st.session_state.np_cli_idx = c1.selectbox(
+            "1. Cliente", 
+            range(len(df_c)), 
+            index=st.session_state.np_cli_idx,
+            format_func=lambda x: f"{df_c.iloc[x]['nome']} / {df_c.iloc[x]['cpf']} / {df_c.iloc[x]['telefone']}", 
+            key="np_cli_selector", 
+            on_change=lambda: st.session_state.update({'np_cli_idx': st.session_state.np_cli_selector}) or on_change_cliente()
         )
-        if ok: 
-            st.success(res)
-            time.sleep(1.5)
-            fechar_modal()
-            st.rerun()
-        else: st.error(res)
+        
+        # 2. Produto
+        st.session_state.np_prod_idx = c2.selectbox(
+            "3. Produto", 
+            range(len(df_p)), 
+            index=st.session_state.np_prod_idx,
+            format_func=lambda x: df_p.iloc[x]['nome'], 
+            key="np_prod_selector",
+            on_change=lambda: st.session_state.update({'np_prod_idx': st.session_state.np_prod_selector}) or on_change_produto()
+        )
+        
+        c2.info(f"📍 **Origem:** {st.session_state.np_origem}")
+        
+        st.divider()
+        
+        # 4. Qtd e Valor
+        c3, c4, c5 = st.columns(3)
+        
+        qtd = c3.number_input("Qtd", min_value=1, key="np_qtd", on_change=atualizar_calculo)
+        val = c4.number_input("Valor Unit.", min_value=0.0, format="%.2f", step=1.0, key="np_val", on_change=atualizar_calculo)
+        
+        total = st.session_state.np_qtd * st.session_state.np_val
+        c5.metric("Total", f"R$ {total:.2f}")
+        
+        st.divider()
+        
+        # 5. Custo
+        c_custo = st.number_input("Valor de Custo (Referência)", 
+                                  step=1.0, 
+                                  help="Valor registrado para controle de custo deste cliente.",
+                                  key="np_custo")
+        
+        # 6. Observação
+        obs = st.text_area("Observação do Pedido", placeholder="Detalhes adicionais...")
+
+        avisar = st.checkbox("Avisar WhatsApp?", value=True)
+        
+        if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
+            cli_final = df_c.iloc[st.session_state.np_cli_idx]
+            prod_final = df_p.iloc[st.session_state.np_prod_idx]
+            
+            ok, res = criar_pedido_novo_fluxo(
+                cli_final, prod_final, 
+                st.session_state.np_qtd, st.session_state.np_val, total, 
+                st.session_state.np_custo, st.session_state.np_origem, 
+                avisar, obs
+            )
+            if ok: 
+                st.success(res)
+                time.sleep(1.5)
+                st.rerun()
+            else: st.error(res)
+
+# =============================================================================
+# 5. DIALOGS DE AÇÃO
+# =============================================================================
 
 @st.dialog("✏️ Editar", width="large")
 def dialog_editar(ped):
@@ -548,7 +548,6 @@ def dialog_status(ped):
         obs = st.text_area("Obs")
         av = st.checkbox("Avisar?", value=True)
         if st.form_submit_button("Atualizar"):
-            # Ajuste para tratar o retorno da tupla (ok, msg)
             ok, msg = atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod)
             if ok:
                 st.success(msg)
@@ -556,7 +555,7 @@ def dialog_status(ped):
                 fechar_modal()
                 st.rerun()
             else:
-                st.warning(msg) # Exibe o erro de validação sem fechar o modal
+                st.warning(msg)
 
     st.divider(); st.caption("Histórico")
     st.dataframe(buscar_historico_pedido(ped['id']), hide_index=True)
@@ -592,34 +591,67 @@ def dialog_tarefa(ped):
 # =============================================================================
 
 def app_pedidos():
-    st.markdown("## 🛒 Módulo de Pedidos")
+    # REMOVIDO TÍTULO CONFORME SOLICITADO
     
-    tab_lista, tab_param, tab_admin = st.tabs(["📋 Lista de Pedidos", "⚙️ Parâmetros", "🗃️ Tabelas Admin"])
+    # NOVA ORDEM DE ABAS
+    tab_novo, tab_lista, tab_param, tab_admin = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros", "🗃️ Tabelas Admin"])
 
-    # ABA 1: LISTA
+    # ABA 1: NOVO PEDIDO (SUB MENU PRIMEIRO)
+    with tab_novo:
+        renderizar_novo_pedido_tab()
+
+    # ABA 2: LISTA DE PEDIDOS
     with tab_lista:
         if 'modal_ativo' not in st.session_state: st.session_state.update({'modal_ativo': None, 'pedido_ativo': None})
         
-        c_t, c_b = st.columns([5, 1])
-        c_b.button("➕ Novo Pedido", type="primary", on_click=abrir_modal, args=('novo', None), use_container_width=True)
-        
         conn = get_conn()
         if conn:
-            df = pd.read_sql("""
+            # FILTROS DE PESQUISA AVANÇADOS
+            with st.expander("🔍 Filtros de Pesquisa", expanded=True):
+                c1, c2, c3, c4 = st.columns(4)
+                
+                filtro_cliente = c1.text_input("Cliente", placeholder="Nome do cliente")
+                filtro_produto = c2.text_input("Produto", placeholder="Nome do produto")
+                
+                # Para status, precisamos carregar as opções disponíveis ou usar fixas
+                opcoes_status = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
+                filtro_status = c3.multiselect("Status", options=opcoes_status)
+                
+                filtro_datas = c4.date_input("Período (Criação)", value=[])
+
+            # CONSTRUÇÃO DA QUERY COM FILTROS
+            query_base = """
                 SELECT p.*, c.nome_empresa, c.email as email_cliente 
                 FROM pedidos p 
                 LEFT JOIN admin.clientes c ON p.id_cliente = c.id 
-                ORDER BY p.data_criacao DESC
-            """, conn)
+                WHERE 1=1
+            """
+            params = []
+
+            if filtro_cliente:
+                query_base += " AND p.nome_cliente ILIKE %s"
+                params.append(f"%{filtro_cliente}%")
+            
+            if filtro_produto:
+                query_base += " AND p.nome_produto ILIKE %s"
+                params.append(f"%{filtro_produto}%")
+            
+            if filtro_status:
+                placeholders = ",".join(["%s"] * len(filtro_status))
+                query_base += f" AND p.status IN ({placeholders})"
+                params.extend(filtro_status)
+            
+            if len(filtro_datas) == 2:
+                query_base += " AND p.data_criacao BETWEEN %s AND %s"
+                params.append(filtro_datas[0])
+                params.append(filtro_datas[1])
+
+            # LIMITAÇÃO DE 10 PEDIDOS E ORDENAÇÃO
+            query_base += " ORDER BY p.data_criacao DESC LIMIT 10"
+
+            df = pd.read_sql(query_base, conn, params=params)
             conn.close()
             
-            with st.expander("🔍 Filtros de Pesquisa", expanded=True):
-                c1, c2 = st.columns([3, 1.5])
-                busca = c1.text_input("Buscar")
-                status = c2.multiselect("Status", df['status'].unique() if not df.empty else [])
-                if not df.empty:
-                    if busca: df = df[df['nome_cliente'].str.contains(busca, case=False, na=False) | df['nome_produto'].str.contains(busca, case=False, na=False)]
-                    if status: df = df[df['status'].isin(status)]
             st.divider()
             
             if not df.empty:
@@ -631,10 +663,37 @@ def app_pedidos():
                     
                     empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
                     
+                    # CARD DO PEDIDO
                     with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}"):
-                        st.write(f"**Produto:** {row['nome_produto']} | **Data:** {row['data_criacao'].strftime('%d/%m %H:%M')}")
-                        st.caption(f"Origem Custo: {row.get('origem_custo', '-')}")
+                        
+                        # TODAS AS INFORMAÇÕES DO PEDIDO
+                        st.markdown("#### ℹ️ Detalhes Completos")
+                        
+                        # Formatando dados para exibição limpa
+                        detalhes = {
+                            "Código": row['codigo'],
+                            "Status": row['status'],
+                            "Data Criação": row['data_criacao'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_criacao']) else "-",
+                            "Cliente": row['nome_cliente'],
+                            "CPF Cliente": row['cpf_cliente'],
+                            "Telefone": row['telefone_cliente'],
+                            "Produto": row['nome_produto'],
+                            "Categoria": row['categoria_produto'],
+                            "Qtd": row['quantidade'],
+                            "Valor Unit.": f"R$ {row['valor_unitario']:.2f}",
+                            "Valor Total": f"R$ {row['valor_total']:.2f}",
+                            "Custo Carteira": f"R$ {row['custo_carteira']:.2f}" if pd.notna(row['custo_carteira']) else "-",
+                            "Origem Custo": row.get('origem_custo', '-'),
+                            "Data Solicitação": row['data_solicitacao'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_solicitacao']) else "-",
+                            "Data Pagamento": row['data_pago'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_pago']) else "-",
+                            "Data Cancelado": row['data_cancelado'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_cancelado']) else "-",
+                            "Observação": row['observacao']
+                        }
+                        
+                        st.json(detalhes) # Exibe formato estruturado
                             
+                        # BOTÕES DE AÇÃO
+                        st.divider()
                         c1, c2, c3, c4, c5, c6 = st.columns(6)
                         ts = int(time.time())
                         c1.button("Cliente", key=f"c_{row['id']}_{ts}", on_click=abrir_modal, args=('cliente', row), use_container_width=True)
@@ -643,9 +702,9 @@ def app_pedidos():
                         c4.button("Histórico", key=f"h_{row['id']}_{ts}", on_click=abrir_modal, args=('historico', row), use_container_width=True)
                         c5.button("Excluir", key=f"d_{row['id']}_{ts}", on_click=abrir_modal, args=('excluir', row), use_container_width=True)
                         c6.button("Tarefa", key=f"t_{row['id']}_{ts}", on_click=abrir_modal, args=('tarefa', row), use_container_width=True)
-            else: st.info("Nenhum pedido.")
+            else: st.info("Nenhum pedido encontrado com os filtros atuais.")
     
-    # ABA 2: PARÂMETROS
+    # ABA 3: PARÂMETROS
     with tab_param:
         st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
         conn = get_conn()
@@ -662,7 +721,7 @@ def app_pedidos():
             except: st.warning("Tabela de custos ainda não criada.")
             conn.close()
 
-    # ABA 3: TABELAS ADMIN
+    # ABA 4: TABELAS ADMIN
     with tab_admin:
         st.markdown("#### 🗃️ Gestão de Tabelas (Schema: Admin)")
         tabelas = listar_tabelas_schema('admin')
@@ -704,8 +763,8 @@ def app_pedidos():
 
     # Roteador de Modais
     m = st.session_state['modal_ativo']; p = st.session_state['pedido_ativo']
-    if m == 'novo': dialog_novo_pedido()
-    elif m == 'cliente' and p is not None: 
+    
+    if m == 'cliente' and p is not None: 
         st.dialog("👤 Cliente")(lambda: st.write(f"Nome: {p['nome_cliente']}\nCPF: {p['cpf_cliente']}\nTel: {p['telefone_cliente']}"))()
         fechar_modal()
     elif m == 'editar' and p is not None: dialog_editar(p)
