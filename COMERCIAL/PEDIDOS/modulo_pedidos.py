@@ -54,9 +54,9 @@ def listar_tabelas_schema(schema_name):
 
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
-    Verifica se já existe custo para este Cliente + Produto.
-    Se existir -> Atualiza.
-    Se não existir -> Insere.
+    Verifica se já existe custo para este Cliente + ORIGEM.
+    Se existir -> Atualiza (Valor e Data).
+    Se não existir -> Insere novo.
     """
     try:
         cur = conn.cursor()
@@ -68,33 +68,35 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             id_user = '0'
             nome_user = 'Sem Vínculo'
 
-        # 1. Verifica se já existe registro para este par Cliente/Produto
+        # 1. Verifica se já existe registro para este Cliente e esta ORIGEM
+        # (Alterado para validar por origem_custo e não mais por id_produto)
         sql_check = """
             SELECT id FROM cliente.valor_custo_carteira_cliente 
-            WHERE id_cliente = %s AND id_produto = %s
+            WHERE id_cliente = %s AND origem_custo = %s
         """
-        cur.execute(sql_check, (str(dados_cliente['id']), str(dados_produto['id'])))
+        cur.execute(sql_check, (str(dados_cliente['id']), str(origem_custo_txt)))
         resultado = cur.fetchone()
 
         if resultado:
             # --- ATUALIZAR (UPDATE) ---
+            # Atualiza o valor, quem fez a alteração e a data, mantendo o ID.
             id_existente = resultado[0]
             sql_update = """
                 UPDATE cliente.valor_custo_carteira_cliente SET
                     valor_custo = %s,
-                    origem_custo = %s,
                     nome_usuario = %s,
                     id_usuario = %s,
                     data_criacao = NOW()
                 WHERE id = %s
             """
             cur.execute(sql_update, (
-                float(valor_custo), str(origem_custo_txt),
+                float(valor_custo),
                 nome_user, id_user,
                 id_existente
             ))
         else:
             # --- INSERIR (INSERT) ---
+            # Caso não exista registro para essa origem, cria um novo.
             sql_insert = """
                 INSERT INTO cliente.valor_custo_carteira_cliente (
                     id_cliente, nome_cliente,
@@ -113,7 +115,7 @@ def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_cu
             
         return True, ""
     except Exception as e:
-        print(f"Erro ao salvar custo carteira: {e}") # Log no terminal
+        print(f"Erro ao salvar custo carteira: {e}") 
         return False, str(e)
 
 def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, valor_custo_informado, origem_custo_txt, avisar_cliente, observacao):
@@ -135,7 +137,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             id_novo = cur.fetchone()[0]
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
-            # Tenta registrar o custo, mas reporta erro no console se falhar
+            # Tenta registrar/atualizar o custo na carteira
             res_upsert = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
             if not res_upsert[0]:
                 print(f"⚠️ Aviso: Custo não salvo na carteira. Erro: {res_upsert[1]}")
@@ -350,6 +352,9 @@ def dialog_novo_pedido():
         if conn_chk:
             try:
                 cur = conn_chk.cursor()
+                # A visualização ainda pode buscar por produto ou origem, dependendo da regra de negócio.
+                # Mantendo por produto para sugestão inicial conforme código original, 
+                # mas o salvamento agora respeita a regra da Origem.
                 cur.execute("SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND id_produto = %s", (str(id_cliente), str(id_produto)))
                 chk = cur.fetchone()
                 if chk: custo = float(chk[0])
