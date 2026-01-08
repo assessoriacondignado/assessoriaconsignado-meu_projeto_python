@@ -7,10 +7,11 @@ passos abaixo no terminal para as mudanças aparecerem no site:
 
 1️⃣ COMANDO TUDO-EM-UM (RECOMENDADO):
 Copie e cole a linha abaixo inteira e aperte Enter:
-
-git add . && git commit -m "ajustes gerais" && git push origin main
-
-git add . && git commit -m "fatualizar menu" && git push origin main
+- enviar atualização ao github: git add . && git commit -m "ajustes gerais" && git push origin main
+- atualizar tabelas: python util_exportar_schema.py
+- sair da venv: deactivate
+- acessar o servidor umbut
+- sair do servidor umbut
 ------------------------------------------------------------
 
 2️⃣ O QUE CADA PARTE FAZ:
@@ -25,8 +26,3 @@ git add . && git commit -m "fatualizar menu" && git push origin main
 • Use sempre aspas duplas "" na mensagem do commit.
 • Verifique se o terminal exibiu "Everything up-to-date" ao final.
 
-============================================================
-
-git add .
-git commit --amend -m "Ajuste layout lateral e remoção de token"
-git push origin main

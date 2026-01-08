@@ -1,0 +1,641 @@
+=== ESTRUTURA COMPLETA DO BANCO DE DADOS ===
+Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
+
+--- SCHEMA: ADMIN ---
+
+[TABELA: admin.agrupamento_clientes]
+   - id (integer) NOT NULL
+   - nome_agrupamento (character varying(100)) NOT NULL
+
+[TABELA: admin.agrupamento_empresas]
+   - id (integer) NOT NULL
+   - nome_agrupamento (character varying(100)) NOT NULL
+
+[TABELA: admin.cliente_cnpj]
+   - id (integer) NOT NULL
+   - cnpj (character varying(20)) NULL
+   - nome_empresa (character varying(255)) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: admin.clientes]
+   - id (integer) NOT NULL
+   - nome (character varying(100)) NULL
+   - email (character varying(100)) NULL
+   - telefone (character varying(20)) NULL
+   - data_cadastro (timestamp without time zone) NULL
+   - id_grupo_whats (text) NULL
+   - cpf (character varying(20)) NULL
+   - nome_empresa (character varying(255)) NULL
+   - cnpj_empresa (character varying(20)) NULL
+   - ids_agrupamento_empresa (text) NULL
+   - ids_agrupamento_cliente (text) NULL
+   - telefone2 (character varying(20)) NULL
+   - id_usuario_vinculo (integer) NULL
+   - status (character varying(20)) NULL
+
+[TABELA: admin.clientes_usuarios]
+   - id (integer) NOT NULL
+   - nome (character varying(200)) NOT NULL
+   - cpf (character varying(20)) NOT NULL
+   - telefone (character varying(20)) NOT NULL
+   - is_whatsapp (boolean) NULL
+   - email (character varying(200)) NULL
+   - dados_bancarios (text) NULL
+   - grupo_whats (character varying(100)) NULL
+   - observacao (text) NULL
+   - pasta_caminho (character varying(300)) NULL
+   - ativo (boolean) NULL
+   - data_cadastro (timestamp without time zone) NULL
+   - senha (character varying(100)) NULL
+   - nivel (character varying(50)) NULL
+   - usuario_pai (integer) NULL
+   - id_grupo_whats (text) NULL
+   - tentativas_falhas (integer) NULL
+
+[TABELA: admin.config_pedidos]
+   - id (integer) NOT NULL
+   - grupo_aviso_id (character varying(100)) NULL
+   - msg_criacao (text) NULL
+   - msg_pago (text) NULL
+   - msg_registrar (text) NULL
+   - msg_pendente (text) NULL
+   - msg_cancelado (text) NULL
+
+[TABELA: admin.config_renovacao_feedback]
+   - id (integer) NOT NULL
+   - msg_entrada (text) NULL
+   - msg_processamento (text) NULL
+   - msg_concluido (text) NULL
+
+[TABELA: admin.config_tarefas]
+   - id (integer) NOT NULL
+   - grupo_aviso_id (character varying(100)) NULL
+   - msg_solicitado (text) NULL
+   - msg_registro (text) NULL
+   - msg_entregue (text) NULL
+   - msg_em_processamento (text) NULL
+   - msg_em_execucao (text) NULL
+   - msg_pendente (text) NULL
+   - msg_cancelado (text) NULL
+
+[TABELA: admin.contratos_inss]
+   - id (integer) NOT NULL
+   - matricula_ref (character varying(50)) NULL
+   - data_atualização (date) NULL
+   - observacao (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: admin.logs_acesso]
+   - id (integer) NOT NULL
+   - id_usuario (integer) NULL
+   - nome_usuario (character varying(200)) NULL
+   - ip_acesso (character varying(50)) NULL
+   - local_acesso (character varying(100)) NULL
+   - data_hora (timestamp without time zone) NULL
+
+[TABELA: admin.logs_reset_senha]
+   - id (integer) NOT NULL
+   - id_usuario (integer) NULL
+   - data_solicitacao (timestamp without time zone) NULL
+
+[TABELA: admin.pedidos]
+   - id (integer) NOT NULL
+   - codigo (character varying(50)) NOT NULL
+   - id_cliente (integer) NULL
+   - nome_cliente (character varying(255)) NULL
+   - cpf_cliente (character varying(20)) NULL
+   - telefone_cliente (character varying(20)) NULL
+   - id_produto (integer) NULL
+   - nome_produto (character varying(255)) NULL
+   - categoria_produto (character varying(100)) NULL
+   - quantidade (integer) NULL
+   - valor_unitario (numeric) NULL
+   - valor_total (numeric) NULL
+   - status (character varying(50)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - observacao (text) NULL
+   - custo_carteira (numeric) NULL
+   - nome_carteira (character varying(255)) NULL
+   - origem_custo (character varying(100)) NULL
+   - data_solicitacao (timestamp without time zone) NULL
+   - data_pago (timestamp without time zone) NULL
+   - data_pendente (timestamp without time zone) NULL
+   - data_cancelado (timestamp without time zone) NULL
+
+[TABELA: admin.pedidos_historico]
+   - id (integer) NOT NULL
+   - id_pedido (integer) NULL
+   - status_novo (character varying(50)) NULL
+   - observacao (text) NULL
+   - data_mudanca (timestamp without time zone) NULL
+
+[TABELA: admin.permissoes]
+   - id (integer) NOT NULL
+   - id_usuario (integer) NULL
+   - modulo (character varying(50)) NULL
+   - acesso (boolean) NULL
+
+[TABELA: admin.produtos_servicos]
+   - id (integer) NOT NULL
+   - codigo (character varying(50)) NOT NULL
+   - nome (character varying(255)) NOT NULL
+   - tipo (character varying(50)) NOT NULL
+   - resumo (text) NULL
+   - preco (numeric) NULL
+   - caminho_pasta (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - obs_atualizacao (text) NULL
+   - ativo (boolean) NULL
+   - origem_custo (character varying(100)) NULL
+
+[TABELA: admin.renovacao_feedback]
+   - id (integer) NOT NULL
+   - id_pedido (integer) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_previsao (date) NULL
+   - observacao (text) NULL
+   - status (character varying(50)) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+
+[TABELA: admin.renovacao_feedback_historico]
+   - id (integer) NOT NULL
+   - id_rf (integer) NULL
+   - status_novo (character varying(50)) NULL
+   - observacao (text) NULL
+   - data_mudanca (timestamp without time zone) NULL
+
+[TABELA: admin.sessoes_ativas]
+   - token (character varying(50)) NOT NULL
+   - id_usuario (integer) NULL
+   - nome_usuario (character varying(100)) NULL
+   - data_inicio (timestamp without time zone) NULL
+   - ultimo_clique (timestamp without time zone) NULL
+
+[TABELA: admin.tarefas]
+   - id (integer) NOT NULL
+   - id_pedido (integer) NULL
+   - data_previsao (date) NULL
+   - observacao_tarefa (text) NULL
+   - status (character varying(50)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - id_cliente (integer) NULL
+   - id_produto (integer) NULL
+
+[TABELA: admin.tarefas_historico]
+   - id (integer) NOT NULL
+   - id_tarefa (integer) NULL
+   - status_novo (character varying(50)) NULL
+   - observacao (text) NULL
+   - data_mudanca (timestamp without time zone) NULL
+
+[TABELA: admin.wapi_chatbot_config]
+   - instance_id (character varying(100)) NOT NULL
+   - ativo (boolean) NULL
+   - json_agendamento (jsonb) NULL
+   - json_fluxo (jsonb) NULL
+   - mensagem_offline (text) NULL
+   - grupo_aviso (character varying(100)) NULL
+
+[TABELA: admin.wapi_instancias]
+   - id (integer) NOT NULL
+   - nome (character varying(100)) NOT NULL
+   - api_instance_id (character varying(100)) NOT NULL
+   - api_token (character varying(255)) NOT NULL
+   - status (character varying(50)) NULL
+   - tipo (character varying(50)) NULL
+   - data_vencimento (date) NULL
+
+[TABELA: admin.wapi_logs]
+   - id (integer) NOT NULL
+   - data_hora (timestamp without time zone) NULL
+   - instance_id (character varying(100)) NULL
+   - telefone (character varying(20)) NULL
+   - nome_contato (character varying(100)) NULL
+   - mensagem (text) NULL
+   - tipo (character varying(20)) NULL
+   - status (character varying(50)) NULL
+   - cpf_cliente (character varying(20)) NULL
+   - id_cliente (integer) NULL
+   - nome_cliente (character varying(255)) NULL
+
+[TABELA: admin.wapi_modelos]
+   - id (integer) NOT NULL
+   - nome (character varying(100)) NULL
+   - objetivo (character varying(100)) NULL
+   - conteudo (text) NOT NULL
+
+[TABELA: admin.wapi_numeros]
+   - id (integer) NOT NULL
+   - telefone (character varying(30)) NOT NULL
+   - id_cliente (integer) NULL
+   - nome_cliente (character varying(255)) NULL
+   - data_registro (timestamp without time zone) NULL
+   - data_ultima_interacao (timestamp without time zone) NULL
+
+[TABELA: admin.wapi_templates]
+   - id (integer) NOT NULL
+   - modulo (character varying(50)) NOT NULL
+   - chave_status (character varying(50)) NOT NULL
+   - conteudo_mensagem (text) NULL
+
+========================================
+
+--- SCHEMA: BANCO_PF ---
+
+[TABELA: banco_pf.convenio_por_planilha]
+   - id (integer) NOT NULL
+   - convenio (character varying(100)) NOT NULL
+   - nome_planilha_sql (character varying(100)) NOT NULL
+   - tipo_planilha (character varying(100)) NULL
+
+[TABELA: banco_pf.cpf_convenio]
+   - id (integer) NOT NULL
+   - convenio (character varying(100)) NULL
+   - cpf (character varying(20)) NULL
+
+[TABELA: banco_pf.pf_campanhas]
+   - id (integer) NOT NULL
+   - nome_campanha (character varying(100)) NOT NULL
+   - data_criacao (date) NULL
+   - filtros_config (text) NULL
+   - filtros_aplicaveis (text) NULL
+   - objetivo (text) NULL
+   - status (character varying(20)) NULL
+
+[TABELA: banco_pf.pf_campanhas_exportacao]
+   - id (integer) NOT NULL
+   - nome_campanha (character varying(150)) NOT NULL
+   - data_criacao (timestamp without time zone) NULL
+   - objetivo (text) NULL
+   - funcao_codigo (character varying(100)) NOT NULL
+   - status (character varying(20)) NULL
+
+[TABELA: banco_pf.pf_contratos]
+   - id (integer) NOT NULL
+   - matricula_ref (character varying(100)) NULL
+   - contrato (character varying(100)) NULL
+   - dados_extras (text) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - importacao_id (integer) NULL
+
+[TABELA: banco_pf.pf_dados]
+   - id (integer) NOT NULL
+   - cpf (character varying(14)) NOT NULL
+   - nome (character varying(255)) NOT NULL
+   - data_nascimento (date) NULL
+   - rg (character varying(20)) NULL
+   - uf_rg (character varying(2)) NULL
+   - data_exp_rg (date) NULL
+   - cnh (character varying(20)) NULL
+   - pis (character varying(20)) NULL
+   - ctps_serie (character varying(50)) NULL
+   - nome_mae (character varying(255)) NULL
+   - nome_pai (character varying(255)) NULL
+   - nome_procurador (character varying(255)) NULL
+   - cpf_procurador (character varying(14)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - importacao_id (character varying(255)) NULL
+   - id_campanha (character varying(50)) NULL
+   - dados_exp_rg (character varying(50)) NULL
+   - serie_ctps (character varying(20)) NULL
+
+[TABELA: banco_pf.pf_emails]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - email (character varying(150)) NULL
+   - importacao_id (integer) NULL
+
+[TABELA: banco_pf.pf_emprego_renda]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - convenio (character varying(100)) NULL
+   - matricula (character varying(100)) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - importacao_id (integer) NULL
+   - cpf_ref (character varying(20)) NULL
+
+[TABELA: banco_pf.pf_enderecos]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - rua (character varying(255)) NULL
+   - bairro (character varying(100)) NULL
+   - cidade (character varying(100)) NULL
+   - uf (character varying(5)) NULL
+   - cep (character varying(10)) NULL
+   - importacao_id (integer) NULL
+
+[TABELA: banco_pf.pf_historico_importacoes]
+   - id (integer) NOT NULL
+   - nome_arquivo (character varying(255)) NULL
+   - data_importacao (timestamp without time zone) NULL
+   - qtd_novos (integer) NULL
+   - qtd_atualizados (integer) NULL
+   - qtd_erros (integer) NULL
+   - caminho_arquivo_original (text) NULL
+   - caminho_arquivo_erro (text) NULL
+
+[TABELA: banco_pf.pf_matricula_dados_clt]
+   - id (integer) NOT NULL
+   - matricula (character varying(100)) NOT NULL
+   - convenio (character varying(150)) NULL
+   - cnpj_nome (character varying(255)) NULL
+   - cnpj_numero (character varying(30)) NULL
+   - qtd_funcionarios (integer) NULL
+   - data_abertura_empresa (date) NULL
+   - tempo_abertura_anos (integer) NULL
+   - cnae_nome (character varying(255)) NULL
+   - cnae_codigo (character varying(50)) NULL
+   - data_admissao (date) NULL
+   - tempo_admissao_anos (integer) NULL
+   - cbo_codigo (character varying(50)) NULL
+   - cbo_nome (character varying(255)) NULL
+   - data_inicio_emprego (date) NULL
+   - tempo_inicio_emprego_anos (integer) NULL
+   - importacao_id (integer) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - tag (text) NULL
+
+[TABELA: banco_pf.pf_modelos_exportacao]
+   - id (integer) NOT NULL
+   - nome_modelo (character varying(100)) NOT NULL
+   - descricao (text) NULL
+   - data_criacao (date) NULL
+   - status (character varying(20)) NULL
+   - codigo_de_consulta (text) NULL
+
+[TABELA: banco_pf.pf_modelos_filtro_fixo]
+   - id (integer) NOT NULL
+   - nome_modelo (character varying(150)) NOT NULL
+   - tabela_alvo (character varying(100)) NOT NULL
+   - coluna_alvo (text) NOT NULL
+   - resumo (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: banco_pf.pf_operadores_de_filtro]
+   - id (integer) NOT NULL
+   - tipo (character varying(20)) NULL
+   - nome (character varying(50)) NULL
+   - simbolo (character varying(10)) NULL
+   - descricao (character varying(100)) NULL
+
+[TABELA: banco_pf.pf_referencias]
+   - id (integer) NOT NULL
+   - tipo (character varying(50)) NULL
+   - nome (character varying(100)) NULL
+
+[TABELA: banco_pf.pf_telefones]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - numero (character varying(20)) NULL
+   - data_atualizacao (date) NULL
+   - tag_whats (character varying(50)) NULL
+   - tag_qualificacao (character varying(50)) NULL
+   - importacao_id (integer) NULL
+
+[TABELA: banco_pf.pf_tipos_exportacao]
+   - id (integer) NOT NULL
+   - nome_exportacao (character varying(150)) NOT NULL
+   - colunas_exportacao (text) NULL
+   - modulo_vinculado (character varying(50)) NULL
+   - descricao (text) NULL
+   - status (character varying(20)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+
+========================================
+
+--- SCHEMA: CLIENTE ---
+
+[TABELA: cliente.carteiras_config]
+   - id (integer) NOT NULL
+   - id_produto (integer) NULL
+   - nome_produto (character varying(255)) NULL
+   - nome_carteira (character varying(255)) NULL
+   - nome_tabela_transacoes (character varying(255)) NULL
+   - status (character varying(50)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - origem_custo (character varying(100)) NULL
+
+[TABELA: cliente.cliente_carteira_lista]
+   - id (integer) NOT NULL
+   - cpf_cliente (character varying(20)) NULL
+   - nome_cliente (character varying(255)) NULL
+   - nome_carteira (character varying(255)) NULL
+   - custo_carteira (numeric) NULL
+   - cpf_usuario (character varying(20)) NULL
+   - nome_usuario (character varying(255)) NULL
+   - origem_custo (character varying(100)) NULL
+   - nome_produto (character varying(255)) NULL
+   - id_cliente (integer) NULL
+
+[TABELA: cliente.cliente_carteira_relacao_pedido_carteira]
+   - id (integer) NOT NULL
+   - produto (character varying(255)) NULL
+   - nome_carteira (character varying(100)) NULL
+   - data_vinculo (timestamp without time zone) NULL
+
+[TABELA: cliente.cliente_carteira_transacoes_modelo]
+   - id (integer) NOT NULL
+   - cpf_cliente (character varying(20)) NULL
+   - nome_cliente (character varying(255)) NULL
+   - motivo (character varying(255)) NULL
+   - origem_lancamento (character varying(100)) NULL
+   - data_transacao (timestamp without time zone) NULL
+   - tipo_lancamento (character varying(50)) NULL
+   - valor (numeric) NULL
+   - saldo_anterior (numeric) NULL
+   - saldo_novo (numeric) NULL
+
+[TABELA: cliente.extrato_carteira_por_produto]
+   - id (bigint) NOT NULL
+   - produto_vinculado (text) NULL
+   - id_cliente (text) NULL
+   - nome_cliente (text) NULL
+   - id_usuario (text) NULL
+   - nome_usuario (text) NULL
+   - origem_lancamento (text) NULL
+   - data_lancamento (timestamp without time zone) NULL
+   - tipo_lancamento (text) NULL
+   - valor_lancado (numeric) NULL
+   - saldo_anterior (numeric) NULL
+   - saldo_novo (numeric) NULL
+   - id_produto (text) NULL
+
+[TABELA: cliente.transacoes_lista_clt_caged_nov_2024_credito_em_consulta_tel]
+   - id (integer) NOT NULL
+   - cpf_cliente (character varying(20)) NULL
+   - nome_cliente (character varying(255)) NULL
+   - motivo (character varying(255)) NULL
+   - origem_lancamento (character varying(100)) NULL
+   - data_transacao (timestamp without time zone) NULL
+   - tipo_lancamento (character varying(50)) NULL
+   - valor (numeric) NULL
+   - saldo_anterior (numeric) NULL
+   - saldo_novo (numeric) NULL
+
+[TABELA: cliente.transacoes_lista_inss_maci_a]
+   - id (integer) NOT NULL
+   - cpf_cliente (character varying(20)) NULL
+   - nome_cliente (character varying(255)) NULL
+   - motivo (character varying(255)) NULL
+   - origem_lancamento (character varying(100)) NULL
+   - data_transacao (timestamp without time zone) NULL
+   - tipo_lancamento (character varying(50)) NULL
+   - valor (numeric) NULL
+   - saldo_anterior (numeric) NULL
+   - saldo_novo (numeric) NULL
+
+[TABELA: cliente.transacoes_recarga_atualizacao_telefone]
+   - id (integer) NOT NULL
+   - cpf_cliente (character varying(20)) NULL
+   - nome_cliente (character varying(255)) NULL
+   - motivo (character varying(255)) NULL
+   - origem_lancamento (character varying(100)) NULL
+   - data_transacao (timestamp without time zone) NULL
+   - tipo_lancamento (character varying(50)) NULL
+   - valor (numeric) NULL
+   - saldo_anterior (numeric) NULL
+   - saldo_novo (numeric) NULL
+   - id_cliente (integer) NULL
+
+[TABELA: cliente.valor_custo_carteira_cliente]
+   - id_cliente (text) NULL
+   - nome_cliente (text) NULL
+   - id_usuario (text) NULL
+   - nome_usuario (text) NULL
+   - id_produto (text) NULL
+   - nome_produto (text) NULL
+   - origem_custo (text) NULL
+   - valor_custo (numeric) NULL
+   - id (integer) NOT NULL
+   - data_criacao (timestamp without time zone) NULL
+
+========================================
+
+--- SCHEMA: CONEXOES ---
+
+[TABELA: conexoes.fator_cliente_carteira]
+   - id (integer) NOT NULL
+   - id_cliente_admin (integer) NULL
+   - nome_cliente (character varying(255)) NULL
+   - custo_por_consulta (numeric) NULL
+   - saldo_atual (numeric) NULL
+   - status (character varying(20)) NULL
+   - data_cadastro (timestamp without time zone) NULL
+
+[TABELA: conexoes.fator_cliente_transacoes]
+   - id (integer) NOT NULL
+   - id_carteira (integer) NULL
+   - tipo (character varying(20)) NULL
+   - valor (numeric) NULL
+   - saldo_anterior (numeric) NULL
+   - saldo_novo (numeric) NULL
+   - motivo (character varying(255)) NULL
+   - data_transacao (timestamp without time zone) NULL
+   - usuario_responsavel (character varying(100)) NULL
+
+[TABELA: conexoes.fatorconferi_ambiente_consulta]
+   - id (integer) NOT NULL
+   - ambiente (character varying(255)) NULL
+   - origem (character varying(255)) NULL
+
+[TABELA: conexoes.fatorconferi_clientes_custo]
+   - id (integer) NOT NULL
+   - id_cliente (integer) NULL
+   - nome_cliente (character varying(255)) NULL
+   - custo_consulta (numeric) NULL
+   - status (character varying(20)) NULL
+
+[TABELA: conexoes.fatorconferi_origem_consulta_fator]
+   - id (integer) NOT NULL
+   - origem (character varying(50)) NOT NULL
+   - descricao (text) NULL
+   - produto (character varying(255)) NULL
+   - carteira_vinculada (character varying(255)) NULL
+
+[TABELA: conexoes.fatorconferi_parametros]
+   - id (integer) NOT NULL
+   - nome_parametro (character varying(100)) NOT NULL
+   - valor_parametro (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - observacao (text) NULL
+   - status (character varying(20)) NULL
+
+[TABELA: conexoes.fatorconferi_registo_consulta]
+   - id (integer) NOT NULL
+   - data_hora (timestamp without time zone) NULL
+   - tipo_consulta (character varying(50)) NULL
+   - cpf_consultado (character varying(20)) NULL
+   - id_usuario (integer) NULL
+   - nome_usuario (character varying(255)) NULL
+   - valor_pago (numeric) NULL
+   - caminho_json (text) NULL
+   - status_api (character varying(50)) NULL
+   - link_arquivo_consulta (text) NULL
+   - origem_consulta (character varying(100)) NULL
+   - tipo_cobranca (character varying(50)) NULL
+   - id_grupo_cliente (integer) NULL
+   - id_grupo_empresas (integer) NULL
+   - id_empresa (integer) NULL
+   - ambiente (text) NULL
+   - id_cliente (integer) NULL
+   - nome_cliente (character varying(255)) NULL
+
+[TABELA: conexoes.fatorconferi_registro_de_saldo]
+   - id (integer) NOT NULL
+   - data_consulta (timestamp without time zone) NULL
+   - valor_saldo (numeric) NULL
+   - observacao (text) NULL
+
+[TABELA: conexoes.fatorconferi_tipo_consulta_fator]
+   - id (integer) NOT NULL
+   - tipo (character varying(100)) NOT NULL
+
+[TABELA: conexoes.fatorconferi_valor_da_consulta]
+   - id (integer) NOT NULL
+   - valor_da_consulta (numeric) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+
+[TABELA: conexoes.relacao]
+   - id (integer) NOT NULL
+   - nome_conexao (character varying(255)) NOT NULL
+   - tipo_conexao (character varying(50)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - descricao (text) NULL
+   - usuario_conexao (character varying(255)) NULL
+   - senha_conexao (character varying(255)) NULL
+   - key_conexao (text) NULL
+   - status (character varying(50)) NULL
+
+========================================
+
+--- SCHEMA: PERMISSÃO ---
+
+[TABELA: permissão.permissão_grupo_nivel]
+   - id (integer) NOT NULL
+   - nivel (character varying(255)) NULL
+
+[TABELA: permissão.permissão_usuario_categoria]
+   - id (integer) NOT NULL
+   - categoria (character varying(255)) NULL
+
+[TABELA: permissão.permissão_usuario_cheve]
+   - id (integer) NOT NULL
+   - chave (character varying(255)) NULL
+
+[TABELA: permissão.permissão_usuario_regras_nível]
+   - id (integer) NOT NULL
+   - nome_regra (character varying(255)) NOT NULL
+   - chave (text) NULL
+   - categoria (character varying(255)) NULL
+   - caminho_bloqueio (text) NULL
+   - descricao (text) NULL
+   - status (character varying(10)) NULL
+   - nivel (text) NULL
+
+========================================
+
