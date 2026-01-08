@@ -111,11 +111,22 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
 
 @st.dialog("🔗 Gestão de Acesso do Cliente")
 def dialog_gestao_usuario_vinculo(dados_cliente):
-    id_vinculo = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
+    # Recupera o ID
+    raw_id = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
+    
+    # CORREÇÃO: Tratamento robusto para NaN e conversão segura para inteiro
+    id_vinculo = None
+    if pd.notna(raw_id) and raw_id is not None:
+        try:
+            id_vinculo = int(float(raw_id))
+        except:
+            id_vinculo = None
+
     if id_vinculo:
         st.success("✅ Este cliente já possui um usuário vinculado.")
         conn = get_conn()
         if conn:
+            # Agora id_vinculo é um inteiro garantido, evitando o erro 'nan' no SQL
             df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn); conn.close()
             if not df_u.empty:
                 usr = df_u.iloc[0]
