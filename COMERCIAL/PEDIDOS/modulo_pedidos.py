@@ -309,16 +309,21 @@ def dialog_novo_pedido():
 
     # 1. Cliente
     c1, c2 = st.columns(2)
-    # KEY adicionada para garantir estado
-    ic = c1.selectbox("1. Cliente", range(len(df_c)), format_func=lambda x: df_c.iloc[x]['nome'], key="sel_cli_novo_ped")
+    # AJUSTE: Visualização concatenada no selectbox
+    ic = c1.selectbox(
+        "1. Cliente", 
+        range(len(df_c)), 
+        format_func=lambda x: f"{df_c.iloc[x]['nome']} / {df_c.iloc[x]['cpf']} / {df_c.iloc[x]['telefone']}", 
+        key="sel_cli_novo_ped"
+    )
     cli = df_c.iloc[ic]
-    c1.caption(f"🆔 **Ref:** CPF {cli['cpf']} | 📞 {cli['telefone']}")
+    # AJUSTE: Removida a linha de referência (caption) que existia aqui
     
     # 2. Produto e Origem
-    # KEY adicionada para garantir estado
     ip = c2.selectbox("3. Produto", range(len(df_p)), format_func=lambda x: df_p.iloc[x]['nome'], key="sel_prod_novo_ped")
     prod = df_p.iloc[ip]
     
+    # A origem é atualizada automaticamente quando o produto muda (re-execução do script pelo key do selectbox)
     origem_produto_txt = prod.get('origem_custo', 'Geral')
     if not origem_produto_txt: origem_produto_txt = 'Geral'
     
@@ -330,10 +335,10 @@ def dialog_novo_pedido():
     c3, c4, c5 = st.columns(3)
     qtd = c3.number_input("Qtd", 1, value=1, key=f"qtd_{prod['id']}") # Reset ao mudar produto
     
-    # CORREÇÃO PRINCIPAL: KEY Dinâmica no Valor Unitário
-    # Isso força o widget a recriar e pegar o novo 'value' (prod['preco']) quando o produto muda.
+    # Valor Unitário atualiza dinamicamente se trocar o produto
     val = c4.number_input("Valor Unit.", 0.0, value=float(prod['preco'] or 0.0), key=f"val_unit_{prod['id']}")
     
+    # Cálculo em tempo real (acontece a cada interação que dispara rerun)
     total = qtd * val
     c5.metric("Total", f"R$ {total:.2f}")
     
@@ -351,8 +356,6 @@ def dialog_novo_pedido():
             conn_chk.close()
         except: conn_chk.close()
         
-    # CORREÇÃO PRINCIPAL: KEY Dinâmica no Custo
-    # Atualiza o custo sugerido quando muda Cliente OU Produto
     c_custo = st.number_input("Valor de Custo (Referência)", value=custo_sugerido, step=1.0, 
                               help="Valor registrado para controle de custo deste cliente.",
                               key=f"custo_{cli['id']}_{prod['id']}")
