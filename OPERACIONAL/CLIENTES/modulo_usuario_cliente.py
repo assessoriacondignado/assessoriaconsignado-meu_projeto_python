@@ -104,8 +104,11 @@ def app_usuario():
     st.markdown("### Gestão de Acesso")
     
     c1, c2 = st.columns([6, 1])
-    busca_user = c1.text_input("Buscar Usuário", placeholder="Nome ou Email")
-    if c2.button("➕ Novo", type="primary"):
+    # Key única para o campo de busca principal
+    busca_user = c1.text_input("Buscar Usuário", placeholder="Nome ou Email", key="input_busca_user_main")
+    
+    # Key única para o botão Novo
+    if c2.button("➕ Novo", type="primary", key="btn_novo_user_main"):
         dialog_criar_usuario()
     
     conn = get_conn()
@@ -136,8 +139,10 @@ def app_usuario():
             with st.expander(f"{label_status} {u['nome']} ({u['nivel']})"):
                 with st.form(f"form_user_{u['id']}"):
                     c_n, c_e = st.columns(2)
-                    n_nome = c_n.text_input("Nome", value=u['nome'])
-                    n_mail = c_e.text_input("Email", value=u['email'])
+                    
+                    # ADICIONADO KEYS ÚNICAS PARA TODOS OS WIDGETS DENTRO DO LOOP
+                    n_nome = c_n.text_input("Nome", value=u['nome'], key=f"nome_{u['id']}")
+                    n_mail = c_e.text_input("Email", value=u['email'], key=f"email_{u['id']}")
                     
                     c_h, c_s, c_a = st.columns(3) 
                     
@@ -145,11 +150,11 @@ def app_usuario():
                     if u['nivel'] in lista_niveis:
                         idx_n = lista_niveis.index(u['nivel'])
                     
-                    n_nivel = c_h.selectbox("Nível", lista_niveis, index=idx_n)
-                    n_senha = c_s.text_input("Nova Senha (deixe em branco para manter)", type="password")
-                    n_ativo = c_a.checkbox("Ativo", value=u['ativo'])
+                    n_nivel = c_h.selectbox("Nível", lista_niveis, index=idx_n, key=f"nivel_{u['id']}")
+                    n_senha = c_s.text_input("Nova Senha (deixe em branco para manter)", type="password", key=f"senha_{u['id']}")
+                    n_ativo = c_a.checkbox("Ativo", value=u['ativo'], key=f"ativo_{u['id']}")
                     
-                    # CORREÇÃO AQUI: Adicionado key única baseada no ID do usuário
+                    # Botão de submit com key única
                     if st.form_submit_button("Atualizar Dados", key=f"btn_upd_{u['id']}"):
                         conn = get_conn()
                         if conn:
