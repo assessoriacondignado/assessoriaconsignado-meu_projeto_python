@@ -8,7 +8,7 @@ from datetime import datetime
 import time
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", page_icon="📈")
 
 # --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
