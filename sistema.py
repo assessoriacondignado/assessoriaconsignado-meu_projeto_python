@@ -27,7 +27,7 @@ pastas_modulos = [
     "" 
 ]
 
-# Adiciona ao path apenas se não existir (evita duplicatas no loop do Streamlit)
+# Adiciona ao path apenas se não existir
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if os.path.exists(caminho) and caminho not in sys.path:
@@ -39,14 +39,12 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # Imports com tratamento de erro específico
     try: import modulo_tela_cliente
     except ImportError: modulo_tela_cliente = None
         
     try: import modulo_permissoes
     except ImportError: modulo_permissoes = None
 
-    # Verificação de existência antes de importar (Evita quebrar o sistema se faltar arquivo)
     def carregar_modulo(caminho_relativo, nome_modulo):
         if os.path.exists(os.path.join(BASE_DIR, caminho_relativo)):
             return __import__(nome_modulo)
@@ -96,7 +94,6 @@ def gerenciar_sessao():
 # --- 5. BANCO DE DADOS ---
 def get_conn():
     try:
-        # Cria conexão nova. (Se o sistema crescer, implementar Pool aqui)
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
@@ -107,7 +104,6 @@ def get_conn():
 
 def verificar_senha(senha_input, senha_hash):
     try:
-        # REMOVIDA verificação de texto plano para maior segurança
         return bcrypt.checkpw(senha_input.encode('utf-8'), senha_hash.encode('utf-8'))
     except: return False
 
@@ -118,7 +114,6 @@ def validar_login_db(usuario, senha):
     try:
         cur = conn.cursor()
         usuario = str(usuario).strip().lower()
-        # Busca por Email, CPF ou Telefone
         sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) 
@@ -144,7 +139,7 @@ def validar_login_db(usuario, senha):
     finally:
         conn.close()
 
-# --- 6. INTERFACE (MENSAGEM RÁPIDA) ---
+# --- 6. INTERFACE (MENSAGEM RÁPIDA - MANTIDA A FUNÇÃO, MAS O BOTÃO FOI REMOVIDO DA MAIN) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
     conn = get_conn()
@@ -178,16 +173,29 @@ def dialog_mensagem_rapida():
     finally:
         conn.close()
 
-# --- 7. MENU LATERAL ---
+# --- 7. MENU LATERAL E ESTILIZAÇÃO ---
 def renderizar_menu_lateral():
-    # CSS para botões estilo menu
+    # CSS para Layout e Menu
     st.markdown("""
         <style>
+        /* 1. Remove Espaço do Topo (Sobe o conteúdo) */
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 0rem !important;
+            margin-top: 0px !important;
+        }
+        
+        /* 2. Cor do Menu Lateral (Laranja Claro) */
+        section[data-testid="stSidebar"] {
+            background-color: #FFF3E0; /* Laranja bem claro */
+        }
+        
+        /* 3. Estilo dos botões do menu */
         div.stButton > button {
             width: 100%; border: none; text-align: left; padding-left: 15px;
             background: transparent; color: #444;
         }
-        div.stButton > button:hover { background: #f0f2f6; color: #FF4B4B; font-weight: bold; }
+        div.stButton > button:hover { background: #ffe0b2; color: #d84315; font-weight: bold; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -196,7 +204,7 @@ def renderizar_menu_lateral():
         st.markdown(f"Olá, **{st.session_state.get('usuario_nome', '').split()[0]}**")
         st.markdown("---")
         
-        # Mapa de navegação: "Nome Botão": "Chave Interna"
+        # Mapa de navegação
         botoes = {
             "🏠 Início": "Início",
             "👥 Clientes": "Clientes",
@@ -241,11 +249,9 @@ def main():
     else:
         renderizar_menu_lateral()
         
-        # Cabeçalho
-        c1, c2 = st.columns([6, 1])
-        with c2: 
-            if st.button("💬 Msg"): dialog_mensagem_rapida()
-
+        # --- REMOVIDO O CABEÇALHO COM O BOTÃO 'Msg' ---
+        # O conteúdo agora flui diretamente, ficando mais ao topo devido ao CSS inserido
+        
         pagina = st.session_state['pagina_central']
         
         # Roteamento
@@ -254,7 +260,6 @@ def main():
             else: st.info("Painel Inicial (Módulo Chat não detectado)")
             
         elif pagina == "Clientes":
-            # Verificação de Permissão Simplificada
             if modulo_permissoes and modulo_permissoes.verificar_bloqueio_de_acesso("bloqueio_menu_cliente", "Clientes", False):
                 st.error("🚫 Acesso Negado ao Módulo Clientes"); st.stop()
             
