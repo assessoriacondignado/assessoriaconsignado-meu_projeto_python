@@ -27,15 +27,17 @@ def get_db_url():
     if not conexao: return None
     return f"postgresql+psycopg2://{conexao.user}:{conexao.password}@{conexao.host}:{conexao.port}/{conexao.database}"
 
-def listar_tabelas(schemas):
-    """Busca tabelas apenas dos schemas selecionados"""
+def obter_lista_completa_tabelas(schemas):
+    """
+    Busca todas as tabelas dos schemas permitidos e retorna uma lista de tuplas (schema, tabela).
+    """
     conn = psycopg2.connect(
         host=conexao.host, port=conexao.port, database=conexao.database,
         user=conexao.user, password=conexao.password
     )
     cursor = conn.cursor()
     
-    # Formata a lista para o SQL (ex: 'admin', 'cliente')
+    # Formata a lista para o SQL
     schemas_str = "', '".join(schemas)
     query = f"""
         SELECT table_schema, table_name 
@@ -48,14 +50,12 @@ def listar_tabelas(schemas):
     resultados = cursor.fetchall()
     conn.close()
     
-    # Retorna lista de strings "schema.tabela"
-    return [f"{res[0]}.{res[1]}" for res in resultados]
+    return results # Retorna lista de tuplas ex: [('admin', 'clientes'), ('cliente', 'vendas')]
 
 def carregar_dados(schema, tabela):
     """Lê os dados da tabela para um DataFrame"""
     try:
         engine = create_engine(get_db_url())
-        # Usa aspas duplas para garantir que o case sensitive do SQL seja respeitado
         query = f'SELECT * FROM "{schema}"."{tabela}"'
         df = pd.read_sql(query, engine)
         return df
@@ -65,8 +65,7 @@ def carregar_dados(schema, tabela):
 
 def salvar_alteracoes(df, schema, tabela):
     """
-    Substitui a tabela inteira pelos dados novos.
-    ATENÇÃO: Método Truncate/Insert (Simples e eficaz para tabelas de apoio/cadastro).
+    Substitui a tabela inteira pelos dados novos (Truncate + Insert).
     """
     try:
         engine = create_engine(get_db_url())
@@ -75,7 +74,6 @@ def salvar_alteracoes(df, schema, tabela):
             conn.exec_driver_sql(f'TRUNCATE TABLE "{schema}"."{tabela}" RESTART IDENTITY CASCADE')
             
             # 2. Insert (Insere os dados do DataFrame)
-            # 'if_exists="append"' porque a tabela já existe (apenas a limpamos)
             df.to_sql(tabela, conn, schema=schema, if_exists='append', index=False)
             
         return True, "Dados salvos com sucesso!"
@@ -86,34 +84,63 @@ def salvar_alteracoes(df, schema, tabela):
 
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 def app_tabelas():
-    st.subheader("📊 Gerenciador de Tabelas (SQL)")
+    # (Titulo removido conforme solicitado)
 
     if not conexao:
         st.warning("Sem conexão configurada.")
         return
 
-    # 1. Seletor de Tabelas
+    # 1. Busca a lista bruta de todas as tabelas disponíveis
     try:
-        lista_tabelas = listar_tabelas(SCHEMAS_PERMITIDOS)
+        # Pega todas as tabelas primeiro (cache simples poderia ser aplicado aqui se fosse muito pesado)
+        todos_dados = obter_lista_completa_tabelas(SCHEMAS_PERMITIDOS)
     except Exception as e:
         st.error(f"Erro ao listar tabelas: {e}")
-        lista_tabelas = []
+        todos_dados = []
 
-    if not lista_tabelas:
-        st.info("Nenhuma tabela encontrada nos schemas: " + ", ".join(SCHEMAS_PERMITIDOS))
+    if not todos_dados:
+        st.info("Nenhuma tabela encontrada.")
         return
 
-    tabela_selecionada = st.selectbox("Selecione a Tabela para Editar:", lista_tabelas)
+    # 2. Área de Filtros (Duas Colunas)
+    col_filtro_schema, col_filtro_nome = st.columns(2)
 
+    with col_filtro_schema:
+        # Cria lista única de schemas encontrados para o filtro
+        schemas_encontrados = sorted(list(set([t[0] for t in todos_dados])))
+        filtro_schema = st.selectbox("Filtrar por Schema", ["Todos"] + schemas_encontrados)
+
+    with col_filtro_nome:
+        filtro_nome = st.text_input("Filtrar por Nome da Tabela")
+
+    # 3. Aplicação dos Filtros
+    lista_opcoes = []
+    for schema, tabela in todos_dados:
+        # Filtra Schema
+        if filtro_schema != "Todos" and schema != filtro_schema:
+            continue
+        
+        # Filtra Nome (Case insensitive)
+        if filtro_nome and filtro_nome.lower() not in tabela.lower():
+            continue
+            
+        # Adiciona formato "schema.tabela" para o selectbox final
+        lista_opcoes.append(f"{schema}.{tabela}")
+
+    # 4. Selectbox Principal (Mostra apenas os filtrados)
+    if not lista_opcoes:
+        st.warning("Nenhuma tabela corresponde aos filtros selecionados.")
+        tabela_selecionada = None
+    else:
+        tabela_selecionada = st.selectbox("Selecione a Tabela para Editar:", lista_opcoes)
+
+    # 5. Lógica de Edição (Mantida igual)
     if tabela_selecionada:
         schema_atual, nome_tabela_atual = tabela_selecionada.split('.')
         
-        st.markdown(f"**Tabela:** `{nome_tabela_atual}` | **Schema:** `{schema_atual}`")
-        st.info("💡 Edite os valores diretamente na planilha abaixo. Clique em 'Salvar Alterações' para confirmar.")
+        st.caption(f"Editando: **{schema_atual}**.**{nome_tabela_atual}**")
 
-        # 2. Carregamento dos Dados
-        # Cacheamos o carregamento para não recarregar a cada clique na tela, 
-        # mas permitimos recarga forçada com botão.
+        # Gerenciamento de estado para carregar dados apenas quando muda a tabela
         if 'df_editor' not in st.session_state or st.session_state.get('tabela_atual') != tabela_selecionada:
             st.session_state['df_base'] = carregar_dados(schema_atual, nome_tabela_atual)
             st.session_state['tabela_atual'] = tabela_selecionada
@@ -121,8 +148,7 @@ def app_tabelas():
         df_original = st.session_state['df_base']
 
         if df_original is not None:
-            # 3. Editor de Dados (Visualizar / Editar)
-            # num_rows="dynamic" permite adicionar/remover linhas
+            # Editor de Dados
             df_editado = st.data_editor(
                 df_original, 
                 use_container_width=True, 
@@ -130,7 +156,7 @@ def app_tabelas():
                 key="editor_tabelas_sql"
             )
 
-            # 4. Botão de Salvar
+            # Botão de Salvar
             col_save, col_info = st.columns([1, 4])
             with col_save:
                 if st.button("💾 Salvar Alterações", type="primary"):
@@ -141,12 +167,29 @@ def app_tabelas():
                             sucesso, msg = salvar_alteracoes(df_editado, schema_atual, nome_tabela_atual)
                             if sucesso:
                                 st.success(msg)
-                                # Atualiza o estado para refletir a nova base
                                 st.session_state['df_base'] = df_editado
-                                # Opcional: st.rerun() para forçar refresh visual
                             else:
                                 st.error(f"Falha ao salvar: {msg}")
 
-# Permite execução direta para testes
+# Correção na função obter_lista_completa_tabelas para garantir retorno correto da variável
+# (Reescrevendo a função auxiliar aqui para garantir que o código acima funcione sem erro de variável 'results')
+def obter_lista_completa_tabelas(schemas):
+    conn = psycopg2.connect(
+        host=conexao.host, port=conexao.port, database=conexao.database,
+        user=conexao.user, password=conexao.password
+    )
+    cursor = conn.cursor()
+    schemas_str = "', '".join(schemas)
+    query = f"""
+        SELECT table_schema, table_name 
+        FROM information_schema.tables 
+        WHERE table_schema IN ('{schemas_str}')
+        ORDER BY table_schema, table_name;
+    """
+    cursor.execute(query)
+    resultados = cursor.fetchall()
+    conn.close()
+    return resultados
+
 if __name__ == "__main__":
     app_tabelas()
