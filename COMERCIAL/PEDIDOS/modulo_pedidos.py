@@ -306,11 +306,9 @@ def dialog_novo_pedido():
         return
 
     # --- INICIALIZAÇÃO DE ESTADO ---
-    # Garante que as chaves existam e tenham valores padrão coerentes na primeira execução
     if 'np_cli_idx' not in st.session_state: st.session_state.np_cli_idx = 0
     if 'np_prod_idx' not in st.session_state: st.session_state.np_prod_idx = 0
     
-    # Define valores iniciais baseados no primeiro produto se ainda não definidos
     prod_inicial = df_p.iloc[st.session_state.np_prod_idx]
     if 'np_val' not in st.session_state: st.session_state.np_val = float(prod_inicial['preco'] or 0.0)
     if 'np_qtd' not in st.session_state: st.session_state.np_qtd = 1
@@ -332,24 +330,19 @@ def dialog_novo_pedido():
         return custo
 
     # --- CALLBACKS ---
-    # Funções chamadas automaticamente quando os selects mudam
-    
     def on_change_produto():
-        idx = st.session_state.np_prod_idx # Índice selecionado
+        idx = st.session_state.np_prod_idx 
         prod = df_p.iloc[idx]
         
-        # Atualiza o preço e a origem no estado
         st.session_state.np_val = float(prod['preco'] or 0.0)
         origem = prod.get('origem_custo', 'Geral')
         st.session_state.np_origem = origem if origem else 'Geral'
         
-        # Recalcula custo
         idx_c = st.session_state.np_cli_idx
         cli = df_c.iloc[idx_c]
         st.session_state.np_custo = buscar_custo_referencia(cli['id'], prod['id'])
 
     def on_change_cliente():
-        # Apenas recalcula o custo, mantém o resto
         idx_c = st.session_state.np_cli_idx
         idx_p = st.session_state.np_prod_idx
         
@@ -357,8 +350,10 @@ def dialog_novo_pedido():
         prod = df_p.iloc[idx_p]
         st.session_state.np_custo = buscar_custo_referencia(cli['id'], prod['id'])
 
-    # Se for a primeira vez que abrimos e o custo está zerado, tenta buscar
-    # (Caso o callback não tenha rodado ainda)
+    def atualizar_calculo():
+        # Gatilho simples para forçar o rerun e atualizar o Total visualmente ao sair do campo
+        pass
+
     if st.session_state.np_custo == 0.0:
         cli_atual = df_c.iloc[st.session_state.np_cli_idx]
         prod_atual = df_p.iloc[st.session_state.np_prod_idx]
@@ -368,13 +363,12 @@ def dialog_novo_pedido():
     c1, c2 = st.columns(2)
     
     # 1. Cliente
-    # Usamos o INDEX e KEY para controlar o estado
     st.session_state.np_cli_idx = c1.selectbox(
         "1. Cliente", 
         range(len(df_c)), 
         index=st.session_state.np_cli_idx,
         format_func=lambda x: f"{df_c.iloc[x]['nome']} / {df_c.iloc[x]['cpf']} / {df_c.iloc[x]['telefone']}", 
-        key="np_cli_selector", # Key diferente da variavel de estado interno para evitar conflito direto no render
+        key="np_cli_selector", 
         on_change=lambda: st.session_state.update({'np_cli_idx': st.session_state.np_cli_selector}) or on_change_cliente()
     )
     
@@ -388,19 +382,16 @@ def dialog_novo_pedido():
         on_change=lambda: st.session_state.update({'np_prod_idx': st.session_state.np_prod_selector}) or on_change_produto()
     )
     
-    # Exibe origem do estado atualizado
     c2.info(f"📍 **Origem:** {st.session_state.np_origem}")
     
     st.divider()
     
-    # 4. Qtd e Valor
+    # 4. Qtd e Valor (COM CALLBACK PARA ATUALIZAÇÃO IMEDIATA)
     c3, c4, c5 = st.columns(3)
     
-    # Number inputs ligados diretamente ao st.session_state
-    qtd = c3.number_input("Qtd", min_value=1, key="np_qtd")
-    val = c4.number_input("Valor Unit.", min_value=0.0, format="%.2f", step=1.0, key="np_val")
+    qtd = c3.number_input("Qtd", min_value=1, key="np_qtd", on_change=atualizar_calculo)
+    val = c4.number_input("Valor Unit.", min_value=0.0, format="%.2f", step=1.0, key="np_val", on_change=atualizar_calculo)
     
-    # Cálculo SEMPRE atualizado (pois qtd e val vêm do session_state atual)
     total = st.session_state.np_qtd * st.session_state.np_val
     c5.metric("Total", f"R$ {total:.2f}")
     
@@ -418,7 +409,6 @@ def dialog_novo_pedido():
     avisar = st.checkbox("Avisar WhatsApp?", value=True)
     
     if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
-        # Recupera objetos reais para salvar
         cli_final = df_c.iloc[st.session_state.np_cli_idx]
         prod_final = df_p.iloc[st.session_state.np_prod_idx]
         
