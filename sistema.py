@@ -6,6 +6,7 @@ import bcrypt
 # import pandas as pd  <-- REMOVIDO (Não era usado)
 from datetime import datetime
 import time
+import importlib  # <--- ADICIONE ESTA LINHA NOVA AQUI
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", page_icon="📈")
@@ -40,10 +41,13 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # Função auxiliar para carregar módulos e MOSTRAR o erro se falhar
+    # Função auxiliar para carregar módulos e FORÇAR ATUALIZAÇÃO (Reload)
     def importar_seguro(nome_modulo):
         try:
-            return __import__(nome_modulo)
+            if nome_modulo in sys.modules:
+                return importlib.reload(sys.modules[nome_modulo])
+            else:
+                return __import__(nome_modulo)
         except ImportError:
             return None
         except Exception as e:
@@ -54,12 +58,16 @@ try:
     modulo_tela_cliente = importar_seguro("modulo_tela_cliente")
     modulo_permissoes = importar_seguro("modulo_permissoes")
 
-    # Verificação de existência antes de importar
+    # Verificação de existência antes de importar (COM RELOAD)
     def carregar_modulo_por_caminho(caminho_relativo, nome_modulo):
         caminho_completo = os.path.join(BASE_DIR, caminho_relativo)
         if os.path.exists(caminho_completo):
             try:
-                return __import__(nome_modulo)
+                # Se o módulo já existe na memória, recarrega. Se não, importa.
+                if nome_modulo in sys.modules:
+                    return importlib.reload(sys.modules[nome_modulo])
+                else:
+                    return __import__(nome_modulo)
             except Exception as e:
                 st.error(f"⚠️ Erro no arquivo '{caminho_relativo}': {e}")
                 return None
@@ -84,7 +92,7 @@ try:
 except Exception as e:
     st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
     st.error(f"Erro Crítico ao carregar módulos: {e}")
-
+    
 # --- 4. FUNÇÕES DE ESTADO ---
 def iniciar_estado():
     if 'ultima_atividade' not in st.session_state:
