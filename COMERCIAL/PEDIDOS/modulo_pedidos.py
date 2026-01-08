@@ -241,6 +241,12 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, modelo_msg):
+    # --- REGRA DE VALIDAÇÃO ---
+    # Impede atualização para o mesmo status
+    if dados_pedido['status'] == novo_status:
+        return False, f"⚠️ O pedido já está com o status '{novo_status}'. Nenhuma alteração realizada."
+    # --------------------------
+
     conn = get_conn()
     if conn:
         try:
@@ -279,10 +285,10 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                     if tpl:
                         msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
-            return True
+            return True, "Status atualizado com sucesso!"
         except Exception as e:
-            print(e); return False
-    return False
+            print(e); return False, str(e)
+    return False, "Erro conexão"
 
 def excluir_pedido_db(id_pedido):
     conn = get_conn()
@@ -403,9 +409,6 @@ def dialog_novo_pedido():
         if conn_chk:
             try:
                 cur = conn_chk.cursor()
-                # A visualização ainda pode buscar por produto ou origem, dependendo da regra de negócio.
-                # Mantendo por produto para sugestão inicial conforme código original, 
-                # mas o salvamento agora respeita a regra da Origem.
                 cur.execute("SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND id_produto = %s", (str(id_cliente), str(id_produto)))
                 chk = cur.fetchone()
                 if chk: custo = float(chk[0])
@@ -545,8 +548,16 @@ def dialog_status(ped):
         obs = st.text_area("Obs")
         av = st.checkbox("Avisar?", value=True)
         if st.form_submit_button("Atualizar"):
-            if atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod):
-                st.success("Atualizado!"); time.sleep(1); fechar_modal(); st.rerun()
+            # Ajuste para tratar o retorno da tupla (ok, msg)
+            ok, msg = atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod)
+            if ok:
+                st.success(msg)
+                time.sleep(1)
+                fechar_modal()
+                st.rerun()
+            else:
+                st.warning(msg) # Exibe o erro de validação sem fechar o modal
+
     st.divider(); st.caption("Histórico")
     st.dataframe(buscar_historico_pedido(ped['id']), hide_index=True)
 
