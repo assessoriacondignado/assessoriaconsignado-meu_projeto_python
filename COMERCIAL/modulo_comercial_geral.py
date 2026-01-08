@@ -46,7 +46,7 @@ except ImportError as e:
 
 # --- 3. FUNÇÃO PRINCIPAL DA TELA ---
 def app_comercial_geral():
-    st.markdown("## 🏢 Gestão Comercial Integrada")
+    st.markdown("## 🏢 Gestão Comercial Integrada - TESTE")
 
     # Diagnóstico técnico (aparece apenas se houver erro crítico de importação)
     if erros_importacao:
