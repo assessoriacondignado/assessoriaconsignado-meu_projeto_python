@@ -179,9 +179,16 @@ def app_cadastro_cliente():
             st.error("Sem conexão com banco de dados.")
             return
 
-        sql = "SELECT *, id_usuario_vinculo as id_vinculo FROM admin.clientes"
-        if filtro: sql += f" WHERE nome ILIKE '%%{filtro}%%' OR cpf ILIKE '%%{filtro}%%' OR nome_empresa ILIKE '%%{filtro}%%'"
-        sql += " ORDER BY id DESC LIMIT 50"
+        # ATUALIZAÇÃO: Join com a tabela de usuários para pegar o nome
+        sql = """
+            SELECT c.*, c.id_usuario_vinculo as id_vinculo, u.nome as nome_usuario_vinculado
+            FROM admin.clientes c
+            LEFT JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
+        """
+        if filtro: 
+            # ATUALIZAÇÃO: Uso do alias 'c.' para evitar ambiguidade
+            sql += f" WHERE c.nome ILIKE '%%{filtro}%%' OR c.cpf ILIKE '%%{filtro}%%' OR c.nome_empresa ILIKE '%%{filtro}%%'"
+        sql += " ORDER BY c.id DESC LIMIT 50"
         
         try:
             df_cli = pd.read_sql(sql, conn)
@@ -192,11 +199,13 @@ def app_cadastro_cliente():
             conn.close()
 
         if not df_cli.empty:
+            # ATUALIZAÇÃO: Inclusão da coluna Usuário no cabeçalho
             st.markdown("""
             <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
                 <div style="flex:3;">Nome</div>
                 <div style="flex:2;">CPF</div>
                 <div style="flex:2;">Empresa</div>
+                <div style="flex:2;">Usuário</div>
                 <div style="flex:1;">Status</div>
                 <div style="flex:2; text-align:center;">Ações</div>
             </div>
@@ -204,14 +213,20 @@ def app_cadastro_cliente():
             
             for _, row in df_cli.iterrows():
                 with st.container():
-                    c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 1, 2])
+                    # ATUALIZAÇÃO: Ajuste de pesos e nova coluna c4 para o usuário
+                    c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 1, 2])
                     c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
                     c2.write(row['cpf'] or "-")
                     c3.write(row['nome_empresa'] or "-")
-                    cor_st = 'green' if row.get('status','ATIVO')=='ATIVO' else 'red'
-                    c4.markdown(f":{cor_st}[{row.get('status','ATIVO')}]")
                     
-                    with c5:
+                    # Nova Coluna: Usuário Vinculado
+                    nome_vinculo = row['nome_usuario_vinculado']
+                    c4.write(limpar_formatacao_texto(nome_vinculo) if nome_vinculo else "-")
+
+                    cor_st = 'green' if row.get('status','ATIVO')=='ATIVO' else 'red'
+                    c5.markdown(f":{cor_st}[{row.get('status','ATIVO')}]")
+                    
+                    with c6:
                         b1, b3, b4 = st.columns(3) # Botão extrato removido (b2)
                         if b1.button("✏️", key=f"e_{row['id']}", help="Editar Cadastro"): 
                             st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
