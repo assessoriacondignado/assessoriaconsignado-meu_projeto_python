@@ -10,7 +10,7 @@ import time
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
 
-# --- 2. CONFIGURAÇÃO DE CAMINHOS ---
+# --- 2. CONFIGURAÇÃO DE CAMINHOS (AJUSTE ITEM 2) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Lista de pastas onde o sistema deve procurar os módulos
@@ -27,13 +27,13 @@ pastas_modulos = [
     "" 
 ]
 
-# Adiciona as pastas ao sys.path
+# Adiciona as pastas ao sys.path de forma segura (evita duplicação)
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if caminho not in sys.path:
         sys.path.append(caminho)
 
-# --- 3. IMPORTAÇÕES DE MÓDULOS (COM TRATAMENTO DE ERROS) ---
+# --- 3. IMPORTAÇÕES DE MÓDULOS ---
 try:
     import conexao
     import modulo_wapi
@@ -52,6 +52,7 @@ try:
         modulo_permissoes = None
 
     # Demais Módulos (Carregamento Condicional)
+    # Verifica se o arquivo existe antes de tentar importar para evitar erros
     modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
     modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
     modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
@@ -95,18 +96,25 @@ def gerenciar_sessao():
     if hh > 0: return f"{hh:02d}:{mm:02d}"
     return f"{mm:02d}:{ss:02d}"
 
-# --- 5. BANCO DE DADOS E AUTH ---
-@st.cache_resource(ttl=600)
+# --- 5. BANCO DE DADOS E AUTH (CORREÇÃO ITEM 2 - ARQUITETURA) ---
+# REMOVIDO @st.cache_resource para evitar uso de conexão velha/fechada
 def get_conn():
     try:
-        return psycopg2.connect(
+        # Cria uma conexão nova a cada chamada para garantir estabilidade
+        # Em produção de alta escala, usaríamos um Connection Pool aqui.
+        conn = psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
         )
-    except: return None
+        return conn
+    except Exception as e: 
+        # Log de erro silencioso ou print para debug
+        print(f"Erro de conexão DB: {e}")
+        return None
 
 def verificar_senha(senha_plana, senha_hash):
     try:
+        # Nota: Idealmente remover a comparação direta no futuro para segurança total
         if senha_hash == senha_plana: return True 
         return bcrypt.checkpw(senha_plana.encode('utf-8'), senha_hash.encode('utf-8'))
     except: return False
@@ -125,28 +133,41 @@ def validar_login_db(usuario_input, senha_input):
         
         if res:
             id_user, nome, cargo, senha_hash, email_user, falhas = res
-            if falhas >= 5: return {"status": "bloqueado"}
+            if falhas >= 5: 
+                conn.close()
+                return {"status": "bloqueado"}
             
             if verificar_senha(senha_input, senha_hash):
                 cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (id_user,))
                 conn.commit()
+                conn.close()
                 return {"id": id_user, "nome": nome, "cargo": cargo, "email": email_user, "status": "sucesso"}
             else:
                 cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (id_user,))
                 conn.commit()
+                conn.close()
                 return {"status": "erro_senha", "restantes": 4 - falhas}
-    except: return None
+        conn.close()
+    except Exception as e: 
+        if conn: conn.close()
+        return None
     return None
 
 # --- 6. DIALOGS (MENSAGEM RÁPIDA) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
+    conn = get_conn()
+    if not conn:
+        st.error("Erro de conexão com banco de dados.")
+        return
+
     try:
-        conn = get_conn(); cur = conn.cursor()
+        cur = conn.cursor()
         cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
         inst = cur.fetchone()
         if not inst:
-            st.error("Sem instância de WhatsApp ativa."); return
+            st.error("Sem instância de WhatsApp ativa.")
+            return
 
         opcao = st.selectbox("Destinatário", ["Selecionar Cliente", "Número Manual", "ID Grupo Manual"])
         destino = ""
@@ -175,11 +196,11 @@ def dialog_mensagem_rapida():
                 st.success("Enviado!"); time.sleep(1); st.rerun()
             else: st.error("Erro no envio.")
     finally:
-        if 'cur' in locals(): cur.close()
+        if conn: conn.close()
 
 # --- 7. MENU LATERAL (SIMPLIFICADO) ---
 def renderizar_menu_lateral():
-    # Estilização dos botões da sidebar para parecerem um menu moderno
+    # Estilização dos botões da sidebar
     st.markdown("""
         <style>
         div.stButton > button {
@@ -196,7 +217,6 @@ def renderizar_menu_lateral():
             color: #FF4B4B;
             font-weight: bold;
         }
-        /* Destaque para o botão ativo */
         div.stButton > button:focus {
             background-color: #e0e0e0;
             color: #FF4B4B;
@@ -297,7 +317,6 @@ def main():
     else:
         renderizar_menu_lateral()
         
-        # Layout da área principal
         # Botão de ação rápida no topo direito
         c_topo1, c_topo2 = st.columns([8, 2])
         with c_topo2:
@@ -317,21 +336,26 @@ def main():
 
         # 2. CLIENTES
         elif pagina == "Clientes":
-            # Verifica bloqueio (mantido do original)
+            # --- CORREÇÃO ITEM 3 (LÓGICA DE BLOQUEIO) ---
+            bloqueado = False
             if modulo_permissoes:
-                 modulo_permissoes.verificar_bloqueio_de_acesso(
+                 # Captura se está bloqueado ou não
+                 bloqueado = modulo_permissoes.verificar_bloqueio_de_acesso(
                     chave="bloqueio_menu_cliente", 
                     caminho_atual="Clientes", 
-                    parar_se_bloqueado=True
+                    parar_se_bloqueado=False # Mudamos para False para controlar aqui
                 )
             
+            if bloqueado:
+                st.error("🔒 Você não tem permissão para acessar este módulo.")
+                st.stop() # Força a parada do script aqui
+            
             if modulo_tela_cliente:
-                # Se houver sub-funções no futuro, transforme em abas aqui
                 modulo_tela_cliente.app_clientes()
             else:
                 st.error("Módulo de Clientes não encontrado.")
 
-        # 3. COMERCIAL (COM ABAS)
+        # 3. COMERCIAL
         elif pagina == "Comercial":
             st.title("💼 Comercial")
             tab_prod, tab_ped, tab_tar, tab_ren = st.tabs(["📦 Produtos", "🛒 Pedidos", "📝 Tarefas", "🔄 Renovação"])
@@ -352,7 +376,7 @@ def main():
                 if modulo_rf: modulo_rf.app_renovacao_feedback()
                 else: st.warning("Módulo Renovação indisponível.")
 
-        # 4. BANCO DE DADOS & MKT (COM ABAS)
+        # 4. BANCO DE DADOS & MKT
         elif pagina == "BancoDados":
             st.title("🏦 Banco de Dados & Marketing")
             tab_pf, tab_camp = st.tabs(["👥 Banco Pessoa Física", "📢 Campanhas MKT"])
