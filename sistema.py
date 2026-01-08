@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 import os
 import sys
+import importlib.util
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -11,62 +12,88 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- ADICIONAR CAMINHOS AO SYSTEM PATH ---
-# Isso garante que o Python encontre os módulos dentro das subpastas
+# --- DEFINIÇÃO DE DIRETÓRIOS E PATHS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(BASE_DIR)
-sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL"))
-sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL", "CLIENTES"))
-sys.path.append(os.path.join(BASE_DIR, "OPERACIONAL", "MODULO_W-API"))
-sys.path.append(os.path.join(BASE_DIR, "CONEXÕES"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL", "PEDIDOS"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL", "PRODUTOS E SERVICOS"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL", "TAREFAS"))
-sys.path.append(os.path.join(BASE_DIR, "COMERCIAL", "RENOVACAO E FEEDBACK"))
 
-# --- IMPORTAÇÃO DOS MÓDULOS ---
+# Lista de diretórios que contêm módulos (incluindo aqueles com espaços ou hífens)
+# Adicionar ao sys.path permite importar os arquivos diretamente, ignorando nomes de pastas inválidos
+paths_to_add = [
+    BASE_DIR,
+    os.path.join(BASE_DIR, "OPERACIONAL"),
+    os.path.join(BASE_DIR, "OPERACIONAL", "CLIENTES"),
+    os.path.join(BASE_DIR, "OPERACIONAL", "MODULO_W-API"), # Resolve erro do hífen
+    os.path.join(BASE_DIR, "CONEXÕES"),                     # Resolve erro do acento
+    os.path.join(BASE_DIR, "COMERCIAL"),
+    os.path.join(BASE_DIR, "COMERCIAL", "PEDIDOS"),
+    os.path.join(BASE_DIR, "COMERCIAL", "PRODUTOS E SERVICOS"),
+    os.path.join(BASE_DIR, "COMERCIAL", "TAREFAS"),
+    os.path.join(BASE_DIR, "COMERCIAL", "RENOVACAO E FEEDBACK"), # Resolve erro do espaço
+    os.path.join(BASE_DIR, "OPERACIONAL", "BANCO DE PLANILHAS")
+]
+
+for path in paths_to_add:
+    if path not in sys.path:
+        sys.path.append(path)
+
+# --- IMPORTAÇÃO ROBUSTA DOS MÓDULOS ---
+
+# 1. HOME (site.py) - Carregamento via Spec para evitar conflito com módulo 'site' do Python
 try:
-    # Módulos Operacionais
-    from OPERACIONAL.MODULO_TELA_PRINCIPAL import site as modulo_home
-    from OPERACIONAL.CLIENTES import modulo_tela_cliente as modulo_clientes
-    from OPERACIONAL.MODULO_CHAT import modulo_chat
-    from CONEXÕES import modulo_conexoes
-    from OPERACIONAL.BANCO_DE_PLANILHAS import modulo_planilhas  # Ajuste conforme nome real da pasta se necessário
-except ImportError as e:
-    # Fallback para imports diretos ou tratamento de erro silencioso para carregamento parcial
-    pass
+    spec_home = importlib.util.spec_from_file_location("modulo_home", os.path.join(BASE_DIR, "site.py"))
+    modulo_home = importlib.util.module_from_spec(spec_home)
+    spec_home.loader.exec_module(modulo_home)
+except Exception as e:
+    modulo_home = None
+    print(f"Erro ao carregar Home: {e}")
 
-# Módulos Comerciais (Novos)
+# 2. CLIENTES
+try:
+    import modulo_tela_cliente as modulo_clientes
+except ImportError:
+    modulo_clientes = None
+
+# 3. MÓDULOS COMERCIAIS
 try:
     import modulo_produtos
 except ImportError:
-    try: from COMERCIAL.PRODUTOS_E_SERVICOS import modulo_produtos 
-    except: modulo_produtos = None
+    modulo_produtos = None
 
 try:
     import modulo_pedidos
 except ImportError:
-    try: from COMERCIAL.PEDIDOS import modulo_pedidos
-    except: modulo_pedidos = None
+    modulo_pedidos = None
 
 try:
     import modulo_tarefas
 except ImportError:
-    try: from COMERCIAL.TAREFAS import modulo_tarefas
-    except: modulo_tarefas = None
+    modulo_tarefas = None
 
 try:
+    # Importa direto pois a pasta "RENOVACAO E FEEDBACK" já está no path
     import modulo_renovacao_feedback
 except ImportError:
-    try: from COMERCIAL.RENOVACAO_E_FEEDBACK import modulo_renovacao_feedback
-    except: modulo_renovacao_feedback = None
+    modulo_renovacao_feedback = None
 
-# Módulos de Infraestrutura
+# 4. WHATSAPP (W-API)
 try:
-    from OPERACIONAL.MODULO_W_API import modulo_wapi
-except:
+    # Importa direto pois "MODULO_W-API" já está no path
+    import modulo_wapi
+except ImportError:
     modulo_wapi = None
+
+# 5. CONEXÕES
+try:
+    # Importa direto pois "CONEXÕES" já está no path
+    import modulo_conexoes
+except ImportError:
+    modulo_conexoes = None
+
+# 6. BANCO DE DADOS (Planilhas)
+try:
+    import modulo_planilhas
+except ImportError:
+    modulo_planilhas = None
+
 
 # --- FUNÇÃO PRINCIPAL ---
 def main():
@@ -80,24 +107,12 @@ def main():
 
     # --- MENU LATERAL ---
     with st.sidebar:
-        # Logo (opcional, se existir)
         logo_path = os.path.join(BASE_DIR, "OPERACIONAL", "MODULO_TELA_PRINCIPAL", "logo_assessoria.png")
         if os.path.exists(logo_path):
             st.image(logo_path, use_column_width=True)
         else:
             st.markdown("### 📊 Assessoria")
 
-        # Definição do Menu
-        # 1. Home
-        # 2. Clientes
-        # 3. Produtos (Novo)
-        # 4. Pedidos (Novo)
-        # 5. Tarefas (Novo)
-        # 6. Renovação (Novo)
-        # 7. Banco de Dados
-        # 8. WhatsApp
-        # 9. Conexões
-        
         selected = option_menu(
             menu_title="Menu Principal",
             options=[
@@ -112,15 +127,15 @@ def main():
                 "Conexões"
             ],
             icons=[
-                "house",           # Home
-                "people",          # Clientes
-                "box-seam",        # Produtos
-                "cart",            # Pedidos
-                "list-task",       # Tarefas
-                "arrow-repeat",    # Renovação
-                "database",        # Banco de Dados
-                "whatsapp",        # WhatsApp
-                "hdd-network"      # Conexões
+                "house",           
+                "people",          
+                "box-seam",        
+                "cart",            
+                "list-task",       
+                "arrow-repeat",    
+                "database",        
+                "whatsapp",        
+                "hdd-network"      
             ],
             menu_icon="cast",
             default_index=0,
@@ -135,95 +150,103 @@ def main():
     # --- ROTEAMENTO DAS PÁGINAS ---
     
     if selected == "Home":
-        try:
-            modulo_home.app_home() 
-        except Exception as e:
-            st.error(f"Erro ao carregar Home: {e}")
-            st.info("Verifique se o módulo 'site.py' ou 'modulo_home' está correto.")
+        if modulo_home:
+            try:
+                modulo_home.app_home() 
+            except AttributeError:
+                # Tenta nome alternativo caso a função tenha mudado
+                if hasattr(modulo_home, 'app'): modulo_home.app()
+                else: st.error("Função principal não encontrada no módulo Home (site.py).")
+            except Exception as e:
+                st.error(f"Erro na execução da Home: {e}")
+        else:
+            st.error("Erro fatal: Módulo 'site.py' não pôde ser carregado.")
 
     elif selected == "Clientes":
-        try:
-            modulo_clientes.app_tela_cliente()
-        except Exception as e:
-            st.error(f"Erro ao carregar Clientes: {e}")
+        if modulo_clientes:
+            try:
+                modulo_clientes.app_tela_cliente()
+            except Exception as e:
+                st.error(f"Erro ao abrir Clientes: {e}")
+        else:
+            st.error("Módulo Clientes não encontrado em 'OPERACIONAL/CLIENTES'.")
 
     elif selected == "Produtos":
         if modulo_produtos:
             try:
                 modulo_produtos.app_produtos()
-            except AttributeError:
-                st.error("A função 'app_produtos' não foi encontrada no módulo.")
             except Exception as e:
-                st.error(f"Erro no módulo Produtos: {e}")
+                st.error(f"Erro em Produtos: {e}")
         else:
-            st.warning("Módulo de Produtos não encontrado.")
+            st.warning("Módulo Produtos não carregado.")
 
     elif selected == "Pedidos":
         if modulo_pedidos:
             try:
                 modulo_pedidos.app_pedidos()
-            except AttributeError:
-                st.error("A função 'app_pedidos' não foi encontrada no módulo.")
             except Exception as e:
-                st.error(f"Erro no módulo Pedidos: {e}")
+                st.error(f"Erro em Pedidos: {e}")
         else:
-            st.warning("Módulo de Pedidos não encontrado.")
+            st.warning("Módulo Pedidos não carregado.")
 
     elif selected == "Tarefas":
         if modulo_tarefas:
             try:
                 modulo_tarefas.app_tarefas()
-            except AttributeError:
-                st.error("A função 'app_tarefas' não foi encontrada no módulo.")
             except Exception as e:
-                st.error(f"Erro no módulo Tarefas: {e}")
+                st.error(f"Erro em Tarefas: {e}")
         else:
-            st.warning("Módulo de Tarefas não encontrado.")
+            st.warning("Módulo Tarefas não carregado.")
 
     elif selected == "Renovação":
         if modulo_renovacao_feedback:
             try:
-                # Tenta chamar a função principal. Ajuste o nome se for diferente no arquivo.
+                # Verifica nomes comuns de função principal
                 if hasattr(modulo_renovacao_feedback, 'app_renovacao'):
                     modulo_renovacao_feedback.app_renovacao()
                 elif hasattr(modulo_renovacao_feedback, 'app_main'):
                     modulo_renovacao_feedback.app_main()
+                elif hasattr(modulo_renovacao_feedback, 'app'):
+                    modulo_renovacao_feedback.app()
                 else:
-                    # Fallback genérico ou aviso
-                    st.info("Módulo carregado, mas a função principal 'app_renovacao' não foi localizada.")
+                    st.info("Módulo carregado, mas função principal 'app_renovacao' não encontrada.")
             except Exception as e:
-                st.error(f"Erro no módulo Renovação: {e}")
+                st.error(f"Erro em Renovação: {e}")
         else:
-            st.warning("Módulo de Renovação não encontrado.")
+            st.error("Módulo Renovação não encontrado (verifique a pasta 'RENOVACAO E FEEDBACK').")
 
     elif selected == "Banco de Dados":
-        # Assumindo que este módulo existia ou era uma view direta
-        # Se não houver módulo específico importado acima, mantemos um placeholder ou a lógica anterior
         st.title("🗄️ Banco de Dados")
-        st.info("Gestão de Planilhas e Importações (Módulo Operacional)")
-        try:
-            # Tenta importar dinamicamente se não estiver no topo
-            from OPERACIONAL.BANCO_DE_PLANILHAS import modulo_planilhas
-            modulo_planilhas.app_banco_planilhas()
-        except:
-            st.warning("Módulo de Banco de Dados/Planilhas em manutenção ou não localizado.")
+        if modulo_planilhas:
+            try:
+                modulo_planilhas.app_banco_planilhas()
+            except Exception as e:
+                st.error(f"Erro interno no módulo de planilhas: {e}")
+        else:
+            st.warning("Módulo de Banco de Planilhas não localizado.")
 
     elif selected == "WhatsApp":
-        st.title("💬 Gestão WhatsApp (W-API)")
+        st.title("💬 WhatsApp (W-API)")
         if modulo_wapi:
-            # Se o módulo W-API tiver uma interface visual, chame-a aqui.
-            # Caso contrário, exibe status.
-            st.success("Módulo W-API carregado.")
-            # Exemplo de chamada se existir uma função visual:
-            # modulo_wapi.dashboard_wapi()
+            # Verifica se existe uma interface visual, senão mostra status
+            if hasattr(modulo_wapi, 'app_wapi'):
+                modulo_wapi.app_wapi()
+            elif hasattr(modulo_wapi, 'dashboard'):
+                modulo_wapi.dashboard()
+            else:
+                st.success("✅ Conexão com Módulo W-API estabelecida.")
+                st.info("Este módulo parece ser apenas de backend (API).")
         else:
-            st.error("Módulo WhatsApp não carregado.")
+            st.error("Falha ao carregar módulo W-API. Verifique a pasta 'OPERACIONAL/MODULO_W-API'.")
 
     elif selected == "Conexões":
-        try:
-            modulo_conexoes.app_conexoes()
-        except Exception as e:
-            st.error(f"Erro ao carregar Conexões: {e}")
+        if modulo_conexoes:
+            try:
+                modulo_conexoes.app_conexoes()
+            except Exception as e:
+                st.error(f"Erro ao abrir Conexões: {e}")
+        else:
+            st.error("Módulo Conexões não encontrado (verifique a pasta 'CONEXÕES').")
 
 if __name__ == "__main__":
     main()
