@@ -1,252 +1,282 @@
 import streamlit as st
-from streamlit_option_menu import option_menu
 import os
 import sys
-import importlib.util
+import psycopg2
+import bcrypt
+# import pandas as pd  <-- REMOVIDO (Não era usado)
+from datetime import datetime
+import time
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(
-    page_title="Sistema Assessoria",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
 
-# --- DEFINIÇÃO DE DIRETÓRIOS E PATHS ---
+# --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Lista de diretórios que contêm módulos (incluindo aqueles com espaços ou hífens)
-# Adicionar ao sys.path permite importar os arquivos diretamente, ignorando nomes de pastas inválidos
-paths_to_add = [
-    BASE_DIR,
-    os.path.join(BASE_DIR, "OPERACIONAL"),
-    os.path.join(BASE_DIR, "OPERACIONAL", "CLIENTES"),
-    os.path.join(BASE_DIR, "OPERACIONAL", "MODULO_W-API"), # Resolve erro do hífen
-    os.path.join(BASE_DIR, "CONEXÕES"),                     # Resolve erro do acento
-    os.path.join(BASE_DIR, "COMERCIAL"),
-    os.path.join(BASE_DIR, "COMERCIAL", "PEDIDOS"),
-    os.path.join(BASE_DIR, "COMERCIAL", "PRODUTOS E SERVICOS"),
-    os.path.join(BASE_DIR, "COMERCIAL", "TAREFAS"),
-    os.path.join(BASE_DIR, "COMERCIAL", "RENOVACAO E FEEDBACK"), # Resolve erro do espaço
-    os.path.join(BASE_DIR, "OPERACIONAL", "BANCO DE PLANILHAS")
+# Pastas dos módulos
+pastas_modulos = [
+    "OPERACIONAL/CLIENTES",
+    "OPERACIONAL/BANCO DE PLANILHAS",
+    "OPERACIONAL/MODULO_W-API",
+    "OPERACIONAL/MODULO_CHAT",
+    "COMERCIAL/PRODUTOS E SERVICOS",
+    "COMERCIAL/PEDIDOS",
+    "COMERCIAL/TAREFAS",
+    "COMERCIAL/RENOVACAO E FEEDBACK",
+    "CONEXÕES",
+    "" 
 ]
 
-for path in paths_to_add:
-    if path not in sys.path:
-        sys.path.append(path)
+# Adiciona ao path apenas se não existir (evita duplicatas no loop do Streamlit)
+for pasta in pastas_modulos:
+    caminho = os.path.join(BASE_DIR, pasta)
+    if os.path.exists(caminho) and caminho not in sys.path:
+        sys.path.append(caminho)
 
-# --- IMPORTAÇÃO ROBUSTA DOS MÓDULOS ---
-
-# 1. HOME (site.py) - Carregamento via Spec para evitar conflito com módulo 'site' do Python
+# --- 3. IMPORTAÇÕES DE MÓDULOS ---
 try:
-    spec_home = importlib.util.spec_from_file_location("modulo_home", os.path.join(BASE_DIR, "site.py"))
-    modulo_home = importlib.util.module_from_spec(spec_home)
-    spec_home.loader.exec_module(modulo_home)
-except Exception as e:
-    modulo_home = None
-    print(f"Erro ao carregar Home: {e}")
-
-# 2. CLIENTES
-try:
-    import modulo_tela_cliente as modulo_clientes
-except ImportError:
-    modulo_clientes = None
-
-# 3. MÓDULOS COMERCIAIS
-try:
-    import modulo_produtos
-except ImportError:
-    modulo_produtos = None
-
-try:
-    import modulo_pedidos
-except ImportError:
-    modulo_pedidos = None
-
-try:
-    import modulo_tarefas
-except ImportError:
-    modulo_tarefas = None
-
-try:
-    # Importa direto pois a pasta "RENOVACAO E FEEDBACK" já está no path
-    import modulo_renovacao_feedback
-except ImportError:
-    modulo_renovacao_feedback = None
-
-# 4. WHATSAPP (W-API)
-try:
-    # Importa direto pois "MODULO_W-API" já está no path
+    import conexao
     import modulo_wapi
-except ImportError:
-    modulo_wapi = None
+    import modulo_whats_controlador
+    
+    # Imports com tratamento de erro específico
+    try: import modulo_tela_cliente
+    except ImportError: modulo_tela_cliente = None
+        
+    try: import modulo_permissoes
+    except ImportError: modulo_permissoes = None
 
-# 5. CONEXÕES
-try:
-    # Importa direto pois "CONEXÕES" já está no path
-    import modulo_conexoes
-except ImportError:
-    modulo_conexoes = None
+    # Verificação de existência antes de importar (Evita quebrar o sistema se faltar arquivo)
+    def carregar_modulo(caminho_relativo, nome_modulo):
+        if os.path.exists(os.path.join(BASE_DIR, caminho_relativo)):
+            return __import__(nome_modulo)
+        return None
 
-# 6. BANCO DE DADOS (Planilhas)
-try:
-    import modulo_planilhas
-except ImportError:
-    modulo_planilhas = None
+    modulo_chat = carregar_modulo("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
+    modulo_pf = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
+    modulo_pf_campanhas = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
+    modulo_produtos = carregar_modulo("COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py", "modulo_produtos")
+    modulo_pedidos = carregar_modulo("COMERCIAL/PEDIDOS/modulo_pedidos.py", "modulo_pedidos")
+    modulo_tarefas = carregar_modulo("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
+    modulo_rf = carregar_modulo("COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
+    modulo_conexoes = carregar_modulo("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
 
+except Exception as e:
+    st.error(f"Erro Crítico ao carregar módulos: {e}")
 
-# --- FUNÇÃO PRINCIPAL ---
-def main():
-    # --- CSS PERSONALIZADO ---
+# --- 4. FUNÇÕES DE ESTADO ---
+def iniciar_estado():
+    if 'ultima_atividade' not in st.session_state:
+        st.session_state['ultima_atividade'] = datetime.now()
+    if 'hora_login' not in st.session_state:
+        st.session_state['hora_login'] = datetime.now()
+    if 'pagina_central' not in st.session_state:
+        st.session_state['pagina_central'] = "Início"
+    if 'logado' not in st.session_state:
+        st.session_state['logado'] = False
+
+def resetar_atividade():
+    st.session_state['ultima_atividade'] = datetime.now()
+
+def gerenciar_sessao():
+    TEMPO_LIMITE_MINUTOS = 60
+    agora = datetime.now()
+    tempo_inativo = agora - st.session_state['ultima_atividade']
+    
+    if tempo_inativo.total_seconds() > (TEMPO_LIMITE_MINUTOS * 60):
+        st.session_state.clear()
+        st.error("Sessão expirada. Faça login novamente.")
+        st.stop()
+
+    tempo_total = agora - st.session_state['hora_login']
+    mm, ss = divmod(tempo_total.seconds, 60)
+    hh, mm = divmod(mm, 60)
+    return f"{hh:02d}:{mm:02d}" if hh > 0 else f"{mm:02d}:{ss:02d}"
+
+# --- 5. BANCO DE DADOS ---
+def get_conn():
+    try:
+        # Cria conexão nova. (Se o sistema crescer, implementar Pool aqui)
+        return psycopg2.connect(
+            host=conexao.host, port=conexao.port, database=conexao.database, 
+            user=conexao.user, password=conexao.password, connect_timeout=5
+        )
+    except Exception as e: 
+        print(f"Erro DB: {e}")
+        return None
+
+def verificar_senha(senha_input, senha_hash):
+    try:
+        # REMOVIDA verificação de texto plano para maior segurança
+        return bcrypt.checkpw(senha_input.encode('utf-8'), senha_hash.encode('utf-8'))
+    except: return False
+
+def validar_login_db(usuario, senha):
+    conn = get_conn()
+    if not conn: return {"status": "erro_conexao"}
+    
+    try:
+        cur = conn.cursor()
+        usuario = str(usuario).strip().lower()
+        # Busca por Email, CPF ou Telefone
+        sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
+                 FROM clientes_usuarios 
+                 WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) 
+                 AND ativo = TRUE"""
+        cur.execute(sql, (usuario, usuario, usuario))
+        res = cur.fetchone()
+        
+        if res:
+            uid, nome, cargo, hash_db, email, falhas = res
+            if falhas >= 5: return {"status": "bloqueado"}
+            
+            if verificar_senha(senha, hash_db):
+                cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (uid,))
+                conn.commit()
+                return {"status": "sucesso", "id": uid, "nome": nome, "cargo": cargo, "email": email}
+            else:
+                cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (uid,))
+                conn.commit()
+                return {"status": "erro_senha", "restantes": 4 - falhas}
+        return {"status": "nao_encontrado"}
+    except Exception as e:
+        return {"status": "erro_generico", "msg": str(e)}
+    finally:
+        conn.close()
+
+# --- 6. INTERFACE (MENSAGEM RÁPIDA) ---
+@st.dialog("🚀 Mensagem Rápida")
+def dialog_mensagem_rapida():
+    conn = get_conn()
+    if not conn: st.error("Erro Conexão DB"); return
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+        inst = cur.fetchone()
+        if not inst: st.warning("Configure a API do WhatsApp primeiro."); return
+
+        opcao = st.radio("Destino", ["Cliente Cadastrado", "Número Avulso"], horizontal=True)
+        destino = ""
+        
+        if opcao == "Cliente Cadastrado":
+            cur.execute("SELECT nome, telefone FROM admin.clientes ORDER BY nome LIMIT 50")
+            clis = cur.fetchall()
+            if clis:
+                sel = st.selectbox("Selecione", [f"{c[0]} | {c[1]}" for c in clis])
+                destino = sel.split("|")[1].strip() if sel else ""
+        else:
+            destino = st.text_input("Número (ex: 5511999999999)")
+
+        msg = st.text_area("Mensagem")
+        if st.button("Enviar", type="primary"):
+            if destino and msg:
+                res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
+                if res.get('success'): st.success("Enviado!"); time.sleep(1); st.rerun()
+                else: st.error("Erro no envio.")
+            else: st.warning("Preencha todos os campos.")
+    finally:
+        conn.close()
+
+# --- 7. MENU LATERAL ---
+def renderizar_menu_lateral():
+    # CSS para botões estilo menu
     st.markdown("""
         <style>
-            [data-testid="stSidebarNav"] {display: none;}
-            .main .block-container {padding-top: 2rem;}
+        div.stButton > button {
+            width: 100%; border: none; text-align: left; padding-left: 15px;
+            background: transparent; color: #444;
+        }
+        div.stButton > button:hover { background: #f0f2f6; color: #FF4B4B; font-weight: bold; }
         </style>
     """, unsafe_allow_html=True)
 
-    # --- MENU LATERAL ---
     with st.sidebar:
-        logo_path = os.path.join(BASE_DIR, "OPERACIONAL", "MODULO_TELA_PRINCIPAL", "logo_assessoria.png")
-        if os.path.exists(logo_path):
-            st.image(logo_path, use_column_width=True)
-        else:
-            st.markdown("### 📊 Assessoria")
+        st.markdown("### 🚀 Assessoria")
+        st.markdown(f"Olá, **{st.session_state.get('usuario_nome', '').split()[0]}**")
+        st.markdown("---")
+        
+        # Mapa de navegação: "Nome Botão": "Chave Interna"
+        botoes = {
+            "🏠 Início": "Início",
+            "👥 Clientes": "Clientes",
+            "💼 Comercial": "Comercial",
+            "🏦 Banco de Dados": "BancoDados",
+            "💬 WhatsApp": "WhatsApp",
+            "🔌 Conexões": "Conexoes"
+        }
+        
+        for rotulo, chave in botoes.items():
+            if st.button(rotulo):
+                st.session_state['pagina_central'] = chave
+                resetar_atividade()
+                st.rerun()
 
-        selected = option_menu(
-            menu_title="Menu Principal",
-            options=[
-                "Home", 
-                "Clientes", 
-                "Produtos", 
-                "Pedidos", 
-                "Tarefas", 
-                "Renovação", 
-                "Banco de Dados", 
-                "WhatsApp", 
-                "Conexões"
-            ],
-            icons=[
-                "house",           
-                "people",          
-                "box-seam",        
-                "cart",            
-                "list-task",       
-                "arrow-repeat",    
-                "database",        
-                "whatsapp",        
-                "hdd-network"      
-            ],
-            menu_icon="cast",
-            default_index=0,
-            styles={
-                "container": {"padding": "0!important", "background-color": "#f0f2f6"},
-                "icon": {"color": "orange", "font-size": "18px"}, 
-                "nav-link": {"font-size": "16px", "text-align": "left", "margin":"0px", "--hover-color": "#eee"},
-                "nav-link-selected": {"background-color": "#ff4b4b"},
-            }
-        )
+        st.markdown("---")
+        if st.button("🚪 Sair"):
+            st.session_state.clear()
+            st.rerun()
 
-    # --- ROTEAMENTO DAS PÁGINAS ---
+# --- 8. FUNÇÃO PRINCIPAL ---
+def main():
+    iniciar_estado()
     
-    if selected == "Home":
-        if modulo_home:
-            try:
-                modulo_home.app_home() 
-            except AttributeError:
-                # Tenta nome alternativo caso a função tenha mudado
-                if hasattr(modulo_home, 'app'): modulo_home.app()
-                else: st.error("Função principal não encontrada no módulo Home (site.py).")
-            except Exception as e:
-                st.error(f"Erro na execução da Home: {e}")
-        else:
-            st.error("Erro fatal: Módulo 'site.py' não pôde ser carregado.")
+    # 8.1 TELA DE LOGIN
+    if not st.session_state['logado']:
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            st.title("🔐 Acesso Restrito")
+            u = st.text_input("Usuário (E-mail/CPF)")
+            s = st.text_input("Senha", type="password")
+            if st.button("Entrar", type="primary", use_container_width=True):
+                res = validar_login_db(u, s)
+                if res['status'] == 'sucesso':
+                    st.session_state.update({'logado': True, 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
+                    st.rerun()
+                elif res['status'] == 'bloqueado': st.error("Usuário bloqueado por excesso de tentativas.")
+                elif res['status'] == 'erro_senha': st.error(f"Senha incorreta. Restam {res.get('restantes')} tentativas.")
+                else: st.error("Erro no login ou usuário inexistente.")
+    
+    # 8.2 SISTEMA LOGADO
+    else:
+        renderizar_menu_lateral()
+        
+        # Cabeçalho
+        c1, c2 = st.columns([6, 1])
+        with c2: 
+            if st.button("💬 Msg"): dialog_mensagem_rapida()
 
-    elif selected == "Clientes":
-        if modulo_clientes:
-            try:
-                modulo_clientes.app_tela_cliente()
-            except Exception as e:
-                st.error(f"Erro ao abrir Clientes: {e}")
-        else:
-            st.error("Módulo Clientes não encontrado em 'OPERACIONAL/CLIENTES'.")
+        pagina = st.session_state['pagina_central']
+        
+        # Roteamento
+        if pagina == "Início":
+            if modulo_chat: modulo_chat.app_chat_screen()
+            else: st.info("Painel Inicial (Módulo Chat não detectado)")
+            
+        elif pagina == "Clientes":
+            # Verificação de Permissão Simplificada
+            if modulo_permissoes and modulo_permissoes.verificar_bloqueio_de_acesso("bloqueio_menu_cliente", "Clientes", False):
+                st.error("🚫 Acesso Negado ao Módulo Clientes"); st.stop()
+            
+            if modulo_tela_cliente: modulo_tela_cliente.app_clientes()
+            
+        elif pagina == "Comercial":
+            t1, t2, t3, t4 = st.tabs(["Produtos", "Pedidos", "Tarefas", "Renovação"])
+            with t1: modulo_produtos.app_produtos() if modulo_produtos else st.warning("N/A")
+            with t2: modulo_pedidos.app_pedidos() if modulo_pedidos else st.warning("N/A")
+            with t3: modulo_tarefas.app_tarefas() if modulo_tarefas else st.warning("N/A")
+            with t4: modulo_rf.app_renovacao_feedback() if modulo_rf else st.warning("N/A")
 
-    elif selected == "Produtos":
-        if modulo_produtos:
-            try:
-                modulo_produtos.app_produtos()
-            except Exception as e:
-                st.error(f"Erro em Produtos: {e}")
-        else:
-            st.warning("Módulo Produtos não carregado.")
+        elif pagina == "BancoDados":
+            t1, t2 = st.tabs(["Pessoa Física", "Campanhas"])
+            with t1: modulo_pf.app_pessoa_fisica() if modulo_pf else st.warning("N/A")
+            with t2: modulo_pf_campanhas.app_campanhas() if modulo_pf_campanhas else st.warning("N/A")
 
-    elif selected == "Pedidos":
-        if modulo_pedidos:
-            try:
-                modulo_pedidos.app_pedidos()
-            except Exception as e:
-                st.error(f"Erro em Pedidos: {e}")
-        else:
-            st.warning("Módulo Pedidos não carregado.")
-
-    elif selected == "Tarefas":
-        if modulo_tarefas:
-            try:
-                modulo_tarefas.app_tarefas()
-            except Exception as e:
-                st.error(f"Erro em Tarefas: {e}")
-        else:
-            st.warning("Módulo Tarefas não carregado.")
-
-    elif selected == "Renovação":
-        if modulo_renovacao_feedback:
-            try:
-                # Verifica nomes comuns de função principal
-                if hasattr(modulo_renovacao_feedback, 'app_renovacao'):
-                    modulo_renovacao_feedback.app_renovacao()
-                elif hasattr(modulo_renovacao_feedback, 'app_main'):
-                    modulo_renovacao_feedback.app_main()
-                elif hasattr(modulo_renovacao_feedback, 'app'):
-                    modulo_renovacao_feedback.app()
-                else:
-                    st.info("Módulo carregado, mas função principal 'app_renovacao' não encontrada.")
-            except Exception as e:
-                st.error(f"Erro em Renovação: {e}")
-        else:
-            st.error("Módulo Renovação não encontrado (verifique a pasta 'RENOVACAO E FEEDBACK').")
-
-    elif selected == "Banco de Dados":
-        st.title("🗄️ Banco de Dados")
-        if modulo_planilhas:
-            try:
-                modulo_planilhas.app_banco_planilhas()
-            except Exception as e:
-                st.error(f"Erro interno no módulo de planilhas: {e}")
-        else:
-            st.warning("Módulo de Banco de Planilhas não localizado.")
-
-    elif selected == "WhatsApp":
-        st.title("💬 WhatsApp (W-API)")
-        if modulo_wapi:
-            # Verifica se existe uma interface visual, senão mostra status
-            if hasattr(modulo_wapi, 'app_wapi'):
-                modulo_wapi.app_wapi()
-            elif hasattr(modulo_wapi, 'dashboard'):
-                modulo_wapi.dashboard()
-            else:
-                st.success("✅ Conexão com Módulo W-API estabelecida.")
-                st.info("Este módulo parece ser apenas de backend (API).")
-        else:
-            st.error("Falha ao carregar módulo W-API. Verifique a pasta 'OPERACIONAL/MODULO_W-API'.")
-
-    elif selected == "Conexões":
-        if modulo_conexoes:
-            try:
-                modulo_conexoes.app_conexoes()
-            except Exception as e:
-                st.error(f"Erro ao abrir Conexões: {e}")
-        else:
-            st.error("Módulo Conexões não encontrado (verifique a pasta 'CONEXÕES').")
+        elif pagina == "WhatsApp":
+            modulo_whats_controlador.app_wapi() if modulo_whats_controlador else st.warning("Módulo WhatsApp Off")
+            
+        elif pagina == "Conexoes":
+            modulo_conexoes.app_conexoes() if modulo_conexoes else st.warning("Módulo Conexões Off")
 
 if __name__ == "__main__":
     main()
