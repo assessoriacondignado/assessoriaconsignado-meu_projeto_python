@@ -3,17 +3,17 @@ import os
 import sys
 import psycopg2
 import bcrypt
-import pandas as pd
-from datetime import datetime, timedelta
+# import pandas as pd  <-- REMOVIDO (Não era usado)
+from datetime import datetime
 import time
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado", layout="wide", page_icon="📈")
 
-# --- 2. CONFIGURAÇÃO DE CAMINHOS (AJUSTE ITEM 2) ---
+# --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Lista de pastas onde o sistema deve procurar os módulos
+# Pastas dos módulos
 pastas_modulos = [
     "OPERACIONAL/CLIENTES",
     "OPERACIONAL/BANCO DE PLANILHAS",
@@ -27,10 +27,10 @@ pastas_modulos = [
     "" 
 ]
 
-# Adiciona as pastas ao sys.path de forma segura (evita duplicação)
+# Adiciona ao path apenas se não existir (evita duplicatas no loop do Streamlit)
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
-    if caminho not in sys.path:
+    if os.path.exists(caminho) and caminho not in sys.path:
         sys.path.append(caminho)
 
 # --- 3. IMPORTAÇÕES DE MÓDULOS ---
@@ -39,40 +39,37 @@ try:
     import modulo_wapi
     import modulo_whats_controlador
     
-    # Módulo Clientes
-    try:
-        import modulo_tela_cliente
-    except ImportError:
-        modulo_tela_cliente = None
+    # Imports com tratamento de erro específico
+    try: import modulo_tela_cliente
+    except ImportError: modulo_tela_cliente = None
         
-    # Módulo Permissões
-    try:
-        import modulo_permissoes
-    except ImportError:
-        modulo_permissoes = None
+    try: import modulo_permissoes
+    except ImportError: modulo_permissoes = None
 
-    # Demais Módulos (Carregamento Condicional)
-    # Verifica se o arquivo existe antes de tentar importar para evitar erros
-    modulo_chat = __import__('modulo_chat') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/MODULO_CHAT/modulo_chat.py")) else None
-    modulo_pf = __import__('modulo_pessoa_fisica') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py")) else None
-    modulo_pf_campanhas = __import__('modulo_pf_campanhas') if os.path.exists(os.path.join(BASE_DIR, "OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py")) else None
-    modulo_produtos = __import__('modulo_produtos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py")) else None
-    modulo_pedidos = __import__('modulo_pedidos') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/PEDIDOS/modulo_pedidos.py")) else None
-    modulo_tarefas = __import__('modulo_tarefas') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/TAREFAS/modulo_tarefas.py")) else None
-    modulo_rf = __import__('modulo_renovacao_feedback') if os.path.exists(os.path.join(BASE_DIR, "COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py")) else None
-    modulo_conexoes = __import__('modulo_conexoes') if os.path.exists(os.path.join(BASE_DIR, "CONEXÕES/modulo_conexoes.py")) else None
+    # Verificação de existência antes de importar (Evita quebrar o sistema se faltar arquivo)
+    def carregar_modulo(caminho_relativo, nome_modulo):
+        if os.path.exists(os.path.join(BASE_DIR, caminho_relativo)):
+            return __import__(nome_modulo)
+        return None
+
+    modulo_chat = carregar_modulo("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
+    modulo_pf = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
+    modulo_pf_campanhas = carregar_modulo("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
+    modulo_produtos = carregar_modulo("COMERCIAL/PRODUTOS E SERVICOS/modulo_produtos.py", "modulo_produtos")
+    modulo_pedidos = carregar_modulo("COMERCIAL/PEDIDOS/modulo_pedidos.py", "modulo_pedidos")
+    modulo_tarefas = carregar_modulo("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
+    modulo_rf = carregar_modulo("COMERCIAL/RENOVACAO E FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
+    modulo_conexoes = carregar_modulo("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
 
 except Exception as e:
-    st.error(f"Aviso do Sistema: Alguns módulos não foram carregados corretamente ({e}).")
+    st.error(f"Erro Crítico ao carregar módulos: {e}")
 
-# --- 4. FUNÇÕES DE ESTADO E UTILITÁRIOS ---
-
+# --- 4. FUNÇÕES DE ESTADO ---
 def iniciar_estado():
     if 'ultima_atividade' not in st.session_state:
         st.session_state['ultima_atividade'] = datetime.now()
     if 'hora_login' not in st.session_state:
         st.session_state['hora_login'] = datetime.now()
-    # Define a página inicial padrão
     if 'pagina_central' not in st.session_state:
         st.session_state['pagina_central'] = "Início"
     if 'logado' not in st.session_state:
@@ -85,323 +82,201 @@ def gerenciar_sessao():
     TEMPO_LIMITE_MINUTOS = 60
     agora = datetime.now()
     tempo_inativo = agora - st.session_state['ultima_atividade']
+    
     if tempo_inativo.total_seconds() > (TEMPO_LIMITE_MINUTOS * 60):
         st.session_state.clear()
-        st.error("Sessão expirada por inatividade. Por favor, faça login novamente.")
+        st.error("Sessão expirada. Faça login novamente.")
         st.stop()
 
     tempo_total = agora - st.session_state['hora_login']
     mm, ss = divmod(tempo_total.seconds, 60)
     hh, mm = divmod(mm, 60)
-    if hh > 0: return f"{hh:02d}:{mm:02d}"
-    return f"{mm:02d}:{ss:02d}"
+    return f"{hh:02d}:{mm:02d}" if hh > 0 else f"{mm:02d}:{ss:02d}"
 
-# --- 5. BANCO DE DADOS E AUTH (CORREÇÃO ITEM 2 - ARQUITETURA) ---
-# REMOVIDO @st.cache_resource para evitar uso de conexão velha/fechada
+# --- 5. BANCO DE DADOS ---
 def get_conn():
     try:
-        # Cria uma conexão nova a cada chamada para garantir estabilidade
-        # Em produção de alta escala, usaríamos um Connection Pool aqui.
-        conn = psycopg2.connect(
+        # Cria conexão nova. (Se o sistema crescer, implementar Pool aqui)
+        return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
         )
-        return conn
     except Exception as e: 
-        # Log de erro silencioso ou print para debug
-        print(f"Erro de conexão DB: {e}")
+        print(f"Erro DB: {e}")
         return None
 
-def verificar_senha(senha_plana, senha_hash):
+def verificar_senha(senha_input, senha_hash):
     try:
-        # Nota: Idealmente remover a comparação direta no futuro para segurança total
-        if senha_hash == senha_plana: return True 
-        return bcrypt.checkpw(senha_plana.encode('utf-8'), senha_hash.encode('utf-8'))
+        # REMOVIDA verificação de texto plano para maior segurança
+        return bcrypt.checkpw(senha_input.encode('utf-8'), senha_hash.encode('utf-8'))
     except: return False
 
-def validar_login_db(usuario_input, senha_input):
+def validar_login_db(usuario, senha):
     conn = get_conn()
-    if not conn: return None
+    if not conn: return {"status": "erro_conexao"}
+    
     try:
-        usuario_limpo = str(usuario_input).strip().lower()
-        cursor = conn.cursor()
+        cur = conn.cursor()
+        usuario = str(usuario).strip().lower()
+        # Busca por Email, CPF ou Telefone
         sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
-                 WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) AND ativo = TRUE"""
-        cursor.execute(sql, (usuario_limpo, usuario_limpo, usuario_limpo))
-        res = cursor.fetchone()
+                 WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) 
+                 AND ativo = TRUE"""
+        cur.execute(sql, (usuario, usuario, usuario))
+        res = cur.fetchone()
         
         if res:
-            id_user, nome, cargo, senha_hash, email_user, falhas = res
-            if falhas >= 5: 
-                conn.close()
-                return {"status": "bloqueado"}
+            uid, nome, cargo, hash_db, email, falhas = res
+            if falhas >= 5: return {"status": "bloqueado"}
             
-            if verificar_senha(senha_input, senha_hash):
-                cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (id_user,))
+            if verificar_senha(senha, hash_db):
+                cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (uid,))
                 conn.commit()
-                conn.close()
-                return {"id": id_user, "nome": nome, "cargo": cargo, "email": email_user, "status": "sucesso"}
+                return {"status": "sucesso", "id": uid, "nome": nome, "cargo": cargo, "email": email}
             else:
-                cursor.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (id_user,))
+                cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (uid,))
                 conn.commit()
-                conn.close()
                 return {"status": "erro_senha", "restantes": 4 - falhas}
+        return {"status": "nao_encontrado"}
+    except Exception as e:
+        return {"status": "erro_generico", "msg": str(e)}
+    finally:
         conn.close()
-    except Exception as e: 
-        if conn: conn.close()
-        return None
-    return None
 
-# --- 6. DIALOGS (MENSAGEM RÁPIDA) ---
+# --- 6. INTERFACE (MENSAGEM RÁPIDA) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
     conn = get_conn()
-    if not conn:
-        st.error("Erro de conexão com banco de dados.")
-        return
+    if not conn: st.error("Erro Conexão DB"); return
 
     try:
         cur = conn.cursor()
         cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
         inst = cur.fetchone()
-        if not inst:
-            st.error("Sem instância de WhatsApp ativa.")
-            return
+        if not inst: st.warning("Configure a API do WhatsApp primeiro."); return
 
-        opcao = st.selectbox("Destinatário", ["Selecionar Cliente", "Número Manual", "ID Grupo Manual"])
+        opcao = st.radio("Destino", ["Cliente Cadastrado", "Número Avulso"], horizontal=True)
         destino = ""
         
-        if opcao == "Selecionar Cliente":
-            cur.execute("SELECT nome, telefone, id_grupo_whats FROM admin.clientes ORDER BY nome")
+        if opcao == "Cliente Cadastrado":
+            cur.execute("SELECT nome, telefone FROM admin.clientes ORDER BY nome LIMIT 50")
             clis = cur.fetchall()
             if clis:
-                sel_n = st.selectbox("Buscar Cliente", [c[0] for c in clis])
-                c_info = next(i for i in clis if i[0] == sel_n)
-                tel, grp = c_info[1], c_info[2]
-                opts = []
-                if tel: opts.append(f"Telefone: {tel}")
-                if grp: opts.append(f"Grupo: {grp}")
-                if opts:
-                    contato = st.radio("Enviar para:", opts)
-                    destino = contato.split(": ")[1]
-            else: st.warning("Nenhum cliente na base.")
-        elif opcao == "Número Manual": destino = st.text_input("DDI+DDD+Número")
-        elif opcao == "ID Grupo Manual": destino = st.text_input("ID (@g.us)")
+                sel = st.selectbox("Selecione", [f"{c[0]} | {c[1]}" for c in clis])
+                destino = sel.split("|")[1].strip() if sel else ""
+        else:
+            destino = st.text_input("Número (ex: 5511999999999)")
 
         msg = st.text_area("Mensagem")
-        if st.button("Enviar Agora", type="primary") and destino and msg:
-            res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
-            if res.get('success') or res.get('messageId'):
-                st.success("Enviado!"); time.sleep(1); st.rerun()
-            else: st.error("Erro no envio.")
+        if st.button("Enviar", type="primary"):
+            if destino and msg:
+                res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
+                if res.get('success'): st.success("Enviado!"); time.sleep(1); st.rerun()
+                else: st.error("Erro no envio.")
+            else: st.warning("Preencha todos os campos.")
     finally:
-        if conn: conn.close()
+        conn.close()
 
-# --- 7. MENU LATERAL (SIMPLIFICADO) ---
+# --- 7. MENU LATERAL ---
 def renderizar_menu_lateral():
-    # Estilização dos botões da sidebar
+    # CSS para botões estilo menu
     st.markdown("""
         <style>
         div.stButton > button {
-            width: 100%; 
-            border: none !important; 
-            text-align: left !important;
-            padding-left: 15px !important;
-            background-color: transparent;
-            color: #333;
-            font-size: 16px;
+            width: 100%; border: none; text-align: left; padding-left: 15px;
+            background: transparent; color: #444;
         }
-        div.stButton > button:hover {
-            background-color: #f0f2f6;
-            color: #FF4B4B;
-            font-weight: bold;
-        }
-        div.stButton > button:focus {
-            background-color: #e0e0e0;
-            color: #FF4B4B;
-        }
-        section[data-testid="stSidebar"] { background-color: #f8f9fa; }
+        div.stButton > button:hover { background: #f0f2f6; color: #FF4B4B; font-weight: bold; }
         </style>
     """, unsafe_allow_html=True)
 
     with st.sidebar:
-        try: st.image("logo_assessoria.png", use_container_width=True)
-        except: st.markdown("### Assessoria Consignado")
-        
-        # Dados do Usuário
-        nome_completo = st.session_state.get('usuario_nome', 'Visitante')
-        primeiro_nome = nome_completo.split()[0].title()
-        cargo_banco = st.session_state.get('usuario_cargo', '-')
-        
-        st.markdown(f"""
-            <div style="margin-bottom: 20px; padding: 10px; background-color: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                <small style="color: gray;">Bem-vindo,</small><br>
-                <strong>{primeiro_nome}</strong><br>
-                <span style="font-size: 0.8em; color: #555;">{cargo_banco}</span>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # --- BOTÕES DE NAVEGAÇÃO ---
+        st.markdown("### 🚀 Assessoria")
+        st.markdown(f"Olá, **{st.session_state.get('usuario_nome', '').split()[0]}**")
         st.markdown("---")
         
-        if st.button("🏠 Início", use_container_width=True):
-            st.session_state['pagina_central'] = "Início"
-            resetar_atividade()
-            st.rerun()
-
-        st.caption("Módulos Principais")
+        # Mapa de navegação: "Nome Botão": "Chave Interna"
+        botoes = {
+            "🏠 Início": "Início",
+            "👥 Clientes": "Clientes",
+            "💼 Comercial": "Comercial",
+            "🏦 Banco de Dados": "BancoDados",
+            "💬 WhatsApp": "WhatsApp",
+            "🔌 Conexões": "Conexoes"
+        }
         
-        if st.button("👥 Clientes & Assessoria", use_container_width=True):
-            st.session_state['pagina_central'] = "Clientes"
-            resetar_atividade()
-            st.rerun()
-            
-        if st.button("💼 Comercial", use_container_width=True):
-            st.session_state['pagina_central'] = "Comercial"
-            resetar_atividade()
-            st.rerun()
-            
-        if st.button("🏦 Banco de Dados & MKT", use_container_width=True):
-            st.session_state['pagina_central'] = "BancoDados"
-            resetar_atividade()
-            st.rerun()
+        for rotulo, chave in botoes.items():
+            if st.button(rotulo):
+                st.session_state['pagina_central'] = chave
+                resetar_atividade()
+                st.rerun()
 
-        if st.button("💬 WhatsApp", use_container_width=True):
-            st.session_state['pagina_central'] = "WhatsApp"
-            resetar_atividade()
-            st.rerun()
-            
-        if st.button("🔌 Conexões", use_container_width=True):
-            st.session_state['pagina_central'] = "Conexoes"
-            resetar_atividade()
-            st.rerun()
-
-        # Rodapé
-        st.markdown("<br>" * 5, unsafe_allow_html=True)
-        if st.button("🚪 Sair", key="btn_sair"):
+        st.markdown("---")
+        if st.button("🚪 Sair"):
             st.session_state.clear()
             st.rerun()
-        
-        st.markdown(f"<div style='text-align:center; margin-top:10px; font-size:0.8em; color:#888;'>Sessão: {gerenciar_sessao()}</div>", unsafe_allow_html=True)
 
-# --- 8. FUNÇÃO PRINCIPAL (ROTEADOR DE MÓDULOS) ---
+# --- 8. FUNÇÃO PRINCIPAL ---
 def main():
     iniciar_estado()
     
-    # TELA DE LOGIN
-    if not st.session_state.get('logado'):
-        st.markdown("""<style>div.stButton > button {width: 100%;}</style>""", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 1.5, 1])
-        with col2:
-            st.markdown('<div style="text-align:center; padding-top:50px; padding-bottom:20px;"><h2>Assessoria Consignado</h2><p>Acesso ao Sistema</p></div>', unsafe_allow_html=True)
-            u = st.text_input("E-mail ou CPF")
+    # 8.1 TELA DE LOGIN
+    if not st.session_state['logado']:
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            st.title("🔐 Acesso Restrito")
+            u = st.text_input("Usuário (E-mail/CPF)")
             s = st.text_input("Senha", type="password")
-            if st.button("ENTRAR", type="primary"):
+            if st.button("Entrar", type="primary", use_container_width=True):
                 res = validar_login_db(u, s)
-                if res:
-                    if res.get('status') == "sucesso":
-                        st.session_state.update({
-                            'logado': True, 
-                            'usuario_id': res['id'], 
-                            'usuario_nome': res['nome'], 
-                            'usuario_cargo': res['cargo'], 
-                            'usuario_email': res.get('email', '')
-                        })
-                        st.rerun()
-                    elif res.get('status') == "bloqueado": st.error("🚨 USUÁRIO BLOQUEADO.")
-                    else: st.error(f"Senha incorreta. Tentativas restantes: {res.get('restantes')}")
-                else: st.error("Usuário não encontrado.")
+                if res['status'] == 'sucesso':
+                    st.session_state.update({'logado': True, 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
+                    st.rerun()
+                elif res['status'] == 'bloqueado': st.error("Usuário bloqueado por excesso de tentativas.")
+                elif res['status'] == 'erro_senha': st.error(f"Senha incorreta. Restam {res.get('restantes')} tentativas.")
+                else: st.error("Erro no login ou usuário inexistente.")
     
-    # SISTEMA LOGADO
+    # 8.2 SISTEMA LOGADO
     else:
         renderizar_menu_lateral()
         
-        # Botão de ação rápida no topo direito
-        c_topo1, c_topo2 = st.columns([8, 2])
-        with c_topo2:
-             if st.button("💬 Msg Rápida", use_container_width=True): 
-                 dialog_mensagem_rapida()
-        
+        # Cabeçalho
+        c1, c2 = st.columns([6, 1])
+        with c2: 
+            if st.button("💬 Msg"): dialog_mensagem_rapida()
+
         pagina = st.session_state['pagina_central']
-
-        # --- ROTEAMENTO DO CONTEÚDO ---
         
-        # 1. INÍCIO
+        # Roteamento
         if pagina == "Início":
-            if modulo_chat: 
-                modulo_chat.app_chat_screen()
-            else: 
-                st.info("Bem-vindo ao Sistema. (Módulo Chat não carregado)")
-
-        # 2. CLIENTES
+            if modulo_chat: modulo_chat.app_chat_screen()
+            else: st.info("Painel Inicial (Módulo Chat não detectado)")
+            
         elif pagina == "Clientes":
-            # --- CORREÇÃO ITEM 3 (LÓGICA DE BLOQUEIO) ---
-            bloqueado = False
-            if modulo_permissoes:
-                 # Captura se está bloqueado ou não
-                 bloqueado = modulo_permissoes.verificar_bloqueio_de_acesso(
-                    chave="bloqueio_menu_cliente", 
-                    caminho_atual="Clientes", 
-                    parar_se_bloqueado=False # Mudamos para False para controlar aqui
-                )
+            # Verificação de Permissão Simplificada
+            if modulo_permissoes and modulo_permissoes.verificar_bloqueio_de_acesso("bloqueio_menu_cliente", "Clientes", False):
+                st.error("🚫 Acesso Negado ao Módulo Clientes"); st.stop()
             
-            if bloqueado:
-                st.error("🔒 Você não tem permissão para acessar este módulo.")
-                st.stop() # Força a parada do script aqui
+            if modulo_tela_cliente: modulo_tela_cliente.app_clientes()
             
-            if modulo_tela_cliente:
-                modulo_tela_cliente.app_clientes()
-            else:
-                st.error("Módulo de Clientes não encontrado.")
-
-        # 3. COMERCIAL
         elif pagina == "Comercial":
-            st.title("💼 Comercial")
-            tab_prod, tab_ped, tab_tar, tab_ren = st.tabs(["📦 Produtos", "🛒 Pedidos", "📝 Tarefas", "🔄 Renovação"])
-            
-            with tab_prod:
-                if modulo_produtos: modulo_produtos.app_produtos()
-                else: st.warning("Módulo Produtos indisponível.")
-            
-            with tab_ped:
-                if modulo_pedidos: modulo_pedidos.app_pedidos()
-                else: st.warning("Módulo Pedidos indisponível.")
-                
-            with tab_tar:
-                if modulo_tarefas: modulo_tarefas.app_tarefas()
-                else: st.warning("Módulo Tarefas indisponível.")
-                
-            with tab_ren:
-                if modulo_rf: modulo_rf.app_renovacao_feedback()
-                else: st.warning("Módulo Renovação indisponível.")
+            t1, t2, t3, t4 = st.tabs(["Produtos", "Pedidos", "Tarefas", "Renovação"])
+            with t1: modulo_produtos.app_produtos() if modulo_produtos else st.warning("N/A")
+            with t2: modulo_pedidos.app_pedidos() if modulo_pedidos else st.warning("N/A")
+            with t3: modulo_tarefas.app_tarefas() if modulo_tarefas else st.warning("N/A")
+            with t4: modulo_rf.app_renovacao_feedback() if modulo_rf else st.warning("N/A")
 
-        # 4. BANCO DE DADOS & MKT
         elif pagina == "BancoDados":
-            st.title("🏦 Banco de Dados & Marketing")
-            tab_pf, tab_camp = st.tabs(["👥 Banco Pessoa Física", "📢 Campanhas MKT"])
-            
-            with tab_pf:
-                if modulo_pf: modulo_pf.app_pessoa_fisica()
-                else: st.warning("Módulo Banco PF indisponível.")
-            
-            with tab_camp:
-                if modulo_pf_campanhas: modulo_pf_campanhas.app_campanhas()
-                else: st.warning("Módulo Campanhas indisponível.")
+            t1, t2 = st.tabs(["Pessoa Física", "Campanhas"])
+            with t1: modulo_pf.app_pessoa_fisica() if modulo_pf else st.warning("N/A")
+            with t2: modulo_pf_campanhas.app_campanhas() if modulo_pf_campanhas else st.warning("N/A")
 
-        # 5. WHATSAPP
         elif pagina == "WhatsApp":
-            if modulo_whats_controlador:
-                modulo_whats_controlador.app_wapi()
-            else:
-                st.error("Módulo WhatsApp indisponível.")
-
-        # 6. CONEXÕES
+            modulo_whats_controlador.app_wapi() if modulo_whats_controlador else st.warning("Módulo WhatsApp Off")
+            
         elif pagina == "Conexoes":
-            if modulo_conexoes:
-                modulo_conexoes.app_conexoes()
-            else:
-                st.error("Módulo Conexões indisponível.")
+            modulo_conexoes.app_conexoes() if modulo_conexoes else st.warning("Módulo Conexões Off")
 
 if __name__ == "__main__":
     main()
