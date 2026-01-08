@@ -490,4 +490,4 @@ def app_tarefas():
                 st.info("Dica: Se você acabou de criar a tabela no banco 'public', use a opção 'Tarefas (Padrão)'.")
 
 if __name__ == "__main__":
-    app_tarefas()
+    app_produtos()
