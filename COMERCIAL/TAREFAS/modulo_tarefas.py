@@ -286,8 +286,12 @@ def dialog_nova_tarefa():
 
 # --- APP PRINCIPAL ---
 def app_tarefas():
-    # REMOVIDO TÍTULO CONFORME PADRÃO
-    
+    # --- CORREÇÃO DE CONFLITO DE MODAIS ---
+    # Limpa estados de modais de outros módulos que podem estar "presos"
+    if 'modal_ativo' in st.session_state and st.session_state['modal_ativo'] is not None:
+        st.session_state['modal_ativo'] = None
+    # --------------------------------------
+
     c_title, c_btn = st.columns([5, 1])
     if c_btn.button("➕ Nova Tarefa", type="primary", use_container_width=True):
         dialog_nova_tarefa()
@@ -348,7 +352,6 @@ def app_tarefas():
         st.caption(f"Exibindo {len(df_exibir)} de {len(df_tar)} tarefas encontradas.")
 
     if not df_exibir.empty:
-        # CORREÇÃO CRÍTICA: reset_index(drop=True) e uso de índice 'i' para chaves únicas
         for i, row in df_exibir.reset_index(drop=True).iterrows():
             stt = row['status']
             cor_status = "🔴"
@@ -365,7 +368,6 @@ def app_tarefas():
                 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
                 
-                # ADICIONADO _{i} AO FINAL DE CADA KEY PARA GARANTIR UNICIDADE
                 if c1.button("👤 Cliente", key=f"cli_{row['id']}_{i}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'], row['email_cliente'])
                 if c2.button("👁️ Ver", key=f"ver_{row['id']}_{i}"): dialog_visualizar(row)
                 if c3.button("🔄 Status", key=f"st_{row['id']}_{i}"): dialog_status(row)
