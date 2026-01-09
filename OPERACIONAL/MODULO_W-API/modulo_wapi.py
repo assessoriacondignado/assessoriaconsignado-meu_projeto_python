@@ -7,7 +7,6 @@ import time
 import base64
 from datetime import datetime
 
-# --- IMPORTAÇÃO ROBUSTA DA CONEXÃO ---
 try: 
     import conexao
 except ImportError:
@@ -15,11 +14,8 @@ except ImportError:
 
 def get_conn():
     return psycopg2.connect(
-        host=conexao.host, 
-        port=conexao.port, 
-        database=conexao.database, 
-        user=conexao.user, 
-        password=conexao.password
+        host=conexao.host, port=conexao.port, database=conexao.database, 
+        user=conexao.user, password=conexao.password
     )
 
 # ==========================================================
@@ -39,16 +35,13 @@ def enviar_msg_api(instance_id, token, to, message):
         return {"success": False, "error": str(e)}
 
 def enviar_midia_api(instance_id, token, to, base64_data, file_name, caption=""):
-    """
-    Envia mídia (imagem, áudio, pdf, etc) via Base64.
-    """
     url = f"{BASE_URL}/message/send-media?instanceId={instance_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     contato_limpo = to if "@g.us" in str(to) else re.sub(r'[^0-9]', '', str(to))
     
     payload = {
         "phone": contato_limpo,
-        "media": base64_data,  # CORREÇÃO: Alterado de 'image' para 'media' (padrão genérico)
+        "media": base64_data,
         "caption": caption,
         "fileName": file_name,
         "delayMessage": 3
@@ -56,13 +49,10 @@ def enviar_midia_api(instance_id, token, to, base64_data, file_name, caption="")
     
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=60)
-        
-        # Tenta decodificar JSON, se falhar devolve o texto do erro
         try:
             return res.json()
         except ValueError:
             return {"success": False, "error": f"Erro API (Não JSON): {res.text} - Code: {res.status_code}"}
-            
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -94,11 +84,10 @@ def checar_status_api(instance_id, token):
     except: return {"state": "erro"}
 
 # ==========================================================
-# 2. FUNÇÕES DE SUPORTE E TEMPLATES
+# 2. FUNÇÕES DE SUPORTE
 # ==========================================================
 
 def buscar_instancia_ativa():
-    """Retorna (instance_id, token) da primeira instância cadastrada"""
     conn = get_conn()
     if conn:
         try:
@@ -113,7 +102,6 @@ def buscar_instancia_ativa():
     return None
 
 def buscar_template(modulo, chave):
-    """Busca o texto configurado para um status específico"""
     conn = get_conn()
     if conn:
         try:
@@ -126,24 +114,6 @@ def buscar_template(modulo, chave):
             conn.close()
             return ""
     return ""
-
-def salvar_template(modulo, chave, texto):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO wapi_templates (modulo, chave_status, conteudo_mensagem) 
-                VALUES (%s, %s, %s) 
-                ON CONFLICT (modulo, chave_status) DO UPDATE SET conteudo_mensagem = EXCLUDED.conteudo_mensagem
-            """, (modulo, chave, texto))
-            conn.commit()
-            conn.close()
-            return True
-        except: 
-            conn.close()
-            return False
-    return False
 
 # ==========================================================
 # 3. POP-UPS (DIÁLOGOS)
@@ -180,27 +150,15 @@ def dialog_editar(id_db, nome, inst_id, token):
             time.sleep(1); st.rerun()
         except Exception as e: st.error(f"Erro ao salvar: {e}")
 
-@st.dialog("✏️ Editar Modelo de Mensagem")
-def dialog_editar_template_msg(modulo, chave, texto_atual):
-    st.write(f"Módulo: **{modulo}** | Status: **{chave}**")
-    novo_texto = st.text_area("Mensagem", value=texto_atual, height=200)
-    st.info("Tags comuns: {nome}, {pedido}, {produto}, {status}, {obs_status}")
-    if st.button("💾 Salvar Modelo"):
-        if salvar_template(modulo, chave, novo_texto):
-            st.success("Modelo salvo com sucesso!")
-            time.sleep(1); st.rerun()
-        else:
-            st.error("Erro ao salvar.")
-
 # ==========================================================
 # 4. INTERFACE PRINCIPAL
 # ==========================================================
 def app_wapi():
     st.markdown("## 📱 Módulo W-API")
-    tab1, tab2, tab3, tab4 = st.tabs(["📤 Disparador", "🤖 Instâncias", "📝 Modelos", "📋 Registros"])
+    # REMOVIDA A ABA "MODELOS" E REDUZIDO O NÚMERO DE ABAS
+    tab1, tab2, tab3 = st.tabs(["📤 Disparador", "🤖 Instâncias", "📋 Registros"])
 
     with tab1:
-        # Importa o módulo de disparador
         import modulo_whats_disparador
         modulo_whats_disparador.app_disparador()
 
@@ -233,42 +191,6 @@ def app_wapi():
         except: pass
 
     with tab3:
-        st.markdown("### 📝 Gestão de Modelos de Mensagem")
-        st.caption("Configure aqui as mensagens automáticas usadas pelos outros módulos.")
-        
-        col_filtro, col_add = st.columns([3, 1])
-        mod_sel = col_filtro.selectbox("Filtrar por Módulo", ["PEDIDOS", "TAREFAS", "RENOVACAO"])
-        
-        conn = get_conn()
-        try:
-            df_tpl = pd.read_sql(f"SELECT chave_status, conteudo_mensagem FROM wapi_templates WHERE modulo = '{mod_sel}' ORDER BY chave_status", conn)
-        except:
-            df_tpl = pd.DataFrame()
-        conn.close()
-        
-        if not df_tpl.empty:
-            for _, row in df_tpl.iterrows():
-                with st.expander(f"Status: {row['chave_status'].upper()}"):
-                    st.text(row['conteudo_mensagem'])
-                    if st.button("✏️ Editar", key=f"edt_{mod_sel}_{row['chave_status']}"):
-                        dialog_editar_template_msg(mod_sel, row['chave_status'], row['conteudo_mensagem'])
-        else:
-            st.info(f"Nenhum modelo cadastrado para {mod_sel}.")
-        
-        st.divider()
-        with st.expander("➕ Adicionar Novo Modelo"):
-            with st.form("form_add_tpl"):
-                novo_chave = st.text_input("Nome do Status (chave)", help="Ex: cancelado, pago, em_analise")
-                novo_txt = st.text_area("Texto da Mensagem")
-                if st.form_submit_button("Criar Modelo"):
-                    if novo_chave and novo_txt:
-                        clean_chave = novo_chave.strip().lower().replace(" ", "_")
-                        salvar_template(mod_sel, clean_chave, novo_txt)
-                        st.success("Criado!"); time.sleep(1); st.rerun()
-                    else:
-                        st.warning("Preencha todos os campos.")
-
-    with tab4:
         st.markdown("### 📋 Histórico de Mensagens (Webhook)")
         try:
             conn = get_conn()
