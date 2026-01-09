@@ -82,9 +82,6 @@ def criar_registro_rf(id_pedido, data_prev, obs, dados_pedido, avisar):
             cur.execute("INSERT INTO renovacao_feedback_historico (id_rf, status_novo, observacao) VALUES (%s, 'Entrada', 'Registro criado')", (id_novo,))
             conn.commit()
             conn.close()
-            
-            # Notificação opcional na criação (se desejar implementar)
-            
             return True
         except Exception as e:
             st.error(f"Erro: {e}")
@@ -234,7 +231,7 @@ def app_renovacao_feedback():
     # Cabeçalho com Botão Novo no Topo (Estilo Pedidos)
     c_t, c_b = st.columns([5, 1])
     c_t.markdown("## 🔄 Renovação e Feedback")
-    if c_b.button("➕ Novo Registro", type="primary", use_container_width=False): 
+    if c_b.button("➕ Novo Registro", type="primary", use_container_width=False, key="btn_novo_rf_topo"): 
         dialog_novo_rf()
 
     df = listar_rf()
@@ -243,20 +240,25 @@ def app_renovacao_feedback():
     with st.expander("🔍 Filtros de Pesquisa", expanded=True):
         # Linha 1
         cf1, cf2, cf3 = st.columns([3, 1.5, 1.5])
-        busca_geral = cf1.text_input("🔍 Buscar (Cliente, Produto, Email, Obs)", placeholder="Comece a digitar...")
+        # ADICIONADO KEY ÚNICA
+        busca_geral = cf1.text_input("🔍 Buscar (Cliente, Produto, Email, Obs)", placeholder="Comece a digitar...", key="rf_busca_geral")
         
-        # Filtro de Status (Padrão: Entrada)
+        # Filtro de Status
         opcoes_status = df['status'].unique().tolist() if not df.empty else []
         padrao_status = ["Entrada"] if "Entrada" in opcoes_status else None
-        f_status = cf2.multiselect("Status", options=opcoes_status, default=padrao_status, placeholder="Filtrar Status")
+        # ADICIONADO KEY ÚNICA
+        f_status = cf2.multiselect("Status", options=opcoes_status, default=padrao_status, placeholder="Filtrar Status", key="rf_filtro_status")
         
         opcoes_cats = df['categoria_produto'].unique() if not df.empty else []
-        f_cats = cf3.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categoria")
+        # ADICIONADO KEY ÚNICA
+        f_cats = cf3.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categoria", key="rf_filtro_cat")
 
         # Linha 2: Data
         cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
-        op_data = cd1.selectbox("Filtro de Data (Previsão)", ["Todo o período", "Igual a", "Antes de", "Depois de"])
-        data_ref = cd2.date_input("Data Referência", value=date.today(), format="DD/MM/YYYY")
+        # ADICIONADO KEY ÚNICA PARA RESOLVER O ERRO
+        op_data = cd1.selectbox("Filtro de Data (Previsão)", ["Todo o período", "Igual a", "Antes de", "Depois de"], key="rf_op_data")
+        # ADICIONADO KEY ÚNICA
+        data_ref = cd2.date_input("Data Referência", value=date.today(), format="DD/MM/YYYY", key="rf_data_ref")
 
         # Aplicação dos Filtros
         if not df.empty:
@@ -285,7 +287,8 @@ def app_renovacao_feedback():
     st.markdown("---")
     col_res, col_pag = st.columns([4, 1])
     with col_pag:
-        qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0)
+        # ADICIONADO KEY ÚNICA
+        qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0, key="rf_qtd_view")
     
     df_exibir = df.copy()
     if qtd_view != "Todos":
@@ -296,8 +299,8 @@ def app_renovacao_feedback():
 
     # --- LISTAGEM ---
     if not df_exibir.empty:
-        for _, row in df_exibir.iterrows():
-            # Cores
+        # Usando reset_index e enumerate para garantir keys únicas nos botões
+        for i, row in df_exibir.reset_index(drop=True).iterrows():
             stt = row['status']
             cor = "🔴"
             if stt == 'Concluído': cor = "🟢"
@@ -311,14 +314,14 @@ def app_renovacao_feedback():
                 st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
                 st.write(f"**Obs:** {row['observacao']}")
                 
-                # Botões (6 colunas)
+                # Botões (6 colunas) - KEY COM ÍNDICE PARA EVITAR DUPLICAÇÃO
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
-                if c1.button("👤 Cliente", key=f"cli_{row['id']}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'], row['email_cliente'])
-                if c2.button("👁️ Ver", key=f"ver_{row['id']}"): dialog_visualizar(row)
-                if c3.button("🔄 Status", key=f"s_{row['id']}"): dialog_status(row)
-                if c4.button("✏️ Editar", key=f"ed_{row['id']}"): dialog_editar(row)
-                if c5.button("📜 Hist.", key=f"h_{row['id']}"): dialog_historico(row['id'])
-                if c6.button("🗑️ Excluir", key=f"d_{row['id']}"): dialog_excluir(row['id'])
+                if c1.button("👤 Cliente", key=f"cli_{row['id']}_{i}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'], row['email_cliente'])
+                if c2.button("👁️ Ver", key=f"ver_{row['id']}_{i}"): dialog_visualizar(row)
+                if c3.button("🔄 Status", key=f"s_{row['id']}_{i}"): dialog_status(row)
+                if c4.button("✏️ Editar", key=f"ed_{row['id']}_{i}"): dialog_editar(row)
+                if c5.button("📜 Hist.", key=f"h_{row['id']}_{i}"): dialog_historico(row['id'])
+                if c6.button("🗑️ Excluir", key=f"d_{row['id']}_{i}"): dialog_excluir(row['id'])
     else:
         st.info("Nenhum registro encontrado.")
 
