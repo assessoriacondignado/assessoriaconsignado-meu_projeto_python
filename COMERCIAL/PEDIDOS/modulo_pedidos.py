@@ -286,20 +286,52 @@ def excluir_pedido_db(id_pedido):
         except: return False
     return False
 
-def editar_dados_pedido_completo(id_pedido, nova_qtd, novo_valor, dados_antigos, novo_custo_carteira, carteira_vinculada, origem_custo):
-    total = nova_qtd * novo_valor
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE pedidos SET quantidade=%s, valor_unitario=%s, valor_total=%s, custo_carteira=%s, data_atualizacao=NOW()
-                WHERE id=%s
-            """, (nova_qtd, novo_valor, total, float(novo_custo_carteira), id_pedido))
-            conn.commit(); conn.close()
-            return True, ""
-        except Exception as e: return False, str(e)
-    return False, "Erro BD"
+def editar_dados_pedido_completo(id_pedido, dados_novos):
+    """
+    Atualiza todos os dados do pedido.
+    dados_novos = {cliente, produto, qtd, valor, custo, origem, obs}
+    """
+    try:
+        conn = get_conn()
+        if not conn: return False, "Erro de conexão"
+        
+        cur = conn.cursor()
+        
+        # Recalcula total
+        total = float(dados_novos['qtd']) * float(dados_novos['valor'])
+        
+        sql = """
+            UPDATE pedidos SET 
+                id_cliente=%s, nome_cliente=%s, cpf_cliente=%s, telefone_cliente=%s,
+                id_produto=%s, nome_produto=%s, categoria_produto=%s,
+                quantidade=%s, valor_unitario=%s, valor_total=%s,
+                custo_carteira=%s, origem_custo=%s, observacao=%s,
+                data_atualizacao=NOW()
+            WHERE id=%s
+        """
+        
+        cur.execute(sql, (
+            int(dados_novos['cliente']['id']), 
+            str(dados_novos['cliente']['nome']), 
+            str(dados_novos['cliente']['cpf']), 
+            str(dados_novos['cliente']['telefone']),
+            int(dados_novos['produto']['id']), 
+            str(dados_novos['produto']['nome']), 
+            str(dados_novos['produto']['tipo']),
+            int(dados_novos['qtd']), 
+            float(dados_novos['valor']), 
+            float(total),
+            float(dados_novos['custo']), 
+            str(dados_novos['origem']), 
+            str(dados_novos['obs']),
+            int(id_pedido)
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True, "Pedido atualizado completo!"
+    except Exception as e:
+        return False, str(e)
 
 # --- ESTADO (MODALS) ---
 def abrir_modal(tipo, pedido=None):
@@ -315,7 +347,7 @@ def fechar_modal():
 # =============================================================================
 
 def renderizar_novo_pedido_tab():
-    st.markdown("### ➕ Novo Pedido")
+    # REMOVIDO TÍTULO INTERNO CONFORME SOLICITADO
     
     # Carregar dados iniciais
     df_c = buscar_clientes()
@@ -450,25 +482,85 @@ def renderizar_novo_pedido_tab():
 
 @st.dialog("✏️ Editar", width="large")
 def dialog_editar(ped):
+    # Carrega tabelas para selects
+    df_c = buscar_clientes()
+    df_p = buscar_produtos()
+    
+    if df_c.empty or df_p.empty:
+        st.error("Erro: Tabelas de clientes ou produtos vazias.")
+        return
+
     with st.form("fe"):
         st.markdown(f"#### Editando: {ped['codigo']}")
-        c_i1, c_i2 = st.columns(2)
-        c_i1.text_input("Cliente", value=ped['nome_cliente'], disabled=True)
-        c_i2.text_input("Produto", value=ped['nome_produto'], disabled=True)
+        
+        c1, c2 = st.columns(2)
+        
+        # --- 1. CLIENTE ---
+        # Tenta achar o index do cliente atual
+        try:
+            curr_cli_idx = df_c[df_c['id'] == ped['id_cliente']].index[0]
+        except:
+            curr_cli_idx = 0
+            
+        idx_cli = c1.selectbox(
+            "Cliente", 
+            range(len(df_c)), 
+            index=int(curr_cli_idx),
+            format_func=lambda x: f"{df_c.iloc[x]['nome']} ({df_c.iloc[x]['cpf']})"
+        )
+        sel_cli = df_c.iloc[idx_cli]
+        
+        # --- 2. PRODUTO ---
+        # Tenta achar o index do produto atual
+        try:
+            curr_prod_idx = df_p[df_p['id'] == ped['id_produto']].index[0]
+        except:
+            curr_prod_idx = 0
+            
+        idx_prod = c2.selectbox(
+            "Produto", 
+            range(len(df_p)), 
+            index=int(curr_prod_idx),
+            format_func=lambda x: df_p.iloc[x]['nome']
+        )
+        sel_prod = df_p.iloc[idx_prod]
 
         st.divider()
-        custo_atual = float(ped['custo_carteira'] or 0.0)
-        novo_custo = st.number_input("Custo Carteira (R$)", value=custo_atual, step=0.01)
-
-        c_d1, c_d2 = st.columns(2)
-        nq = c_d1.number_input("Quantidade", 1, value=int(ped['quantidade']))
-        nv = c_d2.number_input("Valor Unitário", 0.0, value=float(ped['valor_unitario']))
+        
+        c_v1, c_v2 = st.columns(2)
+        
+        # --- 3. VALORES ---
+        nq = c_v1.number_input("Quantidade", min_value=1, value=int(ped['quantidade']))
+        nv = c_v2.number_input("Valor Unitário", min_value=0.0, value=float(ped['valor_unitario']), format="%.2f")
+        
+        c_c1, c_c2 = st.columns(2)
+        ncusto = c_c1.number_input("Custo Carteira (R$)", value=float(ped['custo_carteira'] or 0.0), step=0.01)
+        norigem = c_c2.text_input("Origem Custo", value=ped.get('origem_custo', ''))
+        
+        nobs = st.text_area("Observação", value=ped['observacao'] or "")
+        
         st.info(f"Novo Total: R$ {nq*nv:.2f}")
 
         if st.form_submit_button("💾 Salvar Alterações"):
-            ok, msg = editar_dados_pedido_completo(ped['id'], nq, nv, ped, novo_custo, None, None)
-            if ok: st.success(f"Salvo!"); time.sleep(1); fechar_modal(); st.rerun()
-            else: st.error(f"Erro: {msg}")
+            # Monta o dicionário de dados novos
+            dados_novos = {
+                'cliente': sel_cli,
+                'produto': sel_prod,
+                'qtd': nq,
+                'valor': nv,
+                'custo': ncusto,
+                'origem': norigem,
+                'obs': nobs
+            }
+            
+            ok, msg = editar_dados_pedido_completo(ped['id'], dados_novos)
+            if ok: 
+                st.success(f"Salvo!"); 
+                time.sleep(1); 
+                fechar_modal(); 
+                st.rerun()
+            else: 
+                st.error(f"Erro: {msg}")
 
 @st.dialog("🔄 Status")
 def dialog_status(ped):
@@ -637,7 +729,7 @@ def app_pedidos():
     
     # ABA 3: PARÂMETROS
     with tab_param:
-        st.markdown("#### ⚙️ Edição Técnica da Tabela Pedidos")
+        # REMOVIDO TÍTULO CONFORME SOLICITADO
         conn = get_conn()
         if conn:
             df_pedidos_raw = pd.read_sql("SELECT * FROM pedidos ORDER BY id DESC LIMIT 50", conn)
