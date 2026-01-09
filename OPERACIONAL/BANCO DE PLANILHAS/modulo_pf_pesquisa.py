@@ -7,8 +7,16 @@ import json
 import modulo_pf_cadastro as pf_core
 import modulo_pf_config_exportacao as pf_export
 
-# ... (MANTÉM CONFIGURAÇÕES DE CAMPOS E FUNÇÕES DE BUSCA/EXCLUSÃO INALTERADAS) ...
-# Vou replicar o início do arquivo para garantir contexto, mas o foco é na interface_pesquisa_ampla
+# --- FUNÇÕES DE NAVEGAÇÃO (CALLBACKS) ---
+# Estas funções garantem que a troca de tela ocorra ANTES do recarregamento da página
+def navegar_visualizar(cpf):
+    st.session_state['pf_view'] = 'visualizar'
+    st.session_state['pf_cpf_selecionado'] = str(cpf)
+
+def navegar_editar(cpf):
+    st.session_state['pf_view'] = 'editar'
+    st.session_state['pf_cpf_selecionado'] = str(cpf)
+    st.session_state['form_loaded'] = False
 
 # --- CONFIGURAÇÕES DE CAMPOS (MANTIDA) ---
 CAMPOS_CONFIG = {
@@ -303,12 +311,69 @@ def dialog_tipos_filtro():
 # --- INTERFACES VISUAIS ---
 
 def interface_pesquisa_rapida():
-    # Esta função era usada para busca rápida, mas agora a lógica está centralizada no modulo_pessoa_fisica.py
-    # Mantida vazia ou pode ser removida se não usada em outro lugar
-    pass
+    c1, c2 = st.columns([2, 2])
+    busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
+    col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
+    # Botões de navegação removidos daqui pois estão no menu superior do modulo_pessoa_fisica
+    
+    if busca:
+        df_lista, total = buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
+        
+        if not df_lista.empty:
+            st.markdown(f"**Resultados encontrados: {total}**")
+            
+            # ... (EXPORTAÇÃO: MANTIDA MAS OCULTADA PARA BREVIDADE) ...
+            with st.expander("📂 Exportar Resultados da Busca", expanded=bool(st.session_state.get('cache_export_fast'))):
+                if st.session_state.get('cache_export_fast'):
+                    st.success("Arquivos prontos para download:")
+                    arquivos = st.session_state['cache_export_fast']
+                    for i, item in enumerate(arquivos):
+                        st.download_button(label=f"⬇️ {item['nome']}", data=item['data'], file_name=item['nome'], mime="text/csv", key=f"dl_cached_fast_{i}")
+                    st.markdown("---")
+                    if st.button("❌ Limpar / Fechar Exportação", key="cls_fast"): del st.session_state['cache_export_fast']; st.rerun()
+                else:
+                    df_modelos = pf_export.listar_modelos_ativos()
+                    if not df_modelos.empty:
+                        c_sel, c_btn = st.columns([3, 1])
+                        opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
+                        idx_mod = c_sel.selectbox("Layout de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_fast")
+                        if c_btn.button("⬇️ Gerar Arquivos", key="btn_fast_exp"):
+                            with st.spinner("Gerando arquivos... Aguarde..."):
+                                df_total, _ = buscar_pf_simples(busca, pagina=1, itens_por_pagina=9999999)
+                                lista_cpfs = df_total['cpf'].unique().tolist()
+                                limite = 200000; partes = (len(lista_cpfs) // limite) + (1 if len(lista_cpfs) % limite > 0 else 0); cache_data = []
+                                for p in range(partes):
+                                    cpfs_lote = lista_cpfs[p*limite : (p+1)*limite]
+                                    df_final = pf_export.gerar_dataframe_por_modelo(df_modelos.iloc[idx_mod]['id'], cpfs_lote)
+                                    if not df_final.empty:
+                                        csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
+                                        cache_data.append({'nome': f"busca_p{p+1}.csv", 'data': csv})
+                                st.session_state['cache_export_fast'] = cache_data; st.rerun()
+
+            st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 2;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
+            for _, row in df_lista.iterrows():
+                c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
+                with c1:
+                    b1, b2, b3 = st.columns(3)
+                    # CORREÇÃO: USO DE CALLBACKS PARA GARANTIR NAVEGAÇÃO
+                    b1.button("👁️", key=f"v_fast_{row['id']}", on_click=navegar_visualizar, args=(row['cpf'],))
+                    b2.button("✏️", key=f"e_fast_{row['id']}", on_click=navegar_editar, args=(row['cpf'],))
+                    
+                    with b3:
+                        if st.button("🗑️", key=f"d_fast_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
+                c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome'])
+                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+            
+            cp1, cp2, cp3 = st.columns([1, 3, 1])
+            if cp1.button("⬅️ Ant.", key="prev_fast") and st.session_state.get('pf_pagina_atual', 1) > 1: st.session_state['pf_pagina_atual'] -= 1; st.rerun()
+            if cp3.button("Próx. ➡️", key="next_fast"): st.session_state['pf_pagina_atual'] = st.session_state.get('pf_pagina_atual', 1) + 1; st.rerun()
+        else: st.warning("Nenhum registro encontrado.")
+    else: st.info("Utilize a busca para listar clientes.")
 
 def interface_pesquisa_ampla():
-    c_tipos, c_limpar, c_spacer = st.columns([1.5, 1.5, 6])
+    c_voltar, c_tipos, c_limpar, c_spacer = st.columns([1, 1.5, 1.5, 5])
+    # Botão voltar pode não ser necessário se usar o menu superior, mas mantido se desejado
+    if c_voltar.button("⬅️ Voltar"): st.session_state.update({'pf_view': 'lista'}); st.rerun()
     if c_tipos.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"): dialog_tipos_filtro()
     if c_limpar.button("🗑️ Limpar Filtros"): 
         st.session_state['regras_pesquisa'] = []
@@ -375,23 +440,15 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
 
-            # --- EXPORTAÇÃO ---
+            # --- ÁREA DE EXPORTAÇÃO MASSIVA (CORRIGIDA) ---
             with st.expander("📂 Exportar Dados (Lotes)", expanded=bool(st.session_state.get('cache_export_ampla'))):
                 if st.session_state.get('cache_export_ampla'):
                     st.success("✅ Arquivos gerados e prontos para download:")
                     arquivos = st.session_state['cache_export_ampla']
                     for i, item in enumerate(arquivos):
-                        st.download_button(
-                            label=f"💾 Baixar {item['nome']}",
-                            data=item['data'],
-                            file_name=item['nome'],
-                            mime="text/csv",
-                            key=f"dl_cached_ampla_{i}"
-                        )
+                        st.download_button(label=f"💾 Baixar {item['nome']}", data=item['data'], file_name=item['nome'], mime="text/csv", key=f"dl_cached_ampla_{i}")
                     st.markdown("---")
-                    if st.button("❌ Limpar / Fechar Exportação", key="cls_ampla"):
-                        del st.session_state['cache_export_ampla']
-                        st.rerun()
+                    if st.button("❌ Limpar / Fechar Exportação", key="cls_ampla"): del st.session_state['cache_export_ampla']; st.rerun()
                 else:
                     df_modelos = pf_export.listar_modelos_ativos()
                     if not df_modelos.empty:
@@ -405,20 +462,14 @@ def interface_pesquisa_ampla():
                             with st.spinner("Processando e gerando arquivos em memória..."):
                                 df_total, _ = executar_pesquisa_ampla(regras_limpas, 1, 9999999)
                                 lista_cpfs_total = df_total['cpf'].unique().tolist()
-                                limite = 200000
-                                partes = (len(lista_cpfs_total) // limite) + (1 if len(lista_cpfs_total) % limite > 0 else 0)
-                                st.info(f"Gerando {partes} lote(s) de 200 mil.")
-                                
-                                cache_data = []
+                                limite = 200000; partes = (len(lista_cpfs_total) // limite) + (1 if len(lista_cpfs_total) % limite > 0 else 0); st.info(f"Gerando {partes} lote(s) de 200 mil."); cache_data = []
                                 for p in range(partes):
                                     cpfs_lote = lista_cpfs_total[p*limite : (p+1)*limite]
                                     df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], cpfs_lote)
                                     if not df_final.empty:
                                         csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
                                         cache_data.append({'nome': f"export_p{p+1}.csv", 'data': csv})
-                                
-                                st.session_state['cache_export_ampla'] = cache_data
-                                st.rerun()
+                                st.session_state['cache_export_ampla'] = cache_data; st.rerun()
 
             with st.expander("🗑️ Zona de Perigo: Exclusão em Lote", expanded=False):
                 st.error(f"Atenção: A exclusão será aplicada aos {total} clientes filtrados."); tipo_exc = st.selectbox("O que excluir?", ["Selecione...", "Cadastro Completo", "Telefones", "E-mails", "Endereços", "Emprego e Renda"])
@@ -440,15 +491,10 @@ def interface_pesquisa_ampla():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
                 with c1:
                     b1, b2, b3 = st.columns(3)
-                    # CORREÇÃO: Garante a atualização do estado antes do rerun
-                    with b1:
-                        if st.button("👁️", key=f"v_{row['id']}"):
-                            st.session_state.update({'pf_view': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
-                            st.rerun()
-                    with b2:
-                        if st.button("✏️", key=f"e_{row['id']}"): 
-                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
-                            st.rerun()
+                    # CORREÇÃO: USO DE CALLBACKS PARA GARANTIR NAVEGAÇÃO
+                    b1.button("👁️", key=f"v_{row['id']}", on_click=navegar_visualizar, args=(row['cpf'],))
+                    b2.button("✏️", key=f"e_{row['id']}", on_click=navegar_editar, args=(row['cpf'],))
+                    
                     with b3:
                         if st.button("🗑️", key=f"d_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                 c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome']); st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
