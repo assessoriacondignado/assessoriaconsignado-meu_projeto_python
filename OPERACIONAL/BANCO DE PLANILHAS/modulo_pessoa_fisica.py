@@ -37,7 +37,6 @@ def app_pessoa_fisica():
 
     st.markdown("## 👤 Banco de Dados Pessoa Física")
     
-    # Inicializa estados
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'regras_pesquisa' not in st.session_state: st.session_state['regras_pesquisa'] = []
     if 'pf_pagina_atual' not in st.session_state: st.session_state['pf_pagina_atual'] = 1
@@ -46,7 +45,6 @@ def app_pessoa_fisica():
     # MENU SUPERIOR (NAVEGAÇÃO)
     # =========================================================================
     
-    # Mapeamento: "Nome no Menu" -> "Valor da pf_view"
     MENU_MAP = {
         "🔍 Gestão & Pesquisa": "lista",
         "🔎 Pesquisa Avançada": "pesquisa_ampla",
@@ -57,19 +55,14 @@ def app_pessoa_fisica():
         "⚙️ Configurações": "config_exportacao"
     }
     
-    # Inverso para encontrar o nome com base no estado atual
     VIEW_TO_MENU = {v: k for k, v in MENU_MAP.items()}
-    
-    # Determina qual item do menu deve estar ativo com base no estado atual
     current_view = st.session_state.get('pf_view', 'lista')
     
-    # Se estiver em sub-telas de gestão (editar/visualizar), mantém a aba "Gestão & Pesquisa" ativa
     if current_view in ['editar', 'visualizar']:
         active_menu_label = "🔍 Gestão & Pesquisa"
     else:
         active_menu_label = VIEW_TO_MENU.get(current_view, "🔍 Gestão & Pesquisa")
     
-    # Renderiza o Menu
     selected_menu_label = st.radio(
         "Submenu Superior", 
         options=list(MENU_MAP.keys()), 
@@ -79,19 +72,13 @@ def app_pessoa_fisica():
         key="pf_top_menu_radio"
     )
     
-    # Lógica de Troca de Tela via Menu
     target_view = MENU_MAP[selected_menu_label]
     
-    # Se o usuário clicou em uma aba diferente da atual (e não é apenas uma sub-tela da mesma aba)
     if target_view != current_view:
-        # Permite sair de editar/visualizar apenas se mudar de aba. 
-        # (Clicar na própria aba "Gestão" enquanto edita não reseta a tela, 
-        #  para isso existe o botão "Voltar" interno).
         if current_view in ['editar', 'visualizar'] and target_view == 'lista':
-            pass # Mantém na edição/visualização (usuário usa o botão Voltar interno)
+            pass 
         else:
             st.session_state['pf_view'] = target_view
-            # Reseta flags auxiliares ao mudar de módulo
             if target_view == 'novo': st.session_state['form_loaded'] = False
             if target_view == 'importacao': st.session_state['import_step'] = 1
             st.rerun()
@@ -102,48 +89,39 @@ def app_pessoa_fisica():
     # ROTEAMENTO DE CONTEÚDO
     # =========================================================================
     
-    # 1. PESQUISA AVANÇADA / AMPLA
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         pf_pesquisa.interface_pesquisa_ampla()
 
-    # 2. CAMPANHAS
     elif st.session_state['pf_view'] == 'campanhas':
-        if pf_campanhas: pf_campanhas.app_campanhas()
+        # CORREÇÃO AQUI: Passamos um sufixo para evitar colisão de ID com o menu antigo
+        if pf_campanhas: pf_campanhas.app_campanhas(key_sufix="interno_pf")
 
-    # 3. EXPORTAÇÃO (LEGADO - Mantido caso haja referência, mas sem menu direto se não estiver no map)
     elif st.session_state['pf_view'] == 'modelos_exportacao':
         if st.button("⬅️ Voltar"): st.session_state['pf_view'] = 'lista'; st.rerun()
         if pf_export: pf_export.app_gestao_modelos()
 
-    # 4. CONFIG EXPORTAÇÃO
     elif st.session_state['pf_view'] == 'config_exportacao':
         if pf_config_exp: pf_config_exp.app_config_exportacao()
 
-    # 5. PLANILHAS
     elif st.session_state['pf_view'] == 'planilhas':
         if modulo_pf_planilhas:
             modulo_pf_planilhas.app_gestao_planilhas()
         else:
             st.error("Módulo 'modulo_pf_planilhas.py' não encontrado.")
     
-    # 6. VISUALIZAR CLIENTE (TELA)
     elif st.session_state['pf_view'] == 'visualizar':
         pf_core.interface_visualizar_cliente()
 
-    # 7. IMPORTAÇÃO
     elif st.session_state['pf_view'] == 'importacao':
         pf_importacao.interface_importacao()
 
-    # 8. NOVO CADASTRO / EDIÇÃO (Formulário)
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         pf_core.interface_cadastro_pf()
 
-    # 9. GESTÃO & PESQUISA (LISTA PADRÃO)
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
         
-        # RESULTADO DA BUSCA RÁPIDA
         if busca:
             df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
             

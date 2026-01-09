@@ -20,13 +20,11 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             sql_from = "FROM banco_pf.pf_dados d "
             
             # --- MAPA DE JOINS (LIMPO) ---
-            # Removemos a dependência hardcoded de 'emp' dentro das outras tabelas
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
                 'banco_pf.pf_enderecos': "JOIN banco_pf.pf_enderecos ende ON d.cpf = ende.cpf",
                 'banco_pf.pf_emprego_renda': "JOIN banco_pf.pf_emprego_renda emp ON d.cpf = emp.cpf",
-                # Tabelas filhas (dependem de 'emp')
                 'banco_pf.pf_contratos': "JOIN banco_pf.pf_contratos ctr ON emp.matricula = ctr.matricula",
                 'banco_pf.pf_matricula_dados_clt': "LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
@@ -36,24 +34,19 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             
             for regra in regras_ativas:
                 tabela = regra['tabela']
-                # Compatibilidade com nomes antigos
                 if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
                 tabelas_necessarias.add(tabela)
 
-            # Regra de Dependência: Se usar CLT ou Contratos, PRECISA da tabela de Emprego (emp)
             if 'banco_pf.pf_matricula_dados_clt' in tabelas_necessarias or 'banco_pf.pf_contratos' in tabelas_necessarias:
                 tabelas_necessarias.add('banco_pf.pf_emprego_renda')
 
-            # Montagem dos JOINs na ordem correta
             active_joins = []
             
-            # 1. Prioridade: Emprego Renda (Pai)
             if 'banco_pf.pf_emprego_renda' in tabelas_necessarias:
                 active_joins.append(joins_map['banco_pf.pf_emprego_renda'])
             
-            # 2. Demais tabelas
             for tbl in tabelas_necessarias:
-                if tbl == 'banco_pf.pf_emprego_renda': continue # Já adicionado
+                if tbl == 'banco_pf.pf_emprego_renda': continue 
                 if tbl in joins_map:
                     active_joins.append(joins_map[tbl])
 
@@ -63,7 +56,6 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
 
             for regra in regras_ativas:
                 tabela = regra['tabela']
-                # Normalização do nome da tabela
                 if tabela == 'banco_pf.pf_contratos_clt': tabela = 'banco_pf.pf_matricula_dados_clt'
                 
                 coluna = regra['coluna']
@@ -221,15 +213,12 @@ def dialog_editar_campanha(dados_atuais):
         opcoes_campos = []
         mapa_campos = {}
         
-        # --- CARGA DINÂMICA DE CAMPOS (CORREÇÃO APLICADA) ---
-        # Lê sempre do módulo de pesquisa para garantir que novos campos apareçam
         if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
             for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
                 for item in lista:
                     chave = f"{grupo} -> {item['label']}"
                     opcoes_campos.append(chave)
                     mapa_campos[chave] = item
-        # ----------------------------------------------------
 
         ec1, ec2, ec3, ec4 = st.columns([2, 1.5, 2, 1])
         cp_sel = ec1.selectbox("Campo", opcoes_campos, key="ed_cp")
@@ -280,10 +269,13 @@ def dialog_excluir_campanha(id_campanha, nome):
     if st.button("Cancelar", use_container_width=True): st.rerun()
 
 # =============================================================================
-# 4. INTERFACE PRINCIPAL
+# 4. INTERFACE PRINCIPAL (CORRIGIDA COM KEY_SUFIX)
 # =============================================================================
 
-def app_campanhas():
+def app_campanhas(key_sufix="default"):
+    """
+    key_sufix: Sufixo opcional para evitar duplicação de IDs se o módulo for chamado mais de uma vez.
+    """
     st.markdown("## 📢 Gestão de Campanhas e Perfilamento")
     if 'pag_campanha' not in st.session_state: st.session_state['pag_campanha'] = 1
 
@@ -292,7 +284,8 @@ def app_campanhas():
     # --- ABA 1: CONFIGURAÇÃO ---
     with tab_config:
         st.markdown("### 📝 Nova Campanha")
-        with st.form("form_create_campanha"):
+        # CORREÇÃO: Form Key única usando o sufixo
+        with st.form(f"form_create_campanha_{key_sufix}"):
             c1, c2, c3 = st.columns([3, 1.5, 1.5])
             nome = c1.text_input("Nome da Campanha")
             data_criacao = c2.date_input("Data Criação", value=date.today(), disabled=True)
@@ -308,19 +301,18 @@ def app_campanhas():
             opcoes_campos = []
             mapa_campos = {}
             
-            # --- CARGA DINÂMICA DE CAMPOS ---
             if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
                 for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
                     for item in lista:
                         chave = f"{grupo} -> {item['label']}"
                         opcoes_campos.append(chave)
                         mapa_campos[chave] = item
-            # -------------------------------
 
             rc1, rc2, rc3, rc4 = st.columns([2, 1.5, 2, 1])
-            campo_sel = rc1.selectbox("Campo", opcoes_campos, key="cp_new_camp")
-            op_sel = rc2.selectbox("Operador", ["=", ">", "<", "≥", "≤", "≠", "Contém", "Começa com"], key="op_new_camp")
-            valor_sel = rc3.text_input("Valor", key="val_new_camp")
+            # Keys com sufixo para evitar duplicidade
+            campo_sel = rc1.selectbox("Campo", opcoes_campos, key=f"cp_new_camp_{key_sufix}")
+            op_sel = rc2.selectbox("Operador", ["=", ">", "<", "≥", "≤", "≠", "Contém", "Começa com"], key=f"op_new_camp_{key_sufix}")
+            valor_sel = rc3.text_input("Valor", key=f"val_new_camp_{key_sufix}")
             
             if rc4.form_submit_button("➕ Incluir"):
                 if valor_sel and campo_sel in mapa_campos:
@@ -362,7 +354,7 @@ def app_campanhas():
                 else: del st.session_state['id_campanha_em_edicao']; st.rerun()
 
             sel_camp_fmt = df_todas.apply(lambda x: f"#{x['id']} - {x['nome_campanha']} ({x['status']})", axis=1)
-            idx = st.selectbox("Selecione a Campanha", range(len(df_todas)), format_func=lambda x: sel_camp_fmt[x])
+            idx = st.selectbox("Selecione a Campanha", range(len(df_todas)), format_func=lambda x: sel_camp_fmt[x], key=f"sel_camp_main_{key_sufix}")
             
             campanha = df_todas.iloc[idx]
             filtros_db = json.loads(campanha['filtros_config']) if campanha['filtros_config'] else []
@@ -376,11 +368,11 @@ def app_campanhas():
                     st.info(campanha['filtros_aplicaveis']) 
                 with c_acts:
                     st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("✏️ Editar", key="btn_ed", use_container_width=True):
+                    if st.button("✏️ Editar", key=f"btn_ed_{key_sufix}", use_container_width=True):
                         if 'edit_filtros' in st.session_state: del st.session_state['edit_filtros']
                         st.session_state['id_campanha_em_edicao'] = campanha['id']
                         st.rerun()
-                    if st.button("🗑️ Excluir", key="btn_del", type="primary", use_container_width=True):
+                    if st.button("🗑️ Excluir", key=f"btn_del_{key_sufix}", type="primary", use_container_width=True):
                         dialog_excluir_campanha(campanha['id'], campanha['nome_campanha'])
 
             st.markdown("#### 🔎 Filtros Adicionais (Opcional)")
@@ -396,11 +388,11 @@ def app_campanhas():
                         mapa_campos[chave] = item
 
             fe1, fe2, fe3, fe4 = st.columns([2, 1.5, 2, 1])
-            ex_campo = fe1.selectbox("Campo Extra", opcoes_campos, key="cp_ex")
-            ex_op = fe2.selectbox("Operador", ["=", ">", "<", "Contém"], key="op_ex")
-            ex_val = fe3.text_input("Valor", key="val_ex")
+            ex_campo = fe1.selectbox("Campo Extra", opcoes_campos, key=f"cp_ex_{key_sufix}")
+            ex_op = fe2.selectbox("Operador", ["=", ">", "<", "Contém"], key=f"op_ex_{key_sufix}")
+            ex_val = fe3.text_input("Valor", key=f"val_ex_{key_sufix}")
             
-            if fe4.button("➕ Add", key="add_ex"):
+            if fe4.button("➕ Add", key=f"add_ex_{key_sufix}"):
                 if ex_campo in mapa_campos:
                     dado_ex = mapa_campos[ex_campo]
                     st.session_state['filtros_extras'].append({
@@ -412,17 +404,14 @@ def app_campanhas():
                 st.write("Extras:")
                 for fx in st.session_state['filtros_extras']:
                     st.caption(f"{fx['label']} {fx['operador']} {fx['valor']}")
-                if st.button("Limpar Extras"): st.session_state['filtros_extras'] = []; st.rerun()
+                if st.button("Limpar Extras", key=f"cls_ex_{key_sufix}"): st.session_state['filtros_extras'] = []; st.rerun()
 
             st.divider()
             
-            # --- ATUALIZAÇÃO DE DATA (CORREÇÃO APLICADA) ---
             cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
-            # Adicionado min_value e max_value para permitir datas antigas (ex: nascimentos)
-            data_ref = cd2.date_input("Data Referência", value=date.today(), min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY")
-            # ------------------------------------------------
+            data_ref = cd2.date_input("Data Referência", value=date.today(), min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"dt_ref_{key_sufix}")
 
-            if st.button("🔎 VISUALIZAR PÚBLICO ALVO", type="primary", use_container_width=True):
+            if st.button("🔎 VISUALIZAR PÚBLICO ALVO", type="primary", use_container_width=True, key=f"btn_see_target_{key_sufix}"):
                 todos_filtros = filtros_db + st.session_state['filtros_extras']
                 with st.spinner("Analisando base de dados..."):
                     df_res, total = executar_pesquisa_campanha_interna(todos_filtros, pagina=st.session_state['pag_campanha'], itens_por_pagina=50)
@@ -435,29 +424,31 @@ def app_campanhas():
                 
                 st.markdown(f"### Resultados: {tot} encontrados")
                 csv = df_r.to_csv(index=False, sep=';', encoding='utf-8-sig')
-                st.download_button("⬇️ Exportar CSV", data=csv, file_name="campanha_resultado.csv", mime="text/csv")
+                st.download_button("⬇️ Exportar CSV", data=csv, file_name="campanha_resultado.csv", mime="text/csv", key=f"dl_csv_{key_sufix}")
                 
                 if not df_r.empty:
                     st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 1;">Ações</div><div style="flex: 1;">ID</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
                     for _, row in df_r.iterrows():
                         rc1, rc2, rc3, rc4 = st.columns([1, 1, 2, 4])
                         with rc1:
-                            if st.button("👁️", key=f"v_camp_{row['id']}", help="Visualizar Cliente"):
-                                pf_core.dialog_visualizar_cliente(str(row['cpf']))
+                            # CORREÇÃO AQUI: BOTÃO VISUALIZAR ATUALIZADO
+                            if st.button("👁️", key=f"v_camp_{row['id']}_{key_sufix}", help="Visualizar Cliente"):
+                                st.session_state.update({'pf_view': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
+                                st.rerun()
                         rc2.write(str(row['id']))
                         rc3.write(pf_core.formatar_cpf_visual(row['cpf']))
                         rc4.write(row['nome'])
                         st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
                     
                     cp1, cp2, cp3 = st.columns([1, 3, 1])
-                    if cp1.button("⬅️ Ant.") and st.session_state['pag_campanha'] > 1:
+                    if cp1.button("⬅️ Ant.", key=f"ant_pag_{key_sufix}") and st.session_state['pag_campanha'] > 1:
                         st.session_state['pag_campanha'] -= 1; st.rerun()
-                    if cp3.button("Próx. ➡️"):
+                    if cp3.button("Próx. ➡️", key=f"prox_pag_{key_sufix}"):
                         st.session_state['pag_campanha'] += 1; st.rerun()
 
                 st.divider()
                 st.info(f"Ao confirmar abaixo, o ID da campanha **{campanha['id']}** será aplicado no cadastro desses clientes.")
-                if st.button(f"✅ CONFIRMAR VÍNCULO ({tot} CLIENTES)"):
+                if st.button(f"✅ CONFIRMAR VÍNCULO ({tot} CLIENTES)", key=f"conf_vinc_{key_sufix}"):
                     ids = df_r['id'].tolist()
                     if ids:
                         qtd = vincular_campanha_aos_clientes(campanha['id'], campanha['nome_campanha'], ids)
