@@ -375,7 +375,7 @@ def fechar_modal():
     st.session_state['pedido_ativo'] = None
 
 # =============================================================================
-# 4. COMPONENTE DE NOVO PEDIDO (AGORA UMA FUNÇÃO DE ABA)
+# 4. COMPONENTE DE NOVO PEDIDO
 # =============================================================================
 
 def renderizar_novo_pedido_tab():
@@ -591,9 +591,6 @@ def dialog_tarefa(ped):
 # =============================================================================
 
 def app_pedidos():
-    # REMOVIDO TÍTULO CONFORME SOLICITADO
-    
-    # NOVA ORDEM DE ABAS
     tab_novo, tab_lista, tab_param, tab_admin = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros", "🗃️ Tabelas Admin"])
 
     # ABA 1: NOVO PEDIDO (SUB MENU PRIMEIRO)
@@ -612,14 +609,11 @@ def app_pedidos():
                 
                 filtro_cliente = c1.text_input("Cliente", placeholder="Nome do cliente")
                 filtro_produto = c2.text_input("Produto", placeholder="Nome do produto")
-                
-                # Para status, precisamos carregar as opções disponíveis ou usar fixas
                 opcoes_status = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
                 filtro_status = c3.multiselect("Status", options=opcoes_status)
-                
                 filtro_datas = c4.date_input("Período (Criação)", value=[])
 
-            # CONSTRUÇÃO DA QUERY COM FILTROS
+            # QUERY
             query_base = """
                 SELECT p.*, c.nome_empresa, c.email as email_cliente 
                 FROM pedidos p 
@@ -646,7 +640,6 @@ def app_pedidos():
                 params.append(filtro_datas[0])
                 params.append(filtro_datas[1])
 
-            # LIMITAÇÃO DE 10 PEDIDOS E ORDENAÇÃO
             query_base += " ORDER BY p.data_criacao DESC LIMIT 10"
 
             df = pd.read_sql(query_base, conn, params=params)
@@ -663,36 +656,38 @@ def app_pedidos():
                     
                     empresa_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
                     
-                    # CARD DO PEDIDO
                     with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {empresa_show} | R$ {row['valor_total']:.2f}"):
                         
-                        # TODAS AS INFORMAÇÕES DO PEDIDO
-                        st.markdown("#### ℹ️ Detalhes Completos")
+                        # --- LAYOUT AMIGÁVEL ATUALIZADO ---
+                        st.markdown("#### 📋 Detalhes do Pedido")
                         
-                        # Formatando dados para exibição limpa
-                        detalhes = {
-                            "Código": row['codigo'],
-                            "Status": row['status'],
-                            "Data Criação": row['data_criacao'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_criacao']) else "-",
-                            "Cliente": row['nome_cliente'],
-                            "CPF Cliente": row['cpf_cliente'],
-                            "Telefone": row['telefone_cliente'],
-                            "Produto": row['nome_produto'],
-                            "Categoria": row['categoria_produto'],
-                            "Qtd": row['quantidade'],
-                            "Valor Unit.": f"R$ {row['valor_unitario']:.2f}",
-                            "Valor Total": f"R$ {row['valor_total']:.2f}",
-                            "Custo Carteira": f"R$ {row['custo_carteira']:.2f}" if pd.notna(row['custo_carteira']) else "-",
-                            "Origem Custo": row.get('origem_custo', '-'),
-                            "Data Solicitação": row['data_solicitacao'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_solicitacao']) else "-",
-                            "Data Pagamento": row['data_pago'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_pago']) else "-",
-                            "Data Cancelado": row['data_cancelado'].strftime('%d/%m/%Y %H:%M') if pd.notna(row['data_cancelado']) else "-",
-                            "Observação": row['observacao']
-                        }
+                        gc1, gc2, gc3 = st.columns(3)
                         
-                        st.json(detalhes) # Exibe formato estruturado
+                        with gc1:
+                            st.caption("👤 Dados do Cliente")
+                            st.write(f"**Nome:** {row['nome_cliente']}")
+                            st.write(f"**CPF:** {row['cpf_cliente']}")
+                            st.write(f"**Telefone:** {row['telefone_cliente']}")
+                            st.write(f"**Email:** {row.get('email_cliente') or '-'}")
+
+                        with gc2:
+                            st.caption("📦 Produto e Valores")
+                            st.write(f"**Produto:** {row['nome_produto']}")
+                            st.write(f"**Categoria:** {row['categoria_produto']}")
+                            st.write(f"**Qtd:** {row['quantidade']}")
+                            st.write(f"**Total:** :green[R$ {row['valor_total']:.2f}]")
+                            st.write(f"**Custo:** :red[R$ {row['custo_carteira']:.2f}]" if pd.notna(row['custo_carteira']) else "Custo: -")
+
+                        with gc3:
+                            st.caption("📅 Datas e Status")
+                            st.write(f"**Criação:** {row['data_criacao'].strftime('%d/%m/%Y %H:%M')}")
+                            st.write(f"**Solicitado:** {row['data_solicitacao'].strftime('%d/%m %H:%M') if pd.notna(row['data_solicitacao']) else '-'}")
+                            st.write(f"**Pago:** {row['data_pago'].strftime('%d/%m %H:%M') if pd.notna(row['data_pago']) else '-'}")
+                            st.write(f"**Origem Custo:** {row.get('origem_custo', '-')}")
+
+                        if row['observacao']:
+                            st.info(f"**Observação:** {row['observacao']}")
                             
-                        # BOTÕES DE AÇÃO
                         st.divider()
                         c1, c2, c3, c4, c5, c6 = st.columns(6)
                         ts = int(time.time())
