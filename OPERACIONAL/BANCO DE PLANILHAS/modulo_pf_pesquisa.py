@@ -7,12 +7,13 @@ import json
 import modulo_pf_cadastro as pf_core
 import modulo_pf_config_exportacao as pf_export
 
-# --- CALLBACKS DE NAVEGAÇÃO (Replicação necessária para acesso local) ---
-def navegar_visualizar_pesquisa(cpf):
+# --- FUNÇÕES DE NAVEGAÇÃO (CALLBACKS CORRIGIDOS) ---
+# Estas funções devem ter EXATAMENTE este nome para serem chamadas pelo on_click
+def navegar_visualizar(cpf):
     st.session_state['pf_view'] = 'visualizar'
     st.session_state['pf_cpf_selecionado'] = str(cpf)
 
-def navegar_editar_pesquisa(cpf):
+def navegar_editar(cpf):
     st.session_state['pf_view'] = 'editar'
     st.session_state['pf_cpf_selecionado'] = str(cpf)
     st.session_state['form_loaded'] = False
@@ -81,7 +82,7 @@ CAMPOS_CONFIG = {
     ]
 }
 
-# --- FUNÇÕES SQL E AUXILIARES ---
+# --- FUNÇÕES SQL E AUXILIARES (MANTIDAS) ---
 
 def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50):
     conn = pf_core.get_conn()
@@ -315,6 +316,7 @@ def interface_pesquisa_rapida():
 
 def interface_pesquisa_ampla():
     c_voltar, c_tipos, c_limpar, c_spacer = st.columns([1, 1.5, 1.5, 5])
+    
     if c_voltar.button("⬅️ Voltar"): 
         st.session_state['pf_view'] = 'lista'
         st.rerun()
@@ -324,7 +326,6 @@ def interface_pesquisa_ampla():
         st.session_state['regras_pesquisa'] = []
         st.session_state['executar_busca'] = False
         st.session_state['pf_pagina_atual'] = 1
-        # Limpa cache também ao limpar filtros
         if 'cache_export_ampla' in st.session_state: del st.session_state['cache_export_ampla']
         st.rerun()
     
@@ -413,8 +414,6 @@ def interface_pesquisa_ampla():
                         c_sel, c_btn = st.columns([3, 1])
                         opcoes_mods = df_modelos.apply(lambda x: f"{x['id']} - {x['nome_modelo']}", axis=1)
                         idx_mod = c_sel.selectbox("Selecione o Modelo de Exportação:", range(len(df_modelos)), format_func=lambda x: opcoes_mods[x], key="mod_ampla")
-                        modelo_selecionado = df_modelos.iloc[idx_mod]
-                        st.caption(f"📝 {modelo_selecionado['descricao']}")
                         
                         if c_btn.button("⬇️ Gerar Arquivos", key="btn_ampla_exp"):
                             with st.spinner("Processando e gerando arquivos em memória..."):
@@ -427,7 +426,7 @@ def interface_pesquisa_ampla():
                                 cache_data = []
                                 for p in range(partes):
                                     cpfs_lote = lista_cpfs_total[p*limite : (p+1)*limite]
-                                    df_final = pf_export.gerar_dataframe_por_modelo(modelo_selecionado['id'], cpfs_lote)
+                                    df_final = pf_export.gerar_dataframe_por_modelo(df_modelos.iloc[idx_mod]['id'], cpfs_lote)
                                     if not df_final.empty:
                                         csv = df_final.to_csv(sep=';', index=False, encoding='utf-8-sig')
                                         cache_data.append({'nome': f"export_p{p+1}.csv", 'data': csv})
@@ -457,6 +456,7 @@ def interface_pesquisa_ampla():
                     b1, b2, b3 = st.columns(3)
                     
                     # --- CORREÇÃO APLICADA AQUI: BOTÕES COM CALLBACK ---
+                    # Correção no nome das funções chamadas
                     b1.button("👁️", key=f"v_{row['id']}", on_click=navegar_visualizar, args=(row['cpf'],))
                     b2.button("✏️", key=f"e_{row['id']}", on_click=navegar_editar, args=(row['cpf'],))
                     
