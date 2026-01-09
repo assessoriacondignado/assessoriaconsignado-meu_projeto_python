@@ -4,7 +4,6 @@ import psycopg2
 import time
 import re
 import bcrypt
-import io
 
 # Tenta importar conexao. Se falhar, usa st.secrets direto ou avisa.
 try:
@@ -32,19 +31,7 @@ def hash_senha(senha):
     if senha.startswith('$2b$'): return senha
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-# --- ESTILIZAÇÃO CSS ---
-def aplicar_estilo_tabela():
-    st.markdown("""
-    <style>
-    /* Ajustes para o Data Editor */
-    div[data-testid="stDataEditor"] {
-        border: 1px solid #cccccc;
-        border-radius: 5px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- FUNÇÕES DE BANCO DE DADOS ---
+# --- FUNÇÕES DE BANCO DE DADOS ESPECÍFICAS PARA CLIENTE ---
 
 def listar_agrupamentos(tipo):
     conn = get_conn()
@@ -120,111 +107,30 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
         if conn: conn.close()
         return None
 
-# --- NOVA FUNÇÃO: LISTAR CLIENTES PARA PLANILHA ---
-def listar_clientes_completo(filtro=""):
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        sql = """
-            SELECT id, nome, cpf, nome_empresa, email, telefone, telefone2, status, id_usuario_vinculo
-            FROM admin.clientes 
-            WHERE 1=1
-        """
-        if filtro:
-            sql += f" AND (nome ILIKE '%%{filtro}%%' OR cpf ILIKE '%%{filtro}%%' OR nome_empresa ILIKE '%%{filtro}%%')"
-            
-        sql += " ORDER BY id DESC"
-        
-        df = pd.read_sql(sql, conn)
-        conn.close()
-        return df
-    except:
-        if conn: conn.close()
-        return pd.DataFrame()
-
-# --- NOVA FUNÇÃO: SALVAR EM LOTE (PLANILHA) ---
-def salvar_alteracoes_clientes(df_original, df_editado):
-    conn = get_conn()
-    if not conn: return False, "Erro de conexão"
-    
-    try:
-        cur = conn.cursor()
-        
-        # 1. Identificar IDs Originais
-        ids_originais = set(df_original['id'].dropna().astype(int).tolist()) if 'id' in df_original.columns else set()
-        ids_editados = set()
-        
-        # Coletar IDs que permaneceram no editor
-        for _, row in df_editado.iterrows():
-            if pd.notna(row.get('id')):
-                try: ids_editados.add(int(row['id']))
-                except: pass
-        
-        # 2. Processar DELETES (IDs que sumiram)
-        ids_para_excluir = ids_originais - ids_editados
-        if ids_para_excluir:
-            ids_str = ",".join(map(str, ids_para_excluir))
-            cur.execute(f"DELETE FROM admin.clientes WHERE id IN ({ids_str})")
-
-        # 3. Processar INSERTS e UPDATES
-        # Colunas que serão persistidas via planilha
-        cols_db = ['nome', 'cpf', 'nome_empresa', 'email', 'telefone', 'telefone2', 'status']
-        
-        for index, row in df_editado.iterrows():
-            # Limpeza básica de dados
-            vals = [
-                str(row.get(c, '')).strip() if pd.notna(row.get(c)) else '' 
-                for c in cols_db
-            ]
-            
-            row_id = row.get('id')
-            
-            # Verifica se é NOVO (ID vazio ou NaN)
-            eh_novo = pd.isna(row_id) or str(row_id).strip() == ''
-            
-            if eh_novo:
-                # INSERT
-                placeholders = ",".join(["%s"] * len(cols_db))
-                cols_str = ",".join(cols_db)
-                if not vals[6]: vals[6] = 'ATIVO' # Status padrão
-                
-                cur.execute(f"INSERT INTO admin.clientes ({cols_str}) VALUES ({placeholders})", vals)
-            
-            elif int(row_id) in ids_originais:
-                # UPDATE
-                set_clause = ",".join([f"{c}=%s" for c in cols_db])
-                vals.append(int(row_id)) 
-                cur.execute(f"UPDATE admin.clientes SET {set_clause} WHERE id=%s", vals)
-
-        conn.commit()
-        conn.close()
-        return True, "Alterações salvas com sucesso!"
-        
-    except Exception as e:
-        if conn: conn.close()
-        return False, f"Erro ao salvar: {e}"
-
 # --- DIALOGS (MODAIS) ---
 
 @st.dialog("🔗 Gestão de Acesso do Cliente")
 def dialog_gestao_usuario_vinculo(dados_cliente):
-    # Lógica mantida da versão anterior
+    # Recupera o ID
     raw_id = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
     
+    # CORREÇÃO: Tratamento robusto para NaN e conversão segura para inteiro
     id_vinculo = None
     if pd.notna(raw_id) and raw_id is not None:
-        try: id_vinculo = int(float(raw_id))
-        except: id_vinculo = None
+        try:
+            id_vinculo = int(float(raw_id))
+        except:
+            id_vinculo = None
 
     if id_vinculo:
         st.success("✅ Este cliente já possui um usuário vinculado.")
         conn = get_conn()
         if conn:
+            # Agora id_vinculo é um inteiro garantido, evitando o erro 'nan' no SQL
             df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn); conn.close()
             if not df_u.empty:
                 usr = df_u.iloc[0]
-                st.write(f"**Nome:** {usr['nome']}")
-                st.write(f"**Login:** {usr['email']}")
+                st.write(f"**Nome:** {usr['nome']}"); st.write(f"**Login:** {usr['email']}"); st.write(f"**CPF:** {usr['cpf']}")
                 st.markdown("---")
                 if st.button("🔓 Desvincular Usuário", type="primary"):
                     if desvincular_usuario_cliente(dados_cliente['id']): st.success("Desvinculado!"); time.sleep(1.5); st.rerun()
@@ -255,8 +161,12 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 idx_sel = st.selectbox("Selecione o Usuário", range(len(df_livres)), format_func=lambda x: opcoes[x])
                 if st.button("Vincular Selecionado"):
                     ok, msg = vincular_usuario_cliente(dados_cliente['id'], df_livres.iloc[idx_sel]['id'])
-                    if ok: st.success("Vinculado!"); time.sleep(1); st.rerun()
-                    else: st.error(f"Erro: {msg}")
+                    if ok:
+                        st.success("Vinculado com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao vincular: {msg}")
             else: st.info("Sem usuários livres.")
 
 @st.dialog("🚨 Excluir Cliente")
@@ -270,95 +180,82 @@ def dialog_excluir_cliente(id_cli, nome):
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 
 def app_cadastro_cliente():
-    aplicar_estilo_tabela()
-    
-    # --- BARRA DE TÍTULO E AÇÕES GERAIS ---
-    c_busca, c_novo = st.columns([6, 1])
-    filtro = c_busca.text_input("🔍 Buscar na Tabela", placeholder="Filtrar por Nome, CPF ou Empresa...")
-    
-    if c_novo.button("➕ Novo", type="primary"): 
-        st.session_state['view_cliente'] = 'novo'
-        st.rerun()
+    c1, c2 = st.columns([6, 1])
+    filtro = c1.text_input("🔍 Buscar Cliente", placeholder="Nome, CPF ou Nome Empresa")
+    if c2.button("➕ Novo", type="primary"): st.session_state['view_cliente'] = 'novo'; st.rerun()
 
-    # --- MODO LISTA / PLANILHA (PADRÃO) ---
     if st.session_state.get('view_cliente', 'lista') == 'lista':
+        conn = get_conn()
+        if not conn:
+            st.error("Sem conexão com banco de dados.")
+            return
+
+        # ATUALIZAÇÃO: Join com a tabela de usuários para pegar o nome
+        sql = """
+            SELECT c.*, c.id_usuario_vinculo as id_vinculo, u.nome as nome_usuario_vinculado
+            FROM admin.clientes c
+            LEFT JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
+        """
+        if filtro: 
+            # ATUALIZAÇÃO: Uso do alias 'c.' para evitar ambiguidade
+            sql += f" WHERE c.nome ILIKE '%%{filtro}%%' OR c.cpf ILIKE '%%{filtro}%%' OR c.nome_empresa ILIKE '%%{filtro}%%'"
+        sql += " ORDER BY c.id DESC LIMIT 50"
         
-        # Carregar dados (com cache simples de sessão para não recarregar toda hora se não precisar)
-        if 'df_clientes_cache' not in st.session_state or filtro:
-            st.session_state['df_clientes_cache'] = listar_clientes_completo(filtro)
-        
-        df_atual = st.session_state['df_clientes_cache']
-        
-        st.caption("💡 **Dica:** Cole dados do Excel (Ctrl+V) na última linha vazia para inserir em massa. Edite células diretamente.")
+        try:
+            df_cli = pd.read_sql(sql, conn)
+        except Exception as e:
+            st.error(f"Erro ao ler clientes: {e}")
+            df_cli = pd.DataFrame()
+        finally:
+            conn.close()
 
-        # --- DATA EDITOR (PLANILHA) ---
-        df_editado = st.data_editor(
-            df_atual,
-            key="editor_clientes_principal",
-            num_rows="dynamic",
-            use_container_width=True,
-            height=500,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "nome": st.column_config.TextColumn("Nome Completo", required=True, width="large"),
-                "cpf": st.column_config.TextColumn("CPF", width="medium"),
-                "nome_empresa": st.column_config.TextColumn("Empresa", width="medium"),
-                "email": st.column_config.TextColumn("E-mail", width="medium"),
-                "telefone": st.column_config.TextColumn("Tel 1", width="small"),
-                "telefone2": st.column_config.TextColumn("Tel 2", width="small"),
-                "status": st.column_config.SelectboxColumn("Status", options=["ATIVO", "INATIVO"], default="ATIVO", width="small"),
-                "id_usuario_vinculo": st.column_config.NumberColumn("Vinculo", disabled=True, help="Use 'Ações Avançadas' para alterar")
-            },
-            column_order=["id", "nome", "cpf", "nome_empresa", "email", "telefone", "telefone2", "status"]
-        )
-
-        # --- RODAPÉ DA TABELA (SALVAR E EXPORTAR) ---
-        c_save, c_exp = st.columns([2, 10])
-        
-        with c_save:
-            if st.button("💾 Salvar Alterações", type="primary", use_container_width=True):
-                if not df_editado.equals(df_atual):
-                    ok, msg = salvar_alteracoes_clientes(df_atual, df_editado)
-                    if ok:
-                        st.success(msg)
-                        time.sleep(1)
-                        st.session_state['df_clientes_cache'] = listar_clientes_completo(filtro)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-                else:
-                    st.info("Nenhuma alteração detectada.")
-
-        with c_exp:
-            if not df_editado.empty:
-                csv = df_editado.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Baixar CSV", data=csv, file_name=f"clientes_{pd.Timestamp.now().strftime('%d%m%y')}.csv", mime="text/csv")
-
-        st.divider()
-
-        # --- AÇÕES AVANÇADAS (Para suprir botões que existiam na lista) ---
-        with st.expander("🛠️ Ações Avançadas (Vincular Usuário / Editar Detalhes)"):
-            st.caption("Selecione um cliente para gerenciar acesso ou editar via formulário completo.")
+        if not df_cli.empty:
+            # ATUALIZAÇÃO: Inclusão da coluna Usuário no cabeçalho
+            st.markdown("""
+            <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
+                <div style="flex:3;">Nome</div>
+                <div style="flex:2;">CPF</div>
+                <div style="flex:2;">Empresa</div>
+                <div style="flex:2;">Usuário</div>
+                <div style="flex:1;">Status</div>
+                <div style="flex:2; text-align:center;">Ações</div>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Seletor de cliente baseado no DF atual
-            if not df_atual.empty:
-                opcoes_cli = df_atual.apply(lambda x: f"{x['id']} - {x['nome']}", axis=1)
-                sel_cli_idx = st.selectbox("Selecione o Cliente:", options=range(len(df_atual)), format_func=lambda x: opcoes_cli.iloc[x])
-                
-                if sel_cli_idx is not None:
-                    cli_selecionado = df_atual.iloc[sel_cli_idx]
+            for _, row in df_cli.iterrows():
+                with st.container():
+                    # ATUALIZAÇÃO: Ajuste de pesos e nova coluna c4 para o usuário
+                    c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 1, 2])
+                    c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
+                    c2.write(row['cpf'] or "-")
+                    c3.write(row['nome_empresa'] or "-")
                     
-                    c_act1, c_act2 = st.columns(2)
-                    if c_act1.button("🔗 Gerenciar Acesso (Usuário)", use_container_width=True):
-                        dialog_gestao_usuario_vinculo(cli_selecionado.to_dict())
-                    
-                    if c_act2.button("✏️ Abrir Formulário de Edição", use_container_width=True):
-                        st.session_state.update({'view_cliente': 'editar', 'cli_id': int(cli_selecionado['id'])})
-                        st.rerun()
+                    # Nova Coluna: Usuário Vinculado
+                    nome_vinculo = row['nome_usuario_vinculado']
+                    c4.write(limpar_formatacao_texto(nome_vinculo) if nome_vinculo else "-")
 
-    # --- MODO NOVO / EDITAR (FORMULÁRIO DETALHADO) ---
+                    cor_st = 'green' if row.get('status','ATIVO')=='ATIVO' else 'red'
+                    c5.markdown(f":{cor_st}[{row.get('status','ATIVO')}]")
+                    
+                    with c6:
+                        b1, b3, b4 = st.columns(3) # Botão extrato removido (b2)
+                        if b1.button("✏️", key=f"e_{row['id']}", help="Editar Cadastro"): 
+                            st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
+                        
+                        # O botão de extrato foi removido para evitar dependência circular com módulo financeiro.
+                        # O usuário deve ver o extrato na aba Financeiro.
+                            
+                        if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
+                            dialog_gestao_usuario_vinculo(row)
+                            
+                        if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
+                            dialog_excluir_cliente(row['id'], row['nome'])
+                    
+                    st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
+        else: st.info("Nenhum cliente encontrado.")
+
     elif st.session_state['view_cliente'] in ['novo', 'editar']:
-        st.markdown(f"### {'📝 Novo Cliente' if st.session_state['view_cliente']=='novo' else '✏️ Editar Cliente'}")
+        st.markdown(f"### {'📝 Novo' if st.session_state['view_cliente']=='novo' else '✏️ Editar'}")
         
         dados = {}
         if st.session_state['view_cliente'] == 'editar':
@@ -383,13 +280,13 @@ def app_cadastro_cliente():
             val_emp_atual = dados.get('nome_empresa', '')
             if val_emp_atual in lista_empresas: idx_emp = lista_empresas.index(val_emp_atual)
             
-            nome_emp = c2.selectbox("Empresa", options=[""] + lista_empresas, index=idx_emp + 1 if val_emp_atual else 0)
+            nome_emp = c2.selectbox("Empresa (Selecionar)", options=[""] + lista_empresas, index=idx_emp + 1 if val_emp_atual else 0, help="Ao selecionar, o CNPJ será preenchido automaticamente ao salvar.")
             cnpj_display = dados.get('cnpj_empresa', '')
-            c3.text_input("CNPJ (Vinculado)", value=cnpj_display, disabled=True)
+            c3.text_input("CNPJ (Vinculado)", value=cnpj_display, disabled=True, help="Este campo é atualizado automaticamente com base na Empresa selecionada.")
 
             c4, c5, c6, c7 = st.columns(4)
-            email = c4.text_input("E-mail", value=dados.get('email', ''))
-            cpf = c5.text_input("CPF", value=dados.get('cpf', ''))
+            email = c4.text_input("E-mail *", value=dados.get('email', ''))
+            cpf = c5.text_input("CPF *", value=dados.get('cpf', ''))
             tel1 = c6.text_input("Telefone 1", value=dados.get('telefone', ''))
             tel2 = c7.text_input("Telefone 2", value=dados.get('telefone2', ''))
             
@@ -416,7 +313,6 @@ def app_cadastro_cliente():
             st.markdown("<br>", unsafe_allow_html=True); ca = st.columns([1, 1, 4])
             
             if ca[0].form_submit_button("💾 Salvar"):
-                # Lógica de salvar do formulário (mantida para edições detalhadas)
                 cnpj_final = ""
                 if nome_emp:
                     filtro_cnpj = df_empresas[df_empresas['nome_empresa'] == nome_emp]
@@ -434,14 +330,8 @@ def app_cadastro_cliente():
                         cur.execute("UPDATE admin.clientes SET nome=%s, nome_empresa=%s, cnpj_empresa=%s, email=%s, cpf=%s, telefone=%s, telefone2=%s, id_grupo_whats=%s, ids_agrupamento_cliente=%s, ids_agrupamento_empresa=%s, status=%s WHERE id=%s", (nome, nome_emp, cnpj_final, email, cpf, tel1, tel2, id_gp, str_ag_cli, str_ag_emp, status_final, st.session_state['cli_id']))
                     conn.commit(); conn.close(); st.success("Salvo!"); time.sleep(1); st.session_state['view_cliente'] = 'lista'; st.rerun()
             
-            if ca[1].form_submit_button("Cancelar"): 
-                st.session_state['view_cliente'] = 'lista'
-                st.rerun()
+            if ca[1].form_submit_button("Cancelar"): st.session_state['view_cliente'] = 'lista'; st.rerun()
 
         if st.session_state['view_cliente'] == 'editar':
             st.markdown("---")
-            if st.button("🗑️ Excluir Cliente (Formulário)", type="primary"): 
-                dialog_excluir_cliente(st.session_state['cli_id'], nome)
-
-if __name__ == "__main__":
-    app_cadastro_cliente()
+            if st.button("🗑️ Excluir Cliente", type="primary"): dialog_excluir_cliente(st.session_state['cli_id'], nome)
