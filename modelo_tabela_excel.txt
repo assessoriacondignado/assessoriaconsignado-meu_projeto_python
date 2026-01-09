@@ -1,0 +1,101 @@
+REGRAS PARA SEREM APLICADAS NA FUNÇÃO, PARA MATER AS BOAS PRÁTICAS NO USO DA TABELA DENTRO DO SISTEMA
+
+
+import streamlit as st
+import pandas as pd
+import io
+
+def app_planilha_avancada():
+    st.markdown("### 📊 Gestão de Planilha (Excel-Like)")
+
+    # 1. VISUALIZAR / CARREGAR DADOS INICIAIS
+    # No seu caso, viria do banco de dados (ex: listar_tabelas_schema ou sua query SQL)
+    if 'df_dados' not in st.session_state:
+        # Exemplo de estrutura inicial vazia
+        st.session_state['df_dados'] = pd.DataFrame(columns=[
+            "Nome Cliente", "CPF", "Data Nasc.", "Valor Contrato", "Status"
+        ])
+
+    df_editavel = st.session_state['df_dados'].copy()
+
+    # 2. FUNÇÃO EDITAR & COPIAR/COLAR (st.data_editor)
+    # num_rows="dynamic" -> Permite adicionar linhas colando do Excel
+    # column_config -> GARANTE A FORMATAÇÃO CORRETA
+    
+    st.info("💡 Dica: Copie as células do seu Excel e tecle **Ctrl+V** clicando na primeira célula vazia abaixo.")
+    
+    df_resultado = st.data_editor(
+        df_editavel,
+        key="editor_principal",
+        num_rows="dynamic",  # PERMITE COLAR LINHAS DO EXCEL E ELAS SÃO CRIADAS AUTOMATICAMENTE
+        use_container_width=True,
+        height=500,
+        column_config={
+            "Nome Cliente": st.column_config.TextColumn(
+                "Nome Completo",
+                max_chars=100,
+                validate=r"^.+$" # Exige que não seja vazio
+            ),
+            "CPF": st.column_config.TextColumn(
+                "CPF",
+                help="Digite apenas números ou com pontuação",
+                width="medium"
+            ),
+            "Data Nasc.": st.column_config.DateColumn(
+                "Nascimento",
+                format="DD/MM/YYYY", # Força formato visual brasileiro
+                step=1
+            ),
+            "Valor Contrato": st.column_config.NumberColumn(
+                "Valor (R$)",
+                format="R$ %.2f", # Exibe como moeda, mas salva como número puro
+                min_value=0,
+                step=0.01
+            ),
+            "Status": st.column_config.SelectboxColumn(
+                "Situação",
+                options=["Ativo", "Pendente", "Cancelado"],
+                default="Pendente" # Valor padrão se colar vazio
+            )
+        }
+    )
+
+    # 3. VALIDAÇÃO E LIMPEZA (EVITAR ERRO DE FORMATAÇÃO)
+    if st.button("💾 Salvar Alterações"):
+        if not df_resultado.empty:
+            # Remove linhas totalmente vazias que podem ter ficado
+            df_limpo = df_resultado.dropna(how='all')
+
+            # --- TRATAMENTO DE DADOS (CRÍTICO) ---
+            # Força conversão para evitar erro de string em campo numérico
+            try:
+                # Exemplo: Limpar R$ e converter para float se o copy/paste vier sujo
+                # (O data_editor já filtra muito, mas isso é segurança extra)
+                if df_limpo['Valor Contrato'].dtype == 'object':
+                    df_limpo['Valor Contrato'] = df_limpo['Valor Contrato'].astype(str).str.replace('R$', '').str.replace('.', '').str.replace(',', '.').astype(float)
+                
+                # Salva no estado ou Banco de Dados
+                st.session_state['df_dados'] = df_limpo
+                st.success(f"{len(df_limpo)} registros processados com sucesso!")
+                st.dataframe(df_limpo.head()) # Mostra prévia
+            
+            except Exception as e:
+                st.error(f"Erro de formatação nos dados colados: {e}")
+        else:
+            st.warning("A planilha está vazia.")
+
+    # 4. EXPORTAR EM CSV
+    if not st.session_state['df_dados'].empty:
+        st.divider()
+        csv = st.session_state['df_dados'].to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Baixar Planilha (CSV)",
+            data=csv,
+            file_name=f"exportacao_planilha_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            type="primary"
+        )
+
+if __name__ == "__main__":
+    app_planilha_avancada()
