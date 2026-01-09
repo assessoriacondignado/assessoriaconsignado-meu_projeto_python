@@ -31,6 +31,68 @@ def hash_senha(senha):
     if senha.startswith('$2b$'): return senha
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
+# --- ESTILIZAÇÃO CSS (NOVO) ---
+def aplicar_estilo_tabela():
+    st.markdown("""
+    <style>
+    /* --- 1. ESTRUTURA E GRADES DA TABELA --- */
+    /* Cria uma borda ao redor das colunas para simular grades verticais leves */
+    div[data-testid="column"] {
+        border-right: 1px solid #e0e0e0;
+        padding-left: 8px !important;
+    }
+    div[data-testid="column"]:last-child {
+        border-right: none;
+    }
+    
+    /* --- 2. ESPAÇAMENTO COMPACTO (REDUÇÃO DE PADDING) --- */
+    /* Reduz o espaço entre os elementos dentro das colunas */
+    div[data-testid="stVerticalBlock"] {
+        gap: 0.2rem !important;
+    }
+    /* Reduz margens de textos e parágrafos */
+    div[data-testid="stMarkdownContainer"] p {
+        margin-bottom: 0px !important;
+        font-size: 14px;
+        line-height: 1.2;
+    }
+    /* Reduz a altura das linhas divisórias */
+    hr {
+        margin: 0px 0px 8px 0px !important;
+        border-color: #cccccc !important;
+    }
+
+    /* --- 3. BOTÕES REALISTAS E COLORIDOS --- */
+    /* Estilo base para todos os botões pequenos da tabela */
+    div.stButton > button {
+        width: 100%;
+        border-radius: 6px;
+        border: 1px solid #cfcfcf;
+        background: linear-gradient(to bottom, #ffffff 5%, #f6f6f6 100%);
+        box-shadow: 0px 2px 3px rgba(0,0,0,0.1); /* Sombra 3D */
+        color: #333;
+        font-weight: 600;
+        font-size: 12px;
+        padding: 4px 8px;
+        transition: all 0.2s ease-in-out;
+    }
+    
+    /* Efeito ao passar o mouse (Hover) nos botões */
+    div.stButton > button:hover {
+        background: linear-gradient(to bottom, #f6f6f6 5%, #e9e9e9 100%);
+        transform: translateY(1px); /* Botão "afunda" */
+        box-shadow: 0px 1px 1px rgba(0,0,0,0.1);
+        border-color: #b0b0b0;
+        color: #000;
+    }
+
+    /* Destacar a linha ao passar o mouse (Simulado via container) */
+    div[data-testid="stVerticalBlock"]:hover {
+        background-color: #fcfcfc;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- FUNÇÕES DE BANCO DE DADOS ESPECÍFICAS PARA CLIENTE ---
 
 def listar_agrupamentos(tipo):
@@ -111,10 +173,8 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
 
 @st.dialog("🔗 Gestão de Acesso do Cliente")
 def dialog_gestao_usuario_vinculo(dados_cliente):
-    # Recupera o ID
     raw_id = dados_cliente.get('id_vinculo') or dados_cliente.get('id_usuario_vinculo')
     
-    # CORREÇÃO: Tratamento robusto para NaN e conversão segura para inteiro
     id_vinculo = None
     if pd.notna(raw_id) and raw_id is not None:
         try:
@@ -126,18 +186,25 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
         st.success("✅ Este cliente já possui um usuário vinculado.")
         conn = get_conn()
         if conn:
-            # Agora id_vinculo é um inteiro garantido, evitando o erro 'nan' no SQL
-            df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn); conn.close()
-            if not df_u.empty:
-                usr = df_u.iloc[0]
-                st.write(f"**Nome:** {usr['nome']}"); st.write(f"**Login:** {usr['email']}"); st.write(f"**CPF:** {usr['cpf']}")
-                st.markdown("---")
-                if st.button("🔓 Desvincular Usuário", type="primary"):
-                    if desvincular_usuario_cliente(dados_cliente['id']): st.success("Desvinculado!"); time.sleep(1.5); st.rerun()
-                    else: st.error("Erro.")
-            else:
-                st.warning("Usuário vinculado não encontrado.")
-                if st.button("Forçar Desvinculo"): desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
+            try:
+                df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM clientes_usuarios WHERE id = {id_vinculo}", conn)
+                conn.close()
+                if not df_u.empty:
+                    usr = df_u.iloc[0]
+                    st.write(f"**Nome:** {usr['nome']}")
+                    st.write(f"**Login:** {usr['email']}")
+                    st.write(f"**CPF:** {usr['cpf']}")
+                    st.markdown("---")
+                    if st.button("🔓 Desvincular Usuário", type="primary"):
+                        if desvincular_usuario_cliente(dados_cliente['id']): 
+                            st.success("Desvinculado!"); time.sleep(1.5); st.rerun()
+                        else: st.error("Erro.")
+                else:
+                    st.warning("Usuário vinculado não encontrado.")
+                    if st.button("Forçar Desvinculo"): desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
+            except Exception as e:
+                if conn: conn.close()
+                st.error(f"Erro ao buscar usuário: {e}")
     else:
         st.warning("⚠️ Este cliente não tem acesso ao sistema.")
         tab_novo, tab_existente = st.tabs(["✨ Criar Novo", "🔍 Vincular Existente"])
@@ -180,6 +247,8 @@ def dialog_excluir_cliente(id_cli, nome):
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 
 def app_cadastro_cliente():
+    aplicar_estilo_tabela() # APLICA O NOVO CSS AQUI
+    
     c1, c2 = st.columns([6, 1])
     filtro = c1.text_input("🔍 Buscar Cliente", placeholder="Nome, CPF ou Nome Empresa")
     if c2.button("➕ Novo", type="primary"): st.session_state['view_cliente'] = 'novo'; st.rerun()
@@ -190,14 +259,12 @@ def app_cadastro_cliente():
             st.error("Sem conexão com banco de dados.")
             return
 
-        # ATUALIZAÇÃO: Join com a tabela de usuários para pegar o nome
         sql = """
             SELECT c.*, c.id_usuario_vinculo as id_vinculo, u.nome as nome_usuario_vinculado
             FROM admin.clientes c
             LEFT JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
         """
         if filtro: 
-            # ATUALIZAÇÃO: Uso do alias 'c.' para evitar ambiguidade
             sql += f" WHERE c.nome ILIKE '%%{filtro}%%' OR c.cpf ILIKE '%%{filtro}%%' OR c.nome_empresa ILIKE '%%{filtro}%%'"
         sql += " ORDER BY c.id DESC LIMIT 50"
         
@@ -210,27 +277,27 @@ def app_cadastro_cliente():
             conn.close()
 
         if not df_cli.empty:
-            # ATUALIZAÇÃO: Inclusão da coluna Usuário no cabeçalho
+            # Cabeçalho estilizado para combinar com o CSS
             st.markdown("""
-            <div style="display:flex; font-weight:bold; color:#555; padding:8px; border-bottom:2px solid #ddd; margin-bottom:10px; background-color:#f8f9fa;">
-                <div style="flex:3;">Nome</div>
+            <div style="display:flex; font-weight:bold; color:#333; padding:10px 5px; border-bottom:2px solid #bbb; background-color:#eef2f5; border-radius: 5px 5px 0 0; font-size:14px;">
+                <div style="flex:3; padding-left:5px;">NOME</div>
                 <div style="flex:2;">CPF</div>
-                <div style="flex:2;">Empresa</div>
-                <div style="flex:2;">Usuário</div>
-                <div style="flex:1;">Status</div>
-                <div style="flex:2; text-align:center;">Ações</div>
+                <div style="flex:2;">EMPRESA</div>
+                <div style="flex:2;">USUÁRIO</div>
+                <div style="flex:1;">STATUS</div>
+                <div style="flex:2; text-align:center;">AÇÕES</div>
             </div>
             """, unsafe_allow_html=True)
             
             for _, row in df_cli.iterrows():
                 with st.container():
-                    # ATUALIZAÇÃO: Ajuste de pesos e nova coluna c4 para o usuário
-                    c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 1, 2])
+                    # Gap="small" ajuda na compactação visual
+                    c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 1, 2], gap="small")
+                    
                     c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
                     c2.write(row['cpf'] or "-")
                     c3.write(row['nome_empresa'] or "-")
                     
-                    # Nova Coluna: Usuário Vinculado
                     nome_vinculo = row['nome_usuario_vinculado']
                     c4.write(limpar_formatacao_texto(nome_vinculo) if nome_vinculo else "-")
 
@@ -238,20 +305,19 @@ def app_cadastro_cliente():
                     c5.markdown(f":{cor_st}[{row.get('status','ATIVO')}]")
                     
                     with c6:
-                        b1, b3, b4 = st.columns(3) # Botão extrato removido (b2)
+                        # Botões com ícones e tooltips
+                        b1, b3, b4 = st.columns(3)
                         if b1.button("✏️", key=f"e_{row['id']}", help="Editar Cadastro"): 
                             st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
-                        
-                        # O botão de extrato foi removido para evitar dependência circular com módulo financeiro.
-                        # O usuário deve ver o extrato na aba Financeiro.
                             
-                        if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Acesso Usuário"): 
+                        if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Gestão de Acesso"): 
                             dialog_gestao_usuario_vinculo(row)
                             
-                        if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
+                        if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir Registro"):
                             dialog_excluir_cliente(row['id'], row['nome'])
                     
-                    st.markdown("<hr style='margin: 5px 0; border-color: #eee;'>", unsafe_allow_html=True)
+                    # Linha divisória ultra fina e discreta
+                    st.markdown("<hr>", unsafe_allow_html=True)
         else: st.info("Nenhum cliente encontrado.")
 
     elif st.session_state['view_cliente'] in ['novo', 'editar']:
