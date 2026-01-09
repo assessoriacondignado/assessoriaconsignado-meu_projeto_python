@@ -6,7 +6,7 @@ import bcrypt
 # import pandas as pd  <-- REMOVIDO (Não era usado)
 from datetime import datetime
 import time
-import importlib  # <--- ADICIONE ESTA LINHA NOVA AQUI
+import importlib
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", page_icon="📈")
@@ -75,6 +75,14 @@ try:
 
     # Carregamento dos módulos com feedback de erro
     modulo_chat = carregar_modulo_por_caminho("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
+    
+    # --- CORREÇÃO: Carregar dependências do módulo PF explicitamente ---
+    # Isso garante que o modulo_pessoa_fisica encontre as funções atualizadas
+    modulo_pf_cadastro = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_cadastro.py", "modulo_pf_cadastro")
+    modulo_pf_pesquisa = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_pesquisa.py", "modulo_pf_pesquisa")
+    modulo_pf_importacao = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_importacao.py", "modulo_pf_importacao")
+    # ---------------------------------------------------------------------
+
     modulo_pf = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
     modulo_pf_campanhas = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
     
@@ -297,9 +305,12 @@ def main():
                 st.warning("⚠️ Módulo Comercial Geral não encontrado ou erro na importação.")
 
         elif pagina == "BancoDados":
-            t1, t2 = st.tabs(["Pessoa Física", "Campanhas"])
-            with t1: modulo_pf.app_pessoa_fisica() if modulo_pf else st.warning("N/A")
-            with t2: modulo_pf_campanhas.app_campanhas() if modulo_pf_campanhas else st.warning("N/A")
+            # REMOVIDO st.tabs ANTIGO para evitar conflito de IDs
+            # Chamada direta e única para o módulo principal
+            if modulo_pf:
+                modulo_pf.app_pessoa_fisica()
+            else:
+                st.warning("Módulo Pessoa Física não carregado.")
 
         elif pagina == "WhatsApp":
             modulo_whats_controlador.app_wapi() if modulo_whats_controlador else st.warning("Módulo WhatsApp Off")
