@@ -279,13 +279,19 @@ def carregar_dados_completos(cpf):
             dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=params_busca).fillna("").to_dict('records')
             
-            # Busca Vínculos
+            # Busca Vínculos (CORREÇÃO APLICADA AQUI)
+            # Usa explicitamente cpf_ref para a tabela de emprego, pois é garantido pelo init
             try:
-                query_emp = f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
+                query_emp = "SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s"
                 df_emp = pd.read_sql(query_emp, conn, params=params_busca)
             except:
+                # Fallback apenas se der erro no primeiro (ex: migração incompleta)
                 conn.rollback()
-                df_emp = pd.DataFrame()
+                try:
+                    query_emp = f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s"
+                    df_emp = pd.read_sql(query_emp, conn, params=params_busca)
+                except:
+                    df_emp = pd.DataFrame()
             
             if not df_emp.empty:
                 for _, row_emp in df_emp.iterrows():
@@ -363,6 +369,7 @@ CONFIG_CADASTRO = {
     "Dados Pessoais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
         {"label": "CPF", "key": "cpf", "tabela": "geral", "tipo": "cpf", "obrigatorio": True},
+        # Campos abaixo só aparecem no modo EDITAR
         {"label": "RG", "key": "rg", "tabela": "geral", "tipo": "texto"},
         {"label": "Data Nascimento", "key": "data_nascimento", "tabela": "geral", "tipo": "data"},
         {"label": "Nome da Mãe", "key": "nome_mae", "tabela": "geral", "tipo": "texto"},
@@ -372,6 +379,7 @@ CONFIG_CADASTRO = {
         {"label": "PIS", "key": "pis", "tabela": "geral", "tipo": "texto"},
         {"label": "CNH", "key": "cnh", "tabela": "geral", "tipo": "texto"},
         {"label": "Série CTPS", "key": "serie_ctps", "tabela": "geral", "tipo": "texto"},
+        # Procurador
         {"label": "Nome Procurador", "key": "nome_procurador", "tabela": "geral", "tipo": "texto"},
         {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"}, 
     ],
@@ -709,7 +717,7 @@ def interface_cadastro_pf():
                     st.rerun()
                 else: st.error(msg)
     
-    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 20px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
 
 # --- FUNÇÕES DE SALVAMENTO E EXCLUSÃO (CORRIGIDA) ---
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
