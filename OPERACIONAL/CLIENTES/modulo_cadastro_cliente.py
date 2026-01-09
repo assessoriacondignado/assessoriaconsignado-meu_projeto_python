@@ -31,82 +31,64 @@ def hash_senha(senha):
     if senha.startswith('$2b$'): return senha
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-# --- ESTILIZAÇÃO CSS (AJUSTADA: Laranja, Compacto, Grades 1px) ---
+# --- ESTILIZAÇÃO CSS (NOVO) ---
 def aplicar_estilo_tabela():
     st.markdown("""
     <style>
-    /* 1. GRADES VERTICAIS (COLUNAS) */
+    /* --- 1. ESTRUTURA E GRADES DA TABELA --- */
+    /* Cria uma borda ao redor das colunas para simular grades verticais leves */
     div[data-testid="column"] {
-        border-right: 1px solid #cccccc; /* Grade vertical visível 1px */
-        padding-left: 5px !important;
+        border-right: 1px solid #e0e0e0;
+        padding-left: 8px !important;
     }
     div[data-testid="column"]:last-child {
         border-right: none;
     }
     
-    /* 2. COMPACTAÇÃO VERTICAL EXTREMA */
-    /* Remove espaço entre elementos verticais */
+    /* --- 2. ESPAÇAMENTO COMPACTO (REDUÇÃO DE PADDING) --- */
+    /* Reduz o espaço entre os elementos dentro das colunas */
     div[data-testid="stVerticalBlock"] {
-        gap: 0rem !important;
+        gap: 0.2rem !important;
     }
-    
-    /* Texto das células */
+    /* Reduz margens de textos e parágrafos */
     div[data-testid="stMarkdownContainer"] p {
         margin-bottom: 0px !important;
-        font-size: 13px;
+        font-size: 14px;
         line-height: 1.2;
-        padding-top: 4px; /* Pequeno ajuste para alinhar com o botão */
     }
-    
-    /* Linha Divisória Horizontal (Grade) */
+    /* Reduz a altura das linhas divisórias */
     hr {
-        margin: 2px 0px 2px 0px !important; /* Mínimo possível */
-        border-bottom: 1px solid #cccccc !important; /* Espessura 1px */
-        border-top: none;
-        opacity: 1;
+        margin: 0px 0px 8px 0px !important;
+        border-color: #cccccc !important;
     }
 
-    /* 3. BOTÕES (LARANJA CLARO & COMPACTOS) */
+    /* --- 3. BOTÕES REALISTAS E COLORIDOS --- */
+    /* Estilo base para todos os botões pequenos da tabela */
     div.stButton > button {
         width: 100%;
-        border-radius: 4px;
-        
-        /* Cores Laranja Claro */
-        background-color: #ffe0b2; 
-        border: 1px solid #ffcc80; 
-        color: #4e342e; /* Marrom escuro para contraste */
-        
+        border-radius: 6px;
+        border: 1px solid #cfcfcf;
+        background: linear-gradient(to bottom, #ffffff 5%, #f6f6f6 100%);
+        box-shadow: 0px 2px 3px rgba(0,0,0,0.1); /* Sombra 3D */
+        color: #333;
         font-weight: 600;
         font-size: 12px;
-        
-        /* Margem interna MÍNIMA (Quase zero) */
-        padding: 0px 1px !important; 
-        
-        /* Forçar altura pequena */
-        min-height: 0px !important;
-        height: 22px !important;
-        line-height: 1 !important;
-        
-        transition: all 0.1s ease-in-out;
+        padding: 4px 8px;
+        transition: all 0.2s ease-in-out;
     }
     
-    /* Hover do Botão */
+    /* Efeito ao passar o mouse (Hover) nos botões */
     div.stButton > button:hover {
-        background-color: #ffcc80; /* Laranja mais intenso */
-        border-color: #ffa726;
+        background: linear-gradient(to bottom, #f6f6f6 5%, #e9e9e9 100%);
+        transform: translateY(1px); /* Botão "afunda" */
+        box-shadow: 0px 1px 1px rgba(0,0,0,0.1);
+        border-color: #b0b0b0;
         color: #000;
-        transform: translateY(1px);
     }
-    
-    /* Remove margem extra do container do botão */
-    div.stButton {
-        margin-top: 0px !important;
-        padding-top: 0px !important;
-    }
-    
-    /* Highlight na linha ao passar o mouse */
-    div.stVerticalBlock > div:hover {
-        background-color: #fff8e1; /* Fundo amarelado bem sutil no hover da linha */
+
+    /* Destacar a linha ao passar o mouse (Simulado via container) */
+    div[data-testid="stVerticalBlock"]:hover {
+        background-color: #fcfcfc;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -265,7 +247,7 @@ def dialog_excluir_cliente(id_cli, nome):
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 
 def app_cadastro_cliente():
-    aplicar_estilo_tabela() # INJETA O CSS AQUI
+    aplicar_estilo_tabela() # APLICA O NOVO CSS AQUI
     
     c1, c2 = st.columns([6, 1])
     filtro = c1.text_input("🔍 Buscar Cliente", placeholder="Nome, CPF ou Nome Empresa")
@@ -295,21 +277,21 @@ def app_cadastro_cliente():
             conn.close()
 
         if not df_cli.empty:
-            # Cabeçalho com bordas e cores alinhadas com o CSS
+            # Cabeçalho estilizado para combinar com o CSS
             st.markdown("""
-            <div style="display:flex; font-weight:bold; color:#333; padding:8px 5px; border:1px solid #cccccc; border-bottom:2px solid #999; background-color:#e0e0e0; margin-bottom:2px; font-size:13px;">
-                <div style="flex:3; padding-left:5px; border-right:1px solid #bbb;">NOME</div>
-                <div style="flex:2; padding-left:5px; border-right:1px solid #bbb;">CPF</div>
-                <div style="flex:2; padding-left:5px; border-right:1px solid #bbb;">EMPRESA</div>
-                <div style="flex:2; padding-left:5px; border-right:1px solid #bbb;">USUÁRIO</div>
-                <div style="flex:1; padding-left:5px; border-right:1px solid #bbb;">STATUS</div>
+            <div style="display:flex; font-weight:bold; color:#333; padding:10px 5px; border-bottom:2px solid #bbb; background-color:#eef2f5; border-radius: 5px 5px 0 0; font-size:14px;">
+                <div style="flex:3; padding-left:5px;">NOME</div>
+                <div style="flex:2;">CPF</div>
+                <div style="flex:2;">EMPRESA</div>
+                <div style="flex:2;">USUÁRIO</div>
+                <div style="flex:1;">STATUS</div>
                 <div style="flex:2; text-align:center;">AÇÕES</div>
             </div>
             """, unsafe_allow_html=True)
             
             for _, row in df_cli.iterrows():
                 with st.container():
-                    # Gap="small" ajuda a manter a compactação visual
+                    # Gap="small" ajuda na compactação visual
                     c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 1, 2], gap="small")
                     
                     c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
@@ -323,18 +305,18 @@ def app_cadastro_cliente():
                     c5.markdown(f":{cor_st}[{row.get('status','ATIVO')}]")
                     
                     with c6:
-                        # 3 botões por linha
+                        # Botões com ícones e tooltips
                         b1, b3, b4 = st.columns(3)
-                        if b1.button("✏️", key=f"e_{row['id']}", help="Editar"): 
+                        if b1.button("✏️", key=f"e_{row['id']}", help="Editar Cadastro"): 
                             st.session_state.update({'view_cliente': 'editar', 'cli_id': row['id']}); st.rerun()
                             
-                        if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Vincular"): 
+                        if b3.button("🔗" if row['id_vinculo'] else "👤", key=f"u_{row['id']}", help="Gestão de Acesso"): 
                             dialog_gestao_usuario_vinculo(row)
                             
-                        if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir"):
+                        if b4.button("🗑️", key=f"d_{row['id']}", help="Excluir Registro"):
                             dialog_excluir_cliente(row['id'], row['nome'])
                     
-                    # Linha divisória
+                    # Linha divisória ultra fina e discreta
                     st.markdown("<hr>", unsafe_allow_html=True)
         else: st.info("Nenhum cliente encontrado.")
 
