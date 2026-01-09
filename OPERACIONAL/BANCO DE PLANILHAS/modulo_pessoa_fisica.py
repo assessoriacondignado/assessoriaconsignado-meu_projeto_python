@@ -1,5 +1,5 @@
 import streamlit as st
-import importlib  # Essencial para atualizar o código sem reiniciar
+import importlib  # Importante para recarregar alterações
 import modulo_pf_cadastro as pf_core
 import modulo_pf_pesquisa as pf_pesquisa
 import modulo_pf_importacao as pf_importacao
@@ -25,17 +25,23 @@ try:
 except ImportError:
     modulo_pf_planilhas = None
 
+# --- FUNÇÕES DE NAVEGAÇÃO (CALLBACKS) ---
+# Estas funções garantem a troca de tela estável
+def ir_para_visualizar(cpf):
+    st.session_state['pf_view'] = 'visualizar'
+    st.session_state['pf_cpf_selecionado'] = str(cpf)
+
+def ir_para_editar(cpf):
+    st.session_state['pf_view'] = 'editar'
+    st.session_state['pf_cpf_selecionado'] = str(cpf)
+    st.session_state['form_loaded'] = False
+
 def app_pessoa_fisica():
-    # --- 🔄 FORÇA A ATUALIZAÇÃO DOS MÓDULOS ---
-    # Isso resolve o erro "AttributeError" e garante que botões novos funcionem
+    # Recarrega módulos para garantir que correções recentes funcionem
     try:
         importlib.reload(pf_core)
         importlib.reload(pf_pesquisa)
-        importlib.reload(pf_importacao)
-        if pf_campanhas: importlib.reload(pf_campanhas)
-    except Exception as e:
-        st.error(f"Erro ao recarregar módulos: {e}")
-    # ------------------------------------------
+    except: pass
 
     pf_core.init_db_structures()
     
@@ -58,7 +64,6 @@ def app_pessoa_fisica():
     # MENU SUPERIOR (NAVEGAÇÃO)
     # =========================================================================
     
-    # Mapeamento: "Nome no Menu" -> "Valor da pf_view"
     MENU_MAP = {
         "🔍 Gestão & Pesquisa": "lista",
         "🔎 Pesquisa Avançada": "pesquisa_ampla",
@@ -72,44 +77,38 @@ def app_pessoa_fisica():
     VIEW_TO_MENU = {v: k for k, v in MENU_MAP.items()}
     current_view = st.session_state.get('pf_view', 'lista')
     
-    # Lógica Inteligente de Aba Ativa
-    # Se estiver em sub-telas (editar/visualizar), a aba ativa deve ser "Gestão & Pesquisa"
+    # Se estiver em sub-telas, mantém a aba "Gestão" visualmente ativa
     if current_view in ['editar', 'visualizar']:
         active_menu_label = "🔍 Gestão & Pesquisa"
     else:
         active_menu_label = VIEW_TO_MENU.get(current_view, "🔍 Gestão & Pesquisa")
     
-    # Sincroniza o widget visual com o estado real
+    # Garante sincronia do widget
     if 'pf_top_menu_radio' not in st.session_state:
         st.session_state['pf_top_menu_radio'] = active_menu_label
     
-    # Se o estado mudou internamente (ex: clicou em editar), atualiza o visual do menu
     if st.session_state['pf_top_menu_radio'] != active_menu_label:
          st.session_state['pf_top_menu_radio'] = active_menu_label
 
-    # Renderiza o Menu
     selected_menu_label = st.radio(
         "Submenu Superior", 
         options=list(MENU_MAP.keys()), 
-        index=list(MENU_MAP.keys()).index(active_menu_label),
+        index=list(MENU_MAP.keys()).index(active_menu_label), 
         horizontal=True, 
         label_visibility="collapsed",
-        key="pf_top_menu_radio_widget", # Key diferente para evitar conflito de set/get
-        on_change=None # Controlamos manualmente abaixo
+        key="pf_top_menu_radio_widget"
     )
     
     # Detecta clique no menu
     if selected_menu_label != active_menu_label:
         target_view = MENU_MAP[selected_menu_label]
-        st.session_state['pf_view'] = target_view
-        
-        # Reseta flags auxiliares ao mudar de módulo
-        if target_view == 'novo': st.session_state['form_loaded'] = False
-        if target_view == 'importacao': st.session_state['import_step'] = 1
-        
-        # Atualiza o controle do menu
-        st.session_state['pf_top_menu_radio'] = selected_menu_label
-        st.rerun()
+        # Só navega se realmente mudar de contexto
+        if not (current_view in ['editar', 'visualizar'] and target_view == 'lista'):
+            st.session_state['pf_view'] = target_view
+            if target_view == 'novo': st.session_state['form_loaded'] = False
+            if target_view == 'importacao': st.session_state['import_step'] = 1
+            st.session_state['pf_top_menu_radio'] = selected_menu_label
+            st.rerun()
 
     st.divider()
 
@@ -117,52 +116,44 @@ def app_pessoa_fisica():
     # ROTEAMENTO DE CONTEÚDO
     # =========================================================================
     
-    # 1. PESQUISA AVANÇADA / AMPLA
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         pf_pesquisa.interface_pesquisa_ampla()
 
-    # 2. CAMPANHAS
     elif st.session_state['pf_view'] == 'campanhas':
         if pf_campanhas: pf_campanhas.app_campanhas(key_sufix="interno_pf")
 
-    # 3. EXPORTAÇÃO
     elif st.session_state['pf_view'] == 'modelos_exportacao':
         if st.button("⬅️ Voltar"): st.session_state['pf_view'] = 'lista'; st.rerun()
         if pf_export: pf_export.app_gestao_modelos()
 
-    # 4. CONFIG EXPORTAÇÃO
     elif st.session_state['pf_view'] == 'config_exportacao':
         if pf_config_exp: pf_config_exp.app_config_exportacao()
 
-    # 5. PLANILHAS
     elif st.session_state['pf_view'] == 'planilhas':
         if modulo_pf_planilhas:
             modulo_pf_planilhas.app_gestao_planilhas()
         else:
             st.error("Módulo 'modulo_pf_planilhas.py' não encontrado.")
     
-    # 6. VISUALIZAR CLIENTE (TELA)
+    # --- VISUALIZAR ---
     elif st.session_state['pf_view'] == 'visualizar':
-        # Verifica se a função existe antes de chamar (segurança extra)
         if hasattr(pf_core, 'interface_visualizar_cliente'):
             pf_core.interface_visualizar_cliente()
         else:
-            st.error("Erro: A função de visualização não foi encontrada no módulo de cadastro. Verifique se o arquivo modulo_pf_cadastro.py foi salvo corretamente.")
+            st.error("Erro: Função 'interface_visualizar_cliente' não encontrada em modulo_pf_cadastro.")
 
-    # 7. IMPORTAÇÃO
     elif st.session_state['pf_view'] == 'importacao':
         pf_importacao.interface_importacao()
 
-    # 8. NOVO CADASTRO / EDIÇÃO (Formulário)
+    # --- NOVO / EDITAR ---
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         pf_core.interface_cadastro_pf()
 
-    # 9. GESTÃO & PESQUISA (LISTA PADRÃO)
+    # --- LISTA PADRÃO ---
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
         
-        # RESULTADO DA BUSCA RÁPIDA
         if busca:
             df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
             
@@ -181,14 +172,14 @@ def app_pessoa_fisica():
                     with c_act:
                         b1, b2, b3 = st.columns(3)
                         
-                        if b1.button("👁️", key=f"vq_{row['id']}"): 
-                            st.session_state.update({'pf_view': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
-                            st.rerun()
+                        # --- CORREÇÃO: BOTÕES COM CALLBACK ---
+                        # O uso de on_click garante que o estado mude ANTES do rerun
+                        b1.button("👁️", key=f"vq_{row['id']}", on_click=ir_para_visualizar, args=(row['cpf'],))
+                        b2.button("✏️", key=f"eq_{row['id']}", on_click=ir_para_editar, args=(row['cpf'],))
+                        
+                        if b3.button("🗑️", key=f"dq_{row['id']}"): 
+                            pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                             
-                        if b2.button("✏️", key=f"eq_{row['id']}"): 
-                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
-                            st.rerun()
-                        if b3.button("🗑️", key=f"dq_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                     c_id.write(str(row['id']))
                     c_cpf.write(pf_core.formatar_cpf_visual(row['cpf']))
                     c_nome.write(row['nome'])
