@@ -1,5 +1,5 @@
 import streamlit as st
-import importlib  # Importante para recarregar alterações
+import importlib
 import modulo_pf_cadastro as pf_core
 import modulo_pf_pesquisa as pf_pesquisa
 import modulo_pf_importacao as pf_importacao
@@ -25,19 +25,26 @@ try:
 except ImportError:
     modulo_pf_planilhas = None
 
-# --- FUNÇÕES DE NAVEGAÇÃO (CALLBACKS) ---
-# Estas funções garantem a troca de tela estável
-def ir_para_visualizar(cpf):
+# --- CALLBACKS DE NAVEGAÇÃO (GARANTIA DE FUNCIONAMENTO) ---
+def navegar_visualizar(cpf):
     st.session_state['pf_view'] = 'visualizar'
     st.session_state['pf_cpf_selecionado'] = str(cpf)
 
-def ir_para_editar(cpf):
+def navegar_editar(cpf):
     st.session_state['pf_view'] = 'editar'
     st.session_state['pf_cpf_selecionado'] = str(cpf)
     st.session_state['form_loaded'] = False
 
+def navegar_novo():
+    st.session_state['pf_view'] = 'novo'
+    st.session_state['form_loaded'] = False
+
+def navegar_importacao():
+    st.session_state['pf_view'] = 'importacao'
+    st.session_state['import_step'] = 1
+
 def app_pessoa_fisica():
-    # Recarrega módulos para garantir que correções recentes funcionem
+    # Recarrega módulos para garantir atualizações (opcional, útil em dev)
     try:
         importlib.reload(pf_core)
         importlib.reload(pf_pesquisa)
@@ -77,13 +84,13 @@ def app_pessoa_fisica():
     VIEW_TO_MENU = {v: k for k, v in MENU_MAP.items()}
     current_view = st.session_state.get('pf_view', 'lista')
     
-    # Se estiver em sub-telas, mantém a aba "Gestão" visualmente ativa
+    # Mantém a aba "Gestão" ativa visualmente se estiver em sub-telas
     if current_view in ['editar', 'visualizar']:
         active_menu_label = "🔍 Gestão & Pesquisa"
     else:
         active_menu_label = VIEW_TO_MENU.get(current_view, "🔍 Gestão & Pesquisa")
     
-    # Garante sincronia do widget
+    # Sincroniza widget
     if 'pf_top_menu_radio' not in st.session_state:
         st.session_state['pf_top_menu_radio'] = active_menu_label
     
@@ -99,10 +106,10 @@ def app_pessoa_fisica():
         key="pf_top_menu_radio_widget"
     )
     
-    # Detecta clique no menu
+    # Detecta mudança manual no menu
     if selected_menu_label != active_menu_label:
         target_view = MENU_MAP[selected_menu_label]
-        # Só navega se realmente mudar de contexto
+        # Só navega se não for um "falso positivo" (clicar na aba que já "contém" a tela atual)
         if not (current_view in ['editar', 'visualizar'] and target_view == 'lista'):
             st.session_state['pf_view'] = target_view
             if target_view == 'novo': st.session_state['form_loaded'] = False
@@ -135,12 +142,12 @@ def app_pessoa_fisica():
         else:
             st.error("Módulo 'modulo_pf_planilhas.py' não encontrado.")
     
-    # --- VISUALIZAR ---
+    # --- VISUALIZAR (Direciona para o cadastro) ---
     elif st.session_state['pf_view'] == 'visualizar':
         if hasattr(pf_core, 'interface_visualizar_cliente'):
             pf_core.interface_visualizar_cliente()
         else:
-            st.error("Erro: Função 'interface_visualizar_cliente' não encontrada em modulo_pf_cadastro.")
+            st.error("Erro: Função 'interface_visualizar_cliente' não encontrada.")
 
     elif st.session_state['pf_view'] == 'importacao':
         pf_importacao.interface_importacao()
@@ -149,7 +156,7 @@ def app_pessoa_fisica():
     elif st.session_state['pf_view'] in ['novo', 'editar']:
         pf_core.interface_cadastro_pf()
 
-    # --- LISTA PADRÃO ---
+    # --- LISTA RÁPIDA (PADRÃO) ---
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
@@ -172,10 +179,9 @@ def app_pessoa_fisica():
                     with c_act:
                         b1, b2, b3 = st.columns(3)
                         
-                        # --- CORREÇÃO: BOTÕES COM CALLBACK ---
-                        # O uso de on_click garante que o estado mude ANTES do rerun
-                        b1.button("👁️", key=f"vq_{row['id']}", on_click=ir_para_visualizar, args=(row['cpf'],))
-                        b2.button("✏️", key=f"eq_{row['id']}", on_click=ir_para_editar, args=(row['cpf'],))
+                        # --- USO DE CALLBACKS PARA NAVEGAÇÃO SEGURA ---
+                        b1.button("👁️", key=f"vq_{row['id']}", on_click=navegar_visualizar, args=(row['cpf'],))
+                        b2.button("✏️", key=f"eq_{row['id']}", on_click=navegar_editar, args=(row['cpf'],))
                         
                         if b3.button("🗑️", key=f"dq_{row['id']}"): 
                             pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
