@@ -7,18 +7,45 @@ import json
 import modulo_pf_cadastro as pf_core
 import modulo_pf_config_exportacao as pf_export
 
-# --- FUNÇÕES DE NAVEGAÇÃO (CALLBACKS CORRIGIDOS) ---
-# Estas funções devem ter EXATAMENTE este nome para serem chamadas pelo on_click
-def navegar_visualizar(cpf):
+# --- NOVA FUNÇÃO PRINCIPAL: GERENCIADOR DE TELAS ---
+def app_gestao_pesquisa():
+    """
+    Função principal que gerencia a navegação interna do módulo de Gestão.
+    Alterna entre Lista, Edição e Visualização sem depender do menu principal.
+    """
+    # Garante que existe um estado inicial
+    if 'pf_view' not in st.session_state:
+        st.session_state['pf_view'] = 'lista'
+
+    # ROTEAMENTO INTERNO
+    if st.session_state['pf_view'] == 'lista':
+        interface_pesquisa_ampla()
+    
+    elif st.session_state['pf_view'] == 'visualizar':
+        # Chama a tela de visualização do módulo de cadastro
+        if hasattr(pf_core, 'interface_visualizar_cliente'):
+            pf_core.interface_visualizar_cliente()
+        else:
+            st.error("Função de visualização não encontrada.")
+            if st.button("Voltar"):
+                st.session_state['pf_view'] = 'lista'
+                st.rerun()
+
+    elif st.session_state['pf_view'] == 'editar':
+        # Chama a tela de edição do módulo de cadastro
+        pf_core.interface_cadastro_pf()
+
+# --- FUNÇÕES DE NAVEGAÇÃO ---
+def ir_para_visualizar(cpf):
     st.session_state['pf_view'] = 'visualizar'
     st.session_state['pf_cpf_selecionado'] = str(cpf)
 
-def navegar_editar(cpf):
+def ir_para_editar(cpf):
     st.session_state['pf_view'] = 'editar'
     st.session_state['pf_cpf_selecionado'] = str(cpf)
     st.session_state['form_loaded'] = False
 
-# --- CONFIGURAÇÕES DE CAMPOS (MANTIDA) ---
+# --- (MANTIDO) CONFIGURAÇÕES E SQL ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
@@ -81,8 +108,6 @@ CAMPOS_CONFIG = {
         {"label": "Data Atualização (CLT)", "coluna": "clt.data_atualizacao", "tipo": "data", "tabela": "banco_pf.pf_matricula_dados_clt"}
     ]
 }
-
-# --- FUNÇÕES SQL E AUXILIARES (MANTIDAS) ---
 
 def buscar_pf_simples(termo, filtro_importacao_id=None, pagina=1, itens_por_pagina=50):
     conn = pf_core.get_conn()
@@ -310,10 +335,6 @@ def dialog_tipos_filtro():
 
 # --- INTERFACES VISUAIS ---
 
-def interface_pesquisa_rapida():
-    # OBSOLETA - A busca rápida agora está no modulo_pessoa_fisica.py
-    pass
-
 def interface_pesquisa_ampla():
     c_voltar, c_tipos, c_limpar, c_spacer = st.columns([1, 1.5, 1.5, 5])
     
@@ -387,10 +408,8 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
 
-            # --- ÁREA DE EXPORTAÇÃO MASSIVA (CORRIGIDA) ---
+            # --- ÁREA DE EXPORTAÇÃO MASSIVA ---
             with st.expander("📂 Exportar Dados (Lotes)", expanded=bool(st.session_state.get('cache_export_ampla'))):
-                
-                # 1. Se já existe cache, exibe os downloads persistentes
                 if st.session_state.get('cache_export_ampla'):
                     st.success("✅ Arquivos gerados e prontos para download:")
                     arquivos = st.session_state['cache_export_ampla']
@@ -406,8 +425,6 @@ def interface_pesquisa_ampla():
                     if st.button("❌ Limpar / Fechar Exportação", key="cls_ampla"):
                         del st.session_state['cache_export_ampla']
                         st.rerun()
-
-                # 2. Se não, exibe o formulário
                 else:
                     df_modelos = pf_export.listar_modelos_ativos()
                     if not df_modelos.empty:
@@ -454,9 +471,7 @@ def interface_pesquisa_ampla():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
                 with c1:
                     b1, b2, b3 = st.columns(3)
-                    
-                    # --- CORREÇÃO APLICADA AQUI: BOTÕES COM CALLBACK ---
-                    # Correção no nome das funções chamadas
+                    # CORREÇÃO: CALLBACKS CORRETOS (on_click=navegar_visualizar)
                     b1.button("👁️", key=f"v_{row['id']}", on_click=navegar_visualizar, args=(row['cpf'],))
                     b2.button("✏️", key=f"e_{row['id']}", on_click=navegar_editar, args=(row['cpf'],))
                     
