@@ -35,12 +35,6 @@ def gerar_codigo_automatico():
     sufixo = str(uuid.uuid4())[:4].upper()
     return f"ITEM-{data}-{sufixo}"
 
-def sanitizar_nome_tabela(nome):
-    s = str(nome).lower().strip()
-    s = re.sub(r'[^a-z0-9]', '_', s)
-    s = re.sub(r'_+', '_', s)
-    return s.strip('_')
-
 def listar_origens_custo():
     """Busca as origens de custo na tabela de ambiente de consulta."""
     conn = get_conn()
@@ -54,77 +48,6 @@ def listar_origens_custo():
         except:
             if conn: conn.close()
     return lista
-
-# --- FUNÇÕES GERAIS DE TABELAS (NOVO) ---
-def listar_tabelas_schema(schema_name):
-    conn = get_conn()
-    if conn:
-        try:
-            query = "SELECT table_name FROM information_schema.tables WHERE table_schema = %s ORDER BY table_name"
-            df = pd.read_sql(query, conn, params=(schema_name,))
-            conn.close()
-            return df['table_name'].tolist()
-        except: conn.close()
-    return []
-
-def salvar_tabela_generica(schema, tabela, df_original, df_editado):
-    conn = get_conn()
-    if not conn: return False, "Sem conexão"
-    try:
-        cur = conn.cursor()
-        pk = 'id' 
-        
-        # Identifica IDs originais
-        if pk in df_original.columns:
-            ids_originais = set(df_original[pk].dropna().astype(int).tolist())
-        else:
-            ids_originais = set() 
-
-        # 1. PROCESSAR DELEÇÕES
-        if pk in df_original.columns:
-            ids_editados = set()
-            for _, row in df_editado.iterrows():
-                if pd.notna(row.get(pk)) and row.get(pk) != '':
-                    try: ids_editados.add(int(row[pk]))
-                    except: pass
-            
-            ids_del = ids_originais - ids_editados
-            if ids_del:
-                ids_str = ",".join(map(str, ids_del))
-                cur.execute(f"DELETE FROM {schema}.{tabela} WHERE {pk} IN ({ids_str})")
-
-        # 2. PROCESSAR INSERÇÕES E ATUALIZAÇÕES
-        for index, row in df_editado.iterrows():
-            colunas_validas = list(row.index)
-            # Remove colunas que geralmente são automáticas ou geradas
-            cols_ignore = ['data_criacao', 'data_atualizacao'] 
-            colunas_validas = [c for c in colunas_validas if c not in cols_ignore]
-
-            row_id = row.get(pk)
-            eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
-            
-            if eh_novo:
-                # INSERT
-                cols_insert = [c for c in colunas_validas if c != pk]
-                vals_insert = [row[c] for c in cols_insert]
-                placeholders = ", ".join(["%s"] * len(cols_insert))
-                cols_str = ", ".join(cols_insert)
-                if cols_insert:
-                    cur.execute(f"INSERT INTO {schema}.{tabela} ({cols_str}) VALUES ({placeholders})", vals_insert)
-            elif int(row_id) in ids_originais:
-                # UPDATE
-                cols_update = [c for c in colunas_validas if c != pk]
-                vals_update = [row[c] for c in cols_update]
-                vals_update.append(int(row_id)) 
-                if cols_update:
-                    set_clause = ", ".join([f"{c} = %s" for c in cols_update])
-                    cur.execute(f"UPDATE {schema}.{tabela} SET {set_clause} WHERE {pk} = %s", vals_update)
-
-        conn.commit(); conn.close()
-        return True, "Dados salvos com sucesso!"
-    except Exception as e:
-        if conn: conn.close()
-        return False, str(e)
 
 # --- FUNÇÕES DE ARQUIVO E PASTA ---
 def criar_pasta_produto(codigo, nome):
@@ -255,190 +178,128 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
     else:
         st.error("Pasta não encontrada.")
 
+@st.dialog("✏️ Editar Produto")
+def dialog_editar_produto(dados):
+    lista_origens = listar_origens_custo()
+    opcoes_origem = [""] + lista_origens
+
+    with st.form("form_editar_prod"):
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome *", value=dados['nome'])
+        
+        tipos_prods = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
+        idx_tipo = 0
+        if dados['tipo'] in tipos_prods: idx_tipo = tipos_prods.index(dados['tipo'])
+        tipo = c2.selectbox("Tipo", tipos_prods, index=idx_tipo)
+        
+        c3, c4 = st.columns(2)
+        preco = c3.number_input("Preço (R$)", value=float(dados['preco'] or 0.0), format="%.2f")
+        
+        idx_orig = 0
+        if dados.get('origem_custo') in lista_origens:
+            idx_orig = lista_origens.index(dados.get('origem_custo')) + 1
+        origem = c4.selectbox("Origem de Custo", options=opcoes_origem, index=idx_orig)
+        
+        resumo = st.text_area("Resumo", value=dados.get('resumo', ''))
+        
+        st.divider()
+        
+        if st.form_submit_button("💾 Salvar Alterações"):
+            if nome:
+                if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem):
+                    st.success("Atualizado!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Erro ao atualizar.")
+            else:
+                st.warning("Preencha o nome.")
+
 # --- FUNÇÃO PRINCIPAL ---
 def app_produtos():
-    if 'view_prod' not in st.session_state:
-        st.session_state['view_prod'] = 'lista'
-
-    # Criação das Abas
-    tab_produtos, tab_tabelas = st.tabs(["📦 Produtos", "🗃️ Tabelas"])
+    # Criação das Abas na ordem solicitada
+    tab_novo, tab_lista = st.tabs(["➕ Novo Produto", "📋 Lista de Produtos"])
 
     # ==========================
-    # ABA 1: PRODUTOS
+    # ABA 1: NOVO PRODUTO
     # ==========================
-    with tab_produtos:
+    with tab_novo:
         # Título removido conforme solicitado
+        
+        lista_origens = listar_origens_custo()
+        opcoes_origem = [""] + lista_origens
 
-        # --- LISTA ---
-        if st.session_state['view_prod'] == 'lista':
-            c1, c2 = st.columns([6, 1])
-            c1.markdown("### Lista de Itens") # Subtítulo opcional para contexto
-            if c2.button("➕ Novo", type="primary"):
-                st.session_state['view_prod'] = 'novo'
-                st.rerun()
-            
-            df = listar_produtos()
-            
-            if not df.empty:
-                filtro = st.text_input("🔍 Buscar Produto", placeholder="Nome ou Código")
-                if filtro:
-                    df = df[df['nome'].str.contains(filtro, case=False, na=False) | df['codigo'].str.contains(filtro, case=False, na=False)]
-                
-                st.markdown("---")
-                
-                for index, row in df.iterrows():
-                    status_icon = "🟢" if row['ativo'] else "🔴"
-                    with st.expander(f"{status_icon} {row['nome']} ({row['codigo']})"):
-                        c1, c2 = st.columns(2)
-                        c1.write(f"**Tipo:** {row['tipo']}")
-                        c1.write(f"**Preço:** R$ {row['preco']:.2f}")
-                        c2.write(f"**Origem:** {row.get('origem_custo') or '-'}")
-                        c2.write(f"**Resumo:** {row['resumo']}")
-                        
-                        st.divider()
-                        b1, b2, b3, b4 = st.columns(4)
-                        
-                        if b1.button("📂 Arquivos", key=f"arq_{row['id']}"):
-                            dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
-                        
-                        if b2.button("✏️ Editar", key=f"edit_{row['id']}"):
-                            st.session_state['view_prod'] = 'editar'
-                            st.session_state['prod_id'] = row['id']
-                            st.rerun()
-                            
-                        if b3.button("🔄 Status", key=f"st_{row['id']}"):
-                            alternar_status(row['id'], row['ativo'])
-                            st.rerun()
-                            
-                        if b4.button("🗑️ Excluir", key=f"del_{row['id']}"):
-                            excluir_produto(row['id'], row['caminho_pasta'])
-                            st.rerun()
-            else:
-                st.info("Nenhum produto cadastrado.")
-
-        # --- NOVO / EDITAR ---
-        elif st.session_state['view_prod'] in ['novo', 'editar']:
-            st.markdown(f"### {'📝 Novo Produto' if st.session_state['view_prod']=='novo' else '✏️ Editar Produto'}")
-            
-            dados = {}
-            if st.session_state['view_prod'] == 'editar':
-                df_atual = listar_produtos()
-                if not df_atual.empty:
-                    filtro_id = df_atual[df_atual['id'] == st.session_state['prod_id']]
-                    if not filtro_id.empty: dados = filtro_id.iloc[0]
-
-            lista_origens = listar_origens_custo()
-            opcoes_origem = [""] + lista_origens
-
-            with st.form("form_produto"):
+        with st.container(border=True):
+            with st.form("form_novo_produto"):
                 c1, c2 = st.columns(2)
-                nome = c1.text_input("Nome *", value=dados.get('nome', ''))
-                # Lógica de index segura
-                tipos_prods = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
-                idx_tipo = 0
-                if dados.get('tipo') in tipos_prods: idx_tipo = tipos_prods.index(dados.get('tipo'))
-                
-                tipo = c2.selectbox("Tipo", tipos_prods, index=idx_tipo)
+                nome = c1.text_input("Nome *")
+                tipo = c2.selectbox("Tipo", ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"])
                 
                 c3, c4 = st.columns(2)
-                preco = c3.number_input("Preço (R$)", value=float(dados.get('preco') or 0.0), format="%.2f")
+                preco = c3.number_input("Preço (R$)", value=0.0, format="%.2f")
+                origem = c4.selectbox("Origem de Custo", options=opcoes_origem)
                 
-                idx_orig = 0
-                if dados.get('origem_custo') in lista_origens:
-                    idx_orig = lista_origens.index(dados.get('origem_custo')) + 1
-                origem = c4.selectbox("Origem de Custo", options=opcoes_origem, index=idx_orig)
+                resumo = st.text_area("Resumo")
                 
-                resumo = st.text_area("Resumo", value=dados.get('resumo', ''))
-                
-                arquivos = None
-                
-                # Checkbox de carteira removido
-                
-                if st.session_state['view_prod'] == 'novo':
-                    arquivos = st.file_uploader("Arquivos Iniciais", accept_multiple_files=True)
+                arquivos = st.file_uploader("Arquivos Iniciais (Opcional)", accept_multiple_files=True)
 
                 st.divider()
-                col_save, col_cancel = st.columns([1, 6])
                 
-                if col_save.form_submit_button("💾 Salvar"):
+                if st.form_submit_button("✅ Cadastrar Produto", type="primary"):
                     if nome:
-                        if st.session_state['view_prod'] == 'novo':
-                            codigo = gerar_codigo_automatico()
-                            caminho = criar_pasta_produto(codigo, nome)
-                            if arquivos: salvar_arquivos(arquivos, caminho)
-                            
-                            # Cadastro simples, sem criação automática de carteira
-                            cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem)
-                            st.success("Cadastrado!")
-                        else:
-                            atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem)
-                            st.success("Atualizado!")
+                        codigo = gerar_codigo_automatico()
+                        caminho = criar_pasta_produto(codigo, nome)
+                        if arquivos: salvar_arquivos(arquivos, caminho)
                         
-                        time.sleep(1)
-                        st.session_state['view_prod'] = 'lista'
+                        cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem)
+                        st.success(f"Produto {codigo} cadastrado com sucesso!")
+                        time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning("Preencha o nome.")
-                
-                if col_cancel.form_submit_button("Cancelar"):
-                    st.session_state['view_prod'] = 'lista'
-                    st.rerun()
+                        st.warning("O campo Nome é obrigatório.")
 
     # ==========================
-    # ABA 2: TABELAS
+    # ABA 2: LISTA DE PRODUTOS
     # ==========================
-    with tab_tabelas:
-        st.markdown("#### 🗃️ Gestão de Tabelas")
-        st.caption("Visualização e edição direta de tabelas do banco de dados.")
-
-        c_schema, c_tabela = st.columns(2)
+    with tab_lista:
+        # Título removido conforme solicitado
         
-        # Seletor de Schema
-        schemas_disponiveis = ["public", "admin", "cliente", "conexoes"]
-        schema_sel = c_schema.selectbox("Schema", schemas_disponiveis)
+        df = listar_produtos()
         
-        # Seletor de Tabela
-        tabelas = listar_tabelas_schema(schema_sel)
-        if tabelas:
-            tabela_sel = c_tabela.selectbox("Tabela", tabelas)
+        if not df.empty:
+            filtro = st.text_input("🔍 Buscar Produto", placeholder="Nome ou Código")
+            if filtro:
+                df = df[df['nome'].str.contains(filtro, case=False, na=False) | df['codigo'].str.contains(filtro, case=False, na=False)]
             
-            if tabela_sel:
-                st.divider()
-                conn = get_conn()
-                if conn:
-                    try:
-                        # Carrega dados
-                        query = f"SELECT * FROM {schema_sel}.{tabela_sel} ORDER BY id DESC LIMIT 1000"
-                        df_tab = pd.read_sql(query, conn)
-                        conn.close()
-
-                        st.write(f"Editando: `{schema_sel}.{tabela_sel}`")
+            st.markdown("---")
+            
+            for index, row in df.iterrows():
+                status_icon = "🟢" if row['ativo'] else "🔴"
+                with st.expander(f"{status_icon} {row['nome']} ({row['codigo']})"):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Tipo:** {row['tipo']}")
+                    c1.write(f"**Preço:** R$ {row['preco']:.2f}")
+                    c2.write(f"**Origem:** {row.get('origem_custo') or '-'}")
+                    c2.write(f"**Resumo:** {row['resumo']}")
+                    
+                    st.divider()
+                    b1, b2, b3, b4 = st.columns(4)
+                    
+                    if b1.button("📂 Arquivos", key=f"arq_{row['id']}"):
+                        dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
+                    
+                    if b2.button("✏️ Editar", key=f"edit_{row['id']}"):
+                        dialog_editar_produto(row)
                         
-                        # Editor de Dados
-                        df_editado = st.data_editor(
-                            df_tab,
-                            key=f"editor_produtos_{schema_sel}_{tabela_sel}",
-                            use_container_width=True,
-                            num_rows="dynamic",
-                            disabled=["data_criacao", "data_atualizacao"] # Protege timestamps
-                        )
-
-                        # Botão Salvar
-                        if st.button("💾 Salvar Alterações na Tabela", type="primary", key=f"btn_save_{tabela_sel}"):
-                            with st.spinner("Salvando..."):
-                                ok, msg = salvar_tabela_generica(schema_sel, tabela_sel, df_tab, df_editado)
-                                if ok:
-                                    st.success(msg)
-                                    time.sleep(1.5)
-                                    st.rerun()
-                                else:
-                                    st.error(f"Erro ao salvar: {msg}")
-
-                    except Exception as e:
-                        if conn: conn.close()
-                        st.error(f"Erro ao carregar tabela: {e}")
+                    if b3.button("🔄 Status", key=f"st_{row['id']}"):
+                        alternar_status(row['id'], row['ativo'])
+                        st.rerun()
+                        
+                    if b4.button("🗑️ Excluir", key=f"del_{row['id']}"):
+                        excluir_produto(row['id'], row['caminho_pasta'])
+                        st.rerun()
         else:
-            st.info(f"Nenhuma tabela encontrada no schema '{schema_sel}'.")
+            st.info("Nenhum produto cadastrado.")
 
 if __name__ == "__main__":
     app_produtos()
