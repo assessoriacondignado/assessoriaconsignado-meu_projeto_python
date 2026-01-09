@@ -19,7 +19,6 @@ try:
 except ImportError:
     pf_config_exp = None
 
-# --- NOVO IMPORT ---
 try:
     import modulo_pf_planilhas
 except ImportError:
@@ -32,6 +31,7 @@ def app_pessoa_fisica():
         <style>
             .stButton button { height: 28px; padding-top: 0px; padding-bottom: 0px; }
             div[data-testid="stExpander"] details summary p { font-weight: bold; font-size: 1.1em; }
+            div[role="radiogroup"] > label { padding-right: 20px; font-weight: bold; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -40,72 +40,111 @@ def app_pessoa_fisica():
     # Inicializa estados
     if 'pf_view' not in st.session_state: st.session_state['pf_view'] = 'lista'
     if 'regras_pesquisa' not in st.session_state: st.session_state['regras_pesquisa'] = []
-    
-    # --- CORREÇÃO: Variável exclusiva para paginação do módulo PF ---
     if 'pf_pagina_atual' not in st.session_state: st.session_state['pf_pagina_atual'] = 1
 
     # =========================================================================
-    # ROTEAMENTO DE TELAS
+    # MENU SUPERIOR (NAVEGAÇÃO)
     # =========================================================================
     
-    # 1. PESQUISA AMPLA
+    # Mapeamento: "Nome no Menu" -> "Valor da pf_view"
+    MENU_MAP = {
+        "🔍 Gestão & Pesquisa": "lista",
+        "🔎 Pesquisa Avançada": "pesquisa_ampla",
+        "➕ Novo Cadastro": "novo",
+        "📥 Importação": "importacao",
+        "📢 Campanhas": "campanhas",
+        "📊 Planilhas": "planilhas",
+        "⚙️ Configurações": "config_exportacao"
+    }
+    
+    # Inverso para encontrar o nome com base no estado atual
+    VIEW_TO_MENU = {v: k for k, v in MENU_MAP.items()}
+    
+    # Determina qual item do menu deve estar ativo com base no estado atual
+    current_view = st.session_state.get('pf_view', 'lista')
+    
+    # Se estiver em sub-telas de gestão (editar/visualizar), mantém a aba "Gestão & Pesquisa" ativa
+    if current_view in ['editar', 'visualizar']:
+        active_menu_label = "🔍 Gestão & Pesquisa"
+    else:
+        active_menu_label = VIEW_TO_MENU.get(current_view, "🔍 Gestão & Pesquisa")
+    
+    # Renderiza o Menu
+    selected_menu_label = st.radio(
+        "Submenu Superior", 
+        options=list(MENU_MAP.keys()), 
+        index=list(MENU_MAP.keys()).index(active_menu_label), 
+        horizontal=True, 
+        label_visibility="collapsed",
+        key="pf_top_menu_radio"
+    )
+    
+    # Lógica de Troca de Tela via Menu
+    target_view = MENU_MAP[selected_menu_label]
+    
+    # Se o usuário clicou em uma aba diferente da atual (e não é apenas uma sub-tela da mesma aba)
+    if target_view != current_view:
+        # Permite sair de editar/visualizar apenas se mudar de aba. 
+        # (Clicar na própria aba "Gestão" enquanto edita não reseta a tela, 
+        #  para isso existe o botão "Voltar" interno).
+        if current_view in ['editar', 'visualizar'] and target_view == 'lista':
+            pass # Mantém na edição/visualização (usuário usa o botão Voltar interno)
+        else:
+            st.session_state['pf_view'] = target_view
+            # Reseta flags auxiliares ao mudar de módulo
+            if target_view == 'novo': st.session_state['form_loaded'] = False
+            if target_view == 'importacao': st.session_state['import_step'] = 1
+            st.rerun()
+
+    st.divider()
+
+    # =========================================================================
+    # ROTEAMENTO DE CONTEÚDO
+    # =========================================================================
+    
+    # 1. PESQUISA AVANÇADA / AMPLA
     if st.session_state['pf_view'] == 'pesquisa_ampla':
         pf_pesquisa.interface_pesquisa_ampla()
 
     # 2. CAMPANHAS
     elif st.session_state['pf_view'] == 'campanhas':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
         if pf_campanhas: pf_campanhas.app_campanhas()
 
-    # 3. EXPORTAÇÃO (LEGADO)
+    # 3. EXPORTAÇÃO (LEGADO - Mantido caso haja referência, mas sem menu direto se não estiver no map)
     elif st.session_state['pf_view'] == 'modelos_exportacao':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
+        if st.button("⬅️ Voltar"): st.session_state['pf_view'] = 'lista'; st.rerun()
         if pf_export: pf_export.app_gestao_modelos()
 
     # 4. CONFIG EXPORTAÇÃO
     elif st.session_state['pf_view'] == 'config_exportacao':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
         if pf_config_exp: pf_config_exp.app_config_exportacao()
 
-    # --- 5. NOVO: PLANILHAS (SOMENTE BANCO_PF) ---
+    # 5. PLANILHAS
     elif st.session_state['pf_view'] == 'planilhas':
-        if st.button("⬅️ Voltar para Lista"): st.session_state['pf_view'] = 'lista'; st.rerun()
-        
         if modulo_pf_planilhas:
             modulo_pf_planilhas.app_gestao_planilhas()
         else:
             st.error("Módulo 'modulo_pf_planilhas.py' não encontrado.")
+    
+    # 6. VISUALIZAR CLIENTE (TELA)
+    elif st.session_state['pf_view'] == 'visualizar':
+        pf_core.interface_visualizar_cliente()
 
-    # 6. TELA INICIAL (LISTA + MENU)
+    # 7. IMPORTAÇÃO
+    elif st.session_state['pf_view'] == 'importacao':
+        pf_importacao.interface_importacao()
+
+    # 8. NOVO CADASTRO / EDIÇÃO (Formulário)
+    elif st.session_state['pf_view'] in ['novo', 'editar']:
+        pf_core.interface_cadastro_pf()
+
+    # 9. GESTÃO & PESQUISA (LISTA PADRÃO)
     elif st.session_state['pf_view'] == 'lista':
         c1, c2 = st.columns([2, 2])
         busca = c2.text_input("🔎 Pesquisa Rápida (Nome/CPF)", key="pf_busca")
         
-        # --- MENU ATUALIZADO ---
-        col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns([1, 1, 1, 1, 1, 1])
-        
-        if col_b1.button("➕ Novo", use_container_width=True): 
-            st.session_state.update({'pf_view': 'novo', 'form_loaded': False}); st.rerun()
-            
-        if col_b2.button("🔍 Pesq.", help="Pesquisa Ampla", use_container_width=True): 
-            st.session_state.update({'pf_view': 'pesquisa_ampla'}); st.rerun()
-            
-        if col_b3.button("📥 Importar", use_container_width=True): 
-            st.session_state.update({'pf_view': 'importacao', 'import_step': 1}); st.rerun()
-            
-        if col_b4.button("📢 Campanhas", use_container_width=True): 
-            st.session_state.update({'pf_view': 'campanhas'}); st.rerun()
-
-        if col_b5.button("⚙️ Config", help="Configurar Exportação", use_container_width=True):
-            st.session_state.update({'pf_view': 'config_exportacao'}); st.rerun()
-
-        # BOTÃO NOVO
-        if col_b6.button("📊 Planilhas", help="Ver/Editar Tabelas (banco_pf)", use_container_width=True):
-            st.session_state.update({'pf_view': 'planilhas'}); st.rerun()
-        
         # RESULTADO DA BUSCA RÁPIDA
         if busca:
-            # --- CORREÇÃO: Usa 'pf_pagina_atual' ---
             df_lista, total = pf_pesquisa.buscar_pf_simples(busca, pagina=st.session_state.get('pf_pagina_atual', 1))
             
             if not df_lista.empty:
@@ -122,7 +161,11 @@ def app_pessoa_fisica():
                     c_act, c_id, c_cpf, c_nome = st.columns([2, 1, 2, 4])
                     with c_act:
                         b1, b2, b3 = st.columns(3)
-                        if b1.button("👁️", key=f"vq_{row['id']}"): pf_core.dialog_visualizar_cliente(str(row['cpf']))
+                        
+                        if b1.button("👁️", key=f"vq_{row['id']}"): 
+                            st.session_state.update({'pf_view': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
+                            st.rerun()
+                            
                         if b2.button("✏️", key=f"eq_{row['id']}"): 
                             st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
                             st.rerun()
@@ -135,10 +178,6 @@ def app_pessoa_fisica():
                 st.warning("Nenhum registro encontrado.")
         else:
             st.info("Utilize a busca acima para localizar clientes.")
-
-    # 7. TELAS AUXILIARES
-    elif st.session_state['pf_view'] == 'importacao': pf_importacao.interface_importacao()
-    elif st.session_state['pf_view'] in ['novo', 'editar']: pf_core.interface_cadastro_pf()
 
 if __name__ == "__main__":
     app_pessoa_fisica()
