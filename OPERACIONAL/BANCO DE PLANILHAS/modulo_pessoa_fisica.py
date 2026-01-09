@@ -1,4 +1,5 @@
 import streamlit as st
+import importlib  # Essencial para atualizar o código sem reiniciar
 import modulo_pf_cadastro as pf_core
 import modulo_pf_pesquisa as pf_pesquisa
 import modulo_pf_importacao as pf_importacao
@@ -25,6 +26,17 @@ except ImportError:
     modulo_pf_planilhas = None
 
 def app_pessoa_fisica():
+    # --- 🔄 FORÇA A ATUALIZAÇÃO DOS MÓDULOS ---
+    # Isso resolve o erro "AttributeError" e garante que botões novos funcionem
+    try:
+        importlib.reload(pf_core)
+        importlib.reload(pf_pesquisa)
+        importlib.reload(pf_importacao)
+        if pf_campanhas: importlib.reload(pf_campanhas)
+    except Exception as e:
+        st.error(f"Erro ao recarregar módulos: {e}")
+    # ------------------------------------------
+
     pf_core.init_db_structures()
     
     st.markdown("""
@@ -67,39 +79,37 @@ def app_pessoa_fisica():
     else:
         active_menu_label = VIEW_TO_MENU.get(current_view, "🔍 Gestão & Pesquisa")
     
-    # --- CORREÇÃO CRÍTICA: Sincronizar estado do widget ---
-    # Força o widget st.radio a refletir a aba correta, evitando que ele resete a navegação
-    # Ex: Se vim de "Pesquisa Avançada" para "Visualizar", forço o radio a ir para "Gestão"
-    if 'pf_top_menu_radio' not in st.session_state or st.session_state['pf_top_menu_radio'] != active_menu_label:
+    # Sincroniza o widget visual com o estado real
+    if 'pf_top_menu_radio' not in st.session_state:
         st.session_state['pf_top_menu_radio'] = active_menu_label
+    
+    # Se o estado mudou internamente (ex: clicou em editar), atualiza o visual do menu
+    if st.session_state['pf_top_menu_radio'] != active_menu_label:
+         st.session_state['pf_top_menu_radio'] = active_menu_label
 
     # Renderiza o Menu
     selected_menu_label = st.radio(
         "Submenu Superior", 
         options=list(MENU_MAP.keys()), 
-        # index não é estritamente necessário se usamos session_state, mas mantemos por segurança
-        index=list(MENU_MAP.keys()).index(active_menu_label), 
+        index=list(MENU_MAP.keys()).index(active_menu_label),
         horizontal=True, 
         label_visibility="collapsed",
-        key="pf_top_menu_radio"
+        key="pf_top_menu_radio_widget", # Key diferente para evitar conflito de set/get
+        on_change=None # Controlamos manualmente abaixo
     )
     
-    # Lógica de Troca de Tela via Menu
-    target_view = MENU_MAP[selected_menu_label]
-    
-    # Verifica se houve mudança real de aba
-    if target_view != current_view:
-        # Permite ficar em 'editar'/'visualizar' se a aba selecionada for 'lista' (que é a pai delas)
-        if current_view in ['editar', 'visualizar'] and target_view == 'lista':
-            pass # Não faz nada, mantém a tela de edição/visualização aberta
-        else:
-            # Se clicou em outra aba (ex: Importação), muda a tela
-            st.session_state['pf_view'] = target_view
-            
-            # Reseta flags auxiliares ao mudar de módulo
-            if target_view == 'novo': st.session_state['form_loaded'] = False
-            if target_view == 'importacao': st.session_state['import_step'] = 1
-            st.rerun()
+    # Detecta clique no menu
+    if selected_menu_label != active_menu_label:
+        target_view = MENU_MAP[selected_menu_label]
+        st.session_state['pf_view'] = target_view
+        
+        # Reseta flags auxiliares ao mudar de módulo
+        if target_view == 'novo': st.session_state['form_loaded'] = False
+        if target_view == 'importacao': st.session_state['import_step'] = 1
+        
+        # Atualiza o controle do menu
+        st.session_state['pf_top_menu_radio'] = selected_menu_label
+        st.rerun()
 
     st.divider()
 
@@ -133,7 +143,11 @@ def app_pessoa_fisica():
     
     # 6. VISUALIZAR CLIENTE (TELA)
     elif st.session_state['pf_view'] == 'visualizar':
-        pf_core.interface_visualizar_cliente()
+        # Verifica se a função existe antes de chamar (segurança extra)
+        if hasattr(pf_core, 'interface_visualizar_cliente'):
+            pf_core.interface_visualizar_cliente()
+        else:
+            st.error("Erro: A função de visualização não foi encontrada no módulo de cadastro. Verifique se o arquivo modulo_pf_cadastro.py foi salvo corretamente.")
 
     # 7. IMPORTAÇÃO
     elif st.session_state['pf_view'] == 'importacao':
