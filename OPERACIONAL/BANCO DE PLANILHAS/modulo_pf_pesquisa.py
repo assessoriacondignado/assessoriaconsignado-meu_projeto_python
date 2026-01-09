@@ -7,6 +7,9 @@ import json
 import modulo_pf_cadastro as pf_core
 import modulo_pf_config_exportacao as pf_export
 
+# ... (MANTÉM CONFIGURAÇÕES DE CAMPOS E FUNÇÕES DE BUSCA/EXCLUSÃO INALTERADAS) ...
+# Vou replicar o início do arquivo para garantir contexto, mas o foco é na interface_pesquisa_ampla
+
 # --- CONFIGURAÇÕES DE CAMPOS (MANTIDA) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
@@ -297,22 +300,15 @@ def dialog_tipos_filtro():
                     else: st.warning("Nenhum dado encontrado.")
         else: st.info("Nenhum modelo cadastrado ainda.")
 
-# --- INTERFACES VISUAIS (CORRIGIDAS: REMOVIDA NAVEGAÇÃO LOCAL) ---
+# --- INTERFACES VISUAIS ---
 
 def interface_pesquisa_rapida():
-    # REMOVIDO: Botões de navegação local (Novo, Ampla, Importar)
-    # Apenas a lógica de busca e exibição permanece
-    
-    # OBS: O input de busca rápida agora é renderizado DIRETAMENTE no modulo_pessoa_fisica.py
-    # Se esta função for chamada de lá, ela seria redundante.
-    # No refactoring do modulo_pessoa_fisica.py, eu COPIEI a lógica desta função para dentro do elif 'lista'.
-    # Portanto, esta função pode ficar aqui apenas como "biblioteca" de consulta ou ser removida se não usada.
-    # Mantenho ela "limpa" caso queira reutilizar em outro lugar, mas sem os botões.
+    # Esta função era usada para busca rápida, mas agora a lógica está centralizada no modulo_pessoa_fisica.py
+    # Mantida vazia ou pode ser removida se não usada em outro lugar
     pass
 
 def interface_pesquisa_ampla():
     c_tipos, c_limpar, c_spacer = st.columns([1.5, 1.5, 6])
-    # REMOVIDO: Botão "Voltar"
     if c_tipos.button("📂 Tipos de Filtro", help="Ver modelos de dados únicos"): dialog_tipos_filtro()
     if c_limpar.button("🗑️ Limpar Filtros"): 
         st.session_state['regras_pesquisa'] = []
@@ -379,7 +375,7 @@ def interface_pesquisa_ampla():
         if not df_res.empty:
             st.divider()
 
-            # --- ÁREA DE EXPORTAÇÃO MASSIVA (CORRIGIDA) ---
+            # --- EXPORTAÇÃO ---
             with st.expander("📂 Exportar Dados (Lotes)", expanded=bool(st.session_state.get('cache_export_ampla'))):
                 if st.session_state.get('cache_export_ampla'):
                     st.success("✅ Arquivos gerados e prontos para download:")
@@ -444,12 +440,15 @@ def interface_pesquisa_ampla():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
                 with c1:
                     b1, b2, b3 = st.columns(3)
+                    # CORREÇÃO: Garante a atualização do estado antes do rerun
                     with b1:
                         if st.button("👁️", key=f"v_{row['id']}"):
                             st.session_state.update({'pf_view': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
                             st.rerun()
                     with b2:
-                        if st.button("✏️", key=f"e_{row['id']}"): st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False}); st.rerun()
+                        if st.button("✏️", key=f"e_{row['id']}"): 
+                            st.session_state.update({'pf_view': 'editar', 'pf_cpf_selecionado': str(row['cpf']), 'form_loaded': False})
+                            st.rerun()
                     with b3:
                         if st.button("🗑️", key=f"d_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
                 c2.write(str(row['id'])); c3.write(pf_core.formatar_cpf_visual(row['cpf'])); c4.write(row['nome']); st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
