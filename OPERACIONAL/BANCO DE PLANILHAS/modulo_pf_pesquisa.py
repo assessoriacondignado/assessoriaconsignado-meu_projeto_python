@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 import re
 import time
 import json
@@ -22,18 +22,12 @@ def app_gestao_pesquisa():
         interface_pesquisa_ampla()
     
     elif st.session_state['pf_view'] == 'visualizar':
-        # Chama a tela de visualização do módulo de cadastro
-        if hasattr(pf_core, 'interface_visualizar_cliente'):
-            pf_core.interface_visualizar_cliente()
-        else:
-            st.error("Função de visualização não encontrada.")
-            if st.button("Voltar"):
-                st.session_state['pf_view'] = 'lista'
-                st.rerun()
+        # Chama a tela de visualização LOCAL
+        interface_visualizar_cliente()
 
     elif st.session_state['pf_view'] == 'editar':
-        # Chama a tela de edição do módulo de cadastro
-        pf_core.interface_cadastro_pf()
+        # Chama a tela de edição LOCAL
+        interface_cadastro_pf()
 
 # --- FUNÇÕES DE NAVEGAÇÃO ---
 def ir_para_visualizar(cpf):
@@ -45,7 +39,432 @@ def ir_para_editar(cpf):
     st.session_state['pf_cpf_selecionado'] = str(cpf)
     st.session_state['form_loaded'] = False
 
-# --- (MANTIDO) CONFIGURAÇÕES E SQL ---
+# --- CONFIGURAÇÃO DE CADASTRO (MIGRADO) ---
+CONFIG_CADASTRO = {
+    "Dados Pessoais": [
+        {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
+        {"label": "CPF", "key": "cpf", "tabela": "geral", "tipo": "cpf", "obrigatorio": True},
+        # Campos abaixo só aparecem no modo EDITAR
+        {"label": "RG", "key": "rg", "tabela": "geral", "tipo": "texto"},
+        {"label": "Data Nascimento", "key": "data_nascimento", "tabela": "geral", "tipo": "data"},
+        {"label": "Nome da Mãe", "key": "nome_mae", "tabela": "geral", "tipo": "texto"},
+        {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
+        {"label": "UF do RG", "key": "uf_rg", "tabela": "geral", "tipo": "texto"},
+        {"label": "Dados Exp. RG", "key": "dados_exp_rg", "tabela": "geral", "tipo": "texto"},
+        {"label": "PIS", "key": "pis", "tabela": "geral", "tipo": "texto"},
+        {"label": "CNH", "key": "cnh", "tabela": "geral", "tipo": "texto"},
+        {"label": "Série CTPS", "key": "serie_ctps", "tabela": "geral", "tipo": "texto"},
+        # Procurador
+        {"label": "Nome Procurador", "key": "nome_procurador", "tabela": "geral", "tipo": "texto"},
+        {"label": "CPF Procurador", "key": "cpf_procurador", "tabela": "geral", "tipo": "cpf"}, 
+    ],
+    "Contatos": [
+        {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True},
+        {"label": "E-mail", "key": "email", "tabela": "emails", "tipo": "email", "multiplo": True},
+    ],
+    "Endereços": [
+        {"label": "CEP", "key": "cep", "tabela": "enderecos", "tipo": "cep", "multiplo": True, "agrupado": True}, 
+        {"label": "Logradouro", "key": "rua", "tabela": "enderecos", "tipo": "texto", "multiplo": True, "vinculo": "cep"},
+        {"label": "Bairro", "key": "bairro", "tabela": "enderecos", "tipo": "texto", "multiplo": True, "vinculo": "cep"},
+        {"label": "Cidade", "key": "cidade", "tabela": "enderecos", "tipo": "texto", "multiplo": True, "vinculo": "cep"},
+        {"label": "UF", "key": "uf", "tabela": "enderecos", "tipo": "texto", "multiplo": True, "vinculo": "cep"},
+    ]
+}
+
+# --- FUNÇÕES DE INTERFACE MIGRADAS (VISUALIZAR E EDITAR) ---
+
+def inserir_dado_staging(campo_config, valor, extras=None):
+    tabela = campo_config['tabela']
+    chave = campo_config['key']
+    
+    if tabela not in st.session_state['dados_staging']:
+        if campo_config.get('multiplo'): st.session_state['dados_staging'][tabela] = []
+        else: st.session_state['dados_staging'][tabela] = {}
+
+    erro = None
+    valor_final = valor
+    
+    if campo_config['tipo'] == 'cpf':
+        val, erro = pf_core.validar_formatar_cpf(valor)
+        if not erro: valor_final = pf_core.limpar_normalizar_cpf(val)
+    elif campo_config['tipo'] == 'telefone':
+        val, erro = pf_core.validar_formatar_telefone(valor)
+        if not erro: valor_final = val
+    elif campo_config['tipo'] == 'email':
+        if not pf_core.validar_email(valor): erro = "E-mail inválido."
+    
+    if erro: st.error(erro); return
+    if not valor_final and campo_config.get('obrigatorio'): st.toast(f"❌ O campo {campo_config['label']} é obrigatório."); return
+
+    if campo_config.get('multiplo'):
+        novo_item = {chave: valor_final}
+        if extras: novo_item.update(extras)
+        if isinstance(valor, dict): st.session_state['dados_staging'][tabela].append(valor)
+        else: st.session_state['dados_staging'][tabela].append(novo_item)
+        st.toast(f"✅ {campo_config['label']} adicionado!")
+    else:
+        st.session_state['dados_staging'][tabela][chave] = valor_final
+        st.toast(f"✅ {campo_config['label']} atualizado!")
+
+def interface_cadastro_pf():
+    pf_core.init_db_structures()
+    is_edit = st.session_state['pf_view'] == 'editar'
+    
+    cpf_formatado_titulo = ""
+    if is_edit:
+        raw_cpf = st.session_state.get('pf_cpf_selecionado', '')
+        cpf_formatado_titulo = pf_core.formatar_cpf_visual(raw_cpf)
+    
+    titulo = f"✏️ Editar: {cpf_formatado_titulo}" if is_edit else "➕ Novo Cadastro"
+    st.button("⬅️ Voltar", on_click=lambda: st.session_state.update({'pf_view': 'lista', 'form_loaded': False}))
+    st.markdown(f"### {titulo}")
+
+    if 'dados_staging' not in st.session_state:
+        st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
+
+    if is_edit and not st.session_state.get('form_loaded'):
+        dados_db = pf_core.carregar_dados_completos(st.session_state['pf_cpf_selecionado'])
+        st.session_state['dados_staging'] = dados_db
+        st.session_state['form_loaded'] = True
+    elif not is_edit and not st.session_state.get('form_loaded'):
+        st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
+        st.session_state['form_loaded'] = True
+
+    c_builder, c_preview = st.columns([3, 2])
+
+    with c_builder:
+        st.markdown("#### 🏗️ Inserir Dados")
+        with st.expander("Dados Pessoais", expanded=True):
+            if not is_edit:
+                st.info("ℹ️ Para cadastrar dados complementares (RG, Filiação, Procurador, etc.), salve o Nome e CPF primeiro e depois edite o registro.")
+
+            for campo in CONFIG_CADASTRO["Dados Pessoais"]:
+                if not is_edit and campo['key'] not in ['nome', 'cpf']: continue
+
+                if is_edit and campo['key'] == 'cpf':
+                    c_lab, c_inp = st.columns([1.2, 3.5])
+                    c_lab.markdown(f"**{campo['label']}:**")
+                    val_atual = st.session_state['dados_staging']['geral'].get('cpf', '')
+                    c_inp.text_input("CPF Display", value=pf_core.formatar_cpf_visual(val_atual), disabled=True, label_visibility="collapsed")
+                    continue
+                
+                c_lbl, c_inp, c_btn = st.columns([1.2, 2.5, 1.0])
+                c_lbl.markdown(f"**{campo['label']}:**")
+                with c_inp:
+                    if campo['tipo'] == 'data':
+                        val_pre = st.session_state['dados_staging']['geral'].get(campo['key'])
+                        if isinstance(val_pre, str):
+                            try: val_pre = datetime.strptime(val_pre, '%Y-%m-%d').date()
+                            except: val_pre = None
+                        val = st.date_input("Data", value=val_pre, min_value=date(1900, 1, 1), max_value=date(2050, 12, 31), format="DD/MM/YYYY", key=f"in_{campo['key']}", label_visibility="collapsed")
+                    else:
+                        val_pre = st.session_state['dados_staging']['geral'].get(campo['key'], '')
+                        val = st.text_input("Texto", value=val_pre, label_visibility="collapsed", key=f"in_{campo['key']}")
+                
+                with c_btn:
+                    if st.button("Inserir", key=f"btn_{campo['key']}", type="primary", use_container_width=True): 
+                        inserir_dado_staging(campo, val)
+        
+        with st.expander("Contatos"):
+            if not is_edit:
+                st.info("🚫 A inclusão de telefones e e-mails é permitida apenas no modo 'Editar', após salvar o cadastro inicial.")
+            else:
+                c_tel_in, c_tel_btn = st.columns([4, 2])
+                with c_tel_in: tel = st.text_input("Número", key="in_tel_num", placeholder="Ex: (82)999025155")
+                with c_tel_btn:
+                    st.write(""); st.write("") 
+                    if st.button("Inserir Telefone", type="primary", use_container_width=True):
+                        cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'numero'][0]
+                        inserir_dado_staging(cfg, tel, None)
+                
+                st.divider()
+                st.markdown("##### 📧 Cadastro de E-mail")
+                c_mail_in, c_mail_btn = st.columns([5, 2])
+                with c_mail_in: mail = st.text_input("E-mail", key="in_mail", placeholder="exemplo@email.com")
+                with c_mail_btn:
+                    st.write(""); st.write("")
+                    if st.button("Inserir E-mail", type="primary", use_container_width=True):
+                        if pf_core.validar_email(mail):
+                            emails_atuais = [e['email'] for e in st.session_state['dados_staging'].get('emails', [])]
+                            if mail in emails_atuais: st.warning("⚠️ Este e-mail já está na lista deste cliente.")
+                            else:
+                                cfg = [c for c in CONFIG_CADASTRO["Contatos"] if c['key'] == 'email'][0]
+                                inserir_dado_staging(cfg, mail)
+                                st.success("E-mail validado e adicionado!")
+                        else: st.error("⚠️ Formato de e-mail inválido.")
+
+        with st.expander("Endereço"):
+            if not is_edit:
+                st.info("🚫 A inclusão de endereços é permitida apenas no modo 'Editar', após salvar o cadastro inicial.")
+            else:
+                st.markdown("##### 📍 Cadastro de Endereço")
+                c_cep, c_rua = st.columns([1.5, 3.5])
+                with c_cep: cep = st.text_input("CEP", key="in_end_cep", placeholder="00000-000")
+                with c_rua: rua = st.text_input("Logradouro", key="in_end_rua", placeholder="Rua, Av, etc.")
+                
+                c_bai, c_cid, c_uf = st.columns([2, 2, 1])
+                with c_bai: bairro = st.text_input("Bairro", key="in_end_bairro")
+                with c_cid: cidade = st.text_input("Cidade", key="in_end_cid")
+                with c_uf: uf_digitada = st.text_input("UF", key="in_end_uf", placeholder="UF", max_chars=2).upper()
+                
+                if st.button("Inserir Endereço", type="primary", use_container_width=True):
+                    cep_num, cep_vis, erro_cep = pf_core.validar_formatar_cep(cep)
+                    erro_uf = None
+                    if not pf_core.validar_uf(uf_digitada): erro_uf = f"UF inválida: '{uf_digitada}'. Use siglas (ex: SP, MG, BA)."
+                    
+                    if erro_cep: st.error(erro_cep)
+                    elif erro_uf: st.error(erro_uf)
+                    elif not rua: st.warning("O campo Logradouro é obrigatório.")
+                    else:
+                        ends_atuais = st.session_state['dados_staging'].get('enderecos', [])
+                        duplicado = False
+                        for e in ends_atuais:
+                            if e.get('cep') == cep_num and e.get('rua') == rua: duplicado = True; break
+                        
+                        if duplicado: st.warning("⚠️ Este endereço já está na lista deste cliente.")
+                        else:
+                            obj_end = {'cep': cep_num, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf_digitada}
+                            if 'enderecos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['enderecos'] = []
+                            st.session_state['dados_staging']['enderecos'].append(obj_end)
+                            st.toast(f"✅ Endereço adicionado! (CEP: {cep_vis})")
+                            st.success("Endereço validado e incluído na lista temporária.")
+
+        with st.expander("Emprego e Renda (Vínculo)"):
+            c_conv, c_matr, c_btn_emp = st.columns([3, 3, 2])
+            with c_conv: conv = st.text_input("Convênio", key="in_emp_conv", placeholder="Ex: INSS")
+            with c_matr: matr = st.text_input("Matrícula", key="in_emp_matr")
+            with c_btn_emp:
+                st.write(""); st.write("")
+                if st.button("Inserir Vínculo", type="primary", use_container_width=True):
+                    if conv and matr:
+                        obj_emp = {'convenio': conv.upper(), 'matricula': matr, 'dados_extras': ''}
+                        if 'empregos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['empregos'] = []
+                        st.session_state['dados_staging']['empregos'].append(obj_emp)
+                        st.toast("✅ Vínculo adicionado!")
+                        st.rerun()
+                    else: st.warning("Campos obrigatórios.")
+
+        with st.expander("Contratos / Planilhas"):
+            lista_empregos = st.session_state['dados_staging'].get('empregos', [])
+            if not lista_empregos: st.info("Insira um vínculo em 'Emprego e Renda' primeiro.")
+            else:
+                opcoes_matr = [f"{e['matricula']} - {e['convenio']}" for e in lista_empregos]
+                sel_vinculo = st.selectbox("Vincular à Matrícula:", opcoes_matr, key="sel_vinc_contr")
+                idx_vinc = opcoes_matr.index(sel_vinculo)
+                dados_vinc = lista_empregos[idx_vinc]
+                tabelas_destino = pf_core.listar_tabelas_por_convenio(dados_vinc['convenio'])
+                
+                if not tabelas_destino: st.warning(f"Sem planilhas configuradas para {dados_vinc['convenio']}.")
+                for nome_tabela, tipo_tabela in tabelas_destino:
+                    st.markdown("---")
+                    st.markdown(f"###### 📝 {tipo_tabela or 'Dados'} ({nome_tabela})")
+                    sufixo = f"{nome_tabela}_{idx_vinc}"
+                    colunas_banco = pf_core.get_colunas_tabela(nome_tabela)
+                    campos_ignorados = ['id', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha', 'importacao_id', 'data_criacao', 'data_atualizacao', 'cpf_ref']
+                    inputs_gerados = {}
+                    mapa_calculo_datas = {'tempo_abertura_anos': 'data_abertura_empresa', 'tempo_admissao_anos': 'data_admissao', 'tempo_inicio_emprego_anos': 'data_inicio_emprego'}
+                    datas_preenchidas = {} 
+
+                    cols_ui = st.columns(2)
+                    for idx_col, (col_nome, col_tipo) in enumerate(colunas_banco):
+                        if col_nome in campos_ignorados: continue
+                        label_fmt = col_nome.replace('_', ' ').title()
+                        with cols_ui[idx_col % 2]:
+                            key_input = f"inp_{col_nome}_{sufixo}"
+                            if col_nome in mapa_calculo_datas:
+                                col_data_ref = mapa_calculo_datas[col_nome]
+                                valor_data = datas_preenchidas.get(col_data_ref)
+                                anos_calc = pf_core.calcular_idade_hoje(valor_data) if valor_data else 0
+                                val = st.number_input(label_fmt, value=anos_calc, disabled=True, key=key_input)
+                            elif 'date' in col_tipo.lower() or 'data' in col_nome.lower():
+                                val = st.date_input(label_fmt, value=None, format="DD/MM/YYYY", key=key_input)
+                                datas_preenchidas[col_nome] = val
+                            else:
+                                val = st.text_input(label_fmt, key=key_input)
+                            inputs_gerados[col_nome] = val
+                    
+                    if st.button(f"Inserir em {tipo_tabela or nome_tabela}", key=f"btn_save_{sufixo}", type="primary"):
+                        nomes_cols_tabela = [c[0] for c in colunas_banco]
+                        if 'matricula' in nomes_cols_tabela: inputs_gerados['matricula'] = dados_vinc['matricula']
+                        elif 'matricula_ref' in nomes_cols_tabela: inputs_gerados['matricula_ref'] = dados_vinc['matricula']
+                        
+                        if 'convenio' in nomes_cols_tabela: inputs_gerados['convenio'] = dados_vinc['convenio']
+                        if 'tipo_planilha' in nomes_cols_tabela and tipo_tabela: inputs_gerados['tipo_planilha'] = tipo_tabela
+                        
+                        inputs_gerados['origem_tabela'] = nome_tabela
+                        inputs_gerados['tipo_origem'] = tipo_tabela
+                        
+                        if 'contratos' not in st.session_state['dados_staging']: st.session_state['dados_staging']['contratos'] = []
+                        st.session_state['dados_staging']['contratos'].append(inputs_gerados)
+                        st.toast(f"✅ {tipo_tabela} adicionado!")
+
+    with c_preview:
+        st.markdown("### 📋 Resumo")
+        st.info("👤 Dados Pessoais")
+        geral = st.session_state['dados_staging'].get('geral', {})
+        if geral:
+            cols = st.columns(2)
+            idx = 0
+            for k, v in geral.items():
+                if v:
+                    val_str = v.strftime('%d/%m/%Y') if isinstance(v, (date, datetime)) else str(v)
+                    if k == 'cpf' or k == 'cpf_procurador': val_str = pf_core.formatar_cpf_visual(val_str)
+                    cols[idx%2].text_input(k.replace('_', ' ').upper(), value=val_str, disabled=True, key=f"view_geral_{k}")
+                    idx += 1
+        
+        st.warning("📞 Contatos")
+        tels = st.session_state['dados_staging'].get('telefones', [])
+        if tels:
+            for i, t in enumerate(tels):
+                c1, c2 = st.columns([5, 1])
+                val_view = pf_core.formatar_telefone_visual(t.get('numero'))
+                c1.write(f"📱 **{val_view}**")
+                if c2.button("🗑️", key=f"rm_tel_{i}"):
+                    st.session_state['dados_staging']['telefones'].pop(i); st.rerun()
+        
+        mails = st.session_state['dados_staging'].get('emails', [])
+        if mails:
+            for i, m in enumerate(mails):
+                c1, c2 = st.columns([5, 1])
+                c1.write(f"📧 **{m.get('email')}**")
+                if c2.button("🗑️", key=f"rm_mail_{i}"):
+                    st.session_state['dados_staging']['emails'].pop(i); st.rerun()
+        
+        if not tels and not mails: st.caption("Nenhum contato.")
+
+        st.warning("📍 Endereços")
+        ends = st.session_state['dados_staging'].get('enderecos', [])
+        if ends:
+            for i, e in enumerate(ends):
+                c1, c2 = st.columns([5, 1])
+                _, cep_fmt, _ = pf_core.validar_formatar_cep(e.get('cep'))
+                c1.write(f"🏠 **{e.get('rua')}** - {e.get('bairro')} | {e.get('cidade')}/{e.get('uf')} (CEP: {cep_fmt})")
+                if c2.button("🗑️", key=f"rm_end_{i}"):
+                    st.session_state['dados_staging']['enderecos'].pop(i); st.rerun()
+        else: st.caption("Nenhum endereço.")
+        
+        st.warning("💼 Vínculos (Emprego)")
+        emps = st.session_state['dados_staging'].get('empregos', [])
+        if emps:
+            for i, emp in enumerate(emps):
+                c1, c2 = st.columns([5, 1])
+                c1.write(f"🏢 **{emp.get('convenio')}** | Mat: {emp.get('matricula')}")
+                if c2.button("🗑️", key=f"rm_emp_{i}"):
+                    st.session_state['dados_staging']['empregos'].pop(i); st.rerun()
+        else: st.caption("Nenhum vínculo inserido.")
+
+        st.success("📝 Dados Financeiros / Planilhas")
+        ctrs = st.session_state['dados_staging'].get('contratos', [])
+        if ctrs:
+            for i, c in enumerate(ctrs):
+                c1, c2 = st.columns([5, 1])
+                origem_nome = c.get('tipo_origem') or c.get('origem_tabela', 'Dado')
+                chaves = [k for k in c.keys() if k not in ['origem_tabela', 'tipo_origem', 'matricula_ref', 'matricula', 'convenio', 'tipo_planilha']]
+                display_txt = f"[{origem_nome}] "
+                if len(chaves) > 0: display_txt += f"{c[chaves[0]]} "
+                ref_matr = c.get('matricula') or c.get('matricula_ref')
+                c1.write(f"📌 {display_txt} (Ref: {ref_matr})")
+                if c2.button("🗑️", key=f"rm_ctr_{i}"):
+                    st.session_state['dados_staging']['contratos'].pop(i); st.rerun()
+        else: st.caption("Nenhum vínculo inserido.")
+
+        st.divider()
+        
+        if st.button("💾 CONFIRMAR E SALVAR", type="primary", use_container_width=True):
+            staging = st.session_state['dados_staging']
+            if not staging['geral'].get('nome') or not staging['geral'].get('cpf'):
+                st.error("Nome e CPF são obrigatórios.")
+            else:
+                df_tel = pd.DataFrame(staging['telefones'])
+                df_email = pd.DataFrame(staging['emails'])
+                df_end = pd.DataFrame(staging['enderecos'])
+                df_emp = pd.DataFrame(staging['empregos'])
+                df_contr = pd.DataFrame(staging['contratos'])
+                
+                modo_salvar = "editar" if is_edit else "novo"
+                cpf_orig = pf_core.limpar_normalizar_cpf(st.session_state.get('pf_cpf_selecionado')) if is_edit else None
+                
+                sucesso, msg = pf_core.salvar_pf(staging['geral'], df_tel, df_email, df_end, df_emp, df_contr, modo_salvar, cpf_orig)
+                if sucesso:
+                    st.success(msg)
+                    time.sleep(1.5)
+                    st.session_state['pf_view'] = 'lista'
+                    st.session_state['form_loaded'] = False
+                    st.rerun()
+                else: st.error(msg)
+    
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
+
+def interface_visualizar_cliente():
+    cpf_cliente = st.session_state.get('pf_cpf_selecionado')
+    
+    if st.button("⬅️ Voltar"):
+        st.session_state['pf_view'] = 'lista'
+        st.rerun()
+    
+    if not cpf_cliente:
+        st.error("Nenhum cliente selecionado.")
+        return
+
+    cpf_vis = pf_core.formatar_cpf_visual(cpf_cliente)
+    dados = pf_core.carregar_dados_completos(cpf_cliente)
+    g = dados.get('geral', {})
+    if not g: 
+        st.error("Cliente não encontrado.")
+        return
+    
+    st.markdown("""<style>.compact-header { margin-bottom: -15px; } .stMarkdown hr { margin-top: 5px; margin-bottom: 5px; }</style>""", unsafe_allow_html=True)
+    st.markdown(f"<h3 class='compact-header'>👤 {g.get('nome', 'Nome não informado')}</h3>", unsafe_allow_html=True)
+    st.markdown(f"**CPF:** {cpf_vis}")
+    st.write("") 
+    
+    t1, t2, t3 = st.tabs(["📋 Cadastro & Vínculos", "💼 Detalhes Financeiros", "📞 Contatos & Endereços"])
+    with t1:
+        c1, c2 = st.columns(2)
+        nasc = g.get('data_nascimento')
+        txt_nasc = nasc.strftime('%d/%m/%Y') if nasc and isinstance(nasc, (date, datetime)) else pf_core.safe_view(nasc)
+        c1.write(f"**Nascimento:** {txt_nasc}"); c1.write(f"**RG:** {pf_core.safe_view(g.get('rg'))}"); c2.write(f"**Mãe:** {pf_core.safe_view(g.get('nome_mae'))}")
+        
+        demais_campos = {k: v for k, v in g.items() if k not in ['data_nascimento', 'rg', 'nome_mae', 'id', 'cpf', 'nome', 'importacao_id', 'id_campanha', 'data_criacao']}
+        if demais_campos:
+            st.markdown("---"); st.markdown("##### 📌 Outras Informações")
+            col_iter = st.columns(3); idx = 0
+            for k, v in demais_campos.items(): 
+                val_display = pf_core.safe_view(v)
+                if 'cpf' in k: val_display = pf_core.formatar_cpf_visual(val_display)
+                col_iter[idx % 3].write(f"**{k.replace('_', ' ').title()}:** {val_display}"); idx += 1
+        
+        st.divider(); st.markdown("##### 🔗 Vínculos")
+        for v in dados.get('empregos', []): st.info(f"🆔 **{v['matricula']}** - {v['convenio'].upper()}")
+        if not dados.get('empregos'): st.warning("Nenhum vínculo localizado.")
+            
+    with t2:
+        st.markdown("##### 💰 Detalhes Financeiros & Contratos")
+        for v in dados.get('empregos', []):
+            ctrs = v.get('contratos', [])
+            if ctrs:
+                tipo_display = v.get('contratos')[0].get('tipo_origem') or 'Detalhes'
+                with st.expander(f"📂 {v['convenio'].upper()} | {tipo_display} | Matr: {v['matricula']}", expanded=True):
+                    df_ex = pd.DataFrame(ctrs)
+                    cols_drop = ['id', 'matricula_ref', 'importacao_id', 'data_criacao', 'data_atualizacao', 'origem_tabela', 'tipo_origem']
+                    st.dataframe(df_ex.drop(columns=cols_drop, errors='ignore'), hide_index=True, use_container_width=True)
+            else: st.caption(f"Sem contratos detalhados para {v['convenio']}.")
+    with t3:
+        for t in dados.get('telefones', []): 
+            st.write(f"📱 {pf_core.formatar_telefone_visual(t.get('numero'))}")
+        for m in dados.get('emails', []): 
+            st.write(f"📧 {pf_core.safe_view(m.get('email'))}")
+        
+        st.divider()
+        st.markdown("##### 📍 Endereços")
+        for end in dados.get('enderecos', []): 
+            _, cep_view, _ = pf_core.validar_formatar_cep(end.get('cep'))
+            cep_view = cep_view if cep_view else end.get('cep')
+            st.success(f"🏠 {pf_core.safe_view(end.get('rua'))}, {pf_core.safe_view(end.get('bairro'))} - {pf_core.safe_view(end.get('cidade'))}/{pf_core.safe_view(end.get('uf'))} (CEP: {cep_view})")
+    
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
+
+# --- (MANTIDO) CONFIGURAÇÕES E SQL (ORIGINAL) ---
 CAMPOS_CONFIG = {
     "Dados Pessoais": [
         {"label": "Nome", "coluna": "d.nome", "tipo": "texto", "tabela": "banco_pf.pf_dados"},
