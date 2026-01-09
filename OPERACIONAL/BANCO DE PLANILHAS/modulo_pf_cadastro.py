@@ -32,7 +32,6 @@ def init_db_structures():
             cur.execute("CREATE SCHEMA IF NOT EXISTS banco_pf;")
             
             # --- 1. VERIFICAÇÃO E CORREÇÃO DA TABELA EMPREGO_RENDA ---
-            # Verifica se a tabela existe e se tem a coluna cpf_ref
             tabela_ok = False
             try:
                 cur.execute("""
@@ -46,10 +45,8 @@ def init_db_structures():
                     tabela_ok = True
             except: pass
 
-            # Se a tabela existe mas está errada (sem cpf_ref), APAGA para recriar
             if not tabela_ok:
                 try:
-                    # Verifica se a tabela existe antes de tentar dropar para evitar erro de tabela inexistente
                     cur.execute("SELECT to_regclass('banco_pf.pf_emprego_renda')")
                     if cur.fetchone()[0]:
                         cur.execute("DROP TABLE banco_pf.pf_emprego_renda CASCADE")
@@ -57,7 +54,6 @@ def init_db_structures():
                 except Exception as e:
                     print(f"Aviso ao tentar limpar tabela antiga: {e}")
 
-            # Cria a tabela CORRETA (agora vai criar pois se existia errada, foi apagada acima)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emprego_renda (
                     id SERIAL PRIMARY KEY,
@@ -70,7 +66,6 @@ def init_db_structures():
                 );
             """)
             
-            # Garante a FK (Foreign Key)
             try:
                 cur.execute("""
                     DO $$ BEGIN
@@ -84,8 +79,6 @@ def init_db_structures():
             except: pass
             
             # --- 2. DEMAIS TABELAS E COLUNAS ---
-            
-            # Colunas extras na tabela PRINCIPAL (pf_dados)
             cols_extras_dados = [
                 "uf_rg VARCHAR(2)", "pis VARCHAR(20)", "nome_procurador VARCHAR(150)", 
                 "cpf_procurador VARCHAR(14)", "dados_exp_rg VARCHAR(50)", 
@@ -97,7 +90,6 @@ def init_db_structures():
                     cur.execute(f"ALTER TABLE banco_pf.pf_dados ADD COLUMN IF NOT EXISTS {col_name} {col_def.split(' ', 1)[1]}")
                 except: pass
 
-            # Outras tabelas satélites
             cur.execute("CREATE TABLE IF NOT EXISTS banco_pf.pf_referencias (id SERIAL PRIMARY KEY, tipo VARCHAR(50), nome VARCHAR(100), UNIQUE(tipo, nome));")
             
             cur.execute("""
@@ -130,7 +122,6 @@ def init_db_structures():
                 );
             """)
 
-            # Ajuste de tipos se necessário
             try: cur.execute("ALTER TABLE banco_pf.pf_telefones ALTER COLUMN numero TYPE VARCHAR(20)")
             except: pass
 
@@ -907,12 +898,28 @@ def dialog_excluir_pf(cpf, nome):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pf(cpf): st.success("Apagado!"); time.sleep(1); st.rerun()
 
-@st.dialog("👁️ Detalhes do Cliente", width="large")
-def dialog_visualizar_cliente(cpf_cliente):
+# --- NOVA FUNÇÃO: VISUALIZAR CLIENTE (TELA COMPLETA) ---
+def interface_visualizar_cliente():
+    """
+    Substitui o antigo dialog_visualizar_cliente por uma tela inteira.
+    Lê o CPF da sessão 'pf_cpf_selecionado'.
+    """
+    cpf_cliente = st.session_state.get('pf_cpf_selecionado')
+    
+    if st.button("⬅️ Voltar"):
+        st.session_state['pf_view'] = 'lista'
+        st.rerun()
+    
+    if not cpf_cliente:
+        st.error("Nenhum cliente selecionado.")
+        return
+
     cpf_vis = formatar_cpf_visual(cpf_cliente)
     dados = carregar_dados_completos(cpf_cliente)
     g = dados.get('geral', {})
-    if not g: st.error("Cliente não encontrado."); return
+    if not g: 
+        st.error("Cliente não encontrado.")
+        return
     
     st.markdown("""<style>.compact-header { margin-bottom: -15px; } .stMarkdown hr { margin-top: 5px; margin-bottom: 5px; }</style>""", unsafe_allow_html=True)
     st.markdown(f"<h3 class='compact-header'>👤 {g.get('nome', 'Nome não informado')}</h3>", unsafe_allow_html=True)
