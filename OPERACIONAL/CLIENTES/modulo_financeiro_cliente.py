@@ -407,7 +407,7 @@ def excluir_transacao_dinamica(nome_tabela, id_transacao):
 
 # --- DIALOGS ---
 
-@st.dialog("✏️ Editar Carteira Cliente")
+@st.dialog("Carteira Cliente")
 def dialog_editar_cart_lista(dados):
     st.write(f"Editando: **{dados['nome_cliente']}**")
     
@@ -448,7 +448,7 @@ def dialog_editar_cart_lista(dados):
                 st.success("Atualizado!"); st.rerun()
             else: st.error("Erro.")
 
-@st.dialog("✏️ Editar Configuração da Carteira")
+@st.dialog("Configuração da Carteira")
 def dialog_editar_carteira_config(dados):
     st.write(f"Editando: **{dados['nome_carteira']}**")
     lista_origens = listar_origens_para_selecao()
@@ -467,7 +467,7 @@ def dialog_editar_carteira_config(dados):
                 st.success("Atualizado!"); time.sleep(1); st.rerun()
             else: st.error("Erro ao atualizar.")
 
-@st.dialog("💰 Lançamento Manual")
+@st.dialog("Lançamento Manual")
 def dialog_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc):
     titulo = "Crédito (Aporte)" if tipo_lanc == "CREDITO" else "Débito (Cobrança)"
     st.markdown(f"### {titulo}")
@@ -486,7 +486,7 @@ def dialog_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc):
             else:
                 st.error(f"Erro: {msg}")
 
-@st.dialog("✏️ Editar Lançamento")
+@st.dialog("Editar Lançamento")
 def dialog_editar_lancamento_extrato(tabela_sql, transacao):
     st.write(f"Editando ID: {transacao['id']}")
     with st.form("form_edit_lanc"):
@@ -500,7 +500,7 @@ def dialog_editar_lancamento_extrato(tabela_sql, transacao):
                 st.success("Atualizado!"); time.sleep(1); st.rerun()
             else: st.error("Erro.")
 
-@st.dialog("🗑️ Excluir Lançamento")
+@st.dialog("Excluir Lançamento")
 def dialog_excluir_lancamento_extrato(tabela_sql, id_transacao):
     st.warning("Excluir este lançamento?")
     st.caption("Atenção: O saldo futuro não é recalculado automaticamente.")
@@ -519,111 +519,66 @@ def app_financeiro():
 
     # Título removido conforme solicitado
 
-    tab_custos, tab_rel = st.tabs([
-        "💼 Custos de Carteira", 
-        "📊 Relatórios"
-    ])
+    # --- RELATÓRIOS (AGORA TELA ÚNICA) ---
+    st.markdown("### 📊 Extrato Unificado")
+    conn = get_conn()
+    try:
+        df_clientes_opt = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
+        df_prods = pd.read_sql("SELECT DISTINCT produto_vinculado FROM cliente.extrato_carteira_por_produto", conn)
+        lista_produtos = df_prods['produto_vinculado'].dropna().tolist()
+    except: 
+        df_clientes_opt = pd.DataFrame()
+        lista_produtos = []
+    finally: 
+        if conn: conn.close()
 
-    # --- ABA CUSTOS DE CARTEIRA ---
-    with tab_custos:
-        with st.expander("➕ Adicionar Custo a Cliente", expanded=False):
-            with st.container(border=True):
-                c1, c2, c3, c4, c5 = st.columns([1.5, 2, 1.5, 1, 1])
-                
-                df_clis = listar_clientes_para_selecao()
-                opcoes_cli = [""] + df_clis.apply(lambda x: f"{x['nome']} | CPF: {x['cpf']}", axis=1).tolist()
-                n_sel = c2.selectbox("Cliente", options=opcoes_cli, key="n_sel_l")
-                
-                cpf_auto = n_sel.split(" | CPF: ")[1] if n_sel else ""
-                n_cpf = c1.text_input("CPF", value=cpf_auto, key="n_cpf_l")
-                
-                df_c_at = listar_todas_carteiras_ativas()
-                n_cart = c3.selectbox("Carteira", options=[""] + df_c_at['nome_carteira'].tolist(), key="n_cart_l")
-                
-                n_val = c4.number_input("Custo", key="n_val_l", step=0.01)
-                
-                orgs = listar_origens_para_selecao()
-                n_org = st.selectbox("Origem Custo", options=[""] + orgs, key="n_org_l")
-                
-                if c5.button("Adicionar", key="add_cl_btn"):
-                    if n_cpf and n_cart:
-                        nome_cli_clean = n_sel.split(" | ")[0] if n_sel else ""
-                        if salvar_cliente_carteira_lista(n_cpf, nome_cli_clean, n_cart, n_val, n_org): st.rerun()
-                    else: st.warning("Preencha CPF e Carteira.")
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        cli_sel = c1.selectbox("Cliente", options=df_clientes_opt['id'], format_func=lambda x: df_clientes_opt[df_clientes_opt['id']==x]['nome'].values[0] if not df_clientes_opt.empty else "Vazio")
+        dates = c2.date_input("Período", value=(date.today().replace(day=1), date.today()))
+        prods = c3.multiselect("Filtrar Produtos", options=lista_produtos)
+        btn_gerar = st.button("Gerar Relatório", type="primary", use_container_width=True)
 
-        df_l = listar_cliente_carteira_lista()
-        if not df_l.empty:
-            st.markdown("""<div style="display: flex; font-weight: bold; background: #f0f2f6; padding: 8px; font-size: 0.85em;">
-            <div style="flex: 2;">Cliente</div><div style="flex: 1.5;">CPF</div><div style="flex: 2;">Carteira</div>
-            <div style="flex: 1;">Custo</div><div style="flex: 1.5;">Usuário</div><div style="flex: 1;">Ações</div></div>""", unsafe_allow_html=True)
-            
-            for _, r in df_l.iterrows():
-                c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 2, 1, 1.5, 1])
-                c1.write(r['nome_cliente']); c2.write(r['cpf_cliente']); c3.write(r['nome_carteira'])
-                c4.write(f"R$ {float(r['custo_carteira'] or 0):.2f}")
-                c5.write(r.get('nome_usuario', '-'))
-                with c6:
-                    if st.button("✏️", key=f"ed_cl_{r['id']}"): dialog_editar_cart_lista(r)
-                    if st.button("🗑️", key=f"de_cl_{r['id']}"): excluir_cliente_carteira_lista(r['id']); st.rerun()
-
-    # --- ABA RELATÓRIOS ---
-    with tab_rel:
-        st.markdown("### 📊 Extrato Unificado")
+    if btn_gerar and cli_sel:
         conn = get_conn()
         try:
-            df_clientes_opt = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
-            df_prods = pd.read_sql("SELECT DISTINCT produto_vinculado FROM cliente.extrato_carteira_por_produto", conn)
-            lista_produtos = df_prods['produto_vinculado'].dropna().tolist()
-        except: 
-            df_clientes_opt = pd.DataFrame()
-            lista_produtos = []
-        finally: 
-            if conn: conn.close()
+            dt_ini, dt_fim = dates if len(dates) == 2 else (dates[0], dates[0])
+            q = """
+                SELECT data_lancamento, produto_vinculado, origem_lancamento, tipo_lancamento, valor_lancado, saldo_novo, nome_usuario 
+                FROM cliente.extrato_carteira_por_produto 
+                WHERE id_cliente = %s AND data_lancamento BETWEEN %s AND %s
+            """
+            params = [str(cli_sel), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
+            
+            if prods:
+                q += f" AND produto_vinculado IN ({','.join(['%s']*len(prods))})"
+                params.extend(prods)
+            
+            q += " ORDER BY data_lancamento DESC"
+            
+            df_r = pd.read_sql(q, conn, params=params)
+            
+            # Busca Saldo Real Atual
+            cur = conn.cursor()
+            cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(cli_sel),))
+            res_s = cur.fetchone()
+            saldo_real = float(res_s[0]) if res_s else 0.0
+            
+            if not df_r.empty:
+                df_r['data_lancamento'] = pd.to_datetime(df_r['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
+                st.dataframe(df_r, use_container_width=True, hide_index=True)
+                
+                st.divider()
+                k1, k2, k3 = st.columns(3)
+                tot_c = df_r[df_r['tipo_lancamento']=='CREDITO']['valor_lancado'].sum()
+                tot_d = df_r[df_r['tipo_lancamento']=='DEBITO']['valor_lancado'].sum()
+                
+                k1.metric("Total Crédito (Período)", f"R$ {tot_c:,.2f}")
+                k2.metric("Total Débito (Período)", f"R$ {tot_d:,.2f}")
+                k3.metric("Saldo Atual do Cliente", f"R$ {saldo_real:,.2f}")
+            else: st.warning("Sem dados no período.")
+        except Exception as e: st.error(f"Erro: {e}")
+        finally: conn.close()
 
-        with st.container(border=True):
-            c1, c2, c3 = st.columns(3)
-            cli_sel = c1.selectbox("Cliente", options=df_clientes_opt['id'], format_func=lambda x: df_clientes_opt[df_clientes_opt['id']==x]['nome'].values[0] if not df_clientes_opt.empty else "Vazio")
-            dates = c2.date_input("Período", value=(date.today().replace(day=1), date.today()))
-            prods = c3.multiselect("Filtrar Produtos", options=lista_produtos)
-            btn_gerar = st.button("Gerar Relatório", type="primary", use_container_width=True)
-
-        if btn_gerar and cli_sel:
-            conn = get_conn()
-            try:
-                dt_ini, dt_fim = dates if len(dates) == 2 else (dates[0], dates[0])
-                q = """
-                    SELECT data_lancamento, produto_vinculado, origem_lancamento, tipo_lancamento, valor_lancado, saldo_novo, nome_usuario 
-                    FROM cliente.extrato_carteira_por_produto 
-                    WHERE id_cliente = %s AND data_lancamento BETWEEN %s AND %s
-                """
-                params = [str(cli_sel), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
-                
-                if prods:
-                    q += f" AND produto_vinculado IN ({','.join(['%s']*len(prods))})"
-                    params.extend(prods)
-                
-                q += " ORDER BY data_lancamento DESC"
-                
-                df_r = pd.read_sql(q, conn, params=params)
-                
-                # Busca Saldo Real Atual
-                cur = conn.cursor()
-                cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(cli_sel),))
-                res_s = cur.fetchone()
-                saldo_real = float(res_s[0]) if res_s else 0.0
-                
-                if not df_r.empty:
-                    df_r['data_lancamento'] = pd.to_datetime(df_r['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
-                    st.dataframe(df_r, use_container_width=True, hide_index=True)
-                    
-                    st.divider()
-                    k1, k2, k3 = st.columns(3)
-                    tot_c = df_r[df_r['tipo_lancamento']=='CREDITO']['valor_lancado'].sum()
-                    tot_d = df_r[df_r['tipo_lancamento']=='DEBITO']['valor_lancado'].sum()
-                    
-                    k1.metric("Total Crédito (Período)", f"R$ {tot_c:,.2f}")
-                    k2.metric("Total Débito (Período)", f"R$ {tot_d:,.2f}")
-                    k3.metric("Saldo Atual do Cliente", f"R$ {saldo_real:,.2f}")
-                else: st.warning("Sem dados no período.")
-            except Exception as e: st.error(f"Erro: {e}")
-            finally: conn.close()
+if __name__ == "__main__":
+    app_financeiro()
