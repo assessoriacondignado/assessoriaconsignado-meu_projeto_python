@@ -49,7 +49,7 @@ def init_db_structures():
             # Se a tabela existe mas está errada (sem cpf_ref), APAGA para recriar
             if not tabela_ok:
                 try:
-                    # Verifica se a tabela existe antes de tentar dropar para evitar erro de tabela inexistente
+                    # Verifica se a tabela existe antes de tentar dropar
                     cur.execute("SELECT to_regclass('banco_pf.pf_emprego_renda')")
                     if cur.fetchone()[0]:
                         cur.execute("DROP TABLE banco_pf.pf_emprego_renda CASCADE")
@@ -57,7 +57,7 @@ def init_db_structures():
                 except Exception as e:
                     print(f"Aviso ao tentar limpar tabela antiga: {e}")
 
-            # Cria a tabela CORRETA (agora vai criar pois se existia errada, foi apagada acima)
+            # Cria a tabela CORRETA
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emprego_renda (
                     id SERIAL PRIMARY KEY,
@@ -70,6 +70,22 @@ def init_db_structures():
                 );
             """)
             
+            # --- CORREÇÃO DO ERRO DE COLUNA FALTANTE ---
+            # Verifica explicitamente se a coluna 'dados_extras' existe, pois tabelas antigas podem não tê-la
+            try:
+                cur.execute("""
+                    SELECT 1 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'banco_pf' 
+                    AND table_name = 'pf_emprego_renda' 
+                    AND column_name = 'dados_extras'
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE banco_pf.pf_emprego_renda ADD COLUMN dados_extras TEXT")
+                    print("Coluna 'dados_extras' adicionada à tabela pf_emprego_renda.")
+            except Exception as e:
+                print(f"Erro ao verificar/criar coluna dados_extras: {e}")
+
             # Garante a FK (Foreign Key)
             try:
                 cur.execute("""
