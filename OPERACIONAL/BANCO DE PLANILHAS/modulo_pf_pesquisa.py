@@ -471,9 +471,9 @@ def interface_pesquisa_ampla():
                 c1, c2, c3, c4 = st.columns([2, 1, 2, 4])
                 with c1:
                     b1, b2, b3 = st.columns(3)
-                    # CORREÇÃO: CALLBACKS CORRETOS (on_click=navegar_visualizar)
-                    b1.button("👁️", key=f"v_{row['id']}", on_click=navegar_visualizar, args=(row['cpf'],))
-                    b2.button("✏️", key=f"e_{row['id']}", on_click=navegar_editar, args=(row['cpf'],))
+                    # CORREÇÃO: CALLBACKS CORRETOS (on_click=ir_para_visualizar)
+                    b1.button("👁️", key=f"v_{row['id']}", on_click=ir_para_visualizar, args=(row['cpf'],))
+                    b2.button("✏️", key=f"e_{row['id']}", on_click=ir_para_editar, args=(row['cpf'],))
                     
                     with b3:
                         if st.button("🗑️", key=f"d_{row['id']}"): pf_core.dialog_excluir_pf(str(row['cpf']), row['nome'])
