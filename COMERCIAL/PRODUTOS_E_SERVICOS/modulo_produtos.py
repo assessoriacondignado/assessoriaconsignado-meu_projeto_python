@@ -168,17 +168,17 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, orige
             if conn: conn.close()
     return None
 
-def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_temas):
+def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_temas, ativo):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             query = """
                 UPDATE produtos_servicos 
-                SET nome=%s, tipo=%s, resumo=%s, preco=%s, origem_custo=%s, data_atualizacao=NOW() 
+                SET nome=%s, tipo=%s, resumo=%s, preco=%s, origem_custo=%s, ativo=%s, data_atualizacao=NOW() 
                 WHERE id=%s
             """
-            cur.execute(query, (nome, tipo, resumo, preco, origem_custo, id_prod))
+            cur.execute(query, (nome, tipo, resumo, preco, origem_custo, ativo, id_prod))
             conn.commit()
             conn.close()
             
@@ -199,20 +199,6 @@ def excluir_produto(id_prod, caminho_pasta):
             conn.close()
             if caminho_pasta and os.path.exists(caminho_pasta):
                 shutil.rmtree(caminho_pasta)
-            return True
-        except: 
-            if conn: conn.close()
-    return False
-
-def alternar_status(id_prod, status_atual):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            novo_status = not status_atual
-            cur.execute("UPDATE produtos_servicos SET ativo = %s WHERE id = %s", (novo_status, id_prod))
-            conn.commit()
-            conn.close()
             return True
         except: 
             if conn: conn.close()
@@ -262,6 +248,10 @@ def painel_editar_produto(dados):
     temas_vinculados = buscar_temas_do_produto(dados['id'])
 
     with st.form("form_editar_prod_painel"):
+        # Status agora fica dentro do formulário de edição
+        ativo = st.toggle("Produto Ativo?", value=bool(dados['ativo']))
+        st.markdown("---")
+
         nome = st.text_input("Nome *", value=dados['nome'])
         
         tipos_prods = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
@@ -290,7 +280,7 @@ def painel_editar_produto(dados):
         
         if st.form_submit_button("💾 Salvar Alterações", type="primary"):
             if nome:
-                if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem, temas_sel):
+                if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem, temas_sel, ativo):
                     st.success("Atualizado!")
                     time.sleep(1)
                     st.session_state.prod_panel_active = False # Fecha painel ao salvar
@@ -366,9 +356,19 @@ def app_produtos():
         with col_lista:
             df = listar_produtos()
             if not df.empty:
-                filtro = st.text_input("🔍 Buscar Produto", placeholder="Nome ou Código", key="search_prod")
+                # --- Filtros ---
+                cf1, cf2 = st.columns([3, 1])
+                filtro = cf1.text_input("🔍 Buscar Produto", placeholder="Nome ou Código", key="search_prod")
+                filtro_status = cf2.selectbox("Filtrar Status", ["Todos", "Ativos", "Inativos"])
+
+                # Aplica Filtros
                 if filtro:
                     df = df[df['nome'].str.contains(filtro, case=False, na=False) | df['codigo'].str.contains(filtro, case=False, na=False)]
+                
+                if filtro_status == "Ativos":
+                    df = df[df['ativo'] == True]
+                elif filtro_status == "Inativos":
+                    df = df[df['ativo'] == False]
                 
                 st.markdown("---")
                 
@@ -379,7 +379,8 @@ def app_produtos():
                         st.write(f"**{status_icon} {row['nome']}**")
                         st.caption(f"{row['codigo']} | {row['tipo']}")
                         
-                        b_cols = st.columns(5)
+                        # Removido o botão de status individual, reduzido colunas para 4
+                        b_cols = st.columns(4)
                         
                         # Função Helper para ativar painel
                         def ativar_painel(tipo, dados):
@@ -399,11 +400,7 @@ def app_produtos():
                             ativar_painel('editar', row)
                             st.rerun()
                             
-                        if b_cols[3].button("🔄", key=f"st_{row['id']}", help="Mudar Status"):
-                            alternar_status(row['id'], row['ativo'])
-                            st.rerun()
-                            
-                        if b_cols[4].button("🗑️", key=f"del_{row['id']}", help="Excluir"):
+                        if b_cols[3].button("🗑️", key=f"del_{row['id']}", help="Excluir"):
                             excluir_produto(row['id'], row['caminho_pasta'])
                             st.rerun()
             else:
