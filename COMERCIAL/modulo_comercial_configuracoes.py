@@ -28,7 +28,7 @@ def get_conn():
         st.error(f"Erro de conexão: {e}")
         return None
 
-# --- FUNÇÕES DE BANCO ---
+# --- FUNÇÕES DE BANCO (Gerais) ---
 def salvar_template(modulo, chave, texto):
     conn = get_conn()
     if conn:
@@ -45,6 +45,40 @@ def salvar_template(modulo, chave, texto):
             st.error(f"Erro SQL: {e}")
             conn.close(); return False
     return False
+
+def buscar_template_config(modulo, chave):
+    """
+    Busca o conteúdo de um template de mensagem específico.
+    Utilizado por outros módulos para enviar mensagens.
+    """
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            query = "SELECT conteudo_mensagem FROM wapi_templates WHERE modulo = %s AND chave_status = %s"
+            cur.execute(query, (modulo, chave))
+            result = cur.fetchone()
+            conn.close()
+            if result:
+                return result[0]
+        except Exception:
+            conn.close()
+    return None
+
+def listar_chaves_config(modulo):
+    """
+    Retorna uma lista com os nomes (chaves) dos status cadastrados para um módulo.
+    """
+    conn = get_conn()
+    if conn:
+        try:
+            query = "SELECT chave_status FROM wapi_templates WHERE modulo = %s ORDER BY chave_status ASC"
+            df = pd.read_sql(query, conn, params=(modulo,))
+            conn.close()
+            return df['chave_status'].tolist()
+        except:
+            conn.close()
+    return []
 
 # --- DIALOGS ---
 @st.dialog("✏️ Editar Modelo")
