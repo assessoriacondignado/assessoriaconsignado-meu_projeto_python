@@ -3,13 +3,30 @@ import pandas as pd
 import psycopg2
 import time
 import re
+import os
+import sys
 from datetime import datetime, date
 import modulo_wapi
+
+# Ajuste de path para importar módulos da raiz e de COMERCIAL
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+diretorio_comercial = os.path.dirname(diretorio_atual) # Pasta COMERCIAL
+raiz_projeto = os.path.dirname(diretorio_comercial)    # Raiz do Projeto
+
+if raiz_projeto not in sys.path:
+    sys.path.append(raiz_projeto)
 
 try:
     import conexao
 except ImportError:
     st.error("Erro crítico: Arquivo conexao.py não localizado.")
+
+# Importação do módulo de configurações para templates
+try:
+    from COMERCIAL import modulo_comercial_configuracoes
+except ImportError:
+    modulo_comercial_configuracoes = None
+    st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
 
 # --- CONEXÃO ---
 def get_conn():
@@ -27,14 +44,9 @@ def get_conn():
 # =============================================================================
 
 def listar_modelos_mensagens():
-    conn = get_conn()
-    if conn:
-        try:
-            query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'PEDIDOS' ORDER BY chave_status ASC"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df['chave_status'].tolist()
-        except: conn.close()
+    """Busca os modelos de mensagem cadastrados no Config para este módulo"""
+    if modulo_comercial_configuracoes:
+        return modulo_comercial_configuracoes.listar_chaves_config("PEDIDOS")
     return []
 
 # =============================================================================
@@ -178,13 +190,17 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             conn.close()
             
             msg_whats = ""
-            if avisar_cliente and cliente['telefone']:
+            if avisar_cliente and cliente['telefone'] and modulo_comercial_configuracoes:
                 try:
                     inst = modulo_wapi.buscar_instancia_ativa()
                     if inst:
-                        tpl = modulo_wapi.buscar_template("PEDIDOS", "criacao")
+                        # ALTERADO: Busca template via módulo de configurações
+                        tpl = modulo_comercial_configuracoes.buscar_template_config("PEDIDOS", "criacao")
+                        
                         if tpl:
-                            msg = tpl.replace("{nome}", str(cliente['nome']).split()[0]).replace("{pedido}", codigo).replace("{produto}", str(produto['nome']))
+                            msg = tpl.replace("{nome}", str(cliente['nome']).split()[0]) \
+                                     .replace("{pedido}", codigo) \
+                                     .replace("{produto}", str(produto['nome']))
                             modulo_wapi.enviar_msg_api(inst[0], inst[1], cliente['telefone'], msg)
                             msg_whats = " (WhatsApp Enviado)"
                 except: pass
@@ -262,13 +278,22 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
             
             conn.commit(); conn.close()
             
-            if avisar and dados_pedido['telefone_cliente']:
+            if avisar and dados_pedido['telefone_cliente'] and modulo_comercial_configuracoes:
                 inst = modulo_wapi.buscar_instancia_ativa()
                 if inst:
-                    chave = modelo_msg if modelo_msg != "Automático (Padrão)" else novo_status.lower().replace(" ", "_")
-                    tpl = modulo_wapi.buscar_template("PEDIDOS", chave)
+                    if modelo_msg and modelo_msg != "Automático (Padrão)":
+                        chave = modelo_msg
+                    else:
+                        chave = novo_status.lower().replace(" ", "_")
+                    
+                    # ALTERADO: Busca template via módulo de configurações
+                    tpl = modulo_comercial_configuracoes.buscar_template_config("PEDIDOS", chave)
+                    
                     if tpl:
-                        msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
+                        msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
+                                 .replace("{pedido}", str(dados_pedido['codigo'])) \
+                                 .replace("{status}", novo_status) \
+                                 .replace("{produto}", str(dados_pedido['nome_produto']))
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
             return True, "Status atualizado com sucesso!"
         except Exception as e:
