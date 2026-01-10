@@ -2,15 +2,30 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
+import sys
 import re
 import time
 from datetime import datetime, date
 import modulo_wapi # Integração
 
+# Ajuste de path para importar módulos da raiz e de COMERCIAL
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+diretorio_comercial = os.path.dirname(diretorio_atual) # Pasta COMERCIAL
+raiz_projeto = os.path.dirname(diretorio_comercial)    # Raiz
+if raiz_projeto not in sys.path:
+    sys.path.append(raiz_projeto)
+
 try: 
     import conexao
 except ImportError: 
     st.error("Erro crítico: conexao.py não encontrado.")
+
+# Importação do módulo de configurações para templates
+try:
+    from COMERCIAL import modulo_comercial_configuracoes
+except ImportError:
+    modulo_comercial_configuracoes = None
+    st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
 
 def get_conn():
     try:
@@ -23,17 +38,9 @@ def get_conn():
 
 # --- FUNÇÕES AUXILIARES ---
 def listar_modelos_mensagens():
-    """Busca os modelos de mensagem cadastrados no W-API para este módulo"""
-    conn = get_conn()
-    if conn:
-        try:
-            # Filtra apenas modelos do módulo TAREFAS
-            query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'TAREFAS' ORDER BY chave_status ASC"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df['chave_status'].tolist()
-        except:
-            conn.close()
+    """Busca os modelos de mensagem cadastrados no Config para este módulo"""
+    if modulo_comercial_configuracoes:
+        return modulo_comercial_configuracoes.listar_chaves_config("TAREFAS")
     return []
 
 # --- FUNÇÕES DE BANCO ---
@@ -106,10 +113,12 @@ def criar_tarefa(id_pedido, id_cliente, id_produto, data_prev, obs_tarefa, dados
             conn.commit()
             conn.close()
             
-            if avisar_cli and dados_pedido.get('telefone_cliente'):
+            if avisar_cli and dados_pedido.get('telefone_cliente') and modulo_comercial_configuracoes:
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
-                    template = modulo_wapi.buscar_template("TAREFAS", "solicitado")
+                    # ALTERADO: Busca template via módulo de configurações
+                    template = modulo_comercial_configuracoes.buscar_template_config("TAREFAS", "solicitado")
+                    
                     if template:
                         msg = template.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
                                       .replace("{pedido}", str(dados_pedido['codigo_pedido'])) \
@@ -132,7 +141,7 @@ def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos,
             conn.commit()
             conn.close()
             
-            if avisar and dados_completos.get('telefone_cliente'):
+            if avisar and dados_completos.get('telefone_cliente') and modulo_comercial_configuracoes:
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
                     if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
@@ -140,7 +149,8 @@ def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos,
                     else:
                         chave = novo_status.lower().replace(' ', '_')
                     
-                    template = modulo_wapi.buscar_template("TAREFAS", chave)
+                    # ALTERADO: Busca template via módulo de configurações
+                    template = modulo_comercial_configuracoes.buscar_template_config("TAREFAS", chave)
                     
                     if template:
                          msg = template.replace("{nome}", str(dados_completos['nome_cliente']).split()[0]) \
