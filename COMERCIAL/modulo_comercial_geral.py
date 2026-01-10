@@ -42,7 +42,14 @@ except ImportError as e:
     modulo_renovacao_feedback = None
     erros_importacao.append(f"Renovação: {e}")
 
-# 5. Configurações (NOVO)
+# 5. Tabelas Produto (NOVO)
+try:
+    from COMERCIAL import modulo_gestao_tabelas_produto
+except ImportError as e:
+    modulo_gestao_tabelas_produto = None
+    erros_importacao.append(f"Tabelas Produto: {e}")
+
+# 6. Configurações
 try:
     from COMERCIAL import modulo_comercial_configuracoes
 except ImportError as e:
@@ -61,12 +68,13 @@ def app_comercial_geral():
                 st.error(erro)
 
     # --- DEFINIÇÃO DAS ABAS ---
-    # Adicionada a aba Configurações no final
-    tab_prod, tab_ped, tab_tar, tab_renov, tab_conf = st.tabs([
+    # Adicionada a aba 'Tabelas (Prod)' antes de Configurações
+    tab_prod, tab_ped, tab_tar, tab_renov, tab_tabs_prod, tab_conf = st.tabs([
         "📦 Produtos", 
         "🛒 Pedidos", 
         "✅ Tarefas", 
         "🔄 Renovação",
+        "📂 Tabelas (Prod)",
         "⚙️ Configurações"
     ])
 
@@ -89,8 +97,14 @@ def app_comercial_geral():
         if modulo_renovacao_feedback and hasattr(modulo_renovacao_feedback, 'app_renovacao_feedback'):
             modulo_renovacao_feedback.app_renovacao_feedback()
         else: st.info("Módulo de Renovação indisponível.")
+    
+    # --- ABA 5: TABELAS (PROD) ---
+    with tab_tabs_prod:
+        if modulo_gestao_tabelas_produto and hasattr(modulo_gestao_tabelas_produto, 'app_tabelas'):
+            modulo_gestao_tabelas_produto.app_tabelas()
+        else: st.info("Módulo de Tabelas de Produto indisponível.")
 
-    # --- ABA 5: CONFIGURAÇÕES ---
+    # --- ABA 6: CONFIGURAÇÕES ---
     with tab_conf:
         if modulo_comercial_configuracoes and hasattr(modulo_comercial_configuracoes, 'app_configuracoes'):
             modulo_comercial_configuracoes.app_configuracoes()
