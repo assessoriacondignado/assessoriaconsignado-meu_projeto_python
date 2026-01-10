@@ -101,8 +101,6 @@ def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
     Verifica se já existe custo para este Cliente + ORIGEM.
-    Se existir -> Atualiza (Valor e Data).
-    Se não existir -> Insere novo.
     """
     try:
         cur = conn.cursor()
@@ -186,9 +184,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                     if inst:
                         tpl = modulo_comercial_configuracoes.buscar_template_config("PEDIDOS", "criacao")
                         if tpl:
-                            msg = tpl.replace("{nome}", str(cliente['nome']).split()[0]) \
-                                     .replace("{pedido}", codigo) \
-                                     .replace("{produto}", str(produto['nome']))
+                            msg = tpl.replace("{nome}", str(cliente['nome']).split()[0]).replace("{pedido}", codigo).replace("{produto}", str(produto['nome']))
                             modulo_wapi.enviar_msg_api(inst[0], inst[1], cliente['telefone'], msg)
                             msg_whats = " (WhatsApp Enviado)"
                 except: pass
@@ -265,10 +261,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs, m
                     chave = modelo_msg if modelo_msg and modelo_msg != "Automático (Padrão)" else novo_status.lower().replace(" ", "_")
                     tpl = modulo_comercial_configuracoes.buscar_template_config("PEDIDOS", chave)
                     if tpl:
-                        msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
-                                 .replace("{pedido}", str(dados_pedido['codigo'])) \
-                                 .replace("{status}", novo_status) \
-                                 .replace("{produto}", str(dados_pedido['nome_produto']))
+                        msg = tpl.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]).replace("{pedido}", str(dados_pedido['codigo'])).replace("{status}", novo_status).replace("{produto}", str(dados_pedido['nome_produto']))
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg)
             return True, "Status atualizado com sucesso!"
         except Exception as e:
@@ -313,11 +306,10 @@ def editar_dados_pedido_completo(id_pedido, dados_novos):
     except Exception as e: return False, str(e)
 
 # =============================================================================
-# 4. COMPONENTE DE NOVO PEDIDO (DEFINIÇÃO DA FUNÇÃO QUE FALTAVA)
+# 4. COMPONENTE DE NOVO PEDIDO
 # =============================================================================
 
 def renderizar_novo_pedido_tab():
-    # Carregar dados iniciais
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
@@ -325,7 +317,6 @@ def renderizar_novo_pedido_tab():
         st.warning("Cadastre clientes e produtos antes.")
         return
 
-    # --- INICIALIZAÇÃO DE ESTADO ---
     if 'np_cli_idx' not in st.session_state: st.session_state.np_cli_idx = 0
     if 'np_prod_idx' not in st.session_state: st.session_state.np_prod_idx = 0
     
@@ -335,7 +326,6 @@ def renderizar_novo_pedido_tab():
     if 'np_origem' not in st.session_state: st.session_state.np_origem = prod_inicial.get('origem_custo', 'Geral') or 'Geral'
     if 'np_custo' not in st.session_state: st.session_state.np_custo = 0.0
     
-    # --- HELPER DE CUSTO ---
     def buscar_custo_referencia(id_cliente, id_produto):
         custo = 0.0
         conn_chk = get_conn()
@@ -349,7 +339,6 @@ def renderizar_novo_pedido_tab():
             except: conn_chk.close()
         return custo
 
-    # --- CALLBACKS ---
     def on_change_produto():
         idx = st.session_state.np_prod_idx 
         prod = df_p.iloc[idx]
@@ -517,7 +506,7 @@ def painel_tarefa_pedido(ped):
 def app_pedidos():
     tab_novo, tab_lista, tab_param = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros"])
 
-    # ABA 1: NOVO PEDIDO (SUB MENU PRIMEIRO)
+    # ABA 1: NOVO PEDIDO
     with tab_novo:
         renderizar_novo_pedido_tab()
 
@@ -579,7 +568,7 @@ def app_pedidos():
                 st.divider()
                 
                 if not df.empty:
-                    for _, row in df.iterrows():
+                    for i, row in df.iterrows():
                         cor = "🔴"; 
                         if row['status'] == 'Pago': cor = "🟢"
                         elif row['status'] == 'Pendente': cor = "🟠"
@@ -617,19 +606,19 @@ def app_pedidos():
 
                             # Botões de Ação
                             b1, b2, b3, b4, b5, b6 = st.columns(6)
-                            ts = int(time.time())
                             
-                            if b1.button("👤", key=f"c_{row['id']}_{ts}", help="Dados Cliente"):
+                            # USAR ID FIXO + SUFIXO PARA EVITAR ERRO DE CHAVE DUPLICADA
+                            if b1.button("👤", key=f"btn_cli_{row['id']}", help="Dados Cliente"):
                                 abrir_painel('cliente', row); st.rerun()
-                            if b2.button("✏️", key=f"e_{row['id']}_{ts}", help="Editar"):
+                            if b2.button("✏️", key=f"btn_edt_{row['id']}", help="Editar"):
                                 abrir_painel('editar', row); st.rerun()
-                            if b3.button("🔄", key=f"s_{row['id']}_{ts}", help="Status"):
+                            if b3.button("🔄", key=f"btn_stt_{row['id']}", help="Status"):
                                 abrir_painel('status', row); st.rerun()
-                            if b4.button("📜", key=f"h_{row['id']}_{ts}", help="Histórico"):
+                            if b4.button("📜", key=f"btn_his_{row['id']}", help="Histórico"):
                                 abrir_painel('historico', row); st.rerun()
-                            if b5.button("📝", key=f"t_{row['id']}_{ts}", help="Tarefa"):
+                            if b5.button("📝", key=f"btn_tar_{row['id']}", help="Tarefa"):
                                 abrir_painel('tarefa', row); st.rerun()
-                            if b6.button("🗑️", key=f"d_{row['id']}_{ts}", help="Excluir"):
+                            if b6.button("🗑️", key=f"btn_del_{row['id']}", help="Excluir"):
                                 abrir_painel('excluir', row); st.rerun()
                 else: st.info("Nenhum pedido encontrado.")
 
@@ -639,11 +628,11 @@ def app_pedidos():
                 with st.container(border=True):
                     # Cabeçalho Painel
                     cp1, cp2 = st.columns([1, 3])
-                    if cp1.button("✖ Fechar", type="primary"):
+                    if cp1.button("✖ Fechar", type="primary", key="btn_close_panel_ped"):
                         st.session_state.ped_panel_active = False
                         st.rerun()
                     
-                    st.session_state.ped_panel_width = cp2.slider("Largura (%)", 20, 90, st.session_state.ped_panel_width, label_visibility="collapsed")
+                    st.session_state.ped_panel_width = cp2.slider("Largura (%)", 20, 90, st.session_state.ped_panel_width, label_visibility="collapsed", key="slider_width_ped")
                     st.divider()
 
                     # Roteador
