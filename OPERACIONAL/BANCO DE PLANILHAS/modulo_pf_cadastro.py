@@ -936,3 +936,22 @@ def interface_visualizar_cliente():
             st.success(f"🏠 {safe_view(end.get('rua'))}, {safe_view(end.get('bairro'))} - {safe_view(end.get('cidade'))}/{safe_view(end.get('uf'))} (CEP: {cep_view})")
     
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.8em; margin-top: 10px;'>código atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
+
+# --- FUNÇÃO ROTEADORA PRINCIPAL ---
+def app_cadastro_unificado():
+    """
+    Função roteadora principal para o módulo de cadastro.
+    Define qual interface exibir com base no estado 'pf_view'.
+    """
+    init_db_structures() # Garantir que tabelas existam
+    
+    view = st.session_state.get('pf_view', 'lista')
+    
+    if view == 'novo' or view == 'editar':
+        interface_cadastro_pf()
+    elif view == 'visualizar':
+        interface_visualizar_cliente()
+    else:
+        # Se for 'lista', o controle deve retornar ao módulo de pesquisa/principal
+        # Mas se cair aqui por erro, mostra aviso
+        st.info("Selecione uma opção na pesquisa ou clique em Novo.")
