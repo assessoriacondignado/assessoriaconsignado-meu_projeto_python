@@ -2,14 +2,30 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
+import sys
 import re
 from datetime import datetime, date
 import modulo_wapi # Integração
+
+# Ajuste de path para importar módulos da raiz e de COMERCIAL
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+diretorio_comercial = os.path.dirname(diretorio_atual) # Pasta COMERCIAL
+raiz_projeto = os.path.dirname(diretorio_comercial)    # Raiz do Projeto
+
+if raiz_projeto not in sys.path:
+    sys.path.append(raiz_projeto)
 
 try: 
     import conexao
 except ImportError: 
     st.error("Erro crítico: conexao.py não encontrado.")
+
+# Importação do módulo de configurações para templates
+try:
+    from COMERCIAL import modulo_comercial_configuracoes
+except ImportError:
+    modulo_comercial_configuracoes = None
+    st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
 
 def get_conn():
     try:
@@ -21,16 +37,9 @@ def get_conn():
 
 # --- FUNÇÕES AUXILIARES ---
 def listar_modelos_mensagens():
-    """Busca os modelos de mensagem cadastrados no W-API para este módulo"""
-    conn = get_conn()
-    if conn:
-        try:
-            query = "SELECT chave_status FROM wapi_templates WHERE modulo = 'RENOVACAO' ORDER BY chave_status ASC"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df['chave_status'].tolist()
-        except:
-            conn.close()
+    """Busca os modelos de mensagem cadastrados no Config para este módulo"""
+    if modulo_comercial_configuracoes:
+        return modulo_comercial_configuracoes.listar_chaves_config("RENOVACAO")
     return []
 
 # --- FUNÇÕES DE BANCO ---
@@ -97,16 +106,16 @@ def atualizar_status_rf(id_rf, novo_status, obs, dados_rf, avisar, modelo_msg_es
             conn.commit()
             conn.close()
             
-            if avisar and dados_rf.get('telefone_cliente'):
+            if avisar and dados_rf.get('telefone_cliente') and modulo_comercial_configuracoes:
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
-                    # Seleção de Template
+                    # Seleção de Template via Configurações
                     if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
                         chave = modelo_msg_escolhido
                     else:
                         chave = novo_status.lower().replace(" ", "_")
                     
-                    template = modulo_wapi.buscar_template("RENOVACAO", chave)
+                    template = modulo_comercial_configuracoes.buscar_template_config("RENOVACAO", chave)
                     
                     if template:
                         msg = template.replace("{nome}", str(dados_rf['nome_cliente']).split()[0]) \
@@ -228,7 +237,11 @@ def dialog_excluir(id_rf):
 
 # --- INTERFACE PRINCIPAL ---
 def app_renovacao_feedback():
-    # Cabeçalho com Botão Novo no Topo (Estilo Pedidos)
+    # --- CORREÇÃO DE CONFLITO DE MODAIS (Importante para evitar loops) ---
+    if 'modal_ativo' in st.session_state and st.session_state['modal_ativo'] is not None:
+        st.session_state['modal_ativo'] = None
+
+    # Cabeçalho com Botão Novo no Topo
     c_t, c_b = st.columns([5, 1])
     c_t.markdown("## 🔄 Renovação e Feedback")
     if c_b.button("➕ Novo Registro", type="primary", use_container_width=False, key="btn_novo_rf_topo"): 
@@ -236,28 +249,23 @@ def app_renovacao_feedback():
 
     df = listar_rf()
     
-    # --- FILTROS DE PESQUISA (Estilo Pedidos/Tarefas) ---
+    # --- FILTROS DE PESQUISA ---
     with st.expander("🔍 Filtros de Pesquisa", expanded=True):
         # Linha 1
         cf1, cf2, cf3 = st.columns([3, 1.5, 1.5])
-        # ADICIONADO KEY ÚNICA
         busca_geral = cf1.text_input("🔍 Buscar (Cliente, Produto, Email, Obs)", placeholder="Comece a digitar...", key="rf_busca_geral")
         
         # Filtro de Status
         opcoes_status = df['status'].unique().tolist() if not df.empty else []
         padrao_status = ["Entrada"] if "Entrada" in opcoes_status else None
-        # ADICIONADO KEY ÚNICA
         f_status = cf2.multiselect("Status", options=opcoes_status, default=padrao_status, placeholder="Filtrar Status", key="rf_filtro_status")
         
         opcoes_cats = df['categoria_produto'].unique() if not df.empty else []
-        # ADICIONADO KEY ÚNICA
         f_cats = cf3.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categoria", key="rf_filtro_cat")
 
         # Linha 2: Data
         cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
-        # ADICIONADO KEY ÚNICA PARA RESOLVER O ERRO
         op_data = cd1.selectbox("Filtro de Data (Previsão)", ["Todo o período", "Igual a", "Antes de", "Depois de"], key="rf_op_data")
-        # ADICIONADO KEY ÚNICA
         data_ref = cd2.date_input("Data Referência", value=date.today(), format="DD/MM/YYYY", key="rf_data_ref")
 
         # Aplicação dos Filtros
@@ -287,7 +295,6 @@ def app_renovacao_feedback():
     st.markdown("---")
     col_res, col_pag = st.columns([4, 1])
     with col_pag:
-        # ADICIONADO KEY ÚNICA
         qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0, key="rf_qtd_view")
     
     df_exibir = df.copy()
@@ -299,7 +306,7 @@ def app_renovacao_feedback():
 
     # --- LISTAGEM ---
     if not df_exibir.empty:
-        # Usando reset_index e enumerate para garantir keys únicas nos botões
+        # Usando reset_index e enumerate para garantir keys únicas
         for i, row in df_exibir.reset_index(drop=True).iterrows():
             stt = row['status']
             cor = "🔴"
@@ -314,14 +321,14 @@ def app_renovacao_feedback():
                 st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
                 st.write(f"**Obs:** {row['observacao']}")
                 
-                # Botões (6 colunas) - KEY COM ÍNDICE PARA EVITAR DUPLICAÇÃO
+                # ADICIONADO PREFIXO 'rf_' PARA CORRIGIR DUPLICAÇÃO DE KEY GLOBAL
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
-                if c1.button("👤 Cliente", key=f"cli_{row['id']}_{i}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'], row['email_cliente'])
-                if c2.button("👁️ Ver", key=f"ver_{row['id']}_{i}"): dialog_visualizar(row)
-                if c3.button("🔄 Status", key=f"s_{row['id']}_{i}"): dialog_status(row)
-                if c4.button("✏️ Editar", key=f"ed_{row['id']}_{i}"): dialog_editar(row)
-                if c5.button("📜 Hist.", key=f"h_{row['id']}_{i}"): dialog_historico(row['id'])
-                if c6.button("🗑️ Excluir", key=f"d_{row['id']}_{i}"): dialog_excluir(row['id'])
+                if c1.button("👤 Cliente", key=f"rf_cli_{row['id']}_{i}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'], row['email_cliente'])
+                if c2.button("👁️ Ver", key=f"rf_ver_{row['id']}_{i}"): dialog_visualizar(row)
+                if c3.button("🔄 Status", key=f"rf_s_{row['id']}_{i}"): dialog_status(row)
+                if c4.button("✏️ Editar", key=f"rf_ed_{row['id']}_{i}"): dialog_editar(row)
+                if c5.button("📜 Hist.", key=f"rf_h_{row['id']}_{i}"): dialog_historico(row['id'])
+                if c6.button("🗑️ Excluir", key=f"rf_d_{row['id']}_{i}"): dialog_excluir(row['id'])
     else:
         st.info("Nenhum registro encontrado.")
 
