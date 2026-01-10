@@ -17,14 +17,13 @@ if not os.path.exists(BASE_DIR):
 # --- CONEXÃO COM BANCO ---
 def get_conn():
     try:
-        conn = psycopg2.connect(
+        return psycopg2.connect(
             host=conexao.host,
             port=conexao.port,
             database=conexao.database,
             user=conexao.user,
             password=conexao.password
         )
-        return conn
     except Exception as e:
         st.error(f"Erro ao conectar ao banco: {e}")
         return None
@@ -159,10 +158,14 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, orige
             novo_id = cur.fetchone()[0]
             conn.commit()
             conn.close()
-            if ids_temas: atualizar_vinculo_temas(novo_id, ids_temas)
+            
+            if ids_temas:
+                atualizar_vinculo_temas(novo_id, ids_temas)
+                
             return novo_id
         except Exception as e:
-            st.error(f"Erro SQL: {e}"); if conn: conn.close()
+            st.error(f"Erro SQL: {e}")
+            if conn: conn.close()
     return None
 
 def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_temas):
@@ -178,7 +181,9 @@ def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_t
             cur.execute(query, (nome, tipo, resumo, preco, origem_custo, id_prod))
             conn.commit()
             conn.close()
+            
             atualizar_vinculo_temas(id_prod, ids_temas)
+            
             return True
         except: 
             if conn: conn.close()
