@@ -68,7 +68,67 @@ def salvar_arquivos(uploaded_files, caminho_destino):
             with open(file_path, "wb") as f:
                 f.write(file.getbuffer())
 
-# --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
+# --- FUNÇÕES DE TEMAS (Instruções) ---
+def listar_temas_disponiveis():
+    """Retorna lista de dicts [{'id': 1, 'tema': 'Nome'}]"""
+    conn = get_conn()
+    if conn:
+        try:
+            df = pd.read_sql("SELECT id, tema FROM admin.temas_produtos ORDER BY tema", conn)
+            conn.close()
+            return df.to_dict('records')
+        except: conn.close()
+    return []
+
+def buscar_temas_do_produto(id_produto):
+    """Retorna lista de IDs [1, 5, ...]"""
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id_tema FROM admin.produtos_temas_vinculo WHERE id_produto = %s", (id_produto,))
+            ids = [row[0] for row in cur.fetchall()]
+            conn.close()
+            return ids
+        except: conn.close()
+    return []
+
+def buscar_texto_temas_produto(id_produto):
+    """Retorna DataFrame com tema e texto para visualização"""
+    conn = get_conn()
+    if conn:
+        try:
+            query = """
+                SELECT t.tema, t.texto 
+                FROM admin.produtos_temas_vinculo v
+                JOIN admin.temas_produtos t ON v.id_tema = t.id
+                WHERE v.id_produto = %s
+                ORDER BY t.tema
+            """
+            df = pd.read_sql(query, conn, params=(id_produto,))
+            conn.close()
+            return df
+        except: conn.close()
+    return pd.DataFrame()
+
+def atualizar_vinculo_temas(id_produto, lista_ids_temas):
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # 1. Limpa vínculos atuais
+            cur.execute("DELETE FROM admin.produtos_temas_vinculo WHERE id_produto = %s", (id_produto,))
+            # 2. Insere novos
+            if lista_ids_temas:
+                args = [(int(id_produto), int(tid)) for tid in lista_ids_temas]
+                cur.executemany("INSERT INTO admin.produtos_temas_vinculo (id_produto, id_tema) VALUES (%s, %s)", args)
+            conn.commit(); conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao vincular temas: {e}"); conn.close()
+    return False
+
+# --- FUNÇÕES DE BANCO DE DADOS (CRUD PRODUTOS) ---
 def listar_produtos():
     conn = get_conn()
     if conn:
@@ -87,7 +147,7 @@ def listar_produtos():
             return pd.DataFrame()
     return pd.DataFrame()
 
-def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, origem_custo):
+def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, origem_custo, ids_temas):
     conn = get_conn()
     if conn:
         try:
@@ -101,13 +161,18 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, orige
             novo_id = cur.fetchone()[0]
             conn.commit()
             conn.close()
+            
+            # Salva os temas vinculados
+            if ids_temas:
+                atualizar_vinculo_temas(novo_id, ids_temas)
+                
             return novo_id
         except Exception as e:
             st.error(f"Erro SQL: {e}")
             if conn: conn.close()
     return None
 
-def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo):
+def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_temas):
     conn = get_conn()
     if conn:
         try:
@@ -120,6 +185,10 @@ def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo):
             cur.execute(query, (nome, tipo, resumo, preco, origem_custo, id_prod))
             conn.commit()
             conn.close()
+            
+            # Atualiza vinculos
+            atualizar_vinculo_temas(id_prod, ids_temas)
+            
             return True
         except: 
             if conn: conn.close()
@@ -178,10 +247,26 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
     else:
         st.error("Pasta não encontrada.")
 
+@st.dialog("📖 Instruções do Produto")
+def dialog_visualizar_instrucoes(id_prod, nome_prod):
+    st.subheader(f"Instruções: {nome_prod}")
+    df_inst = buscar_texto_temas_produto(id_prod)
+    
+    if not df_inst.empty:
+        for _, row in df_inst.iterrows():
+            with st.expander(f"📌 {row['tema']}", expanded=False):
+                st.markdown(row['texto'])
+    else:
+        st.info("Este produto não possui instruções vinculadas.")
+
 @st.dialog("✏️ Editar Produto")
 def dialog_editar_produto(dados):
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
+    
+    # Busca temas
+    todos_temas = listar_temas_disponiveis()
+    temas_vinculados = buscar_temas_do_produto(dados['id'])
 
     with st.form("form_editar_prod"):
         c1, c2 = st.columns(2)
@@ -200,13 +285,21 @@ def dialog_editar_produto(dados):
             idx_orig = lista_origens.index(dados.get('origem_custo')) + 1
         origem = c4.selectbox("Origem de Custo", options=opcoes_origem, index=idx_orig)
         
+        # Multiselect Temas
+        temas_sel = st.multiselect(
+            "Instruções / Temas",
+            options=[t['id'] for t in todos_temas],
+            default=temas_vinculados,
+            format_func=lambda x: next((t['tema'] for t in todos_temas if t['id'] == x), str(x))
+        )
+        
         resumo = st.text_area("Resumo", value=dados.get('resumo', ''))
         
         st.divider()
         
         if st.form_submit_button("💾 Salvar Alterações"):
             if nome:
-                if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem):
+                if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem, temas_sel):
                     st.success("Atualizado!")
                     time.sleep(1)
                     st.rerun()
@@ -228,6 +321,7 @@ def app_produtos():
         
         lista_origens = listar_origens_custo()
         opcoes_origem = [""] + lista_origens
+        todos_temas = listar_temas_disponiveis()
 
         with st.container(border=True):
             with st.form("form_novo_produto"):
@@ -239,6 +333,13 @@ def app_produtos():
                 preco = c3.number_input("Preço (R$)", value=0.0, format="%.2f")
                 origem = c4.selectbox("Origem de Custo", options=opcoes_origem)
                 
+                # Multiselect Temas
+                temas_sel = st.multiselect(
+                    "Instruções / Temas",
+                    options=[t['id'] for t in todos_temas],
+                    format_func=lambda x: next((t['tema'] for t in todos_temas if t['id'] == x), str(x))
+                )
+
                 resumo = st.text_area("Resumo")
                 
                 arquivos = st.file_uploader("Arquivos Iniciais (Opcional)", accept_multiple_files=True)
@@ -251,7 +352,7 @@ def app_produtos():
                         caminho = criar_pasta_produto(codigo, nome)
                         if arquivos: salvar_arquivos(arquivos, caminho)
                         
-                        cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem)
+                        cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem, temas_sel)
                         st.success(f"Produto {codigo} cadastrado com sucesso!")
                         time.sleep(1.5)
                         st.rerun()
@@ -283,19 +384,24 @@ def app_produtos():
                     c2.write(f"**Resumo:** {row['resumo']}")
                     
                     st.divider()
-                    b1, b2, b3, b4 = st.columns(4)
+                    # Aumentei para 5 colunas para caber o novo botão
+                    b1, b2, b3, b4, b5 = st.columns(5)
                     
                     if b1.button("📂 Arquivos", key=f"arq_{row['id']}"):
                         dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
+
+                    # Botão NOVO
+                    if b2.button("📖 Instruções", key=f"inst_{row['id']}"):
+                        dialog_visualizar_instrucoes(row['id'], row['nome'])
                     
-                    if b2.button("✏️ Editar", key=f"edit_{row['id']}"):
+                    if b3.button("✏️ Editar", key=f"edit_{row['id']}"):
                         dialog_editar_produto(row)
                         
-                    if b3.button("🔄 Status", key=f"st_{row['id']}"):
+                    if b4.button("🔄 Status", key=f"st_{row['id']}"):
                         alternar_status(row['id'], row['ativo'])
                         st.rerun()
                         
-                    if b4.button("🗑️ Excluir", key=f"del_{row['id']}"):
+                    if b5.button("🗑️ Excluir", key=f"del_{row['id']}"):
                         excluir_produto(row['id'], row['caminho_pasta'])
                         st.rerun()
         else:
