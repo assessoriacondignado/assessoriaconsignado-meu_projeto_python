@@ -116,9 +116,7 @@ def atualizar_vinculo_temas(id_produto, lista_ids_temas):
     if conn:
         try:
             cur = conn.cursor()
-            # 1. Limpa vínculos atuais
             cur.execute("DELETE FROM admin.produtos_temas_vinculo WHERE id_produto = %s", (id_produto,))
-            # 2. Insere novos
             if lista_ids_temas:
                 args = [(int(id_produto), int(tid)) for tid in lista_ids_temas]
                 cur.executemany("INSERT INTO admin.produtos_temas_vinculo (id_produto, id_tema) VALUES (%s, %s)", args)
@@ -161,15 +159,10 @@ def cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho_pasta, orige
             novo_id = cur.fetchone()[0]
             conn.commit()
             conn.close()
-            
-            # Salva os temas vinculados
-            if ids_temas:
-                atualizar_vinculo_temas(novo_id, ids_temas)
-                
+            if ids_temas: atualizar_vinculo_temas(novo_id, ids_temas)
             return novo_id
         except Exception as e:
-            st.error(f"Erro SQL: {e}")
-            if conn: conn.close()
+            st.error(f"Erro SQL: {e}"); if conn: conn.close()
     return None
 
 def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_temas):
@@ -185,10 +178,7 @@ def atualizar_produto_db(id_prod, nome, tipo, resumo, preco, origem_custo, ids_t
             cur.execute(query, (nome, tipo, resumo, preco, origem_custo, id_prod))
             conn.commit()
             conn.close()
-            
-            # Atualiza vinculos
             atualizar_vinculo_temas(id_prod, ids_temas)
-            
             return True
         except: 
             if conn: conn.close()
@@ -223,11 +213,10 @@ def alternar_status(id_prod, status_atual):
             if conn: conn.close()
     return False
 
-# --- DIALOGS ---
+# --- PAINÉIS LATERAIS (SUBSTITUEM OS DIALOGS) ---
 
-@st.dialog("📂 Arquivos do Item")
-def dialog_visualizar_arquivos(caminho_pasta, nome_item):
-    st.write(f"Arquivos de: **{nome_item}**")
+def painel_visualizar_arquivos(caminho_pasta, nome_item):
+    st.markdown(f"### 📂 Arquivos: {nome_item}")
     if caminho_pasta and os.path.exists(caminho_pasta):
         arquivos = os.listdir(caminho_pasta)
         if arquivos:
@@ -239,7 +228,7 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
                 caminho_completo = os.path.join(caminho_pasta, arquivo)
                 try:
                     with open(caminho_completo, "rb") as f:
-                        c3.download_button("⬇️ Baixar", data=f, file_name=arquivo, key=f"dl_{arquivo}_{uuid.uuid4()}")
+                        c3.download_button("⬇️", data=f, file_name=arquivo, key=f"dl_{arquivo}_{uuid.uuid4()}", help="Baixar Arquivo")
                 except:
                     c3.write("Erro")
         else:
@@ -247,9 +236,8 @@ def dialog_visualizar_arquivos(caminho_pasta, nome_item):
     else:
         st.error("Pasta não encontrada.")
 
-@st.dialog("📖 Instruções do Produto")
-def dialog_visualizar_instrucoes(id_prod, nome_prod):
-    st.subheader(f"Instruções: {nome_prod}")
+def painel_visualizar_instrucoes(id_prod, nome_prod):
+    st.markdown(f"### 📖 Instruções: {nome_prod}")
     df_inst = buscar_texto_temas_produto(id_prod)
     
     if not df_inst.empty:
@@ -259,8 +247,8 @@ def dialog_visualizar_instrucoes(id_prod, nome_prod):
     else:
         st.info("Este produto não possui instruções vinculadas.")
 
-@st.dialog("✏️ Editar Produto")
-def dialog_editar_produto(dados):
+def painel_editar_produto(dados):
+    st.markdown(f"### ✏️ Editar: {dados['nome']}")
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
     
@@ -268,24 +256,22 @@ def dialog_editar_produto(dados):
     todos_temas = listar_temas_disponiveis()
     temas_vinculados = buscar_temas_do_produto(dados['id'])
 
-    with st.form("form_editar_prod"):
-        c1, c2 = st.columns(2)
-        nome = c1.text_input("Nome *", value=dados['nome'])
+    with st.form("form_editar_prod_painel"):
+        nome = st.text_input("Nome *", value=dados['nome'])
         
         tipos_prods = ["PRODUTO", "SERVIÇO RECORRENTE", "SERVIÇO CRÉDITO"]
         idx_tipo = 0
         if dados['tipo'] in tipos_prods: idx_tipo = tipos_prods.index(dados['tipo'])
-        tipo = c2.selectbox("Tipo", tipos_prods, index=idx_tipo)
+        tipo = st.selectbox("Tipo", tipos_prods, index=idx_tipo)
         
-        c3, c4 = st.columns(2)
-        preco = c3.number_input("Preço (R$)", value=float(dados['preco'] or 0.0), format="%.2f")
+        c_p1, c_p2 = st.columns(2)
+        preco = c_p1.number_input("Preço (R$)", value=float(dados['preco'] or 0.0), format="%.2f")
         
         idx_orig = 0
         if dados.get('origem_custo') in lista_origens:
             idx_orig = lista_origens.index(dados.get('origem_custo')) + 1
-        origem = c4.selectbox("Origem de Custo", options=opcoes_origem, index=idx_orig)
+        origem = c_p2.selectbox("Origem Custo", options=opcoes_origem, index=idx_orig)
         
-        # Multiselect Temas
         temas_sel = st.multiselect(
             "Instruções / Temas",
             options=[t['id'] for t in todos_temas],
@@ -297,11 +283,12 @@ def dialog_editar_produto(dados):
         
         st.divider()
         
-        if st.form_submit_button("💾 Salvar Alterações"):
+        if st.form_submit_button("💾 Salvar Alterações", type="primary"):
             if nome:
                 if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem, temas_sel):
                     st.success("Atualizado!")
                     time.sleep(1)
+                    st.session_state.prod_panel_active = False # Fecha painel ao salvar
                     st.rerun()
                 else:
                     st.error("Erro ao atualizar.")
@@ -310,15 +297,12 @@ def dialog_editar_produto(dados):
 
 # --- FUNÇÃO PRINCIPAL ---
 def app_produtos():
-    # Criação das Abas na ordem solicitada
     tab_novo, tab_lista = st.tabs(["➕ Novo Produto", "📋 Lista de Produtos"])
 
     # ==========================
-    # ABA 1: NOVO PRODUTO
+    # ABA 1: NOVO PRODUTO (Mantido Layout Original)
     # ==========================
     with tab_novo:
-        # Título removido conforme solicitado
-        
         lista_origens = listar_origens_custo()
         opcoes_origem = [""] + lista_origens
         todos_temas = listar_temas_disponiveis()
@@ -333,7 +317,6 @@ def app_produtos():
                 preco = c3.number_input("Preço (R$)", value=0.0, format="%.2f")
                 origem = c4.selectbox("Origem de Custo", options=opcoes_origem)
                 
-                # Multiselect Temas
                 temas_sel = st.multiselect(
                     "Instruções / Temas",
                     options=[t['id'] for t in todos_temas],
@@ -341,7 +324,6 @@ def app_produtos():
                 )
 
                 resumo = st.text_area("Resumo")
-                
                 arquivos = st.file_uploader("Arquivos Iniciais (Opcional)", accept_multiple_files=True)
 
                 st.divider()
@@ -354,58 +336,103 @@ def app_produtos():
                         
                         cadastrar_produto_db(codigo, nome, tipo, resumo, preco, caminho, origem, temas_sel)
                         st.success(f"Produto {codigo} cadastrado com sucesso!")
-                        time.sleep(1.5)
-                        st.rerun()
-                    else:
-                        st.warning("O campo Nome é obrigatório.")
+                        time.sleep(1.5); st.rerun()
+                    else: st.warning("O campo Nome é obrigatório.")
 
     # ==========================
-    # ABA 2: LISTA DE PRODUTOS
+    # ABA 2: LISTA DE PRODUTOS (LAYOUT COM PAINEL LATERAL)
     # ==========================
     with tab_lista:
-        # Título removido conforme solicitado
-        
-        df = listar_produtos()
-        
-        if not df.empty:
-            filtro = st.text_input("🔍 Buscar Produto", placeholder="Nome ou Código")
-            if filtro:
-                df = df[df['nome'].str.contains(filtro, case=False, na=False) | df['codigo'].str.contains(filtro, case=False, na=False)]
-            
-            st.markdown("---")
-            
-            for index, row in df.iterrows():
-                status_icon = "🟢" if row['ativo'] else "🔴"
-                with st.expander(f"{status_icon} {row['nome']} ({row['codigo']})"):
-                    c1, c2 = st.columns(2)
-                    c1.write(f"**Tipo:** {row['tipo']}")
-                    c1.write(f"**Preço:** R$ {row['preco']:.2f}")
-                    c2.write(f"**Origem:** {row.get('origem_custo') or '-'}")
-                    c2.write(f"**Resumo:** {row['resumo']}")
+        # Inicializa estado do painel
+        if 'prod_panel_active' not in st.session_state: st.session_state.prod_panel_active = False
+        if 'prod_panel_data' not in st.session_state: st.session_state.prod_panel_data = None
+        if 'prod_panel_type' not in st.session_state: st.session_state.prod_panel_type = None 
+        if 'prod_panel_width' not in st.session_state: st.session_state.prod_panel_width = 40 # Largura padrão
+
+        # Define as colunas dinâmicas
+        if st.session_state.prod_panel_active:
+            w = st.session_state.prod_panel_width
+            col_lista, col_painel = st.columns([100-w, w])
+        else:
+            col_lista = st.container()
+            col_painel = None
+
+        # --- COLUNA ESQUERDA: LISTA ---
+        with col_lista:
+            df = listar_produtos()
+            if not df.empty:
+                filtro = st.text_input("🔍 Buscar Produto", placeholder="Nome ou Código", key="search_prod")
+                if filtro:
+                    df = df[df['nome'].str.contains(filtro, case=False, na=False) | df['codigo'].str.contains(filtro, case=False, na=False)]
+                
+                st.markdown("---")
+                
+                for index, row in df.iterrows():
+                    status_icon = "🟢" if row['ativo'] else "🔴"
+                    # Card do produto
+                    with st.container(border=True):
+                        st.write(f"**{status_icon} {row['nome']}**")
+                        st.caption(f"{row['codigo']} | {row['tipo']}")
+                        
+                        b_cols = st.columns(5)
+                        
+                        # Função Helper para ativar painel
+                        def ativar_painel(tipo, dados):
+                            st.session_state.prod_panel_active = True
+                            st.session_state.prod_panel_type = tipo
+                            st.session_state.prod_panel_data = dados
+
+                        if b_cols[0].button("📂", key=f"arq_{row['id']}", help="Arquivos"):
+                            ativar_painel('arquivos', row)
+                            st.rerun()
+
+                        if b_cols[1].button("📖", key=f"inst_{row['id']}", help="Instruções"):
+                            ativar_painel('instrucoes', row)
+                            st.rerun()
+                        
+                        if b_cols[2].button("✏️", key=f"edit_{row['id']}", help="Editar"):
+                            ativar_painel('editar', row)
+                            st.rerun()
+                            
+                        if b_cols[3].button("🔄", key=f"st_{row['id']}", help="Mudar Status"):
+                            alternar_status(row['id'], row['ativo'])
+                            st.rerun()
+                            
+                        if b_cols[4].button("🗑️", key=f"del_{row['id']}", help="Excluir"):
+                            excluir_produto(row['id'], row['caminho_pasta'])
+                            st.rerun()
+            else:
+                st.info("Nenhum produto cadastrado.")
+
+        # --- COLUNA DIREITA: PAINEL LATERAL ---
+        if col_painel and st.session_state.prod_panel_active:
+            with col_painel:
+                with st.container(border=True):
+                    # Cabeçalho do Painel (Fechar + Slider)
+                    cp1, cp2 = st.columns([1, 3])
+                    if cp1.button("✖ Fechar", type="primary"):
+                        st.session_state.prod_panel_active = False
+                        st.rerun()
+                    
+                    st.session_state.prod_panel_width = cp2.slider(
+                        "Largura da Janela (%)", 
+                        min_value=20, max_value=90, 
+                        value=st.session_state.prod_panel_width,
+                        label_visibility="collapsed"
+                    )
                     
                     st.divider()
-                    # Aumentei para 5 colunas para caber o novo botão
-                    b1, b2, b3, b4, b5 = st.columns(5)
                     
-                    if b1.button("📂 Arquivos", key=f"arq_{row['id']}"):
-                        dialog_visualizar_arquivos(row['caminho_pasta'], row['nome'])
-
-                    # Botão NOVO
-                    if b2.button("📖 Instruções", key=f"inst_{row['id']}"):
-                        dialog_visualizar_instrucoes(row['id'], row['nome'])
+                    # Conteúdo do Painel
+                    tipo = st.session_state.prod_panel_type
+                    dados = st.session_state.prod_panel_data
                     
-                    if b3.button("✏️ Editar", key=f"edit_{row['id']}"):
-                        dialog_editar_produto(row)
-                        
-                    if b4.button("🔄 Status", key=f"st_{row['id']}"):
-                        alternar_status(row['id'], row['ativo'])
-                        st.rerun()
-                        
-                    if b5.button("🗑️ Excluir", key=f"del_{row['id']}"):
-                        excluir_produto(row['id'], row['caminho_pasta'])
-                        st.rerun()
-        else:
-            st.info("Nenhum produto cadastrado.")
+                    if tipo == 'arquivos':
+                        painel_visualizar_arquivos(dados['caminho_pasta'], dados['nome'])
+                    elif tipo == 'instrucoes':
+                        painel_visualizar_instrucoes(dados['id'], dados['nome'])
+                    elif tipo == 'editar':
+                        painel_editar_produto(dados)
 
 if __name__ == "__main__":
     app_produtos()
