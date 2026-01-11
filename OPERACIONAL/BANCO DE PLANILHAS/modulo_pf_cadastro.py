@@ -271,9 +271,22 @@ def buscar_pf_simples(termo, pagina=1, itens_por_pagina=50):
     if conn:
         try:
             termo_limpo = limpar_normalizar_cpf(termo)
+            
+            # --- CORREÇÃO: DETECÇÃO DINÂMICA DA COLUNA DE LIGAÇÃO ---
+            col_fk_tel = 'cpf' # Padrão fallback
+            try:
+                # Verifica se existe cpf_ref na tabela de telefones
+                cur_cols = conn.cursor()
+                cur_cols.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'banco_pf' AND table_name = 'pf_telefones' AND column_name = 'cpf_ref'")
+                if cur_cols.fetchone():
+                    col_fk_tel = 'cpf_ref'
+                cur_cols.close()
+            except: pass
+            # --------------------------------------------------------
+
             params = []
             if termo_limpo and len(termo_limpo) > 6: # CPF ou Telefone
-                sql_base = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento FROM banco_pf.pf_dados d LEFT JOIN banco_pf.pf_telefones t ON d.cpf = t.cpf_ref WHERE d.cpf LIKE %s OR t.numero LIKE %s"
+                sql_base = f"SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento FROM banco_pf.pf_dados d LEFT JOIN banco_pf.pf_telefones t ON d.cpf = t.{col_fk_tel} WHERE d.cpf LIKE %s OR t.numero LIKE %s"
                 params = [f"%{termo_limpo}%", f"%{termo_limpo}%"]
             else: # Nome
                 sql_base = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento FROM banco_pf.pf_dados d WHERE d.nome ILIKE %s"
