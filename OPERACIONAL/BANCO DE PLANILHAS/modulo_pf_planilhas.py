@@ -93,7 +93,7 @@ def salvar_alteracoes(df, schema, tabela):
         return False, f"Erro genérico: {str(e)}"
 
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
-def app_gestao_planilhas():
+def app_config_planilhas():
     st.markdown("### 📊 Gestão Avançada de Planilhas (SQLAlchemy)")
 
     if not conexao:
@@ -182,6 +182,7 @@ def app_gestao_planilhas():
                             if sucesso:
                                 st.success(msg)
                                 st.session_state['df_base_pf'] = df_editado
+                                import time
                                 time.sleep(1) # Pequena pausa para visualização
                                 st.rerun()
                             else:
@@ -189,4 +190,4 @@ def app_gestao_planilhas():
 
 if __name__ == "__main__":
     import time # Import local para o rerun funcionar no main
-    app_gestao_planilhas()
+    app_config_planilhas()
