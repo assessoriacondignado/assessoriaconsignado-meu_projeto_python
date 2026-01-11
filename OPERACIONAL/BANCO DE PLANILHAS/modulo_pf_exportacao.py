@@ -443,21 +443,48 @@ def view_pesquisa_lista():
     tab_rapida, tab_ampla = st.tabs(["🔍 Busca Rápida", "🔬 Pesquisa Ampla"])
     
     # -----------------------------------------------------------
-    # ABA 1: BUSCA RÁPIDA
+    # ABA 1: BUSCA RÁPIDA (REFORMULADA)
     # -----------------------------------------------------------
     with tab_rapida:
-        c_busca, c_novo = st.columns([4, 1])
-        termo = c_busca.text_input("Buscar por Nome, CPF ou Telefone", key="busca_unificada", placeholder="Digite para pesquisar...")
-        if c_novo.button("➕ Novo", type="primary", use_container_width=True, key="btn_novo_rapido"):
-            ir_para_novo()
+        # 1. Campo de Busca (Sem botão NOVO aqui)
+        termo = st.text_input("Buscar por Nome, CPF ou Telefone para Localizar ou Cadastrar", key="busca_unificada", placeholder="Digite para pesquisar...")
         
         st.divider()
         
         if termo:
+            # 2. Realiza a busca
             df, total = buscar_pf_simples(termo)
-            renderizar_tabela_resultados(df, total)
-        else:
-            st.info("Digite algo para pesquisar.")
+            
+            # 3. Se achou, mostra
+            if not df.empty:
+                renderizar_tabela_resultados(df, total)
+            else:
+                # 4. Se NÃO achou, oferece cadastro
+                st.warning("Nenhum cadastro localizado com este termo.")
+                
+                # Botão de Ação para Cadastro Novo
+                if st.button(f"📝 Cadastrar novo: {termo}", type="primary"):
+                    # Configura estado para novo cadastro
+                    st.session_state['pf_view_ativa'] = 'formulario'
+                    st.session_state['pf_modo'] = 'novo'
+                    st.session_state['pf_cpf_selecionado'] = None
+                    
+                    # Inicializa staging vazio
+                    st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
+                    
+                    # Lógica de Pré-preenchimento
+                    termo_numerico = limpar_apenas_numeros(termo)
+                    
+                    # Se tiver 11 dígitos numéricos, assume que é CPF
+                    if termo_numerico and len(termo_numerico) == 11:
+                        st.session_state['dados_staging']['geral']['cpf'] = termo_numerico
+                    else:
+                        # Caso contrário, assume que é Nome (e converte para Maiúsculo)
+                        st.session_state['dados_staging']['geral']['nome'] = termo.upper()
+                    
+                    # Marca formulário como carregado para não ser resetado
+                    st.session_state['form_loaded'] = True
+                    st.rerun()
 
     # -----------------------------------------------------------
     # ABA 2: PESQUISA AMPLA (Lógica trazida do modulo_pesquisa)
@@ -558,7 +585,6 @@ def view_formulario_cadastro():
                 
                 # CORREÇÃO DEFINITIVA: 
                 # Se a data for inválida, None ou Vazia, força 'Hoje'.
-                # O componente st.date_input NÃO aceita None em algumas versões.
                 if val_atual is None or pd.isna(val_atual) or not isinstance(val_atual, (date, datetime)):
                     val_atual = date.today()
 
