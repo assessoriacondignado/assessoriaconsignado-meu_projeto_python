@@ -1,191 +1,192 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-from datetime import datetime
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+import sys
+import os
 
-# Tenta importar a conexão
+# Tenta importar configurações de conexão
 try:
     import conexao
 except ImportError:
-    st.error("Erro crítico: conexao.py não encontrado.")
-
-# --- CONEXÃO ---
-def get_conn():
+    # Ajuste de Path: Adiciona o diretório raiz ao path (3 níveis acima: OPERACIONAL/BANCO DE PLANILHAS -> Raiz)
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     try:
-        return psycopg2.connect(
+        import conexao
+    except ImportError:
+        st.error("Arquivo 'conexao.py' não encontrado. Verifique a configuração.")
+        conexao = None
+
+# --- CONFIGURAÇÕES ---
+# Lista de schemas permitidos para visualização/edição (Foco no banco_pf)
+SCHEMAS_PERMITIDOS = ['banco_pf', 'public']
+
+def get_db_url():
+    """Gera a URL de conexão para o SQLAlchemy"""
+    if not conexao: return None
+    return f"postgresql+psycopg2://{conexao.user}:{conexao.password}@{conexao.host}:{conexao.port}/{conexao.database}"
+
+def obter_lista_completa_tabelas(schemas):
+    """
+    Busca todas as tabelas dos schemas permitidos e retorna uma lista de tuplas (schema, tabela).
+    """
+    if not conexao: return []
+    
+    try:
+        conn = psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database,
             user=conexao.user, password=conexao.password
         )
+        cursor = conn.cursor()
+        
+        # Formata a lista para o SQL
+        schemas_str = "', '".join(schemas)
+        query = f"""
+            SELECT table_schema, table_name 
+            FROM information_schema.tables 
+            WHERE table_schema IN ('{schemas_str}')
+            AND table_type = 'BASE TABLE'
+            ORDER BY table_schema, table_name;
+        """
+        
+        cursor.execute(query)
+        resultados = cursor.fetchall() 
+        conn.close()
+        
+        return resultados
     except Exception as e:
-        st.error(f"Erro de conexão com o banco: {e}")
+        st.error(f"Erro ao buscar lista de tabelas: {e}")
+        return []
+
+def carregar_dados(schema, tabela):
+    """Lê os dados da tabela para um DataFrame"""
+    try:
+        engine = create_engine(get_db_url())
+        query = f'SELECT * FROM "{schema}"."{tabela}" ORDER BY 1 ASC' # Ordena pela primeira coluna (geralmente ID)
+        df = pd.read_sql(query, engine)
+        return df
+    except Exception as e:
+        st.error(f"Erro ao ler tabela: {e}")
         return None
 
-# --- LISTAGEM ESTRITA DO SCHEMA BANCO_PF ---
-def listar_tabelas_pf():
-    conn = get_conn()
-    tabelas = []
-    if conn:
-        try:
-            cur = conn.cursor()
-            # FILTRO OBRIGATÓRIO: table_schema = 'banco_pf'
-            query = """
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'banco_pf' 
-                AND table_type = 'BASE TABLE'
-                ORDER BY table_name;
-            """
-            cur.execute(query)
-            # Retorna lista simples de nomes
-            tabelas = [t[0] for t in cur.fetchall()]
-            conn.close()
-        except Exception as e:
-            st.error(f"Erro ao listar tabelas: {e}")
-            conn.close()
-    return tabelas
-
-# --- CARREGAR DADOS ---
-def carregar_dados_tabela(nome_tabela):
-    conn = get_conn()
-    if conn:
-        try:
-            # Força o uso do schema banco_pf na query
-            query = f"SELECT * FROM banco_pf.{nome_tabela} ORDER BY id ASC"
-            df = pd.read_sql(query, conn)
-            conn.close()
-            return df
-        except Exception as e:
-            st.error(f"Erro ao ler banco_pf.{nome_tabela}: {e}")
-            conn.close()
-    return pd.DataFrame()
-
-# --- SALVAR ALTERAÇÕES (CRUD) ---
-def salvar_lote(nome_tabela, changes, df_original):
-    conn = get_conn()
-    if not conn: return
-    
-    cur = conn.cursor()
-    sucesso_count = 0
-    erros = []
-
+def salvar_alteracoes(df, schema, tabela):
+    """
+    Substitui a tabela inteira pelos dados novos (Truncate + Insert).
+    Atenção: Isso reinicia a tabela com os dados do DataFrame.
+    """
     try:
-        # 1. DELETAR (deleted_rows retorna lista de índices)
-        for idx in changes['deleted_rows']:
-            try:
-                # Pega o ID da linha original usando o índice
-                row_id = df_original.iloc[idx]['id']
-                cur.execute(f"DELETE FROM banco_pf.{nome_tabela} WHERE id = %s", (int(row_id),))
-                sucesso_count += 1
-            except Exception as e:
-                erros.append(f"Erro ao excluir linha {idx}: {e}")
-
-        # 2. INSERIR (added_rows retorna lista de dicts)
-        for row in changes['added_rows']:
-            try:
-                # Remove chaves vazias ou nulas para evitar erro de sintaxe
-                clean_row = {k: v for k, v in row.items() if v is not None and str(v).strip() != ''}
-                if not clean_row: continue
-
-                cols = list(clean_row.keys())
-                vals = list(clean_row.values())
-                placeholders = ", ".join(["%s"] * len(vals))
-                col_names = ", ".join(cols)
-
-                query = f"INSERT INTO banco_pf.{nome_tabela} ({col_names}) VALUES ({placeholders})"
-                cur.execute(query, vals)
-                sucesso_count += 1
-            except Exception as e:
-                erros.append(f"Erro ao inserir linha: {e}")
-
-        # 3. EDITAR (edited_rows retorna dict {indice: {coluna: valor}})
-        for idx_str, edits in changes['edited_rows'].items():
-            try:
-                idx = int(idx_str)
-                row_id = df_original.iloc[idx]['id']
-                
-                if not edits: continue
-
-                set_clauses = []
-                vals = []
-                for col, val in edits.items():
-                    set_clauses.append(f"{col} = %s")
-                    vals.append(val)
-                
-                # Adiciona ID no final para o WHERE
-                vals.append(row_id)
-                
-                query = f"UPDATE banco_pf.{nome_tabela} SET {', '.join(set_clauses)} WHERE id = %s"
-                cur.execute(query, vals)
-                sucesso_count += 1
-            except Exception as e:
-                erros.append(f"Erro ao editar linha {idx}: {e}")
-
-        conn.commit()
-        
-        if sucesso_count > 0:
-            st.toast(f"✅ {sucesso_count} alterações salvas em 'banco_pf.{nome_tabela}'!")
-        
-        if erros:
-            st.error("Erros ocorreram durante o salvamento:")
-            for err in erros: st.write(err)
-
+        engine = create_engine(get_db_url())
+        with engine.begin() as conn:
+            # 1. Truncate (Limpa a tabela mantendo a estrutura)
+            # RESTART IDENTITY reinicia os contadores de ID Serial
+            # CASCADE permite limpar mesmo se houver dependências (cuidado!)
+            conn.execute(text(f'TRUNCATE TABLE "{schema}"."{tabela}" RESTART IDENTITY CASCADE'))
+            
+            # 2. Insert (Insere os dados do DataFrame)
+            df.to_sql(tabela, conn, schema=schema, if_exists='append', index=False)
+            
+        return True, "Dados salvos com sucesso (Tabela substituída)!"
+    except SQLAlchemyError as e:
+        return False, f"Erro de banco de dados: {str(e)}"
     except Exception as e:
-        st.error(f"Erro geral ao salvar: {e}")
-    finally:
-        conn.close()
+        return False, f"Erro genérico: {str(e)}"
 
-# --- INTERFACE PRINCIPAL DO MÓDULO ---
+# --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 def app_gestao_planilhas():
-    st.markdown("### 📊 Gestão de Planilhas (Schema: banco_pf)")
-    
-    lista_tabelas = listar_tabelas_pf()
-    
-    if not lista_tabelas:
-        st.warning("Nenhuma tabela encontrada no schema 'banco_pf'.")
+    st.markdown("### 📊 Gestão Avançada de Planilhas (SQLAlchemy)")
+
+    if not conexao:
+        st.warning("Sem conexão configurada.")
         return
 
-    # Seletor de tabelas
-    col1, col2 = st.columns([3, 1])
-    tb_selecionada = col1.selectbox("Selecione a Tabela:", lista_tabelas)
-    
-    if col2.button("🔄 Atualizar"):
-        st.rerun()
+    # 1. Busca a lista bruta de todas as tabelas disponíveis
+    todos_dados = obter_lista_completa_tabelas(SCHEMAS_PERMITIDOS)
 
-    if tb_selecionada:
-        # Garante limpeza de cache ao trocar de tabela
-        if 'tabela_atual_pf' not in st.session_state or st.session_state['tabela_atual_pf'] != tb_selecionada:
-            st.session_state['tabela_atual_pf'] = tb_selecionada
-            if 'editor_key' in st.session_state: del st.session_state['editor_key']
+    if not todos_dados:
+        st.info("Nenhuma tabela encontrada ou erro na conexão.")
+        return
 
-        df = carregar_dados_tabela(tb_selecionada)
+    # 2. Área de Filtros (Duas Colunas)
+    col_filtro_schema, col_filtro_nome = st.columns(2)
+
+    with col_filtro_schema:
+        # Cria lista única de schemas encontrados para o filtro
+        schemas_encontrados = sorted(list(set([t[0] for t in todos_dados])))
+        # Padrão: Selecionar banco_pf se existir, senão Todos
+        idx_padrao = schemas_encontrados.index('banco_pf') + 1 if 'banco_pf' in schemas_encontrados else 0
+        filtro_schema = st.selectbox("Filtrar por Schema", ["Todos"] + schemas_encontrados, index=idx_padrao)
+
+    with col_filtro_nome:
+        filtro_nome = st.text_input("Filtrar por Nome da Tabela")
+
+    # 3. Aplicação dos Filtros
+    lista_opcoes = []
+    for schema, tabela in todos_dados:
+        # Filtra Schema
+        if filtro_schema != "Todos" and schema != filtro_schema:
+            continue
         
-        if df.empty:
-            st.info(f"A tabela 'banco_pf.{tb_selecionada}' está vazia ou não pôde ser carregada.")
-            # Permite tentar adicionar dados mesmo em tabela vazia se tiver colunas (precisaria ler schema, mas aqui simplificamos)
-        else:
-            # Configuração das colunas (Bloqueia edição de ID e datas automáticas se existirem)
-            cfg_colunas = {}
-            if 'id' in df.columns:
-                cfg_colunas['id'] = st.column_config.NumberColumn(disabled=True, help="ID Automático")
-            if 'data_criacao' in df.columns:
-                cfg_colunas['data_criacao'] = st.column_config.DatetimeColumn(disabled=True)
-
-            st.write(f"Editando: **banco_pf.{tb_selecionada}**")
+        # Filtra Nome (Case insensitive)
+        if filtro_nome and filtro_nome.lower() not in tabela.lower():
+            continue
             
-            # EDITOR
-            alteracoes = st.data_editor(
-                df,
-                key="editor_pf_changes",
+        # Adiciona formato "schema.tabela" para o selectbox final
+        lista_opcoes.append(f"{schema}.{tabela}")
+
+    # 4. Selectbox Principal (Mostra apenas os filtrados)
+    if not lista_opcoes:
+        st.warning("Nenhuma tabela corresponde aos filtros selecionados.")
+        tabela_selecionada = None
+    else:
+        tabela_selecionada = st.selectbox("Selecione a Tabela para Editar:", lista_opcoes)
+    
+    st.divider()
+
+    # 5. Lógica de Edição
+    if tabela_selecionada:
+        schema_atual, nome_tabela_atual = tabela_selecionada.split('.')
+        
+        # Gerenciamento de estado para carregar dados apenas quando muda a tabela
+        if 'df_editor_pf' not in st.session_state or st.session_state.get('tabela_atual_pf') != tabela_selecionada:
+            with st.spinner(f"Carregando {tabela_selecionada}..."):
+                st.session_state['df_base_pf'] = carregar_dados(schema_atual, nome_tabela_atual)
+                st.session_state['tabela_atual_pf'] = tabela_selecionada
+                # Limpa chave do editor para forçar recarregamento visual
+                if 'editor_tabelas_sql_pf' in st.session_state:
+                    del st.session_state['editor_tabelas_sql_pf']
+        
+        df_original = st.session_state.get('df_base_pf')
+
+        if df_original is not None:
+            st.caption(f"Visualizando: **{len(df_original)}** registros.")
+            
+            # Editor de Dados
+            df_editado = st.data_editor(
+                df_original, 
+                use_container_width=True, 
                 num_rows="dynamic",
-                use_container_width=True,
-                column_config=cfg_colunas,
-                hide_index=True
+                key="editor_tabelas_sql_pf"
             )
 
-            # BOTÃO DE SALVAR
-            if st.button("💾 Salvar Alterações no Banco", type="primary"):
-                if any([alteracoes['added_rows'], alteracoes['deleted_rows'], alteracoes['edited_rows']]):
-                    salvar_lote(tb_selecionada, alteracoes, df)
-                    st.rerun()
-                else:
-                    st.info("Nenhuma alteração detectada.")
+            # Botão de Salvar
+            st.markdown("---")
+            col_save, col_info = st.columns([1, 4])
+            with col_save:
+                if st.button("💾 Salvar Alterações", type="primary"):
+                    if df_editado.equals(df_original):
+                        st.warning("Nenhuma alteração detectada.")
+                    else:
+                        with st.spinner("Substituindo dados da tabela..."):
+                            sucesso, msg = salvar_alteracoes(df_editado, schema_atual, nome_tabela_atual)
+                            if sucesso:
+                                st.success(msg)
+                                st.session_state['df_base_pf'] = df_editado
+                                time.sleep(1) # Pequena pausa para visualização
+                                st.rerun()
+                            else:
+                                st.error(f"Falha ao salvar: {msg}")
+
+if __name__ == "__main__":
+    import time # Import local para o rerun funcionar no main
+    app_gestao_planilhas()
