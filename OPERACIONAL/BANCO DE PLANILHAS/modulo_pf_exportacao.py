@@ -550,22 +550,20 @@ def view_formulario_cadastro():
         for campo in CONFIG_CADASTRO["Dados Pessoais"]:
             key = campo['key']
             val_atual = staging['geral'].get(key, '')
-            
             if campo['tipo'] == 'data':
-                # --- CORREÇÃO APLICADA AQUI (DATE INPUT) ---
-                if isinstance(val_atual, str) and val_atual.strip():
-                    try: 
-                        val_atual = datetime.strptime(val_atual, '%Y-%m-%d').date()
-                    except: 
-                        val_atual = None
-                elif not val_atual: # Se for '', None, False, 0
-                    val_atual = None
+                if isinstance(val_atual, str) and val_atual:
+                    try: val_atual = datetime.strptime(val_atual, '%Y-%m-%d').date()
+                    except: val_atual = None
                 
+                # --- CORREÇÃO APLICADA: EVITA ERRO COM STRING VAZIA ---
+                if not isinstance(val_atual, (date, datetime)):
+                    val_atual = None
+                # ------------------------------------------------------
+
                 novo_val = st.date_input(campo['label'], value=val_atual, format="DD/MM/YYYY")
                 if isinstance(novo_val, date): novo_val = novo_val.strftime('%Y-%m-%d')
             else:
                 novo_val = st.text_input(campo['label'], value=val_atual, disabled=(key=='cpf' and is_edit))
-            
             staging['geral'][key] = novo_val
 
     with t2:
