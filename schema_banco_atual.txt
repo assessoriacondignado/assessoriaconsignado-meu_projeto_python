@@ -325,7 +325,6 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - matricula (character varying(100)) NULL
    - data_atualizacao (timestamp without time zone) NULL
    - importacao_id (integer) NULL
-   - cpf_ref (character varying(20)) NULL
    - dados_extras (text) NULL
 
 [TABELA: banco_pf.pf_enderecos]
