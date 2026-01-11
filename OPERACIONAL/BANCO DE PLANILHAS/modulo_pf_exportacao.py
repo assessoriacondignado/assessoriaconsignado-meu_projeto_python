@@ -372,10 +372,7 @@ def _motor_layout_fixo_completo(conn, lista_cpfs):
 
 def _pivotar_fixo(df, id_col, limit, value_cols):
     if df.empty: return pd.DataFrame(columns=[id_col])
-    # Se a coluna id_col (ex: cpf) não estiver formatada, formata para garantir o merge
-    # Mas como o merge é feito com base na query anterior, idealmente já vem string. 
-    # A formatação visual foi aplicada no df_dados. Para garantir o merge, o df_tel_p deve usar o cpf bruto ou formatado?
-    # O df_dados['cpf'] foi formatado. Então aqui precisamos formatar também para bater a chave no merge.
+    
     if 'cpf' in id_col.lower():
          df[id_col] = df[id_col].apply(pf_core.formatar_cpf_visual)
 
@@ -476,3 +473,70 @@ def dialog_editar_modelo(m):
 def dialog_excluir_modelo(id, nome):
     st.error(f"Excluir {nome}?")
     if st.button("Confirmar"): excluir_modelo(id); st.rerun()
+
+# =============================================================================
+# PARTE 4: INTERFACE DE EXPORTAÇÃO (CORREÇÃO DE ATRIBUTO)
+# =============================================================================
+
+def buscar_todos_cpfs():
+    """Busca todos os CPFs da base para exportação total."""
+    conn = pf_core.get_conn()
+    if conn:
+        try:
+            df = pd.read_sql("SELECT cpf FROM banco_pf.pf_dados", conn)
+            conn.close()
+            return df['cpf'].tolist()
+        except: conn.close()
+    return []
+
+def app_exportacao_dados():
+    st.markdown("## 📤 Exportar Dados")
+    st.caption("Selecione um modelo e gere arquivos Excel/CSV.")
+
+    df_modelos = listar_modelos_ativos()
+    if df_modelos.empty:
+        st.warning("Nenhum modelo configurado. Vá em Configurações > Exportação.")
+        return
+
+    # 1. Seleção de Modelo
+    opcoes = df_modelos.to_dict('records')
+    modelo_sel = st.selectbox(
+        "Selecione o Modelo de Exportação:",
+        opcoes,
+        format_func=lambda x: x['nome_modelo']
+    )
+
+    # 2. Definição do Escopo (Filtro)
+    st.markdown("###### Escopo da Exportação")
+    tipo_escopo = st.radio("Origem dos dados:", ["Toda a Base de Dados", "Filtro Personalizado (Em breve)"])
+    
+    lista_cpfs = []
+    if tipo_escopo == "Toda a Base de Dados":
+        if st.checkbox("Confirmar leitura de TODA a base? (Pode demorar)", value=False):
+            with st.spinner("Contabilizando registros..."):
+                lista_cpfs = buscar_todos_cpfs()
+            st.info(f"Total de registros a processar: {len(lista_cpfs)}")
+    
+    st.divider()
+
+    # 3. Ação
+    if st.button("🚀 Gerar Arquivo", type="primary", disabled=(len(lista_cpfs) == 0)):
+        if modelo_sel and lista_cpfs:
+            with st.spinner(f"Gerando exportação '{modelo_sel['nome_modelo']}'..."):
+                df_export = gerar_dataframe_por_modelo(modelo_sel['id'], lista_cpfs)
+                
+                if not df_export.empty:
+                    st.success(f"Sucesso! {len(df_export)} linhas geradas.")
+                    
+                    data_hj = date.today().strftime('%d-%m-%Y')
+                    nome_arq = f"Export_{modelo_sel['nome_modelo']}_{data_hj}.csv"
+                    csv = df_export.to_csv(index=False, sep=';', encoding='utf-8-sig')
+                    
+                    st.download_button(
+                        label="⬇️ Baixar CSV",
+                        data=csv,
+                        file_name=nome_arq,
+                        mime='text/csv'
+                    )
+                else:
+                    st.warning("A consulta não retornou dados para os CPFs selecionados.")
