@@ -167,8 +167,7 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # --- CORREÇÃO APLICADA: MUDANÇA DE 'cpf_ref' PARA 'cpf' ---
-            # Conforme schema, as tabelas pf_telefones, pf_emails e pf_enderecos usam 'cpf'
+            # --- CORREÇÃO APLICADA: 'cpf' é a chave correta conforme schema atual ---
             col_fk = 'cpf' 
             
             dados['telefones'] = pd.read_sql(f"SELECT numero FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
@@ -177,7 +176,7 @@ def carregar_dados_completos(cpf):
             
             # --- 1. BUSCA DE EMPREGOS/MATRÍCULAS (TABELA PRINCIPAL) ---
             try:
-                # pf_emprego_renda pode ter tanto cpf quanto cpf_ref, usamos o definido em col_fk (cpf) que é mais seguro pelo schema atual
+                # Usa col_fk (cpf) que agora é consistente com o schema
                 df_emp = pd.read_sql(f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s", conn, params=(cpf_norm,))
             except:
                 conn.rollback(); df_emp = pd.DataFrame()
@@ -244,7 +243,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             vals = list(dados_gerais.values()) + [cpf_original]
             cur.execute(f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s", vals)
 
-        col_fk = 'cpf_ref' 
+        col_fk = 'cpf' 
         
         if not df_tel.empty:
             for _, r in df_tel.iterrows():
@@ -350,7 +349,10 @@ def buscar_pf_ampla(filtros_ativos):
                 if tab_nome == 'cpf_convenio':
                     joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf")
                 else:
-                    joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf_ref")
+                    # Correção para pesquisa ampla também: usar 'cpf' se 'cpf_ref' não for mais padrão
+                    # Porém, como a pesquisa ampla constrói queries dinâmicas, idealmente verificariamos o schema.
+                    # Mantendo compatibilidade com a alteração principal:
+                    joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf") 
                 tabelas_usadas.add(tab_nome)
             
             operador = f['operador']
