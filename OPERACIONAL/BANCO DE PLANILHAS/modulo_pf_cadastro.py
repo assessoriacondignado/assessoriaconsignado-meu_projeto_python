@@ -167,7 +167,9 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            col_fk = 'cpf_ref' # Padronizado
+            # --- CORREÇÃO APLICADA: MUDANÇA DE 'cpf_ref' PARA 'cpf' ---
+            # Conforme schema, as tabelas pf_telefones, pf_emails e pf_enderecos usam 'cpf'
+            col_fk = 'cpf' 
             
             dados['telefones'] = pd.read_sql(f"SELECT numero FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
@@ -175,6 +177,7 @@ def carregar_dados_completos(cpf):
             
             # --- 1. BUSCA DE EMPREGOS/MATRÍCULAS (TABELA PRINCIPAL) ---
             try:
+                # pf_emprego_renda pode ter tanto cpf quanto cpf_ref, usamos o definido em col_fk (cpf) que é mais seguro pelo schema atual
                 df_emp = pd.read_sql(f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s", conn, params=(cpf_norm,))
             except:
                 conn.rollback(); df_emp = pd.DataFrame()
