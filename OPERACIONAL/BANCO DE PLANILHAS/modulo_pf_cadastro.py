@@ -173,11 +173,13 @@ def carregar_dados_completos(cpf):
             dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             
+            # --- 1. BUSCA DE EMPREGOS/MATRÍCULAS (TABELA PRINCIPAL) ---
             try:
                 df_emp = pd.read_sql(f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s", conn, params=(cpf_norm,))
             except:
                 conn.rollback(); df_emp = pd.DataFrame()
 
+            # Processa vínculos principais
             if not df_emp.empty:
                 for _, row_emp in df_emp.iterrows():
                     vinculo = {'convenio': str(row_emp['convenio']).strip(), 'matricula': str(row_emp['matricula']).strip(), 'dados_extras': row_emp.get('dados_extras'), 'contratos': []}
@@ -190,6 +192,32 @@ def carregar_dados_completos(cpf):
                             vinculo['contratos'] = df_contratos.to_dict('records')
                     except: pass
                     dados['empregos'].append(vinculo)
+
+            # --- 2. BUSCA COMPLEMENTAR (TABELA CPF_CONVENIO) ---
+            # Esta tabela liga convênios diretamente ao CPF, sem 'matricula' detalhada às vezes.
+            try:
+                # Query direta na tabela cpf_convenio (coluna 'cpf')
+                df_conv_extra = pd.read_sql("SELECT convenio FROM banco_pf.cpf_convenio WHERE cpf = %s", conn, params=(cpf_norm,))
+                
+                # Cria lista de convênios já carregados para evitar duplicação visual
+                nomes_existentes = {str(v['convenio']).strip().upper() for v in dados['empregos'] if v.get('convenio')}
+                
+                if not df_conv_extra.empty:
+                    for _, row_c in df_conv_extra.iterrows():
+                        nome_conv = str(row_c['convenio']).strip().upper()
+                        # Só adiciona se ainda não existir na lista
+                        if nome_conv and nome_conv not in nomes_existentes:
+                            dados['empregos'].append({
+                                'convenio': nome_conv,
+                                'matricula': 'Via CPF', # Placeholder para indicar a origem
+                                'dados_extras': 'Origem: banco_pf.cpf_convenio',
+                                'contratos': []
+                            })
+                            nomes_existentes.add(nome_conv)
+            except Exception as e:
+                # Não bloqueia o carregamento se der erro nessa parte secundária
+                print(f"Aviso: Erro ao carregar cpf_convenio extra: {e}")
+
         except Exception as e: print(f"Erro carregamento: {e}") 
         finally: conn.close()
     return dados
@@ -236,7 +264,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
 
         if not df_emp.empty:
             for _, r in df_emp.iterrows():
-                if r.get('matricula'):
+                if r.get('matricula') and r.get('matricula') != 'Via CPF': # Evita salvar o placeholder
                     cur.execute(f"INSERT INTO banco_pf.pf_emprego_renda ({col_fk}, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s) ON CONFLICT (matricula) DO NOTHING", 
                                 (cpf_limpo, r.get('convenio'), r.get('matricula'), r.get('dados_extras', '')))
                     if r.get('convenio'):

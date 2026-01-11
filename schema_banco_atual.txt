@@ -150,6 +150,10 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - ativo (boolean) NULL
    - origem_custo (character varying(100)) NULL
 
+[TABELA: admin.produtos_temas_vinculo]
+   - id_produto (integer) NOT NULL
+   - id_tema (integer) NOT NULL
+
 [TABELA: admin.renovacao_feedback]
    - id (integer) NOT NULL
    - id_pedido (integer) NULL
@@ -190,6 +194,12 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - status_novo (character varying(50)) NULL
    - observacao (text) NULL
    - data_mudanca (timestamp without time zone) NULL
+
+[TABELA: admin.temas_produtos]
+   - id (integer) NOT NULL
+   - tema (character varying(255)) NOT NULL
+   - texto (text) NULL
+   - data_atualizacao (timestamp without time zone) NULL
 
 [TABELA: admin.wapi_chatbot_config]
    - instance_id (character varying(100)) NOT NULL
@@ -316,6 +326,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - data_atualizacao (timestamp without time zone) NULL
    - importacao_id (integer) NULL
    - cpf_ref (character varying(20)) NULL
+   - dados_extras (text) NULL
 
 [TABELA: banco_pf.pf_enderecos]
    - id (integer) NOT NULL
