@@ -440,7 +440,7 @@ def view_pesquisa_lista():
     st.markdown("### 🔍 Gestão de Clientes")
     
     # Abas de navegação interna da pesquisa
-    tab_rapida, tab_ampla = st.tabs(["🔍 Busca Rápida", "🔬 Pesquisa Ampla"])
+    tab_rapida, tab_ampla = st.tabs(["🔍 Busca Rápida2", "🔬 Pesquisa Ampla"])
     
     # -----------------------------------------------------------
     # ABA 1: BUSCA RÁPIDA (REFORMULADA)
