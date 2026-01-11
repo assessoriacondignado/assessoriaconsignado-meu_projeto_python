@@ -551,14 +551,16 @@ def view_formulario_cadastro():
             key = campo['key']
             val_atual = staging['geral'].get(key, '')
             if campo['tipo'] == 'data':
+                # Tenta converter string se vier preenchida
                 if isinstance(val_atual, str) and val_atual:
                     try: val_atual = datetime.strptime(val_atual, '%Y-%m-%d').date()
                     except: val_atual = None
                 
-                # --- CORREÇÃO APLICADA: EVITA ERRO COM STRING VAZIA ---
-                if not isinstance(val_atual, (date, datetime)):
-                    val_atual = None
-                # ------------------------------------------------------
+                # CORREÇÃO DEFINITIVA: 
+                # Se a data for inválida, None ou Vazia, força 'Hoje'.
+                # O componente st.date_input NÃO aceita None em algumas versões.
+                if val_atual is None or pd.isna(val_atual) or not isinstance(val_atual, (date, datetime)):
+                    val_atual = date.today()
 
                 novo_val = st.date_input(campo['label'], value=val_atual, format="DD/MM/YYYY")
                 if isinstance(novo_val, date): novo_val = novo_val.strftime('%Y-%m-%d')
