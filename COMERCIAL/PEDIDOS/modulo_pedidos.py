@@ -26,7 +26,7 @@ try:
     from COMERCIAL import modulo_comercial_configuracoes
 except ImportError:
     modulo_comercial_configuracoes = None
-    st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
+    # st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
 
 # --- CONEXÃO ---
 def get_conn():
@@ -40,7 +40,7 @@ def get_conn():
         return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES
+# 1. FUNÇÕES AUXILIARES E DE NEGÓCIO (MANTIDAS)
 # =============================================================================
 
 def listar_modelos_mensagens():
@@ -49,19 +49,11 @@ def listar_modelos_mensagens():
         return modulo_comercial_configuracoes.listar_chaves_config("PEDIDOS")
     return []
 
-# =============================================================================
-# 2. LÓGICA FINANCEIRA E DE PEDIDOS
-# =============================================================================
-
 def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor):
-    """
-    Registra movimentação no extrato financeiro (CREDITO ou DEBITO).
-    """
     try:
         cur = conn.cursor()
         id_cliente = dados_pedido['id_cliente']
         
-        # 1. Buscar Saldo Anterior do Cliente
         cur.execute("""
             SELECT saldo_novo 
             FROM cliente.extrato_carteira_por_produto 
@@ -71,14 +63,12 @@ def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor
         res = cur.fetchone()
         saldo_anterior = float(res[0]) if res else 0.0
         
-        # 2. Calcular Novo Saldo
         valor_float = float(valor)
         if tipo_lancamento == 'CREDITO':
             saldo_novo = saldo_anterior + valor_float
         else: # DEBITO
             saldo_novo = saldo_anterior - valor_float
             
-        # 3. Inserir no Extrato
         cur.execute("""
             INSERT INTO cliente.extrato_carteira_por_produto (
                 id_cliente, data_lancamento, tipo_lancamento, 
@@ -99,9 +89,6 @@ def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor
         return False
 
 def registrar_custo_carteira_upsert(conn, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
-    """
-    Verifica se já existe custo para este Cliente + ORIGEM.
-    """
     try:
         cur = conn.cursor()
         
@@ -171,8 +158,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo')", (id_novo,))
             
             res_upsert = registrar_custo_carteira_upsert(conn, cliente, produto, valor_custo_informado, origem_custo_txt)
-            if not res_upsert[0]:
-                print(f"⚠️ Aviso: Custo não salvo na carteira. Erro: {res_upsert[1]}")
             
             conn.commit()
             conn.close()
@@ -320,6 +305,7 @@ def renderizar_novo_pedido_tab():
     if 'np_cli_idx' not in st.session_state: st.session_state.np_cli_idx = 0
     if 'np_prod_idx' not in st.session_state: st.session_state.np_prod_idx = 0
     
+    # Lógica de atualização de estado (Mantida igual ao original)
     prod_inicial = df_p.iloc[st.session_state.np_prod_idx]
     if 'np_val' not in st.session_state: st.session_state.np_val = float(prod_inicial['preco'] or 0.0)
     if 'np_qtd' not in st.session_state: st.session_state.np_qtd = 1
@@ -398,23 +384,26 @@ def renderizar_novo_pedido_tab():
             else: st.error(res)
 
 # =============================================================================
-# 5. PAINÉIS LATERAIS (Novo Padrão)
+# 5. PAINÉIS DE RENDERIZAÇÃO (Layout Gaveta)
 # =============================================================================
 
-def painel_dados_cliente(ped):
-    st.markdown(f"### 👤 Cliente: {ped['nome_cliente']}")
+def renderizar_dados_cliente(ped):
+    st.markdown(f"#### 👤 Dados do Cliente")
+    st.write(f"**Nome:** {ped['nome_cliente']}")
     st.write(f"**CPF:** {ped['cpf_cliente']}")
     st.write(f"**Telefone:** {ped['telefone_cliente']}")
     st.write(f"**E-mail:** {ped.get('email_cliente', '-')}")
+    if ped.get('nome_empresa'):
+        st.write(f"**Empresa:** {ped['nome_empresa']}")
 
-def painel_editar_pedido(ped):
-    st.markdown(f"### ✏️ Editar: {ped['codigo']}")
+def renderizar_editar_pedido(ped):
+    st.markdown(f"#### ✏️ Editar Dados")
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
     if df_c.empty or df_p.empty: st.error("Dados base vazios."); return
 
-    with st.form("form_painel_editar"):
+    with st.form("form_gaveta_editar_ped"):
         # Selects
         try: curr_cli_idx = df_c[df_c['id'] == ped['id_cliente']].index[0]
         except: curr_cli_idx = 0
@@ -429,16 +418,16 @@ def painel_editar_pedido(ped):
         st.divider()
         c_v1, c_v2 = st.columns(2)
         nq = c_v1.number_input("Qtd", min_value=1, value=int(ped['quantidade']))
-        nv = c_v2.number_input("Valor", min_value=0.0, value=float(ped['valor_unitario']), format="%.2f")
+        nv = c_v2.number_input("Valor Unit.", min_value=0.0, value=float(ped['valor_unitario']), format="%.2f")
         
         c_c1, c_c2 = st.columns(2)
-        ncusto = c_c1.number_input("Custo (R$)", value=float(ped['custo_carteira'] or 0.0), step=0.01)
-        norigem = c_c2.text_input("Origem", value=ped.get('origem_custo', ''))
+        ncusto = c_c1.number_input("Custo Carteira (R$)", value=float(ped['custo_carteira'] or 0.0), step=0.01)
+        norigem = c_c2.text_input("Origem Custo", value=ped.get('origem_custo', ''))
         
         nobs = st.text_area("Observação", value=ped['observacao'] or "")
-        st.info(f"Novo Total: R$ {nq*nv:.2f}")
+        st.info(f"💰 Novo Total: R$ {nq*nv:.2f}")
 
-        if st.form_submit_button("💾 Salvar"):
+        if st.form_submit_button("💾 Salvar Alterações", type="primary"):
             dados_novos = {
                 'cliente': sel_cli, 'produto': sel_prod, 'qtd': nq, 'valor': nv,
                 'custo': ncusto, 'origem': norigem, 'obs': nobs
@@ -446,58 +435,63 @@ def painel_editar_pedido(ped):
             ok, msg = editar_dados_pedido_completo(ped['id'], dados_novos)
             if ok: 
                 st.success("Salvo!"); time.sleep(1)
-                st.session_state.ped_panel_active = False
+                st.session_state.ped_selecionado = None # Força recarregamento ao clicar de novo
+                st.session_state.ped_aba_ativa = None
                 st.rerun()
             else: st.error(f"Erro: {msg}")
 
-def painel_status_pedido(ped):
-    st.markdown(f"### 🔄 Status: {ped['codigo']}")
+def renderizar_status_pedido(ped):
+    st.markdown(f"#### 🔄 Atualizar Status")
     lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
     try: idx = lst.index(ped['status']) 
     except: idx = 0
     mods = ["Automático (Padrão)"] + listar_modelos_mensagens()
     
-    with st.form("form_painel_status"):
+    with st.form("form_gaveta_status_ped"):
         ns = st.selectbox("Novo Status", lst, index=idx)
-        mod = st.selectbox("Modelo Msg", mods)
-        obs = st.text_area("Observação")
-        av = st.checkbox("Avisar Cliente?", value=True)
+        mod = st.selectbox("Modelo Mensagem", mods)
+        obs = st.text_area("Observação da Mudança")
+        av = st.checkbox("Avisar Cliente (WhatsApp)?", value=True)
         
-        if st.form_submit_button("Atualizar Status", type="primary"):
+        if st.form_submit_button("✅ Confirmar Novo Status", type="primary"):
             ok, msg = atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod)
             if ok:
                 st.success(msg); time.sleep(1)
-                st.session_state.ped_panel_active = False
+                st.session_state.ped_selecionado = None
+                st.session_state.ped_aba_ativa = None
                 st.rerun()
             else: st.warning(msg)
 
-def painel_historico_pedido(id_pedido):
-    st.markdown("### 📜 Histórico")
+def renderizar_historico_pedido(id_pedido):
+    st.markdown("#### 📜 Histórico de Movimentações")
     df = buscar_historico_pedido(id_pedido)
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
-    else: st.info("Sem histórico.")
+    else: st.info("Sem histórico registrado.")
 
-def painel_excluir_pedido(pid):
-    st.markdown("### 🗑️ Excluir Pedido")
-    st.warning("Esta ação é irreversível.")
-    if st.button("Confirmar Exclusão", type="primary", use_container_width=True):
-        if excluir_pedido_db(pid): 
-            st.success("Apagado!"); time.sleep(1)
-            st.session_state.ped_panel_active = False
+def renderizar_excluir_pedido(ped):
+    st.markdown(f"#### 🗑️ Excluir Pedido: {ped['codigo']}")
+    st.warning("⚠️ Esta ação é irreversível e removerá o histórico financeiro associado.")
+    
+    col_del = st.columns([1, 1])
+    if col_del[0].button("Sim, Excluir Permanentemente", type="primary", use_container_width=True):
+        if excluir_pedido_db(ped['id']): 
+            st.success("Pedido excluído com sucesso!"); time.sleep(1)
+            st.session_state.ped_selecionado = None
+            st.session_state.ped_aba_ativa = None
             st.rerun()
 
-def painel_tarefa_pedido(ped):
-    st.markdown("### 📝 Criar Tarefa")
-    with st.form("form_painel_tarefa"):
-        dt = st.date_input("Previsão", datetime.now())
-        obs = st.text_area("Obs da Tarefa")
-        if st.form_submit_button("Criar"):
+def renderizar_tarefa_pedido(ped):
+    st.markdown("#### 📝 Criar Tarefa Vinculada")
+    with st.form("form_gaveta_tarefa_ped"):
+        dt = st.date_input("Data de Previsão", datetime.now())
+        obs = st.text_area("Descrição da Tarefa")
+        if st.form_submit_button("Criar Tarefa"):
             conn = get_conn(); cur = conn.cursor()
             cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) VALUES (%s,%s,%s,%s,%s,'Solicitado')", (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
             conn.commit(); conn.close()
-            st.success("Criada!"); time.sleep(1); 
-            st.session_state.ped_panel_active = False; st.rerun()
+            st.success("Tarefa criada!"); time.sleep(1); 
+            st.session_state.ped_aba_ativa = None; st.rerun()
 
 # =============================================================================
 # 6. APP PRINCIPAL
@@ -506,40 +500,29 @@ def painel_tarefa_pedido(ped):
 def app_pedidos():
     tab_novo, tab_lista, tab_param = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros"])
 
-    # ABA 1: NOVO PEDIDO
+    # ABA 1: NOVO PEDIDO (MANTIDA)
     with tab_novo:
         renderizar_novo_pedido_tab()
 
-    # ABA 2: LISTA DE PEDIDOS (LAYOUT DUAS COLUNAS)
+    # ABA 2: LISTA DE PEDIDOS (LAYOUT MASTER-DETAIL 30/70)
     with tab_lista:
-        # Inicialização do Estado do Painel
-        if 'ped_panel_active' not in st.session_state: st.session_state.ped_panel_active = False
-        if 'ped_panel_data' not in st.session_state: st.session_state.ped_panel_data = None
-        if 'ped_panel_type' not in st.session_state: st.session_state.ped_panel_type = None 
-        if 'ped_panel_width' not in st.session_state: st.session_state.ped_panel_width = 40
+        # Inicializa Estados
+        if 'ped_selecionado' not in st.session_state: st.session_state.ped_selecionado = None
+        if 'ped_aba_ativa' not in st.session_state: st.session_state.ped_aba_ativa = None
 
-        # Layout Colunas
-        if st.session_state.ped_panel_active:
-            w = st.session_state.ped_panel_width
-            col_lista, col_painel = st.columns([100-w, w])
-        else:
-            col_lista = st.container()
-            col_painel = None
+        # Layout fixo
+        col_lista, col_detalhe = st.columns([0.3, 0.7])
 
         # --- COLUNA ESQUERDA: LISTA ---
         with col_lista:
+            st.markdown("##### 🔍 Filtros & Lista")
+            # Filtros Compactos
+            f1, f2 = st.columns(2)
+            filtro_txt = f1.text_input("Busca", placeholder="Nome/Cod", label_visibility="collapsed")
+            filtro_stt = f2.selectbox("St", ["Todos", "Solicitado", "Pendente", "Pago"], label_visibility="collapsed")
+            
             conn = get_conn()
             if conn:
-                # FILTROS
-                with st.expander("🔍 Filtros de Pesquisa", expanded=True):
-                    c1, c2, c3, c4 = st.columns(4)
-                    filtro_cliente = c1.text_input("Cliente", placeholder="Nome")
-                    filtro_produto = c2.text_input("Produto", placeholder="Nome")
-                    opcoes_status = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
-                    filtro_status = c3.multiselect("Status", options=opcoes_status)
-                    filtro_datas = c4.date_input("Período", value=[])
-
-                # QUERY
                 query_base = """
                     SELECT p.*, c.nome_empresa, c.email as email_cliente 
                     FROM pedidos p 
@@ -547,104 +530,99 @@ def app_pedidos():
                     WHERE 1=1
                 """
                 params = []
-                if filtro_cliente:
-                    query_base += " AND p.nome_cliente ILIKE %s"
-                    params.append(f"%{filtro_cliente}%")
-                if filtro_produto:
-                    query_base += " AND p.nome_produto ILIKE %s"
-                    params.append(f"%{filtro_produto}%")
-                if filtro_status:
-                    placeholders = ",".join(["%s"] * len(filtro_status))
-                    query_base += f" AND p.status IN ({placeholders})"
-                    params.extend(filtro_status)
-                if len(filtro_datas) == 2:
-                    query_base += " AND p.data_criacao BETWEEN %s AND %s"
-                    params.append(filtro_datas[0]); params.append(filtro_datas[1])
+                if filtro_txt:
+                    query_base += " AND (p.nome_cliente ILIKE %s OR p.codigo ILIKE %s)"
+                    params.extend([f"%{filtro_txt}%", f"%{filtro_txt}%"])
+                
+                if filtro_stt != "Todos":
+                    query_base += " AND p.status = %s"
+                    params.append(filtro_stt)
 
-                query_base += " ORDER BY p.data_criacao DESC LIMIT 10"
+                query_base += " ORDER BY p.data_criacao DESC LIMIT 20" # Limitado para performance
                 df = pd.read_sql(query_base, conn, params=params)
                 conn.close()
-                
-                st.divider()
-                
+
                 if not df.empty:
                     for i, row in df.iterrows():
-                        cor = "🔴"; 
+                        # Lógica Visual
+                        is_selected = (st.session_state.ped_selecionado is not None and 
+                                       st.session_state.ped_selecionado['id'] == row['id'])
+                        
+                        cor = "🔴"
                         if row['status'] == 'Pago': cor = "🟢"
                         elif row['status'] == 'Pendente': cor = "🟠"
                         elif row['status'] == 'Solicitado': cor = "🔵"
                         
-                        emp_show = f"({row['nome_empresa']})" if row.get('nome_empresa') else ""
-                        
-                        with st.expander(f"{cor} [{row['status']}] {row['codigo']} - {row['nome_cliente']} {emp_show} | R$ {row['valor_total']:.2f}"):
-                            
-                            gc1, gc2, gc3 = st.columns(3)
-                            with gc1:
-                                st.caption("👤 Cliente")
-                                st.write(f"**{row['nome_cliente']}**")
-                                st.write(f"CPF: {row['cpf_cliente']}")
-                                st.write(f"Tel: {row['telefone_cliente']}")
-                            with gc2:
-                                st.caption("📦 Produto")
-                                st.write(f"**{row['nome_produto']}**")
-                                st.write(f"Qtd: {row['quantidade']} | Total: :green[{row['valor_total']:.2f}]")
-                                st.write(f"**Custo:** :red[R$ {row['custo_carteira']:.2f}]" if pd.notna(row['custo_carteira']) else "Custo: -")
-                            with gc3:
-                                st.caption("📅 Info")
-                                st.write(f"Criado: {row['data_criacao'].strftime('%d/%m/%y')}")
-                                st.write(f"Origem: {row.get('origem_custo', '-')}")
+                        border_style = True 
+                        icon_sel = "👉 " if is_selected else ""
 
-                            if row['observacao']: st.info(f"Obs: {row['observacao']}")
-                                
-                            st.divider()
+                        with st.container(border=border_style):
+                            st.write(f"**{icon_sel}{row['nome_cliente']}**")
+                            st.caption(f"{cor} {row['codigo']} | R$ {row['valor_total']:.2f}")
                             
-                            # Helper para abrir painel
-                            def abrir_painel(tipo, dados):
-                                st.session_state.ped_panel_active = True
-                                st.session_state.ped_panel_type = tipo
-                                st.session_state.ped_panel_data = dados
+                            if st.button("Ver Detalhes >", key=f"sel_ped_{row['id']}", use_container_width=True):
+                                st.session_state.ped_selecionado = row.to_dict()
+                                st.session_state.ped_aba_ativa = None # Reseta gaveta
+                                st.rerun()
+                else:
+                    st.info("Nenhum pedido.")
+            else:
+                st.error("Sem conexão.")
 
-                            # Botões de Ação
-                            b1, b2, b3, b4, b5, b6 = st.columns(6)
-                            
-                            # USAR ID FIXO + SUFIXO PARA EVITAR ERRO DE CHAVE DUPLICADA
-                            if b1.button("👤", key=f"btn_cli_{row['id']}", help="Dados Cliente"):
-                                abrir_painel('cliente', row); st.rerun()
-                            if b2.button("✏️", key=f"btn_edt_{row['id']}", help="Editar"):
-                                abrir_painel('editar', row); st.rerun()
-                            if b3.button("🔄", key=f"btn_stt_{row['id']}", help="Status"):
-                                abrir_painel('status', row); st.rerun()
-                            if b4.button("📜", key=f"btn_his_{row['id']}", help="Histórico"):
-                                abrir_painel('historico', row); st.rerun()
-                            if b5.button("📝", key=f"btn_tar_{row['id']}", help="Tarefa"):
-                                abrir_painel('tarefa', row); st.rerun()
-                            if b6.button("🗑️", key=f"btn_del_{row['id']}", help="Excluir"):
-                                abrir_painel('excluir', row); st.rerun()
-                else: st.info("Nenhum pedido encontrado.")
-
-        # --- COLUNA DIREITA: PAINEL ---
-        if col_painel and st.session_state.ped_panel_active:
-            with col_painel:
+        # --- COLUNA DIREITA: DETALHES (FIXO) ---
+        with col_detalhe:
+            ped = st.session_state.ped_selecionado
+            
+            if ped:
                 with st.container(border=True):
-                    # Cabeçalho Painel
-                    cp1, cp2 = st.columns([1, 3])
-                    if cp1.button("✖ Fechar", type="primary", key="btn_close_panel_ped"):
-                        st.session_state.ped_panel_active = False
-                        st.rerun()
+                    # Cabeçalho Fixo
+                    st.title(f"{ped['nome_cliente']}")
+                    st.caption(f"Pedido: {ped['codigo']} | Status: {ped['status']} | Data: {ped['data_criacao']}")
                     
-                    st.session_state.ped_panel_width = cp2.slider("Largura (%)", 20, 90, st.session_state.ped_panel_width, label_visibility="collapsed", key="slider_width_ped")
                     st.divider()
-
-                    # Roteador
-                    tipo = st.session_state.ped_panel_type
-                    dados = st.session_state.ped_panel_data
                     
-                    if tipo == 'cliente': painel_dados_cliente(dados)
-                    elif tipo == 'editar': painel_editar_pedido(dados)
-                    elif tipo == 'status': painel_status_pedido(dados)
-                    elif tipo == 'historico': painel_historico_pedido(dados['id'])
-                    elif tipo == 'tarefa': painel_tarefa_pedido(dados)
-                    elif tipo == 'excluir': painel_excluir_pedido(dados['id'])
+                    # Menu de Ações (Barra Horizontal)
+                    c_b1, c_b2, c_b3, c_b4, c_b5, c_b6 = st.columns(6)
+                    
+                    def set_aba(nome):
+                        st.session_state.ped_aba_ativa = nome
+                        st.rerun()
+
+                    # Lógica de estilo para botão ativo
+                    ativa = st.session_state.ped_aba_ativa
+                    
+                    if c_b1.button("👤 Cliente", use_container_width=True, type="primary" if ativa == 'cliente' else "secondary"): set_aba('cliente')
+                    if c_b2.button("✏️ Editar", use_container_width=True, type="primary" if ativa == 'editar' else "secondary"): set_aba('editar')
+                    if c_b3.button("🔄 Status", use_container_width=True, type="primary" if ativa == 'status' else "secondary"): set_aba('status')
+                    if c_b4.button("📜 Histórico", use_container_width=True, type="primary" if ativa == 'historico' else "secondary"): set_aba('historico')
+                    if c_b5.button("📝 Tarefa", use_container_width=True, type="primary" if ativa == 'tarefa' else "secondary"): set_aba('tarefa')
+                    if c_b6.button("🗑️ Excluir", use_container_width=True, type="primary" if ativa == 'excluir' else "secondary"): set_aba('excluir')
+
+                # Área de Conteúdo "Gaveta" (Renderiza abaixo do menu)
+                aba = st.session_state.ped_aba_ativa
+                
+                if aba:
+                    with st.container(border=True):
+                        if aba == 'cliente': renderizar_dados_cliente(ped)
+                        elif aba == 'editar': renderizar_editar_pedido(ped)
+                        elif aba == 'status': renderizar_status_pedido(ped)
+                        elif aba == 'historico': renderizar_historico_pedido(ped['id'])
+                        elif aba == 'tarefa': renderizar_tarefa_pedido(ped)
+                        elif aba == 'excluir': renderizar_excluir_pedido(ped)
+                else:
+                    st.info("👆 Selecione uma opção acima para gerenciar o pedido.")
+
+            else:
+                # Estado Vazio
+                st.container(border=True).markdown(
+                    """
+                    <div style='text-align: center; padding: 50px;'>
+                        <h3>⬅️ Selecione um pedido na lista</h3>
+                        <p>Os detalhes, financeiro e opções de gerenciamento aparecerão aqui.</p>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
     
     # ABA 3: PARÂMETROS
     with tab_param:
