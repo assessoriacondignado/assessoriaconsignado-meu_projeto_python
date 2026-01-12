@@ -40,7 +40,7 @@ def get_conn():
         return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES E DE NEGÓCIO (MANTIDAS)
+# 1. FUNÇÕES AUXILIARES E DE NEGÓCIO
 # =============================================================================
 
 def listar_modelos_mensagens():
@@ -305,7 +305,6 @@ def renderizar_novo_pedido_tab():
     if 'np_cli_idx' not in st.session_state: st.session_state.np_cli_idx = 0
     if 'np_prod_idx' not in st.session_state: st.session_state.np_prod_idx = 0
     
-    # Lógica de atualização de estado (Mantida igual ao original)
     prod_inicial = df_p.iloc[st.session_state.np_prod_idx]
     if 'np_val' not in st.session_state: st.session_state.np_val = float(prod_inicial['preco'] or 0.0)
     if 'np_qtd' not in st.session_state: st.session_state.np_qtd = 1
@@ -500,7 +499,7 @@ def renderizar_tarefa_pedido(ped):
 def app_pedidos():
     tab_novo, tab_lista, tab_param = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros"])
 
-    # ABA 1: NOVO PEDIDO (MANTIDA)
+    # ABA 1: NOVO PEDIDO
     with tab_novo:
         renderizar_novo_pedido_tab()
 
@@ -538,7 +537,7 @@ def app_pedidos():
                     query_base += " AND p.status = %s"
                     params.append(filtro_stt)
 
-                query_base += " ORDER BY p.data_criacao DESC LIMIT 20" # Limitado para performance
+                query_base += " ORDER BY p.data_criacao DESC LIMIT 20"
                 df = pd.read_sql(query_base, conn, params=params)
                 conn.close()
 
@@ -562,7 +561,7 @@ def app_pedidos():
                             
                             if st.button("Ver Detalhes >", key=f"sel_ped_{row['id']}", use_container_width=True):
                                 st.session_state.ped_selecionado = row.to_dict()
-                                st.session_state.ped_aba_ativa = None # Reseta gaveta
+                                st.session_state.ped_aba_ativa = None # Reseta gaveta ao trocar de item
                                 st.rerun()
                 else:
                     st.info("Nenhum pedido.")
@@ -581,22 +580,35 @@ def app_pedidos():
                     
                     st.divider()
                     
-                    # Menu de Ações (Barra Horizontal)
-                    c_b1, c_b2, c_b3, c_b4, c_b5, c_b6 = st.columns(6)
-                    
-                    def set_aba(nome):
-                        st.session_state.ped_aba_ativa = nome
-                        st.rerun()
+                    # --- MENU DE AÇÕES CORRIGIDO ---
+                    # Callback para troca de aba (Evita reload manual)
+                    def selecionar_aba_callback(nome_aba):
+                        st.session_state.ped_aba_ativa = nome_aba
 
-                    # Lógica de estilo para botão ativo
-                    ativa = st.session_state.ped_aba_ativa
+                    # Lista de configurações dos botões
+                    opcoes_menu = [
+                        ("👤 Cliente", "cliente"),
+                        ("✏️ Editar", "editar"),
+                        ("🔄 Status", "status"),
+                        ("📜 Histórico", "historico"),
+                        ("📝 Tarefa", "tarefa"),
+                        ("🗑️ Excluir", "excluir")
+                    ]
                     
-                    if c_b1.button("👤 Cliente", use_container_width=True, type="primary" if ativa == 'cliente' else "secondary"): set_aba('cliente')
-                    if c_b2.button("✏️ Editar", use_container_width=True, type="primary" if ativa == 'editar' else "secondary"): set_aba('editar')
-                    if c_b3.button("🔄 Status", use_container_width=True, type="primary" if ativa == 'status' else "secondary"): set_aba('status')
-                    if c_b4.button("📜 Histórico", use_container_width=True, type="primary" if ativa == 'historico' else "secondary"): set_aba('historico')
-                    if c_b5.button("📝 Tarefa", use_container_width=True, type="primary" if ativa == 'tarefa' else "secondary"): set_aba('tarefa')
-                    if c_b6.button("🗑️ Excluir", use_container_width=True, type="primary" if ativa == 'excluir' else "secondary"): set_aba('excluir')
+                    # Renderização em Loop (Garante alinhamento)
+                    cols_menu = st.columns(6, gap="small")
+                    
+                    for col, (label, key_aba) in zip(cols_menu, opcoes_menu):
+                        tipo_btn = "primary" if st.session_state.ped_aba_ativa == key_aba else "secondary"
+                        # O uso de on_click torna a interação instantânea
+                        col.button(
+                            label, 
+                            key=f"btn_topo_{key_aba}", 
+                            type=tipo_btn, 
+                            use_container_width=True, 
+                            on_click=selecionar_aba_callback, 
+                            args=(key_aba,)
+                        )
 
                 # Área de Conteúdo "Gaveta" (Renderiza abaixo do menu)
                 aba = st.session_state.ped_aba_ativa
