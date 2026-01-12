@@ -204,14 +204,13 @@ def excluir_produto(id_prod, caminho_pasta):
             if conn: conn.close()
     return False
 
-# --- PAINÉIS LATERAIS (SUBSTITUEM OS DIALOGS) ---
+# --- PAINÉIS DE CONTEÚDO (Para uso "Embutido/Gaveta") ---
 
-def painel_visualizar_arquivos(caminho_pasta, nome_item):
-    st.markdown(f"### 📂 Arquivos: {nome_item}")
+def renderizar_arquivos(caminho_pasta, nome_item):
+    st.markdown("#### 📂 Arquivos Vinculados")
     if caminho_pasta and os.path.exists(caminho_pasta):
         arquivos = os.listdir(caminho_pasta)
         if arquivos:
-            st.markdown("---")
             for arquivo in arquivos:
                 c1, c2, c3 = st.columns([0.5, 3, 1.5])
                 c1.write("📄")
@@ -219,16 +218,17 @@ def painel_visualizar_arquivos(caminho_pasta, nome_item):
                 caminho_completo = os.path.join(caminho_pasta, arquivo)
                 try:
                     with open(caminho_completo, "rb") as f:
-                        c3.download_button("⬇️", data=f, file_name=arquivo, key=f"dl_{arquivo}_{uuid.uuid4()}", help="Baixar Arquivo")
+                        c3.download_button("⬇️ Baixar", data=f, file_name=arquivo, key=f"dl_{arquivo}_{uuid.uuid4()}")
                 except:
                     c3.write("Erro")
+            st.info(f"Local: {caminho_pasta}")
         else:
             st.warning("Pasta vazia.")
     else:
         st.error("Pasta não encontrada.")
 
-def painel_visualizar_instrucoes(id_prod, nome_prod):
-    st.markdown(f"### 📖 Instruções: {nome_prod}")
+def renderizar_instrucoes(id_prod, nome_prod):
+    st.markdown("#### 📖 Instruções e Procedimentos")
     df_inst = buscar_texto_temas_produto(id_prod)
     
     if not df_inst.empty:
@@ -238,8 +238,8 @@ def painel_visualizar_instrucoes(id_prod, nome_prod):
     else:
         st.info("Este produto não possui instruções vinculadas.")
 
-def painel_editar_produto(dados):
-    st.markdown(f"### ✏️ Editar: {dados['nome']}")
+def renderizar_edicao(dados):
+    st.markdown(f"#### ✏️ Editando: {dados['nome']}")
     lista_origens = listar_origens_custo()
     opcoes_origem = [""] + lista_origens
     
@@ -247,8 +247,7 @@ def painel_editar_produto(dados):
     todos_temas = listar_temas_disponiveis()
     temas_vinculados = buscar_temas_do_produto(dados['id'])
 
-    with st.form("form_editar_prod_painel"):
-        # Status agora fica dentro do formulário de edição
+    with st.form("form_editar_prod_gaveta"):
         ativo = st.toggle("Produto Ativo?", value=bool(dados['ativo']))
         st.markdown("---")
 
@@ -282,13 +281,30 @@ def painel_editar_produto(dados):
             if nome:
                 if atualizar_produto_db(dados['id'], nome, tipo, resumo, preco, origem, temas_sel, ativo):
                     st.success("Atualizado!")
+                    # Atualiza o estado para refletir a mudança imediatamente ou limpa a seleção
+                    st.session_state.prod_selecionado = None 
+                    st.session_state.prod_aba_ativa = None
                     time.sleep(1)
-                    st.session_state.prod_panel_active = False # Fecha painel ao salvar
                     st.rerun()
                 else:
                     st.error("Erro ao atualizar.")
             else:
                 st.warning("Preencha o nome.")
+
+def renderizar_exclusao(dados):
+    st.markdown(f"#### 🗑️ Excluir: {dados['nome']}")
+    st.warning("Tem certeza que deseja excluir este produto e todos os seus arquivos? Esta ação não pode ser desfeita.")
+    
+    col_confirm = st.columns([1, 1])
+    if col_confirm[0].button("⚠️ Sim, Excluir Permanentemente", type="primary", use_container_width=True):
+        if excluir_produto(dados['id'], dados['caminho_pasta']):
+            st.success("Produto excluído.")
+            st.session_state.prod_selecionado = None
+            st.session_state.prod_aba_ativa = None
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("Erro ao excluir.")
 
 # --- FUNÇÃO PRINCIPAL ---
 def app_produtos():
@@ -335,106 +351,118 @@ def app_produtos():
                     else: st.warning("O campo Nome é obrigatório.")
 
     # ==========================
-    # ABA 2: LISTA DE PRODUTOS (LAYOUT COM PAINEL LATERAL)
+    # ABA 2: LISTA DE PRODUTOS (LAYOUT MASTER-DETAIL)
     # ==========================
     with tab_lista:
-        # Inicializa estado do painel
-        if 'prod_panel_active' not in st.session_state: st.session_state.prod_panel_active = False
-        if 'prod_panel_data' not in st.session_state: st.session_state.prod_panel_data = None
-        if 'prod_panel_type' not in st.session_state: st.session_state.prod_panel_type = None 
-        if 'prod_panel_width' not in st.session_state: st.session_state.prod_panel_width = 40 # Largura padrão
+        # Inicializa estado de seleção se não existir
+        if 'prod_selecionado' not in st.session_state:
+            st.session_state.prod_selecionado = None
+        if 'prod_aba_ativa' not in st.session_state:
+            st.session_state.prod_aba_ativa = None # Valores: 'arquivos', 'instrucoes', 'editar', 'excluir', None
 
-        # Define as colunas dinâmicas
-        if st.session_state.prod_panel_active:
-            w = st.session_state.prod_panel_width
-            col_lista, col_painel = st.columns([100-w, w])
-        else:
-            col_lista = st.container()
-            col_painel = None
+        # Layout fixo 30% / 70%
+        col_lista, col_detalhe = st.columns([0.3, 0.7])
 
         # --- COLUNA ESQUERDA: LISTA ---
         with col_lista:
+            st.markdown("##### 🔍 Catálogo")
+            # Filtros Simplificados
+            filtro = st.text_input("Buscar", placeholder="Nome/Código", key="search_prod", label_visibility="collapsed")
+            
             df = listar_produtos()
+            
+            # Aplicar filtro em memória (para a lista esquerda)
             if not df.empty:
-                # --- Filtros ---
-                cf1, cf2 = st.columns([3, 1])
-                filtro = cf1.text_input("🔍 Buscar Produto", placeholder="Nome ou Código", key="search_prod")
-                filtro_status = cf2.selectbox("Filtrar Status", ["Todos", "Ativos", "Inativos"])
-
-                # Aplica Filtros
                 if filtro:
                     df = df[df['nome'].str.contains(filtro, case=False, na=False) | df['codigo'].str.contains(filtro, case=False, na=False)]
                 
-                if filtro_status == "Ativos":
-                    df = df[df['ativo'] == True]
-                elif filtro_status == "Inativos":
-                    df = df[df['ativo'] == False]
-                
-                st.markdown("---")
-                
+                # Lista Rolável (se muitos itens, o streamlit gerencia o scroll da coluna)
                 for index, row in df.iterrows():
+                    # Estilo condicional para item selecionado (visual trick: borda ou ícone)
+                    is_selected = (st.session_state.prod_selecionado is not None and 
+                                   st.session_state.prod_selecionado['id'] == row['id'])
+                    
+                    border_color = True # Padrão
+                    icon_sel = "👉" if is_selected else ""
+                    
                     status_icon = "🟢" if row['ativo'] else "🔴"
-                    # Card do produto
-                    with st.container(border=True):
-                        st.write(f"**{status_icon} {row['nome']}**")
-                        st.caption(f"{row['codigo']} | {row['tipo']}")
+                    
+                    with st.container(border=border_color):
+                        st.write(f"{icon_sel} **{row['nome']}**")
+                        st.caption(f"{status_icon} {row['codigo']} | {row['tipo']}")
                         
-                        # Removido o botão de status individual, reduzido colunas para 4
-                        b_cols = st.columns(4)
-                        
-                        # Função Helper para ativar painel
-                        def ativar_painel(tipo, dados):
-                            st.session_state.prod_panel_active = True
-                            st.session_state.prod_panel_type = tipo
-                            st.session_state.prod_panel_data = dados
-
-                        if b_cols[0].button("📂", key=f"arq_{row['id']}", help="Arquivos"):
-                            ativar_painel('arquivos', row)
-                            st.rerun()
-
-                        if b_cols[1].button("📖", key=f"inst_{row['id']}", help="Instruções"):
-                            ativar_painel('instrucoes', row)
-                            st.rerun()
-                        
-                        if b_cols[2].button("✏️", key=f"edit_{row['id']}", help="Editar"):
-                            ativar_painel('editar', row)
-                            st.rerun()
-                            
-                        if b_cols[3].button("🗑️", key=f"del_{row['id']}", help="Excluir"):
-                            excluir_produto(row['id'], row['caminho_pasta'])
+                        # Botão de Ação Única
+                        if st.button("Ver Mais >", key=f"sel_{row['id']}", use_container_width=True):
+                            st.session_state.prod_selecionado = row.to_dict()
+                            st.session_state.prod_aba_ativa = None # Reseta a gaveta ao trocar de produto
                             st.rerun()
             else:
-                st.info("Nenhum produto cadastrado.")
+                st.info("Nenhum produto.")
 
-        # --- COLUNA DIREITA: PAINEL LATERAL ---
-        if col_painel and st.session_state.prod_panel_active:
-            with col_painel:
+        # --- COLUNA DIREITA: DETALHES (FIXO) ---
+        with col_detalhe:
+            prod = st.session_state.prod_selecionado
+            
+            if prod:
+                # Cabeçalho do Produto
                 with st.container(border=True):
-                    # Cabeçalho do Painel (Fechar + Slider)
-                    cp1, cp2 = st.columns([1, 3])
-                    if cp1.button("✖ Fechar", type="primary"):
-                        st.session_state.prod_panel_active = False
-                        st.rerun()
+                    st.title(prod['nome'])
+                    st.caption(f"Código: {prod['codigo']} | Status: {'Ativo' if prod['ativo'] else 'Inativo'}")
                     
-                    st.session_state.prod_panel_width = cp2.slider(
-                        "Largura da Janela (%)", 
-                        min_value=20, max_value=90, 
-                        value=st.session_state.prod_panel_width,
-                        label_visibility="collapsed"
-                    )
+                    if prod['resumo']:
+                        st.info(prod['resumo'])
+                    else:
+                        st.text("Sem descrição cadastrada.")
                     
                     st.divider()
                     
-                    # Conteúdo do Painel
-                    tipo = st.session_state.prod_panel_type
-                    dados = st.session_state.prod_panel_data
+                    # Menu de Ações (Botões Lado a Lado)
+                    c_btn1, c_btn2, c_btn3, c_btn4 = st.columns(4)
                     
-                    if tipo == 'arquivos':
-                        painel_visualizar_arquivos(dados['caminho_pasta'], dados['nome'])
-                    elif tipo == 'instrucoes':
-                        painel_visualizar_instrucoes(dados['id'], dados['nome'])
-                    elif tipo == 'editar':
-                        painel_editar_produto(dados)
+                    # Definição dos botões. Ao clicar, define a aba ativa.
+                    if c_btn1.button("📂 Arquivos", use_container_width=True, type="secondary" if st.session_state.prod_aba_ativa != 'arquivos' else "primary"):
+                        st.session_state.prod_aba_ativa = 'arquivos'
+                        st.rerun()
+                        
+                    if c_btn2.button("📖 Instruções", use_container_width=True, type="secondary" if st.session_state.prod_aba_ativa != 'instrucoes' else "primary"):
+                        st.session_state.prod_aba_ativa = 'instrucoes'
+                        st.rerun()
+                        
+                    if c_btn3.button("✏️ Editar", use_container_width=True, type="secondary" if st.session_state.prod_aba_ativa != 'editar' else "primary"):
+                        st.session_state.prod_aba_ativa = 'editar'
+                        st.rerun()
+
+                    if c_btn4.button("🗑️ Excluir", use_container_width=True, type="secondary" if st.session_state.prod_aba_ativa != 'excluir' else "primary"):
+                        st.session_state.prod_aba_ativa = 'excluir'
+                        st.rerun()
+
+                # Área de Conteúdo "Gaveta" (Aparece embaixo do cabeçalho)
+                aba = st.session_state.prod_aba_ativa
+                
+                if aba:
+                    with st.container(border=True):
+                        if aba == 'arquivos':
+                            renderizar_arquivos(prod['caminho_pasta'], prod['nome'])
+                        elif aba == 'instrucoes':
+                            renderizar_instrucoes(prod['id'], prod['nome'])
+                        elif aba == 'editar':
+                            renderizar_edicao(prod)
+                        elif aba == 'excluir':
+                            renderizar_exclusao(prod)
+                else:
+                    st.caption("Selecione uma ação acima para visualizar os detalhes.")
+                    
+            else:
+                # Estado vazio (nenhum produto selecionado)
+                st.container(border=True).markdown(
+                    """
+                    <div style='text-align: center; padding: 50px;'>
+                        <h3>⬅️ Selecione um produto na lista</h3>
+                        <p>Os detalhes e opções de gerenciamento aparecerão aqui.</p>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
 
 if __name__ == "__main__":
     app_produtos()
