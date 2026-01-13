@@ -3,7 +3,7 @@ import os
 import sys
 import psycopg2
 import bcrypt
-# import pandas as pd  <-- REMOVIDO (Não era usado)
+# import pandas as pd 
 from datetime import datetime
 import time
 import importlib
@@ -14,22 +14,22 @@ st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", pa
 # --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Pastas dos módulos (ATUALIZADO PARA _ NAS PASTAS COMERCIAIS)
+# Pastas dos módulos
 pastas_modulos = [
     "OPERACIONAL/CLIENTES",
     "OPERACIONAL/BANCO DE PLANILHAS",
     "OPERACIONAL/MODULO_W-API",
     "OPERACIONAL/MODULO_CHAT",
-    "COMERCIAL",  # Adicionado para importar o modulo_comercial_geral.py
-    "COMERCIAL/PRODUTOS_E_SERVICOS", # Atualizado
+    "COMERCIAL",
+    "COMERCIAL/PRODUTOS_E_SERVICOS",
     "COMERCIAL/PEDIDOS",
     "COMERCIAL/TAREFAS",
-    "COMERCIAL/RENOVACAO_E_FEEDBACK", # Atualizado
+    "COMERCIAL/RENOVACAO_E_FEEDBACK",
     "CONEXÕES",
     "" 
 ]
 
-# Adiciona ao path apenas se não existir (evita duplicatas no loop do Streamlit)
+# Adiciona ao path apenas se não existir
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if os.path.exists(caminho) and caminho not in sys.path:
@@ -51,7 +51,6 @@ try:
         except ImportError:
             return None
         except Exception as e:
-            # Isso vai mostrar o erro real na tela (ex: erro de sintaxe)
             st.error(f"⚠️ Erro grave ao carregar módulo '{nome_modulo}': {e}")
             return None
 
@@ -63,7 +62,6 @@ try:
         caminho_completo = os.path.join(BASE_DIR, caminho_relativo)
         if os.path.exists(caminho_completo):
             try:
-                # Se o módulo já existe na memória, recarrega. Se não, importa.
                 if nome_modulo in sys.modules:
                     return importlib.reload(sys.modules[nome_modulo])
                 else:
@@ -73,15 +71,12 @@ try:
                 return None
         return None
 
-    # Carregamento dos módulos com feedback de erro
+    # Carregamento dos módulos
     modulo_chat = carregar_modulo_por_caminho("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
     
-    # --- CORREÇÃO: Carregar dependências do módulo PF explicitamente ---
-    # Isso garante que o modulo_pessoa_fisica encontre as funções atualizadas
     modulo_pf_cadastro = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_cadastro.py", "modulo_pf_cadastro")
     modulo_pf_pesquisa = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_pesquisa.py", "modulo_pf_pesquisa")
     modulo_pf_importacao = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_importacao.py", "modulo_pf_importacao")
-    # ---------------------------------------------------------------------
 
     modulo_pf = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
     modulo_pf_campanhas = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
@@ -92,7 +87,6 @@ try:
     modulo_tarefas = carregar_modulo_por_caminho("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
     modulo_rf = carregar_modulo_por_caminho("COMERCIAL/RENOVACAO_E_FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
     
-    # NOVO MÓDULO GERAL COMERCIAL
     modulo_comercial_geral = carregar_modulo_por_caminho("COMERCIAL/modulo_comercial_geral.py", "modulo_comercial_geral")
 
     modulo_conexoes = carregar_modulo_por_caminho("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
@@ -133,7 +127,7 @@ def gerenciar_sessao():
 # --- 5. BANCO DE DADOS ---
 def get_conn():
     try:
-        # Cria conexão nova. (Se o sistema crescer, implementar Pool aqui)
+        # Usa as variáveis carregadas no conexao.py (que pegam do secrets.toml automaticamente)
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
@@ -144,7 +138,6 @@ def get_conn():
 
 def verificar_senha(senha_input, senha_hash):
     try:
-        # REMOVIDA verificação de texto plano para maior segurança
         return bcrypt.checkpw(senha_input.encode('utf-8'), senha_hash.encode('utf-8'))
     except: return False
 
@@ -217,7 +210,6 @@ def dialog_mensagem_rapida():
 
 # --- 7. MENU LATERAL ---
 def renderizar_menu_lateral():
-    # CSS para botões estilo menu
     st.markdown("""
         <style>
         div.stButton > button {
@@ -233,7 +225,6 @@ def renderizar_menu_lateral():
         st.markdown(f"Olá, **{st.session_state.get('usuario_nome', '').split()[0]}**")
         st.markdown("---")
         
-        # Mapa de navegação: "Nome Botão": "Chave Interna"
         botoes = {
             "🏠 Início": "Início",
             "👥 Clientes": "Clientes",
@@ -265,9 +256,13 @@ def main():
             st.title("🔐 Acesso Restrito")
             u = st.text_input("Usuário (E-mail/CPF)")
             s = st.text_input("Senha", type="password")
+            
+            # LOGIN LIMPO (SEM DETETIVE)
             if st.button("Entrar", type="primary", use_container_width=True):
                 res = validar_login_db(u, s)
                 if res['status'] == 'sucesso':
+                    st.success("Login efetuado com sucesso!")
+                    time.sleep(0.5)
                     st.session_state.update({'logado': True, 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
                     st.rerun()
                 elif res['status'] == 'bloqueado': st.error("Usuário bloqueado por excesso de tentativas.")
@@ -278,39 +273,28 @@ def main():
     else:
         renderizar_menu_lateral()
         
-        # Cabeçalho
         c1, c2 = st.columns([6, 1])
         with c2: 
             if st.button("💬 Msg"): dialog_mensagem_rapida()
 
         pagina = st.session_state['pagina_central']
         
-        # Roteamento
         if pagina == "Início":
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Painel Inicial (Módulo Chat não detectado)")
             
         elif pagina == "Clientes":
-            # Verificação de Permissão Simplificada
             if modulo_permissoes and modulo_permissoes.verificar_bloqueio_de_acesso("bloqueio_menu_cliente", "Clientes", False):
                 st.error("🚫 Acesso Negado ao Módulo Clientes"); st.stop()
-            
             if modulo_tela_cliente: modulo_tela_cliente.app_clientes()
             
         elif pagina == "Comercial":
-            # ATUALIZAÇÃO: Redireciona para o novo Hub Comercial
-            if modulo_comercial_geral:
-                modulo_comercial_geral.app_comercial_geral()
-            else:
-                st.warning("⚠️ Módulo Comercial Geral não encontrado ou erro na importação.")
+            if modulo_comercial_geral: modulo_comercial_geral.app_comercial_geral()
+            else: st.warning("⚠️ Módulo Comercial Geral não encontrado.")
 
         elif pagina == "BancoDados":
-            # REMOVIDO st.tabs ANTIGO para evitar conflito de IDs
-            # Chamada direta e única para o módulo principal
-            if modulo_pf:
-                modulo_pf.app_pessoa_fisica()
-            else:
-                st.warning("Módulo Pessoa Física não carregado.")
+            if modulo_pf: modulo_pf.app_pessoa_fisica()
+            else: st.warning("Módulo Pessoa Física não carregado.")
 
         elif pagina == "WhatsApp":
             modulo_whats_controlador.app_wapi() if modulo_whats_controlador else st.warning("Módulo WhatsApp Off")
