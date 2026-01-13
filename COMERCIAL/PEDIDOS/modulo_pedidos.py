@@ -767,7 +767,8 @@ def app_pedidos():
                         icon_sel = "👉 " if is_selected else ""
 
                         with st.container(border=border_style):
-                            st.write(f"**{icon_sel}{row['nome_cliente']}**")
+                            # --- AJUSTE AQUI: REMOVIDO ** e icon_sel ---
+                            st.write(f"{row['nome_cliente']}")
                             st.caption(f"{cor} {row['codigo']} | R$ {row['valor_total']:.2f}")
                             
                             if st.button("Ver Detalhes >", key=f"sel_ped_{row['id']}", use_container_width=True):
