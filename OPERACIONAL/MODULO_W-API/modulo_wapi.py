@@ -1,22 +1,22 @@
-import streamlit as st
-import pandas as pd
 import psycopg2
 import requests
 import re
-import time
-import base64
-from datetime import datetime
 
 try: 
     import conexao
 except ImportError:
-    st.error("Erro crítico: Arquivo conexao.py não localizado no servidor.")
+    print("Erro crítico: Arquivo conexao.py não localizado no servidor.")
 
 def get_conn():
-    return psycopg2.connect(
-        host=conexao.host, port=conexao.port, database=conexao.database, 
-        user=conexao.user, password=conexao.password
-    )
+    """Estabelece conexão com o banco de dados usando as configurações do arquivo conexao.py"""
+    try:
+        return psycopg2.connect(
+            host=conexao.host, port=conexao.port, database=conexao.database, 
+            user=conexao.user, password=conexao.password
+        )
+    except Exception as e:
+        print(f"Erro de conexão DB: {e}")
+        return None
 
 # ==========================================================
 # 1. FUNÇÕES DE API (W-API)
@@ -24,9 +24,13 @@ def get_conn():
 BASE_URL = "https://api.w-api.app/v1"
 
 def enviar_msg_api(instance_id, token, to, message):
+    """Envia mensagem de texto via API"""
     url = f"{BASE_URL}/message/send-text?instanceId={instance_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
+    # Limpeza básica do número
     contato_limpo = to if "@g.us" in str(to) else re.sub(r'[^0-9]', '', str(to))
+    
     payload = {"phone": contato_limpo, "message": message, "delayMessage": 3}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -35,8 +39,10 @@ def enviar_msg_api(instance_id, token, to, message):
         return {"success": False, "error": str(e)}
 
 def enviar_midia_api(instance_id, token, to, base64_data, file_name, caption=""):
+    """Envia arquivo/mídia via API (Base64)"""
     url = f"{BASE_URL}/message/send-media?instanceId={instance_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
     contato_limpo = to if "@g.us" in str(to) else re.sub(r'[^0-9]', '', str(to))
     
     payload = {
@@ -57,6 +63,7 @@ def enviar_midia_api(instance_id, token, to, base64_data, file_name, caption="")
         return {"success": False, "error": str(e)}
 
 def obter_qrcode_api(instance_id, token):
+    """Obtém o buffer da imagem do QR Code"""
     url = f"{BASE_URL}/instance/qr-code"
     headers = {"Authorization": f"Bearer {token}"}
     params = {"instanceId": instance_id, "image": "enable"}
@@ -66,6 +73,7 @@ def obter_qrcode_api(instance_id, token):
     except: return None
 
 def obter_otp_api(instance_id, token, phone):
+    """Solicita o código de pareamento (OTP)"""
     url = f"{BASE_URL}/instance/connect-phone"
     headers = {"Authorization": f"Bearer {token}"}
     payload = {"instanceId": instance_id, "phone": phone}
@@ -75,6 +83,7 @@ def obter_otp_api(instance_id, token, phone):
     except: return None
 
 def checar_status_api(instance_id, token):
+    """Verifica o status da instância na API"""
     url = f"{BASE_URL}/instance/status-instance"
     headers = {"Authorization": f"Bearer {token}"}
     params = {"instanceId": instance_id}
@@ -84,10 +93,11 @@ def checar_status_api(instance_id, token):
     except: return {"state": "erro"}
 
 # ==========================================================
-# 2. FUNÇÕES DE SUPORTE
+# 2. FUNÇÕES DE SUPORTE (BANCO DE DADOS)
 # ==========================================================
 
 def buscar_instancia_ativa():
+    """Retorna a primeira instância configurada no banco"""
     conn = get_conn()
     if conn:
         try:
@@ -102,6 +112,7 @@ def buscar_instancia_ativa():
     return None
 
 def buscar_template(modulo, chave):
+    """Busca o texto de um modelo de mensagem no banco"""
     conn = get_conn()
     if conn:
         try:
@@ -114,100 +125,3 @@ def buscar_template(modulo, chave):
             conn.close()
             return ""
     return ""
-
-# ==========================================================
-# 3. POP-UPS (DIÁLOGOS)
-# ==========================================================
-@st.dialog("📷 Conectar QR Code")
-def dialog_qrcode(inst_id, token):
-    img = obter_qrcode_api(inst_id, token)
-    if img: 
-        st.image(img, width=300)
-        st.info("Escaneie para conectar a instância.")
-    else: st.error("Erro ao carregar QR Code da API.")
-
-@st.dialog("🔢 Conectar via Código (OTP)")
-def dialog_otp(inst_id, token):
-    phone = st.text_input("Número com DDI (Ex: 5511999999999)")
-    if st.button("Gerar Código"):
-        res = obter_otp_api(inst_id, token, phone)
-        if res and res.get('code'):
-            st.code(res['code'], language="text")
-            st.success("Insira este código no seu aparelho WhatsApp.")
-        else: st.error("Erro ao gerar código OTP.")
-
-@st.dialog("📝 Editar Instância")
-def dialog_editar(id_db, nome, inst_id, token):
-    new_nome = st.text_input("Nome Identificador", value=nome)
-    new_id = st.text_input("Instance ID", value=inst_id)
-    new_token = st.text_input("Token de Acesso", value=token)
-    if st.button("Salvar Alterações"):
-        try:
-            conn = get_conn(); cur = conn.cursor()
-            cur.execute("UPDATE wapi_instancias SET nome=%s, api_instance_id=%s, api_token=%s WHERE id=%s", (new_nome, new_id, new_token, id_db))
-            conn.commit(); conn.close()
-            st.success("Configurações atualizadas!")
-            time.sleep(1); st.rerun()
-        except Exception as e: st.error(f"Erro ao salvar: {e}")
-
-# ==========================================================
-# 4. INTERFACE PRINCIPAL
-# ==========================================================
-def app_wapi():
-    st.markdown("## 📱 Módulo W-API")
-    # REMOVIDA A ABA "MODELOS" E REDUZIDO O NÚMERO DE ABAS
-    tab1, tab2, tab3 = st.tabs(["📤 Disparador", "🤖 Instâncias", "📋 Registros"])
-
-    with tab1:
-        import modulo_whats_disparador
-        modulo_whats_disparador.app_disparador()
-
-    with tab2:
-        st.markdown("### 🤖 Gerenciar Instâncias")
-        try:
-            conn = get_conn()
-            df_list = pd.read_sql("SELECT id, nome, api_instance_id, api_token FROM wapi_instancias", conn)
-            conn.close()
-
-            if not df_list.empty:
-                for _, inst in df_list.iterrows():
-                    with st.expander(f"Instância: **{inst['nome']}**"):
-                        c1, c2, c3 = st.columns(3)
-                        with c1:
-                            if st.button("📷 QR Code", key=f"qr_{inst['id']}"): dialog_qrcode(inst['api_instance_id'], inst['api_token'])
-                            if st.button("📊 Status", key=f"st_{inst['id']}"):
-                                res_st = checar_status_api(inst['api_instance_id'], inst['api_token'])
-                                st.write(f"Estado: **{res_st.get('state')}**")
-                        with c2:
-                            if st.button("🔢 Código OTP", key=f"otp_{inst['id']}"): dialog_otp(inst['api_instance_id'], inst['api_token'])
-                            if st.button("📝 Editar", key=f"ed_{inst['id']}"): dialog_editar(inst['id'], inst['nome'], inst['api_instance_id'], inst['api_token'])
-                        with c3:
-                            if st.button("❌ Excluir", key=f"del_{inst['id']}"):
-                                conn = get_conn(); cur = conn.cursor()
-                                cur.execute("DELETE FROM wapi_instancias WHERE id=%s", (inst['id'],))
-                                conn.commit(); conn.close()
-                                st.warning("Removida."); time.sleep(1); st.rerun()
-            else: st.info("Nenhuma instância cadastrada.")
-        except: pass
-
-    with tab3:
-        st.markdown("### 📋 Histórico de Mensagens (Webhook)")
-        try:
-            conn = get_conn()
-            query = """
-                SELECT data_hora, instance_id as "Instância", nome_contato as "Contato", 
-                       tipo as "Fluxo", telefone, mensagem, status 
-                FROM wapi_logs 
-                ORDER BY data_hora DESC 
-                LIMIT 50
-            """
-            df_logs = pd.read_sql(query, conn)
-            conn.close()
-            if not df_logs.empty:
-                df_logs['data_hora'] = pd.to_datetime(df_logs['data_hora']).dt.strftime('%d/%m/%Y %H:%M')
-                st.dataframe(df_logs, use_container_width=True, hide_index=True)
-            else: st.info("Histórico vazio.")
-        except Exception as e: st.error(f"Erro ao carregar logs: {e}")
-
-if __name__ == "__main__":
-    app_wapi()
