@@ -612,12 +612,9 @@ def renderizar_excluir_pedido(ped):
 
 def renderizar_tarefa_pedido(ped):
     st.markdown("#### 📋 Tarefas Vinculadas")
-    
-    # --- LISTAGEM DE TAREFAS EXISTENTES ---
     conn = get_conn()
     if conn:
         try:
-            # Busca tarefas vinculadas a este pedido
             query = """
                 SELECT id, status, data_previsao, observacao_tarefa as observacao 
                 FROM tarefas 
@@ -628,7 +625,6 @@ def renderizar_tarefa_pedido(ped):
             conn.close()
             
             if not df_tar.empty:
-                # Formatação da data para DD/MM/AAAA
                 df_tar['data_previsao'] = pd.to_datetime(df_tar['data_previsao']).dt.strftime('%d/%m/%Y')
                 st.dataframe(df_tar, use_container_width=True, hide_index=True)
             else:
@@ -639,7 +635,6 @@ def renderizar_tarefa_pedido(ped):
 
     st.markdown("---")
     
-    # --- FORMULÁRIO DE CRIAÇÃO ---
     with st.expander("➕ Criar Nova Tarefa", expanded=False):
         with st.form("form_gaveta_tarefa_ped"):
             dt = st.date_input("Data de Previsão", datetime.now())
@@ -649,17 +644,64 @@ def renderizar_tarefa_pedido(ped):
                 if conn:
                     try:
                         cur = conn.cursor()
-                        # Inserção direta no banco (mantendo padrão do módulo)
                         cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status, data_criacao) VALUES (%s,%s,%s,%s,%s,'Solicitado', NOW())", 
                                     (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
                         conn.commit()
                         conn.close()
                         st.success("Tarefa criada!"); time.sleep(1)
-                        # Recarrega a aba para atualizar a lista
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao criar tarefa: {e}")
                         if conn: conn.close()
+
+# --- NOVA FUNÇÃO PARA RENOVAÇÃO ---
+def renderizar_renovacao_pedido(ped):
+    st.markdown("#### 📅 Renovações / Feedback")
+    
+    # 1. LISTAGEM DE RENOVAÇÕES
+    conn = get_conn()
+    if conn:
+        try:
+            query = """
+                SELECT id, status, data_previsao, observacao 
+                FROM renovacao_feedback 
+                WHERE id_pedido = %s 
+                ORDER BY data_criacao DESC
+            """
+            df = pd.read_sql(query, conn, params=(ped['id'],))
+            conn.close()
+            
+            if not df.empty:
+                df['data_previsao'] = pd.to_datetime(df['data_previsao']).dt.strftime('%d/%m/%Y')
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhuma renovação agendada para este pedido.")
+        except Exception as e:
+            st.error(f"Erro ao buscar renovações: {e}")
+            if conn: conn.close()
+
+    st.markdown("---")
+    
+    # 2. FORMULÁRIO DE CRIAÇÃO
+    with st.expander("➕ Agendar Nova Renovação", expanded=False):
+        with st.form("form_gaveta_renovacao"):
+            dt = st.date_input("Data Previsão", value=date.today())
+            obs = st.text_area("Observação")
+            if st.form_submit_button("Agendar"):
+                if modulo_renovacao_feedback:
+                    # Usando a função do módulo de renovação para manter consistência
+                    ok = modulo_renovacao_feedback.criar_registro_rf(
+                        id_pedido=ped['id'],
+                        data_prev=dt,
+                        obs=obs,
+                        dados_pedido=None, # Não envia mensagem automática aqui
+                        avisar=False
+                    )
+                    if ok: 
+                        st.success("Renovação Agendada!"); time.sleep(1)
+                        st.rerun()
+                else:
+                    st.error("Módulo de Renovação não foi carregado corretamente.")
 
 # =============================================================================
 # 6. APP PRINCIPAL
@@ -745,16 +787,19 @@ def app_pedidos():
                     def selecionar_aba_callback(nome_aba):
                         st.session_state.ped_aba_ativa = nome_aba
 
+                    # --- MENU DE OPÇÕES ATUALIZADO (INCLUÍDO RENOVAÇÃO) ---
                     opcoes_menu = [
                         ("👤 Cliente", "cliente"),
                         ("✏️ Editar", "editar"),
                         ("🔄 Status", "status"),
                         ("📜 Histórico", "historico"),
                         ("📝 Tarefa", "tarefa"),
+                        ("📅 Renovação", "renovacao"), # Nova Opção
                         ("🗑️ Excluir", "excluir")
                     ]
                     
-                    cols_menu = st.columns(6, gap="small")
+                    # Colunas alteradas de 6 para 7
+                    cols_menu = st.columns(7, gap="small")
                     
                     for col, (label, key_aba) in zip(cols_menu, opcoes_menu):
                         tipo_btn = "primary" if st.session_state.ped_aba_ativa == key_aba else "secondary"
@@ -776,6 +821,7 @@ def app_pedidos():
                         elif aba == 'status': renderizar_status_pedido(ped)
                         elif aba == 'historico': renderizar_historico_pedido(ped['id'])
                         elif aba == 'tarefa': renderizar_tarefa_pedido(ped)
+                        elif aba == 'renovacao': renderizar_renovacao_pedido(ped) # Nova Chamada
                         elif aba == 'excluir': renderizar_excluir_pedido(ped)
                 else:
                     st.info("👆 Selecione uma opção acima para gerenciar o pedido.")
