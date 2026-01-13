@@ -14,6 +14,33 @@ def get_conn():
 
 # --- DIALOGS (POP-UPS) ---
 
+@st.dialog("📜 Histórico de Mensagens")
+def dialog_historico(telefone):
+    st.write(f"Histórico para: **{telefone}**")
+    
+    conn = get_conn()
+    if not conn: st.error("Erro conexão"); return
+
+    try:
+        # Busca logs filtrando pelo telefone
+        query = """
+            SELECT data_hora, tipo, mensagem, status 
+            FROM wapi_logs 
+            WHERE telefone = %s 
+            ORDER BY data_hora DESC
+        """
+        df = pd.read_sql(query, conn, params=(telefone,))
+        conn.close()
+
+        if not df.empty:
+            df['data_hora'] = pd.to_datetime(df['data_hora']).dt.strftime('%d/%m/%Y %H:%M')
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhuma mensagem encontrada para este número.")
+    except Exception as e:
+        if conn: conn.close()
+        st.error(f"Erro ao buscar histórico: {e}")
+
 @st.dialog("✏️ Editar Vínculo")
 def dialog_editar_vinculo(id_registro, telefone_atual):
     st.write(f"Vinculando número: **{telefone_atual}**")
@@ -135,7 +162,6 @@ def app_numeros():
         c_h4.markdown("**Ações**")
         st.divider()
 
-        # CORREÇÃO APLICADA AQUI: Usando idx para gerar keys únicas
         for idx, row in df.iterrows():
             with st.container():
                 c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
@@ -152,20 +178,26 @@ def app_numeros():
                 data_fmt = pd.to_datetime(row['data_ultima_interacao']).strftime('%d/%m %H:%M')
                 c3.write(data_fmt)
                 
-                # Botões de Ação
-                b1, b2, b3 = c4.columns(3)
+                # Botões de Ação (Aumentado para 4 colunas)
+                b1, b2, b3, b4 = c4.columns(4)
                 
-                # Adicionado _{idx} para garantir unicidade da chave
+                # Botão Editar
                 if b1.button("✏️", key=f"ed_{row['id']}_{idx}", help="Editar / Vincular"):
                     dialog_editar_vinculo(row['id'], row['telefone'])
                 
+                # Botão Ver Cliente
                 if row['id_cliente']:
                     if b2.button("👁️", key=f"ver_{row['id']}_{idx}", help="Ver Cliente"):
                         dialog_ver_cliente(row['id_cliente'])
                 else:
                     b2.write("-")
 
-                if b3.button("🗑️", key=f"del_{row['id']}_{idx}", help="Excluir Registro"):
+                # NOVO BOTÃO: Histórico
+                if b3.button("📜", key=f"hist_{row['id']}_{idx}", help="Ver Histórico"):
+                    dialog_historico(row['telefone'])
+
+                # Botão Excluir
+                if b4.button("🗑️", key=f"del_{row['id']}_{idx}", help="Excluir Registro"):
                     dialog_excluir_numero(row['id'], row['telefone'])
                 
                 st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
