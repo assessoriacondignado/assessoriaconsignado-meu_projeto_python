@@ -116,7 +116,6 @@ def criar_tarefa(id_pedido, id_cliente, id_produto, data_prev, obs_tarefa, dados
             if avisar_cli and dados_pedido.get('telefone_cliente') and modulo_comercial_configuracoes:
                 instancia = modulo_wapi.buscar_instancia_ativa()
                 if instancia:
-                    # ALTERADO: Busca template via módulo de configurações
                     template = modulo_comercial_configuracoes.buscar_template_config("TAREFAS", "solicitado")
                     
                     if template:
@@ -131,33 +130,36 @@ def criar_tarefa(id_pedido, id_cliente, id_produto, data_prev, obs_tarefa, dados
             if conn: conn.close()
     return False
 
-def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos, avisar, modelo_msg_escolhido="Automático (Padrão)"):
+def atualizar_status_tarefa(id_tarefa, novo_status, obs_status, dados_completos, avisar):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("UPDATE tarefas SET status=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, id_tarefa))
             cur.execute("INSERT INTO tarefas_historico (id_tarefa, status_novo, observacao) VALUES (%s, %s, %s)", (id_tarefa, novo_status, obs_status))
+            
+            # --- NOVA LÓGICA DE ENVIO DE MENSAGEM (IGUAL AO PEDIDO) ---
+            if avisar and dados_completos.get('telefone_cliente'):
+                # Busca mensagem na tabela admin.status
+                cur.execute("SELECT mensagem_padrao FROM admin.status WHERE modulo='TAREFAS' AND status_relacionado=%s", (novo_status,))
+                res_msg = cur.fetchone()
+                
+                if res_msg and res_msg[0]:
+                    template = res_msg[0]
+                    # Substitui variáveis (Incluindo novas tags)
+                    msg_final = template.replace("{nome}", str(dados_completos['nome_cliente']).split()[0]) \
+                                        .replace("{nome_completo}", str(dados_completos['nome_cliente'])) \
+                                        .replace("{pedido}", str(dados_completos['codigo_pedido'])) \
+                                        .replace("{status}", novo_status) \
+                                        .replace("{produto}", str(dados_completos['nome_produto'])) \
+                                        .replace("{obs_status}", obs_status)
+                    
+                    inst = modulo_wapi.buscar_instancia_ativa()
+                    if inst:
+                        modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_completos['telefone_cliente'], msg_final)
+
             conn.commit()
             conn.close()
-            
-            if avisar and dados_completos.get('telefone_cliente') and modulo_comercial_configuracoes:
-                instancia = modulo_wapi.buscar_instancia_ativa()
-                if instancia:
-                    if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
-                        chave = modelo_msg_escolhido
-                    else:
-                        chave = novo_status.lower().replace(' ', '_')
-                    
-                    # ALTERADO: Busca template via módulo de configurações
-                    template = modulo_comercial_configuracoes.buscar_template_config("TAREFAS", chave)
-                    
-                    if template:
-                         msg = template.replace("{nome}", str(dados_completos['nome_cliente']).split()[0]) \
-                                       .replace("{pedido}", str(dados_completos['codigo_pedido'])) \
-                                       .replace("{status}", novo_status) \
-                                       .replace("{obs_status}", obs_status)
-                         modulo_wapi.enviar_msg_api(instancia[0], instancia[1], dados_completos['telefone_cliente'], msg)
             return True
         except: return False
     return False
@@ -212,7 +214,7 @@ def dialog_editar(tarefa):
     with st.form("form_edit_tar"):
         n_data = st.date_input("Nova Previsão", value=pd.to_datetime(tarefa['data_previsao']), format="DD/MM/YYYY")
         n_obs = st.text_area("Observação da Tarefa", value=tarefa['observacao_tarefa'])
-        if st.form_submit_button("Salvar"):
+        if st.form_submit_button("Salvar", type="primary"):
             if editar_tarefa_dados(tarefa['id'], n_data, n_obs):
                 st.success("Editado!"); st.rerun()
 
@@ -221,17 +223,14 @@ def dialog_status(tarefa):
     lst_status = ["Solicitado", "Registro", "Entregue", "Em processamento", "Em execução", "Pendente", "Cancelado"]
     idx = lst_status.index(tarefa['status']) if tarefa['status'] in lst_status else 0
     
-    lista_modelos = listar_modelos_mensagens()
-    opcoes_msg = ["Automático (Padrão)"] + lista_modelos
-
     with st.form("form_st_tar"):
         novo_st = st.selectbox("Novo Status", lst_status, index=idx)
-        modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
         obs_st = st.text_area("Observação")
-        avisar = st.checkbox("Avisar Cliente?", value=True)
+        avisar = st.checkbox("📱 Enviar mensagem automática ao cliente?", value=True, help="Se houver configuração na tabela de Status, a mensagem será enviada.")
         
-        if st.form_submit_button("Atualizar"):
-            if atualizar_status_tarefa(tarefa['id'], novo_st, obs_st, tarefa, avisar, modelo_escolhido):
+        if st.form_submit_button("Atualizar", type="primary"):
+            # Lógica alterada: Removemos o seletor manual e usamos a tabela admin.status
+            if atualizar_status_tarefa(tarefa['id'], novo_st, obs_st, tarefa, avisar):
                 st.success("Atualizado!"); st.rerun()
 
 @st.dialog("📜 Histórico")
@@ -272,7 +271,7 @@ def dialog_nova_tarefa():
             d_prev = st.date_input("Data Previsão", value=date.today(), format="DD/MM/YYYY")
             obs_tar = st.text_area("Observação")
             
-            if st.form_submit_button("Criar Tarefa"):
+            if st.form_submit_button("Criar Tarefa", type="primary"):
                 dados_msg = {
                     'codigo_pedido': sel['codigo'], 
                     'nome_cliente': sel['nome_cliente'], 
@@ -296,8 +295,28 @@ def dialog_nova_tarefa():
 
 # --- APP PRINCIPAL ---
 def app_tarefas():
+    # --- ESTILIZAÇÃO PADRÃO VERMELHA ---
+    st.markdown("""
+        <style>
+        div.stButton > button {
+            background-color: #FF4B4B !important;
+            color: white !important;
+            border-color: #FF4B4B !important;
+        }
+        div.stButton > button:hover {
+            background-color: #FF0000 !important;
+            border-color: #FF0000 !important;
+            color: white !important;
+        }
+        div.stButton > button:active {
+            background-color: #CC0000 !important;
+            border-color: #CC0000 !important;
+            color: white !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     # --- CORREÇÃO DE CONFLITO DE MODAIS ---
-    # Limpa estados de modais de outros módulos que podem estar "presos"
     if 'modal_ativo' in st.session_state and st.session_state['modal_ativo'] is not None:
         st.session_state['modal_ativo'] = None
     # --------------------------------------

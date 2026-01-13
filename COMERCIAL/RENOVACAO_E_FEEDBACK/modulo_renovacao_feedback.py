@@ -96,34 +96,36 @@ def criar_registro_rf(id_pedido, data_prev, obs, dados_pedido, avisar):
             st.error(f"Erro: {e}")
     return False
 
-def atualizar_status_rf(id_rf, novo_status, obs, dados_rf, avisar, modelo_msg_escolhido="Automático (Padrão)"):
+def atualizar_status_rf(id_rf, novo_status, obs, dados_rf, avisar):
     conn = get_conn()
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("UPDATE renovacao_feedback SET status=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, id_rf))
             cur.execute("INSERT INTO renovacao_feedback_historico (id_rf, status_novo, observacao) VALUES (%s, %s, %s)", (id_rf, novo_status, obs))
+            
+            # --- NOVA LÓGICA DE MENSAGEM AUTOMÁTICA (VIA ADMIN.STATUS) ---
+            if avisar and dados_rf.get('telefone_cliente') and modulo_comercial_configuracoes:
+                # Busca mensagem baseada no status selecionado e módulo RENOVACAO
+                cur.execute("SELECT mensagem_padrao FROM admin.status WHERE modulo='RENOVACAO' AND status_relacionado=%s", (novo_status,))
+                res_msg = cur.fetchone()
+                
+                if res_msg and res_msg[0]:
+                    template = res_msg[0]
+                    # Substitui variáveis
+                    msg_final = template.replace("{nome}", str(dados_rf['nome_cliente']).split()[0]) \
+                                        .replace("{nome_completo}", str(dados_rf['nome_cliente'])) \
+                                        .replace("{pedido}", str(dados_rf['codigo_pedido'])) \
+                                        .replace("{status}", novo_status) \
+                                        .replace("{produto}", str(dados_rf['nome_produto'])) \
+                                        .replace("{obs_status}", obs)
+                    
+                    instancia = modulo_wapi.buscar_instancia_ativa()
+                    if instancia:
+                        modulo_wapi.enviar_msg_api(instancia[0], instancia[1], dados_rf['telefone_cliente'], msg_final)
+
             conn.commit()
             conn.close()
-            
-            if avisar and dados_rf.get('telefone_cliente') and modulo_comercial_configuracoes:
-                instancia = modulo_wapi.buscar_instancia_ativa()
-                if instancia:
-                    # Seleção de Template via Configurações
-                    if modelo_msg_escolhido and modelo_msg_escolhido != "Automático (Padrão)":
-                        chave = modelo_msg_escolhido
-                    else:
-                        chave = novo_status.lower().replace(" ", "_")
-                    
-                    template = modulo_comercial_configuracoes.buscar_template_config("RENOVACAO", chave)
-                    
-                    if template:
-                        msg = template.replace("{nome}", str(dados_rf['nome_cliente']).split()[0]) \
-                                      .replace("{pedido}", str(dados_rf['codigo_pedido'])) \
-                                      .replace("{status}", novo_status) \
-                                      .replace("{produto}", str(dados_rf['nome_produto'])) \
-                                      .replace("{obs_status}", obs)
-                        modulo_wapi.enviar_msg_api(instancia[0], instancia[1], dados_rf['telefone_cliente'], msg)
             return True
         except Exception as e: st.error(f"Erro: {e}")
     return False
@@ -183,7 +185,7 @@ def dialog_novo_rf():
     with st.form("form_novo_rf"):
         d_prev = st.date_input("Data Previsão", value=date.today(), format="DD/MM/YYYY")
         obs = st.text_area("Observação inicial")
-        if st.form_submit_button("Criar Registro"):
+        if st.form_submit_button("Criar Registro", type="primary"):
             if idx_ped is not None:
                 id_p = int(df_ped.iloc[idx_ped]['id'])
                 if criar_registro_rf(id_p, d_prev, obs, None, False):
@@ -197,7 +199,7 @@ def dialog_editar(rf):
     with st.form("form_edit_rf"):
         n_data = st.date_input("Data Previsão", value=pd.to_datetime(rf['data_previsao']), format="DD/MM/YYYY")
         n_obs = st.text_area("Observação", value=rf['observacao'])
-        if st.form_submit_button("Salvar"):
+        if st.form_submit_button("Salvar", type="primary"):
             if editar_rf_dados(rf['id'], n_data, n_obs):
                 st.success("Atualizado!"); st.rerun()
 
@@ -206,17 +208,14 @@ def dialog_status(rf):
     status_opcoes = ["Entrada", "Em Análise", "Concluído", "Pendente", "Cancelado"]
     idx = status_opcoes.index(rf['status']) if rf['status'] in status_opcoes else 0
     
-    lista_modelos = listar_modelos_mensagens()
-    opcoes_msg = ["Automático (Padrão)"] + lista_modelos
-
     with st.form("form_st_rf"):
         novo = st.selectbox("Novo Status", status_opcoes, index=idx)
-        modelo_escolhido = st.selectbox("Modelo de Mensagem", opcoes_msg, help="Selecione 'Automático' para usar a mensagem padrão do status.")
         obs = st.text_area("Observação da mudança")
-        enviar_whats = st.checkbox("Enviar aviso ao cliente?", value=True)
+        enviar_whats = st.checkbox("📱 Enviar mensagem automática ao cliente?", value=True, help="Se configurada, a mensagem padrão para este status será enviada.")
         
-        if st.form_submit_button("Atualizar"):
-            if atualizar_status_rf(rf['id'], novo, obs, rf, enviar_whats, modelo_escolhido):
+        if st.form_submit_button("Atualizar", type="primary"):
+            # Lógica atualizada para usar admin.status
+            if atualizar_status_rf(rf['id'], novo, obs, rf, enviar_whats):
                 st.success("Status atualizado!"); st.rerun()
 
 @st.dialog("📜 Histórico")
@@ -237,6 +236,27 @@ def dialog_excluir(id_rf):
 
 # --- INTERFACE PRINCIPAL ---
 def app_renovacao_feedback():
+    # --- ESTILIZAÇÃO PADRÃO VERMELHA ---
+    st.markdown("""
+        <style>
+        div.stButton > button {
+            background-color: #FF4B4B !important;
+            color: white !important;
+            border-color: #FF4B4B !important;
+        }
+        div.stButton > button:hover {
+            background-color: #FF0000 !important;
+            border-color: #FF0000 !important;
+            color: white !important;
+        }
+        div.stButton > button:active {
+            background-color: #CC0000 !important;
+            border-color: #CC0000 !important;
+            color: white !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     # --- CORREÇÃO DE CONFLITO DE MODAIS (Importante para evitar loops) ---
     if 'modal_ativo' in st.session_state and st.session_state['modal_ativo'] is not None:
         st.session_state['modal_ativo'] = None
