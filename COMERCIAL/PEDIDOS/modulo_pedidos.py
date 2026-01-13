@@ -218,9 +218,6 @@ def buscar_historico_pedido(id_pedido):
     return pd.DataFrame()
 
 def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
-    """
-    Atualiza o status e envia mensagem automática baseada na configuração da tabela admin.status
-    """
     if dados_pedido['status'] == novo_status:
         return False, f"⚠️ O pedido já está com o status '{novo_status}'. Nenhuma alteração realizada."
     
@@ -228,8 +225,7 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
     if conn:
         try:
             cur = conn.cursor()
-            
-            # 1. Atualização do Status
+            obs_hist = obs
             coluna_data = ""
             if novo_status == "Solicitado": coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago": coluna_data = ", data_pago = NOW()"
@@ -238,29 +234,28 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
 
             sql_update = f"UPDATE pedidos SET status=%s, observacao=%s, data_atualizacao=NOW(){coluna_data} WHERE id=%s"
             cur.execute(sql_update, (novo_status, obs, id_pedido))
-            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs))
+            cur.execute("INSERT INTO pedidos_historico (id_pedido, status_novo, observacao) VALUES (%s, %s, %s)", (id_pedido, novo_status, obs_hist))
             
-            # 2. Movimentação Financeira
             if novo_status == "Pago":
                 registrar_movimentacao_financeira(conn, dados_pedido, "CREDITO", dados_pedido['valor_total'])
             elif novo_status == "Cancelado":
                 registrar_movimentacao_financeira(conn, dados_pedido, "DEBITO", dados_pedido['valor_total'])
             
-            # 3. Envio de Mensagem Automática (NOVA LÓGICA)
+            # --- NOVA LÓGICA DE ENVIO DE MENSAGEM ---
             if avisar and dados_pedido['telefone_cliente']:
-                # Busca na tabela de configuração se existe mensagem para este status
                 cur.execute("SELECT mensagem_padrao FROM admin.status WHERE modulo='PEDIDOS' AND status_relacionado=%s", (novo_status,))
                 res_msg = cur.fetchone()
                 
                 if res_msg and res_msg[0]:
                     template = res_msg[0]
-                    # Substitui variáveis
+                    # Substituição de variáveis
                     msg_final = template.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
+                                        .replace("{nome_completo}", str(dados_pedido['nome_cliente'])) \
                                         .replace("{pedido}", str(dados_pedido['codigo'])) \
                                         .replace("{status}", novo_status) \
-                                        .replace("{produto}", str(dados_pedido['nome_produto']))
+                                        .replace("{produto}", str(dados_pedido['nome_produto'])) \
+                                        .replace("{obs_status}", obs)
                     
-                    # Envia
                     inst = modulo_wapi.buscar_instancia_ativa()
                     if inst:
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg_final)
@@ -337,6 +332,8 @@ def renderizar_fluxo_pos_venda():
                 st.write(f"Nova Tarefa para: **{dados['nome_cliente']}**")
                 dt_prev = st.date_input("Data Previsão", value=date.today())
                 obs_tar = st.text_area("Descrição da Tarefa", value=f"Acompanhar pedido do produto {dados['nome_produto']}")
+                
+                # Checkbox de aviso no fluxo de tarefas
                 avisar_task = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_tarefa_pv")
                 
                 c_btn1, c_btn2 = st.columns(2)
@@ -386,6 +383,8 @@ def renderizar_fluxo_pos_venda():
                 st.write(f"Agendar Renovação para: **{dados['nome_produto']}**")
                 dt_ren = st.date_input("Data para contato", value=date.today())
                 obs_ren = st.text_area("Observação", value="Entrar em contato para renovação.")
+                
+                # Checkbox de aviso no fluxo de renovação
                 avisar_ren = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_renovacao_pv")
                 
                 c_btn1, c_btn2 = st.columns(2)
@@ -596,7 +595,7 @@ def renderizar_editar_pedido(ped):
 def renderizar_status_pedido(ped):
     st.markdown(f"#### 📜 Histórico & Status")
     
-    # 1. LISTAGEM DO HISTÓRICO (Fusão da aba Histórico)
+    # 1. LISTAGEM DO HISTÓRICO
     df = buscar_historico_pedido(ped['id'])
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -605,17 +604,16 @@ def renderizar_status_pedido(ped):
 
     st.markdown("---")
     
-    # 2. FORMULÁRIO DE ATUALIZAÇÃO (Dentro do Expander)
+    # 2. FORMULÁRIO DE ATUALIZAÇÃO
     with st.expander("🔄 Registrar Nova Atualização", expanded=False):
         lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
         try: idx = lst.index(ped['status']) 
         except: idx = 0
         
         with st.form("form_gaveta_status_ped"):
-            # Apenas Status e Obs. A mensagem é automática se configurada.
             ns = st.selectbox("Novo Status", lst, index=idx)
             obs = st.text_area("Observação da Mudança")
-            av = st.checkbox("📱 Enviar mensagem automática ao cliente?", value=True, help="Se configurada em 'Parâmetros', a mensagem será enviada.")
+            av = st.checkbox("Avisar Cliente (WhatsApp)?", value=True)
             
             if st.form_submit_button("✅ Confirmar Novo Status", type="primary"):
                 ok, msg = atualizar_status_pedido(ped['id'], ns, ped, av, obs)
@@ -671,7 +669,6 @@ def renderizar_tarefa_pedido(ped):
             
             if st.form_submit_button("Criar Tarefa", type="primary"):
                 if modulo_tarefas:
-                    # Prepara dados para envio de msg via modulo_tarefas
                     dados_msg = {
                         'codigo_pedido': ped['codigo'],
                         'nome_cliente': ped['nome_cliente'],
@@ -685,7 +682,7 @@ def renderizar_tarefa_pedido(ped):
                         id_produto=ped['id_produto'], 
                         data_prev=dt, 
                         obs_tarefa=obs, 
-                        dados_pedido=dados_msg, # Passa os dados
+                        dados_pedido=dados_msg, 
                         avisar_cli=avisar_task_drawer
                     )
                     
@@ -699,7 +696,6 @@ def renderizar_tarefa_pedido(ped):
 def renderizar_renovacao_pedido(ped):
     st.markdown("#### 📅 Renovações / Feedback")
     
-    # 1. LISTAGEM DE RENOVAÇÕES
     conn = get_conn()
     if conn:
         try:
@@ -723,7 +719,6 @@ def renderizar_renovacao_pedido(ped):
 
     st.markdown("---")
     
-    # 2. FORMULÁRIO DE CRIAÇÃO
     with st.expander("➕ Agendar Nova Renovação", expanded=False):
         with st.form("form_gaveta_renovacao"):
             dt = st.date_input("Data Previsão", value=date.today())
@@ -732,7 +727,6 @@ def renderizar_renovacao_pedido(ped):
             
             if st.form_submit_button("Agendar", type="primary"):
                 if modulo_renovacao_feedback:
-                    # Prepara dados para envio de msg via modulo_renovacao
                     dados_msg = {
                         'codigo_pedido': ped['codigo'],
                         'nome_cliente': ped['nome_cliente'],
@@ -744,7 +738,7 @@ def renderizar_renovacao_pedido(ped):
                         id_pedido=ped['id'],
                         data_prev=dt,
                         obs=obs,
-                        dados_pedido=dados_msg, # Passa os dados
+                        dados_pedido=dados_msg,
                         avisar=avisar_ren_drawer
                     )
                     if ok: 
@@ -857,7 +851,7 @@ def app_pedidos():
                     def selecionar_aba_callback(nome_aba):
                         st.session_state.ped_aba_ativa = nome_aba
 
-                    # --- MENU DE OPÇÕES ATUALIZADO ---
+                    # --- MENU DE OPÇÕES ATUALIZADO (RENOVACAO INCLUÍDA) ---
                     opcoes_menu = [
                         ("👤 Cliente", "cliente"),
                         ("✏️ Editar", "editar"),
@@ -867,7 +861,6 @@ def app_pedidos():
                         ("🗑️ Excluir", "excluir")
                     ]
                     
-                    # Mantido 6 colunas
                     cols_menu = st.columns(6, gap="small")
                     
                     for col, (label, key_aba) in zip(cols_menu, opcoes_menu):
