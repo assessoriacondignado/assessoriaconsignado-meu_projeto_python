@@ -322,12 +322,17 @@ def renderizar_fluxo_pos_venda():
                 st.write(f"Nova Tarefa para: **{dados['nome_cliente']}**")
                 dt_prev = st.date_input("Data Previsão", value=date.today())
                 obs_tar = st.text_area("Descrição da Tarefa", value=f"Acompanhar pedido do produto {dados['nome_produto']}")
+                avisar_task = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_tarefa_pv")
                 
                 c_btn1, c_btn2 = st.columns(2)
                 if c_btn1.button("✅ Confirmar Tarefa", type="primary"):
                     if modulo_tarefas:
+                        # Reconstroi dados_msg apenas com o necessário para o modulo_tarefas
+                        # Nota: modulo_tarefas espera 'codigo_pedido' no dict
+                        # Vamos assumir 'RECÉM-CRIADO' ou tentar buscar o código se necessário, 
+                        # mas para o fluxo rápido, o nome do cliente e produto são o foco da msg.
                         dados_msg = {
-                            'codigo_pedido': 'RECÉM-CRIADO', 
+                            'codigo_pedido': 'Novo', 
                             'nome_cliente': dados['nome_cliente'], 
                             'telefone_cliente': dados['telefone'], 
                             'nome_produto': dados['nome_produto']
@@ -339,7 +344,7 @@ def renderizar_fluxo_pos_venda():
                             data_prev=dt_prev,
                             obs_tarefa=obs_tar,
                             dados_pedido=dados_msg,
-                            avisar_cli=True
+                            avisar_cli=avisar_task
                         )
                         if ok: st.success("Tarefa Criada!")
                     
@@ -370,16 +375,25 @@ def renderizar_fluxo_pos_venda():
                 st.write(f"Agendar Renovação para: **{dados['nome_produto']}**")
                 dt_ren = st.date_input("Data para contato", value=date.today())
                 obs_ren = st.text_area("Observação", value="Entrar em contato para renovação.")
+                avisar_ren = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_renovacao_pv")
                 
                 c_btn1, c_btn2 = st.columns(2)
                 if c_btn1.button("✅ Confirmar Agendamento", type="primary"):
                     if modulo_renovacao_feedback:
+                        # Prepara dados para mensagem se avisar=True
+                        dados_msg = {
+                            'codigo_pedido': 'Novo',
+                            'nome_cliente': dados['nome_cliente'],
+                            'telefone_cliente': dados['telefone'],
+                            'nome_produto': dados['nome_produto']
+                        }
+                        
                         ok = modulo_renovacao_feedback.criar_registro_rf(
                             id_pedido=id_ped,
                             data_prev=dt_ren,
                             obs=obs_ren,
-                            dados_pedido=None,
-                            avisar=False
+                            dados_pedido=dados_msg,
+                            avisar=avisar_ren
                         )
                         if ok: st.success("Renovação Agendada!")
                     
@@ -572,17 +586,16 @@ def renderizar_editar_pedido(ped):
 def renderizar_status_pedido(ped):
     st.markdown(f"#### 📜 Histórico & Status")
     
-    # 1. LISTAGEM DO HISTÓRICO (Fusão da aba Histórico)
+    # 1. LISTAGEM DO HISTÓRICO
     df = buscar_historico_pedido(ped['id'])
     if not df.empty:
-        # Ajuste visual simples
         st.dataframe(df, use_container_width=True, hide_index=True)
     else: 
         st.info("Sem histórico registrado.")
 
     st.markdown("---")
     
-    # 2. FORMULÁRIO DE ATUALIZAÇÃO (Dentro do Expander)
+    # 2. FORMULÁRIO DE ATUALIZAÇÃO
     with st.expander("🔄 Registrar Nova Atualização", expanded=False):
         lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
         try: idx = lst.index(ped['status']) 
@@ -645,20 +658,33 @@ def renderizar_tarefa_pedido(ped):
         with st.form("form_gaveta_tarefa_ped"):
             dt = st.date_input("Data de Previsão", datetime.now())
             obs = st.text_area("Descrição da Tarefa")
-            if st.form_submit_button("Criar Tarefa"):
-                conn = get_conn()
-                if conn:
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status, data_criacao) VALUES (%s,%s,%s,%s,%s,'Solicitado', NOW())", 
-                                    (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
-                        conn.commit()
-                        conn.close()
+            avisar_task_drawer = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_tarefa_drawer")
+            
+            if st.form_submit_button("Criar Tarefa", type="primary"):
+                if modulo_tarefas:
+                    # Prepara dados para envio de msg via modulo_tarefas
+                    dados_msg = {
+                        'codigo_pedido': ped['codigo'],
+                        'nome_cliente': ped['nome_cliente'],
+                        'telefone_cliente': ped['telefone_cliente'],
+                        'nome_produto': ped['nome_produto']
+                    }
+                    
+                    ok = modulo_tarefas.criar_tarefa(
+                        id_pedido=ped['id'], 
+                        id_cliente=ped['id_cliente'], 
+                        id_produto=ped['id_produto'], 
+                        data_prev=dt, 
+                        obs_tarefa=obs, 
+                        dados_pedido=dados_msg, # Passa os dados
+                        avisar_cli=avisar_task_drawer
+                    )
+                    
+                    if ok:
                         st.success("Tarefa criada!"); time.sleep(1)
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao criar tarefa: {e}")
-                        if conn: conn.close()
+                else:
+                    st.error("Módulo de Tarefas não disponível.")
 
 # --- NOVA FUNÇÃO: RENOVAÇÃO ---
 def renderizar_renovacao_pedido(ped):
@@ -693,14 +719,24 @@ def renderizar_renovacao_pedido(ped):
         with st.form("form_gaveta_renovacao"):
             dt = st.date_input("Data Previsão", value=date.today())
             obs = st.text_area("Observação")
-            if st.form_submit_button("Agendar"):
+            avisar_ren_drawer = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_renovacao_drawer")
+            
+            if st.form_submit_button("Agendar", type="primary"):
                 if modulo_renovacao_feedback:
+                    # Prepara dados para envio de msg via modulo_renovacao
+                    dados_msg = {
+                        'codigo_pedido': ped['codigo'],
+                        'nome_cliente': ped['nome_cliente'],
+                        'telefone_cliente': ped['telefone_cliente'],
+                        'nome_produto': ped['nome_produto']
+                    }
+                    
                     ok = modulo_renovacao_feedback.criar_registro_rf(
                         id_pedido=ped['id'],
                         data_prev=dt,
                         obs=obs,
-                        dados_pedido=None,
-                        avisar=False
+                        dados_pedido=dados_msg, # Passa os dados
+                        avisar=avisar_ren_drawer
                     )
                     if ok: 
                         st.success("Renovação Agendada!"); time.sleep(1)
@@ -713,6 +749,27 @@ def renderizar_renovacao_pedido(ped):
 # =============================================================================
 
 def app_pedidos():
+    # --- ESTILIZAÇÃO PADRÃO VERMELHA ---
+    st.markdown("""
+        <style>
+        div.stButton > button {
+            background-color: #FF4B4B !important;
+            color: white !important;
+            border-color: #FF4B4B !important;
+        }
+        div.stButton > button:hover {
+            background-color: #FF0000 !important;
+            border-color: #FF0000 !important;
+            color: white !important;
+        }
+        div.stButton > button:active {
+            background-color: #CC0000 !important;
+            border-color: #CC0000 !important;
+            color: white !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     tab_novo, tab_lista, tab_param = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros"])
 
     # ABA 1: NOVO PEDIDO (COM WIZARD DE PÓS-VENDA)
@@ -764,10 +821,8 @@ def app_pedidos():
                         elif row['status'] == 'Solicitado': cor = "🔵"
                         
                         border_style = True 
-                        icon_sel = "👉 " if is_selected else ""
-
+                        
                         with st.container(border=border_style):
-                            # --- AJUSTE AQUI: REMOVIDO ** e icon_sel ---
                             st.write(f"{row['nome_cliente']}")
                             st.caption(f"{cor} {row['codigo']} | R$ {row['valor_total']:.2f}")
                             
@@ -794,8 +849,6 @@ def app_pedidos():
                         st.session_state.ped_aba_ativa = nome_aba
 
                     # --- MENU DE OPÇÕES ATUALIZADO ---
-                    # 1. Removido 'Histórico' (agora dentro de status)
-                    # 2. Adicionado 'Renovação' ao lado de Tarefa
                     opcoes_menu = [
                         ("👤 Cliente", "cliente"),
                         ("✏️ Editar", "editar"),
