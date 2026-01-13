@@ -177,7 +177,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                             msg_whats = " (WhatsApp Enviado)"
                 except: pass
 
-            # ALTERADO: Retorna também o ID do pedido para o fluxo pós-venda
             return True, f"Pedido {codigo} criado!{msg_whats}", id_novo
 
         except Exception as e: return False, str(e), None
@@ -299,7 +298,6 @@ def editar_dados_pedido_completo(id_pedido, dados_novos):
 # =============================================================================
 
 def renderizar_fluxo_pos_venda():
-    """Gerencia o Wizard de Tarefas e Renovações após criar o pedido"""
     st.markdown("### 🚀 Fluxo de Pós-Venda")
     st.info("O pedido foi criado! Agora vamos definir as próximas ações.")
     
@@ -319,7 +317,6 @@ def renderizar_fluxo_pos_venda():
         st.markdown("---")
         st.markdown("#### 1️⃣ Deseja criar uma **TAREFA** para este pedido?")
         
-        # Se o usuário escolheu "Sim", mostra o form
         if st.session_state.get('show_task_form', False):
             with st.container(border=True):
                 st.write(f"Nova Tarefa para: **{dados['nome_cliente']}**")
@@ -335,7 +332,6 @@ def renderizar_fluxo_pos_venda():
                             'telefone_cliente': dados['telefone'], 
                             'nome_produto': dados['nome_produto']
                         }
-                        # Função do modulo_tarefas
                         ok = modulo_tarefas.criar_tarefa(
                             id_pedido=id_ped,
                             id_cliente=dados['id_cliente'],
@@ -356,7 +352,6 @@ def renderizar_fluxo_pos_venda():
                      st.rerun()
 
         else:
-            # Botões de Decisão Sim/Não
             c1, c2 = st.columns([1, 4])
             if c1.button("Sim, criar Tarefa", key="btn_pv_task_sim"):
                 st.session_state.show_task_form = True
@@ -388,7 +383,6 @@ def renderizar_fluxo_pos_venda():
                         )
                         if ok: st.success("Renovação Agendada!")
                     
-                    # FIM DO FLUXO
                     st.session_state.pos_venda_ativo = False
                     st.session_state.pos_venda_dados = None
                     st.success("Fluxo finalizado com sucesso!")
@@ -412,12 +406,10 @@ def renderizar_fluxo_pos_venda():
                 st.rerun()
 
 def renderizar_novo_pedido_tab():
-    # VERIFICA SE ESTÁ NO FLUXO PÓS-VENDA
     if st.session_state.get('pos_venda_ativo', False):
         renderizar_fluxo_pos_venda()
         return
 
-    # FLUXO PADRÃO DE CRIAÇÃO
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
@@ -507,7 +499,6 @@ def renderizar_novo_pedido_tab():
             )
             if ok: 
                 st.toast(res)
-                # INICIA FLUXO PÓS-VENDA
                 st.session_state.pos_venda_ativo = True
                 st.session_state.pos_venda_etapa = 'tarefa'
                 st.session_state.pos_venda_ped_id = id_novo_ped
@@ -543,7 +534,6 @@ def renderizar_editar_pedido(ped):
     if df_c.empty or df_p.empty: st.error("Dados base vazios."); return
 
     with st.form("form_gaveta_editar_ped"):
-        # Selects
         try: curr_cli_idx = df_c[df_c['id'] == ped['id_cliente']].index[0]
         except: curr_cli_idx = 0
         idx_cli = st.selectbox("Cliente", range(len(df_c)), index=int(curr_cli_idx), format_func=lambda x: f"{df_c.iloc[x]['nome']} ({df_c.iloc[x]['cpf']})")
@@ -574,7 +564,7 @@ def renderizar_editar_pedido(ped):
             ok, msg = editar_dados_pedido_completo(ped['id'], dados_novos)
             if ok: 
                 st.success("Salvo!"); time.sleep(1)
-                st.session_state.ped_selecionado = None # Força recarregamento ao clicar de novo
+                st.session_state.ped_selecionado = None
                 st.session_state.ped_aba_ativa = None
                 st.rerun()
             else: st.error(f"Erro: {msg}")
@@ -621,16 +611,55 @@ def renderizar_excluir_pedido(ped):
             st.rerun()
 
 def renderizar_tarefa_pedido(ped):
-    st.markdown("#### 📝 Criar Tarefa Vinculada")
-    with st.form("form_gaveta_tarefa_ped"):
-        dt = st.date_input("Data de Previsão", datetime.now())
-        obs = st.text_area("Descrição da Tarefa")
-        if st.form_submit_button("Criar Tarefa"):
-            conn = get_conn(); cur = conn.cursor()
-            cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status) VALUES (%s,%s,%s,%s,%s,'Solicitado')", (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
-            conn.commit(); conn.close()
-            st.success("Tarefa criada!"); time.sleep(1); 
-            st.session_state.ped_aba_ativa = None; st.rerun()
+    st.markdown("#### 📋 Tarefas Vinculadas")
+    
+    # --- LISTAGEM DE TAREFAS EXISTENTES ---
+    conn = get_conn()
+    if conn:
+        try:
+            # Busca tarefas vinculadas a este pedido
+            query = """
+                SELECT id, status, data_previsao, observacao_tarefa as observacao 
+                FROM tarefas 
+                WHERE id_pedido = %s 
+                ORDER BY data_criacao DESC
+            """
+            df_tar = pd.read_sql(query, conn, params=(ped['id'],))
+            conn.close()
+            
+            if not df_tar.empty:
+                # Formatação da data para DD/MM/AAAA
+                df_tar['data_previsao'] = pd.to_datetime(df_tar['data_previsao']).dt.strftime('%d/%m/%Y')
+                st.dataframe(df_tar, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhuma tarefa vinculada a este pedido.")
+        except Exception as e:
+            st.error(f"Erro ao buscar tarefas: {e}")
+            if conn: conn.close()
+
+    st.markdown("---")
+    
+    # --- FORMULÁRIO DE CRIAÇÃO ---
+    with st.expander("➕ Criar Nova Tarefa", expanded=False):
+        with st.form("form_gaveta_tarefa_ped"):
+            dt = st.date_input("Data de Previsão", datetime.now())
+            obs = st.text_area("Descrição da Tarefa")
+            if st.form_submit_button("Criar Tarefa"):
+                conn = get_conn()
+                if conn:
+                    try:
+                        cur = conn.cursor()
+                        # Inserção direta no banco (mantendo padrão do módulo)
+                        cur.execute("INSERT INTO tarefas (id_pedido, id_cliente, id_produto, data_previsao, observacao_tarefa, status, data_criacao) VALUES (%s,%s,%s,%s,%s,'Solicitado', NOW())", 
+                                    (ped['id'], ped['id_cliente'], ped['id_produto'], dt, obs))
+                        conn.commit()
+                        conn.close()
+                        st.success("Tarefa criada!"); time.sleep(1)
+                        # Recarrega a aba para atualizar a lista
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao criar tarefa: {e}")
+                        if conn: conn.close()
 
 # =============================================================================
 # 6. APP PRINCIPAL
@@ -645,17 +674,13 @@ def app_pedidos():
 
     # ABA 2: LISTA DE PEDIDOS (LAYOUT MASTER-DETAIL 30/70)
     with tab_lista:
-        # Inicializa Estados
         if 'ped_selecionado' not in st.session_state: st.session_state.ped_selecionado = None
         if 'ped_aba_ativa' not in st.session_state: st.session_state.ped_aba_ativa = None
 
-        # Layout fixo
         col_lista, col_detalhe = st.columns([0.3, 0.7])
 
-        # --- COLUNA ESQUERDA: LISTA ---
         with col_lista:
             st.markdown("##### 🔍 Filtros & Lista")
-            # Filtros Compactos
             f1, f2 = st.columns(2)
             filtro_txt = f1.text_input("Busca", placeholder="Nome/Cod", label_visibility="collapsed")
             filtro_stt = f2.selectbox("St", ["Todos", "Solicitado", "Pendente", "Pago"], label_visibility="collapsed")
@@ -683,7 +708,6 @@ def app_pedidos():
 
                 if not df.empty:
                     for i, row in df.iterrows():
-                        # Lógica Visual
                         is_selected = (st.session_state.ped_selecionado is not None and 
                                        st.session_state.ped_selecionado['id'] == row['id'])
                         
@@ -701,31 +725,26 @@ def app_pedidos():
                             
                             if st.button("Ver Detalhes >", key=f"sel_ped_{row['id']}", use_container_width=True):
                                 st.session_state.ped_selecionado = row.to_dict()
-                                st.session_state.ped_aba_ativa = None # Reseta gaveta ao trocar de item
+                                st.session_state.ped_aba_ativa = None
                                 st.rerun()
                 else:
                     st.info("Nenhum pedido.")
             else:
                 st.error("Sem conexão.")
 
-        # --- COLUNA DIREITA: DETALHES (FIXO) ---
         with col_detalhe:
             ped = st.session_state.ped_selecionado
             
             if ped:
                 with st.container(border=True):
-                    # Cabeçalho Fixo
                     st.title(f"{ped['nome_cliente']}")
                     st.caption(f"Pedido: {ped['codigo']} | Status: {ped['status']} | Data: {ped['data_criacao']}")
                     
                     st.divider()
                     
-                    # --- MENU DE AÇÕES CORRIGIDO ---
-                    # Callback para troca de aba (Evita reload manual)
                     def selecionar_aba_callback(nome_aba):
                         st.session_state.ped_aba_ativa = nome_aba
 
-                    # Lista de configurações dos botões
                     opcoes_menu = [
                         ("👤 Cliente", "cliente"),
                         ("✏️ Editar", "editar"),
@@ -735,12 +754,10 @@ def app_pedidos():
                         ("🗑️ Excluir", "excluir")
                     ]
                     
-                    # Renderização em Loop (Garante alinhamento)
                     cols_menu = st.columns(6, gap="small")
                     
                     for col, (label, key_aba) in zip(cols_menu, opcoes_menu):
                         tipo_btn = "primary" if st.session_state.ped_aba_ativa == key_aba else "secondary"
-                        # O uso de on_click torna a interação instantânea
                         col.button(
                             label, 
                             key=f"btn_topo_{key_aba}", 
@@ -750,7 +767,6 @@ def app_pedidos():
                             args=(key_aba,)
                         )
 
-                # Área de Conteúdo "Gaveta" (Renderiza abaixo do menu)
                 aba = st.session_state.ped_aba_ativa
                 
                 if aba:
@@ -765,7 +781,6 @@ def app_pedidos():
                     st.info("👆 Selecione uma opção acima para gerenciar o pedido.")
 
             else:
-                # Estado Vazio
                 st.container(border=True).markdown(
                     """
                     <div style='text-align: center; padding: 50px;'>
@@ -776,7 +791,6 @@ def app_pedidos():
                     unsafe_allow_html=True
                 )
     
-    # ABA 3: PARÂMETROS
     with tab_param:
         conn = get_conn()
         if conn:
