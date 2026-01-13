@@ -9,8 +9,8 @@ import modulo_wapi # Integração
 
 # Ajuste de path para importar módulos da raiz e de COMERCIAL
 diretorio_atual = os.path.dirname(os.path.abspath(__file__))
-diretorio_comercial = os.path.dirname(diretorio_atual) # Pasta COMERCIAL
-raiz_projeto = os.path.dirname(diretorio_comercial)    # Raiz do Projeto
+diretorio_comercial = os.path.dirname(diretorio_atual)
+raiz_projeto = os.path.dirname(diretorio_comercial)
 
 if raiz_projeto not in sys.path:
     sys.path.append(raiz_projeto)
@@ -20,12 +20,10 @@ try:
 except ImportError: 
     st.error("Erro crítico: conexao.py não encontrado.")
 
-# Importação do módulo de configurações para templates
 try:
     from COMERCIAL import modulo_comercial_configuracoes
 except ImportError:
     modulo_comercial_configuracoes = None
-    st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
 
 def get_conn():
     try:
@@ -35,14 +33,9 @@ def get_conn():
         )
     except: return None
 
-# --- FUNÇÕES AUXILIARES ---
-def listar_modelos_mensagens():
-    """Busca os modelos de mensagem cadastrados no Config para este módulo"""
-    if modulo_comercial_configuracoes:
-        return modulo_comercial_configuracoes.listar_chaves_config("RENOVACAO")
-    return []
-
-# --- FUNÇÕES DE BANCO ---
+# =============================================================================
+# 1. FUNÇÕES DE BANCO
+# =============================================================================
 
 def buscar_pedidos_disponiveis():
     conn = get_conn()
@@ -56,7 +49,6 @@ def buscar_pedidos_disponiveis():
 def listar_rf():
     conn = get_conn()
     if conn:
-        # Join com clientes_usuarios para trazer dados de contato atualizados
         query = """
             SELECT rf.id, rf.id_pedido, rf.data_criacao, rf.data_previsao, rf.status, rf.observacao,
                    p.codigo as codigo_pedido, p.nome_cliente, p.nome_produto, p.categoria_produto,
@@ -104,15 +96,12 @@ def atualizar_status_rf(id_rf, novo_status, obs, dados_rf, avisar):
             cur.execute("UPDATE renovacao_feedback SET status=%s, data_atualizacao=NOW() WHERE id=%s", (novo_status, id_rf))
             cur.execute("INSERT INTO renovacao_feedback_historico (id_rf, status_novo, observacao) VALUES (%s, %s, %s)", (id_rf, novo_status, obs))
             
-            # --- NOVA LÓGICA DE MENSAGEM AUTOMÁTICA (VIA ADMIN.STATUS) ---
             if avisar and dados_rf.get('telefone_cliente') and modulo_comercial_configuracoes:
-                # Busca mensagem baseada no status selecionado e módulo RENOVACAO
                 cur.execute("SELECT mensagem_padrao FROM admin.status WHERE modulo='RENOVACAO' AND status_relacionado=%s", (novo_status,))
                 res_msg = cur.fetchone()
                 
                 if res_msg and res_msg[0]:
                     template = res_msg[0]
-                    # Substitui variáveis
                     msg_final = template.replace("{nome}", str(dados_rf['nome_cliente']).split()[0]) \
                                         .replace("{nome_completo}", str(dados_rf['nome_cliente'])) \
                                         .replace("{pedido}", str(dados_rf['codigo_pedido'])) \
@@ -154,17 +143,44 @@ def excluir_rf_db(id_rf):
         except: return False
     return False
 
-# --- DIALOGS ---
-@st.dialog("👤 Dados do Cliente")
-def ver_cliente(nome, cpf, tel, email):
-    st.write(f"**Nome:** {nome}")
-    st.write(f"**CPF:** {cpf}")
-    st.write(f"**Telefone:** {tel}")
-    st.write(f"**E-mail:** {email}")
+# =============================================================================
+# 2. PAINÉIS DE RENDERIZAÇÃO (MASTER-DETAIL)
+# =============================================================================
 
-@st.dialog("👁️ Detalhes")
-def dialog_visualizar(rf):
-    st.markdown(f"### Registro: {rf['codigo_pedido']}")
+def renderizar_novo_rf_tab():
+    st.markdown("### ➕ Novo Registro de Renovação/Feedback")
+    df_ped = buscar_pedidos_disponiveis()
+    
+    if df_ped.empty:
+        st.warning("Nenhum pedido encontrado para gerar renovação.")
+        return
+
+    opcoes = df_ped.apply(lambda x: f"{x['codigo']} | {x['nome_cliente']} - {x['nome_produto']}", axis=1)
+    
+    with st.container(border=True):
+        idx_ped = st.selectbox("Selecione o Pedido", range(len(df_ped)), format_func=lambda x: opcoes[x], index=None)
+        
+        if idx_ped is not None:
+            sel = df_ped.iloc[idx_ped]
+            st.info(f"Gerando registro para: **{sel['nome_cliente']}**")
+            
+            with st.form("form_novo_rf_tab"):
+                d_prev = st.date_input("Data Previsão", value=date.today())
+                obs = st.text_area("Observação inicial", placeholder="Motivo da renovação ou feedback...")
+                
+                if st.form_submit_button("Criar Registro", type="primary"):
+                    id_p = int(sel['id'])
+                    # O parâmetro dados_pedido/avisar está como None/False pois a função criar original
+                    # não implementava o envio de msg na criação explicitamente no código anterior
+                    # (apenas no fluxo pós-venda). Mantendo padrão.
+                    if criar_registro_rf(id_p, d_prev, obs, None, False):
+                        st.success("Criado com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+
+def renderizar_detalhes_rf(rf):
+    st.markdown(f"#### 👁️ Detalhes: {rf['codigo_pedido']}")
+    st.write(f"**Cliente:** {rf['nome_cliente']}")
     st.write(f"**Produto:** {rf['nome_produto']}")
     st.write(f"**Categoria:** {rf['categoria_produto']}")
     st.markdown("---")
@@ -172,71 +188,74 @@ def dialog_visualizar(rf):
     st.write(f"**Previsão:** {pd.to_datetime(rf['data_previsao']).strftime('%d/%m/%Y')}")
     st.info(f"**Observação:**\n{rf['observacao']}")
 
-@st.dialog("➕ Novo Registro")
-def dialog_novo_rf():
-    df_ped = buscar_pedidos_disponiveis()
-    if df_ped.empty:
-        st.warning("Nenhum pedido encontrado.")
-        return
+def renderizar_dados_cliente_rf(rf):
+    st.markdown(f"#### 👤 Dados do Cliente")
+    st.write(f"**Nome:** {rf['nome_cliente']}")
+    st.write(f"**CPF:** {rf['cpf_cliente']}")
+    st.write(f"**Telefone:** {rf['telefone_cliente']}")
+    st.write(f"**E-mail:** {rf['email_cliente']}")
 
-    opcoes = df_ped.apply(lambda x: f"{x['codigo']} | {x['nome_cliente']} - {x['nome_produto']}", axis=1)
-    idx_ped = st.selectbox("Selecione o Pedido", range(len(df_ped)), format_func=lambda x: opcoes[x], index=None)
-    
-    with st.form("form_novo_rf"):
-        d_prev = st.date_input("Data Previsão", value=date.today(), format="DD/MM/YYYY")
-        obs = st.text_area("Observação inicial")
-        if st.form_submit_button("Criar Registro", type="primary"):
-            if idx_ped is not None:
-                id_p = int(df_ped.iloc[idx_ped]['id'])
-                if criar_registro_rf(id_p, d_prev, obs, None, False):
-                    st.success("Criado!"); st.rerun()
-            else:
-                st.warning("Selecione um pedido.")
-
-@st.dialog("✏️ Editar Registro")
-def dialog_editar(rf):
-    st.write(f"Editando: **{rf['codigo_pedido']}**")
-    with st.form("form_edit_rf"):
-        n_data = st.date_input("Data Previsão", value=pd.to_datetime(rf['data_previsao']), format="DD/MM/YYYY")
+def renderizar_editar_rf(rf):
+    st.markdown(f"#### ✏️ Editar Registro")
+    with st.form("form_gaveta_edit_rf"):
+        n_data = st.date_input("Data Previsão", value=pd.to_datetime(rf['data_previsao']))
         n_obs = st.text_area("Observação", value=rf['observacao'])
-        if st.form_submit_button("Salvar", type="primary"):
+        
+        if st.form_submit_button("💾 Salvar", type="primary"):
             if editar_rf_dados(rf['id'], n_data, n_obs):
-                st.success("Atualizado!"); st.rerun()
+                st.success("Atualizado!")
+                time.sleep(1)
+                st.session_state.rf_selecionado = None
+                st.rerun()
+            else:
+                st.error("Erro ao salvar.")
 
-@st.dialog("🔄 Atualizar Status")
-def dialog_status(rf):
-    status_opcoes = ["Entrada", "Em Análise", "Concluído", "Pendente", "Cancelado"]
-    idx = status_opcoes.index(rf['status']) if rf['status'] in status_opcoes else 0
+def renderizar_status_rf(rf):
+    st.markdown(f"#### 🔄 Atualizar Status")
     
-    with st.form("form_st_rf"):
+    # Histórico
+    df_h = buscar_historico_rf(rf['id'])
+    if not df_h.empty:
+        st.caption("Histórico:")
+        df_h.columns = ["Data", "Status", "Obs"]
+        st.dataframe(df_h, use_container_width=True, hide_index=True, height=150)
+    
+    st.markdown("---")
+    
+    # Form
+    status_opcoes = ["Entrada", "Em Análise", "Concluído", "Pendente", "Cancelado"]
+    try: idx = status_opcoes.index(rf['status'])
+    except: idx = 0
+    
+    with st.form("form_gaveta_st_rf"):
         novo = st.selectbox("Novo Status", status_opcoes, index=idx)
         obs = st.text_area("Observação da mudança")
-        enviar_whats = st.checkbox("📱 Enviar mensagem automática ao cliente?", value=True, help="Se configurada, a mensagem padrão para este status será enviada.")
+        enviar_whats = st.checkbox("📱 Enviar mensagem automática?", value=True)
         
-        if st.form_submit_button("Atualizar", type="primary"):
-            # Lógica atualizada para usar admin.status
+        if st.form_submit_button("Confirmar Atualização", type="primary"):
             if atualizar_status_rf(rf['id'], novo, obs, rf, enviar_whats):
-                st.success("Status atualizado!"); st.rerun()
+                st.success("Status atualizado!")
+                time.sleep(1)
+                st.session_state.rf_selecionado = None
+                st.rerun()
 
-@st.dialog("📜 Histórico")
-def dialog_historico(id_rf):
-    st.write("Histórico de Status:")
-    df_h = buscar_historico_rf(id_rf)
-    if not df_h.empty:
-        df_h.columns = ["Data", "Status", "Obs"]
-        st.dataframe(df_h, use_container_width=True, hide_index=True)
-    else: st.info("Sem histórico.")
-
-@st.dialog("⚠️ Excluir")
-def dialog_excluir(id_rf):
-    st.warning("Tem certeza que deseja apagar este registro?")
+def renderizar_excluir_rf(rf):
+    st.markdown(f"#### 🗑️ Excluir Registro")
+    st.warning("Tem certeza que deseja apagar este registro de renovação?")
+    
     if st.button("Sim, confirmar exclusão", type="primary"):
-        if excluir_rf_db(id_rf):
-            st.success("Apagado!"); st.rerun()
+        if excluir_rf_db(rf['id']):
+            st.success("Apagado!")
+            time.sleep(1)
+            st.session_state.rf_selecionado = None
+            st.rerun()
 
-# --- INTERFACE PRINCIPAL ---
+# =============================================================================
+# 3. APP PRINCIPAL
+# =============================================================================
+
 def app_renovacao_feedback():
-    # --- ESTILIZAÇÃO PADRÃO VERMELHA ---
+    # Estilização
     st.markdown("""
         <style>
         div.stButton > button {
@@ -249,108 +268,112 @@ def app_renovacao_feedback():
             border-color: #FF0000 !important;
             color: white !important;
         }
-        div.stButton > button:active {
-            background-color: #CC0000 !important;
-            border-color: #CC0000 !important;
-            color: white !important;
-        }
         </style>
     """, unsafe_allow_html=True)
 
-    # --- CORREÇÃO DE CONFLITO DE MODAIS (Importante para evitar loops) ---
-    if 'modal_ativo' in st.session_state and st.session_state['modal_ativo'] is not None:
-        st.session_state['modal_ativo'] = None
+    tab_novo, tab_gestao = st.tabs(["➕ Novo Registro", "📋 Gestão de Renovações"])
 
-    # Cabeçalho com Botão Novo no Topo
-    c_t, c_b = st.columns([5, 1])
-    c_t.markdown("## 🔄 Renovação e Feedback")
-    if c_b.button("➕ Novo Registro", type="primary", use_container_width=False, key="btn_novo_rf_topo"): 
-        dialog_novo_rf()
+    # --- ABA 1: NOVO ---
+    with tab_novo:
+        renderizar_novo_rf_tab()
 
-    df = listar_rf()
-    
-    # --- FILTROS DE PESQUISA ---
-    with st.expander("🔍 Filtros de Pesquisa", expanded=True):
-        # Linha 1
-        cf1, cf2, cf3 = st.columns([3, 1.5, 1.5])
-        busca_geral = cf1.text_input("🔍 Buscar (Cliente, Produto, Email, Obs)", placeholder="Comece a digitar...", key="rf_busca_geral")
-        
-        # Filtro de Status
-        opcoes_status = df['status'].unique().tolist() if not df.empty else []
-        padrao_status = ["Entrada"] if "Entrada" in opcoes_status else None
-        f_status = cf2.multiselect("Status", options=opcoes_status, default=padrao_status, placeholder="Filtrar Status", key="rf_filtro_status")
-        
-        opcoes_cats = df['categoria_produto'].unique() if not df.empty else []
-        f_cats = cf3.multiselect("Categoria", options=opcoes_cats, placeholder="Filtrar Categoria", key="rf_filtro_cat")
+    # --- ABA 2: GESTÃO ---
+    with tab_gestao:
+        if 'rf_selecionado' not in st.session_state: st.session_state.rf_selecionado = None
+        if 'rf_aba_ativa' not in st.session_state: st.session_state.rf_aba_ativa = None
 
-        # Linha 2: Data
-        cd1, cd2, cd3 = st.columns([1.5, 1.5, 3])
-        op_data = cd1.selectbox("Filtro de Data (Previsão)", ["Todo o período", "Igual a", "Antes de", "Depois de"], key="rf_op_data")
-        data_ref = cd2.date_input("Data Referência", value=date.today(), format="DD/MM/YYYY", key="rf_data_ref")
+        col_lista, col_detalhe = st.columns([0.3, 0.7])
 
-        # Aplicação dos Filtros
-        if not df.empty:
-            if busca_geral:
-                mask = (
-                    df['nome_cliente'].str.contains(busca_geral, case=False, na=False) |
-                    df['nome_produto'].str.contains(busca_geral, case=False, na=False) |
-                    df['observacao'].str.contains(busca_geral, case=False, na=False) |
-                    df['email_cliente'].str.contains(busca_geral, case=False, na=False)
-                )
-                df = df[mask]
+        # --- COLUNA ESQUERDA ---
+        with col_lista:
+            st.markdown("##### 🔍 Filtros")
+            busca = st.text_input("Buscar", placeholder="Cli/Prod/Obs", label_visibility="collapsed")
             
-            if f_status:
-                df = df[df['status'].isin(f_status)]
+            df = listar_rf()
             
-            if f_cats:
-                df = df[df['categoria_produto'].isin(f_cats)]
-            
-            if op_data != "Todo o período":
-                df_data = pd.to_datetime(df['data_previsao']).dt.date
-                if op_data == "Igual a": df = df[df_data == data_ref]
-                elif op_data == "Antes de": df = df[df_data < data_ref]
-                elif op_data == "Depois de": df = df[df_data > data_ref]
-
-    # --- PAGINAÇÃO ---
-    st.markdown("---")
-    col_res, col_pag = st.columns([4, 1])
-    with col_pag:
-        qtd_view = st.selectbox("Visualizar:", [10, 20, 50, 100, "Todos"], index=0, key="rf_qtd_view")
-    
-    df_exibir = df.copy()
-    if qtd_view != "Todos":
-        df_exibir = df.head(int(qtd_view))
-    
-    with col_res:
-        st.caption(f"Exibindo {len(df_exibir)} de {len(df)} registros.")
-
-    # --- LISTAGEM ---
-    if not df_exibir.empty:
-        # Usando reset_index e enumerate para garantir keys únicas
-        for i, row in df_exibir.reset_index(drop=True).iterrows():
-            stt = row['status']
-            cor = "🔴"
-            if stt == 'Concluído': cor = "🟢"
-            elif stt == 'Em Análise': cor = "🟠"
-            elif stt == 'Entrada': cor = "🔵"
-            
-            data_fmt = pd.to_datetime(row['data_previsao']).strftime('%d/%m/%Y')
-            titulo_card = f"{cor} [{stt.upper()}] | {row['codigo_pedido']} - {row['nome_cliente']} | 📅 Prev: {data_fmt}"
-
-            with st.expander(titulo_card):
-                st.write(f"**Produto:** {row['nome_produto']} ({row['categoria_produto']})")
-                st.write(f"**Obs:** {row['observacao']}")
+            if not df.empty:
+                f_stt = st.multiselect("Status", options=df['status'].unique(), placeholder="Status")
                 
-                # ADICIONADO PREFIXO 'rf_' PARA CORRIGIR DUPLICAÇÃO DE KEY GLOBAL
-                c1, c2, c3, c4, c5, c6 = st.columns(6)
-                if c1.button("👤 Cliente", key=f"rf_cli_{row['id']}_{i}"): ver_cliente(row['nome_cliente'], row['cpf_cliente'], row['telefone_cliente'], row['email_cliente'])
-                if c2.button("👁️ Ver", key=f"rf_ver_{row['id']}_{i}"): dialog_visualizar(row)
-                if c3.button("🔄 Status", key=f"rf_s_{row['id']}_{i}"): dialog_status(row)
-                if c4.button("✏️ Editar", key=f"rf_ed_{row['id']}_{i}"): dialog_editar(row)
-                if c5.button("📜 Hist.", key=f"rf_h_{row['id']}_{i}"): dialog_historico(row['id'])
-                if c6.button("🗑️ Excluir", key=f"rf_d_{row['id']}_{i}"): dialog_excluir(row['id'])
-    else:
-        st.info("Nenhum registro encontrado.")
+                # Aplicação Filtros
+                if busca:
+                    mask = (
+                        df['nome_cliente'].str.contains(busca, case=False, na=False) |
+                        df['nome_produto'].str.contains(busca, case=False, na=False) |
+                        df['observacao'].str.contains(busca, case=False, na=False)
+                    )
+                    df = df[mask]
+                
+                if f_stt:
+                    df = df[df['status'].isin(f_stt)]
+                
+                st.markdown(f"**Total:** {len(df)}")
+                st.markdown("---")
+
+                # Lista
+                for i, row in df.iterrows():
+                    stt = row['status']
+                    cor = "🔴"
+                    if stt == 'Concluído': cor = "🟢"
+                    elif stt == 'Em Análise': cor = "🟠"
+                    elif stt == 'Entrada': cor = "🔵"
+                    
+                    with st.container(border=True):
+                        st.write(f"**{row['nome_cliente']}**")
+                        st.caption(f"{cor} {stt} | {pd.to_datetime(row['data_previsao']).strftime('%d/%m')}")
+                        st.caption(f"{row['nome_produto']}")
+                        
+                        if st.button("Ver >", key=f"sel_rf_{row['id']}", use_container_width=True):
+                            st.session_state.rf_selecionado = row.to_dict()
+                            st.session_state.rf_aba_ativa = "detalhes"
+                            st.rerun()
+            else:
+                st.info("Nenhum registro.")
+
+        # --- COLUNA DIREITA ---
+        with col_detalhe:
+            rf = st.session_state.rf_selecionado
+            
+            if rf:
+                with st.container(border=True):
+                    st.title(f"{rf['nome_cliente']}")
+                    st.caption(f"Pedido: {rf['codigo_pedido']} | Produto: {rf['nome_produto']}")
+                    st.divider()
+
+                    # Menu
+                    opcoes = [
+                        ("👁️ Detalhes", "detalhes"),
+                        ("👤 Cliente", "cliente"),
+                        ("✏️ Editar", "editar"),
+                        ("🔄 Status", "status"),
+                        ("🗑️ Excluir", "excluir")
+                    ]
+                    
+                    cols = st.columns(len(opcoes), gap="small")
+                    for col, (lbl, key) in zip(cols, opcoes):
+                        tipo = "primary" if st.session_state.rf_aba_ativa == key else "secondary"
+                        if col.button(lbl, key=f"btn_rf_top_{key}", type=tipo, use_container_width=True):
+                            st.session_state.rf_aba_ativa = key
+                            st.rerun()
+
+                # Conteúdo
+                aba = st.session_state.rf_aba_ativa
+                with st.container(border=True):
+                    if aba == 'detalhes': renderizar_detalhes_rf(rf)
+                    elif aba == 'cliente': renderizar_dados_cliente_rf(rf)
+                    elif aba == 'editar': renderizar_editar_rf(rf)
+                    elif aba == 'status': renderizar_status_rf(rf)
+                    elif aba == 'excluir': renderizar_excluir_rf(rf)
+
+            else:
+                st.container(border=True).markdown(
+                    """
+                    <div style='text-align: center; padding: 50px;'>
+                        <h3>⬅️ Selecione um registro</h3>
+                        <p>Detalhes e opções aparecerão aqui.</p>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
 
 if __name__ == "__main__":
     app_renovacao_feedback()
