@@ -21,12 +21,15 @@ try:
 except ImportError:
     st.error("Erro crítico: Arquivo conexao.py não localizado.")
 
-# Importação do módulo de configurações para templates
+# Importação do módulo de configurações e Módulos Satélites (Tarefas/Renovação)
 try:
     from COMERCIAL import modulo_comercial_configuracoes
+    from COMERCIAL.TAREFAS import modulo_tarefas
+    from COMERCIAL.RENOVACAO_E_FEEDBACK import modulo_renovacao_feedback
 except ImportError:
     modulo_comercial_configuracoes = None
-    # st.warning("Aviso: modulo_comercial_configuracoes não encontrado. Templates podem falhar.")
+    modulo_tarefas = None
+    modulo_renovacao_feedback = None
 
 # --- CONEXÃO ---
 def get_conn():
@@ -174,10 +177,11 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                             msg_whats = " (WhatsApp Enviado)"
                 except: pass
 
-            return True, f"Pedido {codigo} criado!{msg_whats}"
+            # ALTERADO: Retorna também o ID do pedido para o fluxo pós-venda
+            return True, f"Pedido {codigo} criado!{msg_whats}", id_novo
 
-        except Exception as e: return False, str(e)
-    return False, "Erro conexão"
+        except Exception as e: return False, str(e), None
+    return False, "Erro conexão", None
 
 # =============================================================================
 # 3. CRUD E FUNÇÕES GERAIS
@@ -291,10 +295,129 @@ def editar_dados_pedido_completo(id_pedido, dados_novos):
     except Exception as e: return False, str(e)
 
 # =============================================================================
-# 4. COMPONENTE DE NOVO PEDIDO
+# 4. COMPONENTE DE NOVO PEDIDO (COM FLUXO PÓS-VENDA)
 # =============================================================================
 
+def renderizar_fluxo_pos_venda():
+    """Gerencia o Wizard de Tarefas e Renovações após criar o pedido"""
+    st.markdown("### 🚀 Fluxo de Pós-Venda")
+    st.info("O pedido foi criado! Agora vamos definir as próximas ações.")
+    
+    etapa = st.session_state.get('pos_venda_etapa', 'tarefa')
+    dados = st.session_state.get('pos_venda_dados', {})
+    id_ped = st.session_state.get('pos_venda_ped_id')
+
+    if not dados or not id_ped:
+        st.error("Erro ao recuperar dados do pedido.")
+        if st.button("Sair"): 
+            st.session_state.pos_venda_ativo = False
+            st.rerun()
+        return
+
+    # --- ETAPA 1: TAREFA ---
+    if etapa == 'tarefa':
+        st.markdown("---")
+        st.markdown("#### 1️⃣ Deseja criar uma **TAREFA** para este pedido?")
+        
+        # Se o usuário escolheu "Sim", mostra o form
+        if st.session_state.get('show_task_form', False):
+            with st.container(border=True):
+                st.write(f"Nova Tarefa para: **{dados['nome_cliente']}**")
+                dt_prev = st.date_input("Data Previsão", value=date.today())
+                obs_tar = st.text_area("Descrição da Tarefa", value=f"Acompanhar pedido do produto {dados['nome_produto']}")
+                
+                c_btn1, c_btn2 = st.columns(2)
+                if c_btn1.button("✅ Confirmar Tarefa", type="primary"):
+                    if modulo_tarefas:
+                        dados_msg = {
+                            'codigo_pedido': 'RECÉM-CRIADO', 
+                            'nome_cliente': dados['nome_cliente'], 
+                            'telefone_cliente': dados['telefone'], 
+                            'nome_produto': dados['nome_produto']
+                        }
+                        # Função do modulo_tarefas
+                        ok = modulo_tarefas.criar_tarefa(
+                            id_pedido=id_ped,
+                            id_cliente=dados['id_cliente'],
+                            id_produto=dados['id_produto'],
+                            data_prev=dt_prev,
+                            obs_tarefa=obs_tar,
+                            dados_pedido=dados_msg,
+                            avisar_cli=True
+                        )
+                        if ok: st.success("Tarefa Criada!")
+                    
+                    st.session_state.show_task_form = False
+                    st.session_state.pos_venda_etapa = 'renovacao'
+                    st.rerun()
+                
+                if c_btn2.button("Cancelar Criação"):
+                     st.session_state.show_task_form = False
+                     st.rerun()
+
+        else:
+            # Botões de Decisão Sim/Não
+            c1, c2 = st.columns([1, 4])
+            if c1.button("Sim, criar Tarefa", key="btn_pv_task_sim"):
+                st.session_state.show_task_form = True
+                st.rerun()
+            if c2.button("Não, pular", key="btn_pv_task_nao"):
+                st.session_state.pos_venda_etapa = 'renovacao'
+                st.rerun()
+
+    # --- ETAPA 2: RENOVAÇÃO ---
+    elif etapa == 'renovacao':
+        st.markdown("---")
+        st.markdown("#### 2️⃣ Deseja agendar uma **RENOVAÇÃO/FEEDBACK**?")
+        
+        if st.session_state.get('show_rf_form', False):
+            with st.container(border=True):
+                st.write(f"Agendar Renovação para: **{dados['nome_produto']}**")
+                dt_ren = st.date_input("Data para contato", value=date.today())
+                obs_ren = st.text_area("Observação", value="Entrar em contato para renovação.")
+                
+                c_btn1, c_btn2 = st.columns(2)
+                if c_btn1.button("✅ Confirmar Agendamento", type="primary"):
+                    if modulo_renovacao_feedback:
+                        ok = modulo_renovacao_feedback.criar_registro_rf(
+                            id_pedido=id_ped,
+                            data_prev=dt_ren,
+                            obs=obs_ren,
+                            dados_pedido=None,
+                            avisar=False
+                        )
+                        if ok: st.success("Renovação Agendada!")
+                    
+                    # FIM DO FLUXO
+                    st.session_state.pos_venda_ativo = False
+                    st.session_state.pos_venda_dados = None
+                    st.success("Fluxo finalizado com sucesso!")
+                    time.sleep(1)
+                    st.rerun()
+                
+                if c_btn2.button("Cancelar"):
+                    st.session_state.pos_venda_ativo = False
+                    st.session_state.pos_venda_dados = None
+                    st.rerun()
+        else:
+            c1, c2 = st.columns([1, 4])
+            if c1.button("Sim, agendar", key="btn_pv_rf_sim"):
+                st.session_state.show_rf_form = True
+                st.rerun()
+            if c2.button("Não, finalizar", key="btn_pv_rf_nao"):
+                st.session_state.pos_venda_ativo = False
+                st.session_state.pos_venda_dados = None
+                st.success("Finalizado!")
+                time.sleep(1)
+                st.rerun()
+
 def renderizar_novo_pedido_tab():
+    # VERIFICA SE ESTÁ NO FLUXO PÓS-VENDA
+    if st.session_state.get('pos_venda_ativo', False):
+        renderizar_fluxo_pos_venda()
+        return
+
+    # FLUXO PADRÃO DE CRIAÇÃO
     df_c = buscar_clientes()
     df_p = buscar_produtos()
     
@@ -305,7 +428,10 @@ def renderizar_novo_pedido_tab():
     if 'np_cli_idx' not in st.session_state: st.session_state.np_cli_idx = 0
     if 'np_prod_idx' not in st.session_state: st.session_state.np_prod_idx = 0
     
-    prod_inicial = df_p.iloc[st.session_state.np_prod_idx]
+    try:
+        prod_inicial = df_p.iloc[st.session_state.np_prod_idx]
+    except: prod_inicial = df_p.iloc[0]
+
     if 'np_val' not in st.session_state: st.session_state.np_val = float(prod_inicial['preco'] or 0.0)
     if 'np_qtd' not in st.session_state: st.session_state.np_qtd = 1
     if 'np_origem' not in st.session_state: st.session_state.np_origem = prod_inicial.get('origem_custo', 'Geral') or 'Geral'
@@ -375,11 +501,25 @@ def renderizar_novo_pedido_tab():
         if st.button("✅ Criar Pedido", type="primary", use_container_width=True):
             cli_final = df_c.iloc[st.session_state.np_cli_idx]
             prod_final = df_p.iloc[st.session_state.np_prod_idx]
-            ok, res = criar_pedido_novo_fluxo(
+            ok, res, id_novo_ped = criar_pedido_novo_fluxo(
                 cli_final, prod_final, st.session_state.np_qtd, st.session_state.np_val, total, 
                 st.session_state.np_custo, st.session_state.np_origem, avisar, obs
             )
-            if ok: st.success(res); time.sleep(1.5); st.rerun()
+            if ok: 
+                st.toast(res)
+                # INICIA FLUXO PÓS-VENDA
+                st.session_state.pos_venda_ativo = True
+                st.session_state.pos_venda_etapa = 'tarefa'
+                st.session_state.pos_venda_ped_id = id_novo_ped
+                st.session_state.pos_venda_dados = {
+                    'nome_cliente': cli_final['nome'],
+                    'id_cliente': cli_final['id'],
+                    'telefone': cli_final['telefone'],
+                    'nome_produto': prod_final['nome'],
+                    'id_produto': prod_final['id']
+                }
+                time.sleep(0.5)
+                st.rerun()
             else: st.error(res)
 
 # =============================================================================
@@ -499,7 +639,7 @@ def renderizar_tarefa_pedido(ped):
 def app_pedidos():
     tab_novo, tab_lista, tab_param = st.tabs(["➕ Novo Pedido", "📋 Lista de Pedidos", "⚙️ Parâmetros"])
 
-    # ABA 1: NOVO PEDIDO
+    # ABA 1: NOVO PEDIDO (COM WIZARD DE PÓS-VENDA)
     with tab_novo:
         renderizar_novo_pedido_tab()
 
