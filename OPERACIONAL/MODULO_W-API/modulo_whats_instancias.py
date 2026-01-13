@@ -20,8 +20,14 @@ def dialog_qrcode(inst_id, token):
     # Uso da função centralizada
     img = modulo_wapi.obter_qrcode_api(inst_id, token)
     if img: 
-        st.image(img, width=300)
-        st.info("Escaneie para conectar a instância.")
+        try:
+            # Tenta renderizar como imagem
+            st.image(img, width=300)
+            st.info("Escaneie para conectar a instância.")
+        except Exception:
+            # Se falhar (ex: PIL.UnidentifiedImageError), exibe o conteúdo como texto
+            st.warning("Resposta da API não é uma imagem (provavelmente mensagem de status):")
+            st.code(img, language="text")
     else: st.error("Erro ao carregar QR Code da API.")
 
 @st.dialog("🔢 Conectar via Código (OTP)")
