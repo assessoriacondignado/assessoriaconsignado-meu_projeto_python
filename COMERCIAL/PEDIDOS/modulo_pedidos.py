@@ -570,33 +570,39 @@ def renderizar_editar_pedido(ped):
             else: st.error(f"Erro: {msg}")
 
 def renderizar_status_pedido(ped):
-    st.markdown(f"#### 🔄 Atualizar Status")
-    lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
-    try: idx = lst.index(ped['status']) 
-    except: idx = 0
-    mods = ["Automático (Padrão)"] + listar_modelos_mensagens()
+    st.markdown(f"#### 📜 Histórico & Status")
     
-    with st.form("form_gaveta_status_ped"):
-        ns = st.selectbox("Novo Status", lst, index=idx)
-        mod = st.selectbox("Modelo Mensagem", mods)
-        obs = st.text_area("Observação da Mudança")
-        av = st.checkbox("Avisar Cliente (WhatsApp)?", value=True)
-        
-        if st.form_submit_button("✅ Confirmar Novo Status", type="primary"):
-            ok, msg = atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod)
-            if ok:
-                st.success(msg); time.sleep(1)
-                st.session_state.ped_selecionado = None
-                st.session_state.ped_aba_ativa = None
-                st.rerun()
-            else: st.warning(msg)
-
-def renderizar_historico_pedido(id_pedido):
-    st.markdown("#### 📜 Histórico de Movimentações")
-    df = buscar_historico_pedido(id_pedido)
+    # 1. LISTAGEM DO HISTÓRICO (Fusão da aba Histórico)
+    df = buscar_historico_pedido(ped['id'])
     if not df.empty:
+        # Ajuste visual simples
         st.dataframe(df, use_container_width=True, hide_index=True)
-    else: st.info("Sem histórico registrado.")
+    else: 
+        st.info("Sem histórico registrado.")
+
+    st.markdown("---")
+    
+    # 2. FORMULÁRIO DE ATUALIZAÇÃO (Dentro do Expander)
+    with st.expander("🔄 Registrar Nova Atualização", expanded=False):
+        lst = ["Solicitado", "Pago", "Registro", "Pendente", "Cancelado"]
+        try: idx = lst.index(ped['status']) 
+        except: idx = 0
+        mods = ["Automático (Padrão)"] + listar_modelos_mensagens()
+        
+        with st.form("form_gaveta_status_ped"):
+            ns = st.selectbox("Novo Status", lst, index=idx)
+            mod = st.selectbox("Modelo Mensagem", mods)
+            obs = st.text_area("Observação da Mudança")
+            av = st.checkbox("Avisar Cliente (WhatsApp)?", value=True)
+            
+            if st.form_submit_button("✅ Confirmar Novo Status", type="primary"):
+                ok, msg = atualizar_status_pedido(ped['id'], ns, ped, av, obs, mod)
+                if ok:
+                    st.success(msg); time.sleep(1)
+                    st.session_state.ped_selecionado = None
+                    st.session_state.ped_aba_ativa = None
+                    st.rerun()
+                else: st.warning(msg)
 
 def renderizar_excluir_pedido(ped):
     st.markdown(f"#### 🗑️ Excluir Pedido: {ped['codigo']}")
@@ -654,7 +660,7 @@ def renderizar_tarefa_pedido(ped):
                         st.error(f"Erro ao criar tarefa: {e}")
                         if conn: conn.close()
 
-# --- NOVA FUNÇÃO PARA RENOVAÇÃO ---
+# --- NOVA FUNÇÃO: RENOVAÇÃO ---
 def renderizar_renovacao_pedido(ped):
     st.markdown("#### 📅 Renovações / Feedback")
     
@@ -689,19 +695,18 @@ def renderizar_renovacao_pedido(ped):
             obs = st.text_area("Observação")
             if st.form_submit_button("Agendar"):
                 if modulo_renovacao_feedback:
-                    # Usando a função do módulo de renovação para manter consistência
                     ok = modulo_renovacao_feedback.criar_registro_rf(
                         id_pedido=ped['id'],
                         data_prev=dt,
                         obs=obs,
-                        dados_pedido=None, # Não envia mensagem automática aqui
+                        dados_pedido=None,
                         avisar=False
                     )
                     if ok: 
                         st.success("Renovação Agendada!"); time.sleep(1)
                         st.rerun()
                 else:
-                    st.error("Módulo de Renovação não foi carregado corretamente.")
+                    st.error("Módulo de Renovação não carregado.")
 
 # =============================================================================
 # 6. APP PRINCIPAL
@@ -787,19 +792,20 @@ def app_pedidos():
                     def selecionar_aba_callback(nome_aba):
                         st.session_state.ped_aba_ativa = nome_aba
 
-                    # --- MENU DE OPÇÕES ATUALIZADO (INCLUÍDO RENOVAÇÃO) ---
+                    # --- MENU DE OPÇÕES ATUALIZADO ---
+                    # 1. Removido 'Histórico' (agora dentro de status)
+                    # 2. Adicionado 'Renovação' ao lado de Tarefa
                     opcoes_menu = [
                         ("👤 Cliente", "cliente"),
                         ("✏️ Editar", "editar"),
                         ("🔄 Status", "status"),
-                        ("📜 Histórico", "historico"),
                         ("📝 Tarefa", "tarefa"),
-                        ("📅 Renovação", "renovacao"), # Nova Opção
+                        ("📅 Renovação", "renovacao"), 
                         ("🗑️ Excluir", "excluir")
                     ]
                     
-                    # Colunas alteradas de 6 para 7
-                    cols_menu = st.columns(7, gap="small")
+                    # Mantido 6 colunas
+                    cols_menu = st.columns(6, gap="small")
                     
                     for col, (label, key_aba) in zip(cols_menu, opcoes_menu):
                         tipo_btn = "primary" if st.session_state.ped_aba_ativa == key_aba else "secondary"
@@ -818,10 +824,9 @@ def app_pedidos():
                     with st.container(border=True):
                         if aba == 'cliente': renderizar_dados_cliente(ped)
                         elif aba == 'editar': renderizar_editar_pedido(ped)
-                        elif aba == 'status': renderizar_status_pedido(ped)
-                        elif aba == 'historico': renderizar_historico_pedido(ped['id'])
+                        elif aba == 'status': renderizar_status_pedido(ped) # Contém histórico
                         elif aba == 'tarefa': renderizar_tarefa_pedido(ped)
-                        elif aba == 'renovacao': renderizar_renovacao_pedido(ped) # Nova Chamada
+                        elif aba == 'renovacao': renderizar_renovacao_pedido(ped) # Nova Aba
                         elif aba == 'excluir': renderizar_excluir_pedido(ped)
                 else:
                     st.info("👆 Selecione uma opção acima para gerenciar o pedido.")
