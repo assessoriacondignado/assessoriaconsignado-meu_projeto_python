@@ -156,7 +156,8 @@ def app_config_planilhas():
                 if 'editor_tabelas_sql_pf' in st.session_state:
                     del st.session_state['editor_tabelas_sql_pf']
         
-        df_original = st.session_state.get('df_base_pf')
+        # USA CÓPIA PARA NÃO AFETAR REFERÊNCIA EM MEMÓRIA
+        df_original = st.session_state.get('df_base_pf').copy() if st.session_state.get('df_base_pf') is not None else None
 
         if df_original is not None:
             st.caption(f"Visualizando: **{len(df_original)}** registros.")
@@ -174,13 +175,28 @@ def app_config_planilhas():
             col_save, col_info = st.columns([1, 4])
             with col_save:
                 if st.button("💾 Salvar Alterações", type="primary"):
-                    if df_editado.equals(df_original):
+                    # LÓGICA DE COMPARAÇÃO ROBUSTA (Correção aplicada aqui)
+                    # 1. Verifica se tamanhos são diferentes (Inclusão/Exclusão)
+                    mudou_tamanho = df_editado.shape != df_original.shape
+                    
+                    # 2. Verifica conteúdo ignorando índices (reset_index)
+                    # Isso resolve o problema de exclusão onde o índice 'pula'
+                    mudou_conteudo = False
+                    if not mudou_tamanho:
+                        try:
+                            # Compara valores resetando o índice para garantir alinhamento
+                            mudou_conteudo = not df_editado.reset_index(drop=True).equals(df_original.reset_index(drop=True))
+                        except:
+                            mudou_conteudo = True # Se der erro na comparação, assume que mudou
+                    
+                    if not mudou_tamanho and not mudou_conteudo:
                         st.warning("Nenhuma alteração detectada.")
                     else:
                         with st.spinner("Substituindo dados da tabela..."):
                             sucesso, msg = salvar_alteracoes(df_editado, schema_atual, nome_tabela_atual)
                             if sucesso:
                                 st.success(msg)
+                                # Atualiza o estado base com o novo dataframe
                                 st.session_state['df_base_pf'] = df_editado
                                 import time
                                 time.sleep(1) # Pequena pausa para visualização
