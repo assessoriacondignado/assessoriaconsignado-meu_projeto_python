@@ -167,7 +167,6 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
-            # --- CORREÇÃO APLICADA: 'cpf' é a chave correta conforme schema atual ---
             col_fk = 'cpf' 
             
             dados['telefones'] = pd.read_sql(f"SELECT numero FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
@@ -176,7 +175,6 @@ def carregar_dados_completos(cpf):
             
             # --- 1. BUSCA DE EMPREGOS/MATRÍCULAS (TABELA PRINCIPAL) ---
             try:
-                # Usa col_fk (cpf) que agora é consistente com o schema
                 df_emp = pd.read_sql(f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s", conn, params=(cpf_norm,))
             except:
                 conn.rollback(); df_emp = pd.DataFrame()
@@ -262,8 +260,18 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
         if not df_emp.empty:
             for _, r in df_emp.iterrows():
                 if r.get('matricula') and r.get('matricula') != 'Via CPF':
-                    cur.execute(f"INSERT INTO banco_pf.pf_emprego_renda ({col_fk}, convenio, matricula, dados_extras) VALUES (%s, %s, %s, %s) ON CONFLICT (matricula) DO NOTHING", 
-                                (cpf_limpo, r.get('convenio'), r.get('matricula'), r.get('dados_extras', '')))
+                    # --- CORREÇÃO: Usar UPSEERT para permitir atualização de dados extras se matricula existir ---
+                    sql_upsert = f"""
+                        INSERT INTO banco_pf.pf_emprego_renda ({col_fk}, convenio, matricula, dados_extras) 
+                        VALUES (%s, %s, %s, %s) 
+                        ON CONFLICT (matricula) 
+                        DO UPDATE SET 
+                            convenio = EXCLUDED.convenio,
+                            dados_extras = EXCLUDED.dados_extras,
+                            data_atualizacao = CURRENT_TIMESTAMP
+                    """
+                    cur.execute(sql_upsert, (cpf_limpo, r.get('convenio'), r.get('matricula'), r.get('dados_extras', '')))
+                    
                     if r.get('convenio'):
                         cur.execute("INSERT INTO banco_pf.cpf_convenio (cpf, convenio) VALUES (%s, %s)", (cpf_limpo, r.get('convenio')))
 
@@ -349,9 +357,6 @@ def buscar_pf_ampla(filtros_ativos):
                 if tab_nome == 'cpf_convenio':
                     joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf")
                 else:
-                    # Correção para pesquisa ampla também: usar 'cpf' se 'cpf_ref' não for mais padrão
-                    # Porém, como a pesquisa ampla constrói queries dinâmicas, idealmente verificariamos o schema.
-                    # Mantendo compatibilidade com a alteração principal:
                     joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf") 
                 tabelas_usadas.add(tab_nome)
             
@@ -552,10 +557,23 @@ def view_formulario_cadastro():
         st.markdown("###### 💼 Vínculos (Emprego)")
         conv = st.text_input("Convênio")
         matr = st.text_input("Matrícula")
+        d_extras = st.text_input("Dados Extras / Observações", placeholder="Ex: Detalhes, margem, origem...") # Novo campo
+
         if st.button("Adicionar Vínculo"):
-            staging['empregos'].append({'convenio': conv, 'matricula': matr}); st.rerun()
-        for emp in staging.get('empregos', []): 
-            st.caption(f"🏢 {emp.get('convenio')} | {emp.get('matricula')}")
+            staging['empregos'].append({'convenio': conv, 'matricula': matr, 'dados_extras': d_extras}); st.rerun()
+        
+        # Lista com visual melhorado e botão excluir
+        if staging.get('empregos'):
+            st.markdown("---")
+            for i, emp in enumerate(staging.get('empregos', [])): 
+                c_info, c_del = st.columns([5, 1])
+                with c_info:
+                    texto_extra = f" | ℹ️ {emp.get('dados_extras')}" if emp.get('dados_extras') else ""
+                    st.markdown(f"🏢 **{emp.get('convenio')}** | Matrícula: `{emp.get('matricula')}`{texto_extra}")
+                with c_del:
+                    if st.button("🗑️", key=f"del_vinculo_{i}"):
+                        staging['empregos'].pop(i)
+                        st.rerun()
 
     st.divider()
     if st.button("💾 SALVAR DADOS", type="primary", use_container_width=True):
