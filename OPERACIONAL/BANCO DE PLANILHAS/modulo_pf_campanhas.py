@@ -4,12 +4,40 @@ import json
 import time
 import re
 from datetime import date
-# Importações dos módulos que estão na mesma pasta
+# Importações dos módulos ativos
 import modulo_pf_cadastro as pf_core
-import modulo_pf_pesquisa as pf_pesquisa
 
 # =============================================================================
-# 1. MOTOR DE BUSCA INTERNO (CORRIGIDO E OTIMIZADO)
+# CONFIGURAÇÃO DE CAMPOS PARA FILTRO (Recriado localmente)
+# =============================================================================
+CAMPOS_CONFIG = {
+    "Dados Pessoais": [
+        {"label": "Nome", "coluna": "d.nome", "tabela": "banco_pf.pf_dados", "tipo": "texto"},
+        {"label": "CPF", "coluna": "d.cpf", "tabela": "banco_pf.pf_dados", "tipo": "texto"},
+        {"label": "Data Nascimento", "coluna": "d.data_nascimento", "tabela": "banco_pf.pf_dados", "tipo": "data"},
+        {"label": "Idade (Virtual)", "coluna": "virtual_idade", "tabela": "banco_pf.pf_dados", "tipo": "numero"},
+        {"label": "RG", "coluna": "d.rg", "tabela": "banco_pf.pf_dados", "tipo": "texto"},
+        {"label": "Nome da Mãe", "coluna": "d.nome_mae", "tabela": "banco_pf.pf_dados", "tipo": "texto"},
+        {"label": "Sexo", "coluna": "d.sexo", "tabela": "banco_pf.pf_dados", "tipo": "texto"},
+    ],
+    "Endereço": [
+        {"label": "Cidade", "coluna": "ende.cidade", "tabela": "banco_pf.pf_enderecos", "tipo": "texto"},
+        {"label": "UF", "coluna": "ende.uf", "tabela": "banco_pf.pf_enderecos", "tipo": "texto"},
+        {"label": "Bairro", "coluna": "ende.bairro", "tabela": "banco_pf.pf_enderecos", "tipo": "texto"},
+        {"label": "CEP", "coluna": "ende.cep", "tabela": "banco_pf.pf_enderecos", "tipo": "texto"},
+    ],
+    "Vínculos (Emprego)": [
+        {"label": "Convênio", "coluna": "emp.convenio", "tabela": "banco_pf.pf_emprego_renda", "tipo": "texto"},
+        {"label": "Matrícula", "coluna": "emp.matricula", "tabela": "banco_pf.pf_emprego_renda", "tipo": "texto"},
+    ],
+    "Contatos": [
+        {"label": "Telefone (Número)", "coluna": "tel.numero", "tabela": "banco_pf.pf_telefones", "tipo": "texto"},
+        {"label": "E-mail", "coluna": "em.email", "tabela": "banco_pf.pf_emails", "tipo": "texto"},
+    ]
+}
+
+# =============================================================================
+# 1. MOTOR DE BUSCA INTERNO
 # =============================================================================
 
 def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina=50):
@@ -19,7 +47,7 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
             sql_select = "SELECT DISTINCT d.id, d.nome, d.cpf, d.data_nascimento "
             sql_from = "FROM banco_pf.pf_dados d "
             
-            # --- MAPA DE JOINS (LIMPO) ---
+            # --- MAPA DE JOINS ---
             joins_map = {
                 'banco_pf.pf_telefones': "JOIN banco_pf.pf_telefones tel ON d.cpf = tel.cpf",
                 'banco_pf.pf_emails': "JOIN banco_pf.pf_emails em ON d.cpf = em.cpf",
@@ -29,7 +57,6 @@ def executar_pesquisa_campanha_interna(regras_ativas, pagina=1, itens_por_pagina
                 'banco_pf.pf_matricula_dados_clt': "LEFT JOIN banco_pf.pf_matricula_dados_clt clt ON emp.matricula = clt.matricula"
             }
             
-            # --- RESOLUÇÃO DE DEPENDÊNCIAS DE TABELA ---
             tabelas_necessarias = set()
             
             for regra in regras_ativas:
@@ -213,12 +240,12 @@ def dialog_editar_campanha(dados_atuais):
         opcoes_campos = []
         mapa_campos = {}
         
-        if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
-            for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
-                for item in lista:
-                    chave = f"{grupo} -> {item['label']}"
-                    opcoes_campos.append(chave)
-                    mapa_campos[chave] = item
+        # USA CAMPOS_CONFIG LOCAL
+        for grupo, lista in CAMPOS_CONFIG.items():
+            for item in lista:
+                chave = f"{grupo} -> {item['label']}"
+                opcoes_campos.append(chave)
+                mapa_campos[chave] = item
 
         ec1, ec2, ec3, ec4 = st.columns([2, 1.5, 2, 1])
         cp_sel = ec1.selectbox("Campo", opcoes_campos, key="ed_cp")
@@ -269,13 +296,10 @@ def dialog_excluir_campanha(id_campanha, nome):
     if st.button("Cancelar", use_container_width=True): st.rerun()
 
 # =============================================================================
-# 4. INTERFACE PRINCIPAL (CORRIGIDA COM KEY_SUFIX)
+# 4. INTERFACE PRINCIPAL
 # =============================================================================
 
 def app_campanhas(key_sufix="default"):
-    """
-    key_sufix: Sufixo opcional para evitar duplicação de IDs se o módulo for chamado mais de uma vez.
-    """
     st.markdown("## 📢 Gestão de Campanhas e Perfilamento")
     if 'pag_campanha' not in st.session_state: st.session_state['pag_campanha'] = 1
 
@@ -284,7 +308,6 @@ def app_campanhas(key_sufix="default"):
     # --- ABA 1: CONFIGURAÇÃO ---
     with tab_config:
         st.markdown("### 📝 Nova Campanha")
-        # CORREÇÃO: Form Key única usando o sufixo
         with st.form(f"form_create_campanha_{key_sufix}"):
             c1, c2, c3 = st.columns([3, 1.5, 1.5])
             nome = c1.text_input("Nome da Campanha")
@@ -301,15 +324,14 @@ def app_campanhas(key_sufix="default"):
             opcoes_campos = []
             mapa_campos = {}
             
-            if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
-                for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
-                    for item in lista:
-                        chave = f"{grupo} -> {item['label']}"
-                        opcoes_campos.append(chave)
-                        mapa_campos[chave] = item
+            # USA CAMPOS_CONFIG LOCAL
+            for grupo, lista in CAMPOS_CONFIG.items():
+                for item in lista:
+                    chave = f"{grupo} -> {item['label']}"
+                    opcoes_campos.append(chave)
+                    mapa_campos[chave] = item
 
             rc1, rc2, rc3, rc4 = st.columns([2, 1.5, 2, 1])
-            # Keys com sufixo para evitar duplicidade
             campo_sel = rc1.selectbox("Campo", opcoes_campos, key=f"cp_new_camp_{key_sufix}")
             op_sel = rc2.selectbox("Operador", ["=", ">", "<", "≥", "≤", "≠", "Contém", "Começa com"], key=f"op_new_camp_{key_sufix}")
             valor_sel = rc3.text_input("Valor", key=f"val_new_camp_{key_sufix}")
@@ -380,12 +402,12 @@ def app_campanhas(key_sufix="default"):
             
             opcoes_campos = []
             mapa_campos = {}
-            if hasattr(pf_pesquisa, 'CAMPOS_CONFIG'):
-                for grupo, lista in pf_pesquisa.CAMPOS_CONFIG.items():
-                    for item in lista:
-                        chave = f"{grupo} -> {item['label']}"
-                        opcoes_campos.append(chave)
-                        mapa_campos[chave] = item
+            # USA CAMPOS_CONFIG LOCAL
+            for grupo, lista in CAMPOS_CONFIG.items():
+                for item in lista:
+                    chave = f"{grupo} -> {item['label']}"
+                    opcoes_campos.append(chave)
+                    mapa_campos[chave] = item
 
             fe1, fe2, fe3, fe4 = st.columns([2, 1.5, 2, 1])
             ex_campo = fe1.selectbox("Campo Extra", opcoes_campos, key=f"cp_ex_{key_sufix}")
@@ -431,9 +453,10 @@ def app_campanhas(key_sufix="default"):
                     for _, row in df_r.iterrows():
                         rc1, rc2, rc3, rc4 = st.columns([1, 1, 2, 4])
                         with rc1:
-                            # CORREÇÃO AQUI: BOTÃO VISUALIZAR ATUALIZADO
                             if st.button("👁️", key=f"v_camp_{row['id']}_{key_sufix}", help="Visualizar Cliente"):
-                                st.session_state.update({'pf_view': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
+                                st.session_state.update({'pf_view_ativa': 'visualizar', 'pf_cpf_selecionado': str(row['cpf'])})
+                                # Redireciona para o módulo de cadastro
+                                pf_core.app_cadastro_unificado()
                                 st.rerun()
                         rc2.write(str(row['id']))
                         rc3.write(pf_core.formatar_cpf_visual(row['cpf']))
