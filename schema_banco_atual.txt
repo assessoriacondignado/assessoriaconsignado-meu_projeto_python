@@ -177,6 +177,14 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - data_inicio (timestamp without time zone) NULL
    - ultimo_clique (timestamp without time zone) NULL
 
+[TABELA: admin.status]
+   - id (integer) NOT NULL
+   - nome_status (character varying(100)) NULL
+   - modulo (character varying(50)) NULL
+   - status_relacionado (character varying(50)) NULL
+   - mensagem_padrao (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+
 [TABELA: admin.tarefas]
    - id (integer) NOT NULL
    - id_pedido (integer) NULL
@@ -325,7 +333,6 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - matricula (character varying(100)) NULL
    - data_atualizacao (timestamp without time zone) NULL
    - importacao_id (integer) NULL
-   - dados_extras (text) NULL
 
 [TABELA: banco_pf.pf_enderecos]
    - id (integer) NOT NULL
