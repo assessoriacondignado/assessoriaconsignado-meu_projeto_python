@@ -112,13 +112,13 @@ def carregar_dados_completos(cpf):
             df = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df.empty: dados['geral'] = df.iloc[0].to_dict()
             
-            # Satélites
-            dados['telefones'] = pd.read_sql("SELECT * FROM banco_pf.pf_telefones WHERE cpf_ref = %s", conn, params=(cpf_norm,)).to_dict('records')
-            dados['emails'] = pd.read_sql("SELECT * FROM banco_pf.pf_emails WHERE cpf_ref = %s", conn, params=(cpf_norm,)).to_dict('records')
-            dados['enderecos'] = pd.read_sql("SELECT * FROM banco_pf.pf_enderecos WHERE cpf_ref = %s", conn, params=(cpf_norm,)).to_dict('records')
+            # Satélites (Corrigido cpf_ref -> cpf)
+            dados['telefones'] = pd.read_sql("SELECT * FROM banco_pf.pf_telefones WHERE cpf = %s", conn, params=(cpf_norm,)).to_dict('records')
+            dados['emails'] = pd.read_sql("SELECT * FROM banco_pf.pf_emails WHERE cpf = %s", conn, params=(cpf_norm,)).to_dict('records')
+            dados['enderecos'] = pd.read_sql("SELECT * FROM banco_pf.pf_enderecos WHERE cpf = %s", conn, params=(cpf_norm,)).to_dict('records')
             
-            # Vínculos e Contratos
-            df_emp = pd.read_sql("SELECT * FROM banco_pf.pf_emprego_renda WHERE cpf_ref = %s", conn, params=(cpf_norm,))
+            # Vínculos e Contratos (Corrigido cpf_ref -> cpf)
+            df_emp = pd.read_sql("SELECT * FROM banco_pf.pf_emprego_renda WHERE cpf = %s", conn, params=(cpf_norm,))
             for _, row in df_emp.iterrows():
                 vinculo = row.to_dict()
                 vinculo['contratos'] = []
@@ -158,28 +158,31 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
             stmt = f"UPDATE banco_pf.pf_dados SET {set_clause} WHERE cpf=%s"
             cur.execute(stmt, vals)
         
-        # 2. Telefones
+        # 2. Telefones (Corrigido cpf_ref -> cpf e ON CONFLICT composto)
         if not df_tel.empty:
             for _, r in df_tel.iterrows():
-                cur.execute("INSERT INTO banco_pf.pf_telefones (cpf_ref, numero) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, r['numero']))
+                cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero) VALUES (%s, %s) ON CONFLICT (cpf, numero) DO NOTHING", (cpf_limpo, r['numero']))
         
-        # 3. Emails
+        # 3. Emails (Corrigido cpf_ref -> cpf e ON CONFLICT composto)
         if not df_email.empty:
             for _, r in df_email.iterrows():
-                cur.execute("INSERT INTO banco_pf.pf_emails (cpf_ref, email) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, r['email']))
+                cur.execute("INSERT INTO banco_pf.pf_emails (cpf, email) VALUES (%s, %s) ON CONFLICT (cpf, email) DO NOTHING", (cpf_limpo, r['email']))
 
-        # 4. Endereços
+        # 4. Endereços (Corrigido cpf_ref -> cpf)
         if not df_end.empty:
             for _, r in df_end.iterrows():
-                cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf_ref, cep, rua, bairro, cidade, uf) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", 
-                            (cpf_limpo, r.get('cep'), r.get('rua'), r.get('bairro'), r.get('cidade'), r.get('uf')))
+                # Tenta inserir, se der conflito genérico, ignora (ou especifique colunas se tiver constraint)
+                cur.execute("""
+                    INSERT INTO banco_pf.pf_enderecos (cpf, cep, rua, bairro, cidade, uf) 
+                    VALUES (%s, %s, %s, %s, %s, %s) 
+                    ON CONFLICT DO NOTHING
+                """, (cpf_limpo, r.get('cep'), r.get('rua'), r.get('bairro'), r.get('cidade'), r.get('uf')))
 
-        # 5. Empregos (ATUALIZADO PARA PERMITIR EDIÇÃO)
+        # 5. Empregos (Corrigido cpf_ref -> cpf e Permite Edição)
         if not df_emp.empty:
             for _, r in df_emp.iterrows():
-                # Alterado de DO NOTHING para DO UPDATE para desbloquear edição
                 sql_upsert = """
-                    INSERT INTO banco_pf.pf_emprego_renda (cpf_ref, convenio, matricula) 
+                    INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula) 
                     VALUES (%s, %s, %s) 
                     ON CONFLICT (matricula) 
                     DO UPDATE SET convenio = EXCLUDED.convenio
@@ -192,7 +195,7 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
         # 6. Contratos
         if not df_contr.empty:
             for _, r in df_contr.iterrows():
-                pass # Lógica de contratos mantida simples conforme original
+                pass 
 
         conn.commit()
         conn.close()
@@ -227,8 +230,9 @@ def buscar_pf_simples(termo, pagina=1, itens=50):
     if conn:
         try:
             termo_limpo = limpar_normalizar_cpf(termo)
+            # Corrigido cpf_ref -> cpf
             if termo_limpo and len(termo_limpo) > 6:
-                sql = "SELECT DISTINCT d.id, d.nome, d.cpf FROM banco_pf.pf_dados d LEFT JOIN banco_pf.pf_telefones t ON d.cpf = t.cpf_ref WHERE d.cpf LIKE %s OR t.numero LIKE %s"
+                sql = "SELECT DISTINCT d.id, d.nome, d.cpf FROM banco_pf.pf_dados d LEFT JOIN banco_pf.pf_telefones t ON d.cpf = t.cpf WHERE d.cpf LIKE %s OR t.numero LIKE %s"
                 params = [f"%{termo_limpo}%", f"%{termo_limpo}%"]
             else:
                 sql = "SELECT DISTINCT d.id, d.nome, d.cpf FROM banco_pf.pf_dados d WHERE d.nome ILIKE %s"
@@ -302,12 +306,12 @@ def view_formulario_cadastro():
         if is_edit:
             st.session_state['dados_staging'] = carregar_dados_completos(st.session_state['pf_cpf_selecionado'])
         else:
-            st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': []}
+            st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
         st.session_state['form_loaded'] = True
     
     staging = st.session_state['dados_staging']
     
-    # --- ÁREA DE INPUTS COM NOVA ABA DE VÍNCULOS ---
+    # --- ÁREA DE INPUTS COM ABA DE VÍNCULOS ---
     t1, t2, t3 = st.tabs(["Dados Pessoais", "Contatos & Endereços", "Vínculos"])
     
     with t1:
