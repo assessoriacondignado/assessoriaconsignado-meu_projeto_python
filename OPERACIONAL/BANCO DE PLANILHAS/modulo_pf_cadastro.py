@@ -49,7 +49,7 @@ def init_db_structures():
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emprego_renda (
-                    id SERIAL PRIMARY KEY, cpf_ref VARCHAR(20), convenio VARCHAR(100),
+                    id SERIAL PRIMARY KEY, cpf VARCHAR(20), convenio VARCHAR(100),
                     matricula VARCHAR(100), dados_extras TEXT,
                     data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(matricula)
@@ -65,19 +65,19 @@ def init_db_structures():
             
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_emails (
-                    id SERIAL PRIMARY KEY, cpf_ref VARCHAR(20), email VARCHAR(150)
+                    id SERIAL PRIMARY KEY, cpf VARCHAR(20), email VARCHAR(150)
                 );
             """)
             
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_telefones (
-                    id SERIAL PRIMARY KEY, cpf_ref VARCHAR(20), numero VARCHAR(20), data_atualizacao DATE
+                    id SERIAL PRIMARY KEY, cpf VARCHAR(20), numero VARCHAR(20), data_atualizacao DATE
                 );
             """)
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS banco_pf.pf_enderecos (
-                    id SERIAL PRIMARY KEY, cpf_ref VARCHAR(20), rua VARCHAR(255), 
+                    id SERIAL PRIMARY KEY, cpf VARCHAR(20), rua VARCHAR(255), 
                     bairro VARCHAR(100), cidade VARCHAR(100), uf VARCHAR(5), cep VARCHAR(20)
                 );
             """)
@@ -167,13 +167,14 @@ def carregar_dados_completos(cpf):
             df_d = pd.read_sql("SELECT * FROM banco_pf.pf_dados WHERE cpf = %s", conn, params=(cpf_norm,))
             if not df_d.empty: dados['geral'] = df_d.where(pd.notnull(df_d), None).iloc[0].to_dict()
             
+            # --- CORREÇÃO APLICADA: 'cpf' é a chave correta ---
             col_fk = 'cpf' 
             
             dados['telefones'] = pd.read_sql(f"SELECT numero FROM banco_pf.pf_telefones WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['emails'] = pd.read_sql(f"SELECT email FROM banco_pf.pf_emails WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             dados['enderecos'] = pd.read_sql(f"SELECT rua, bairro, cidade, uf, cep FROM banco_pf.pf_enderecos WHERE {col_fk} = %s", conn, params=(cpf_norm,)).fillna("").to_dict('records')
             
-            # --- 1. BUSCA DE EMPREGOS/MATRÍCULAS (TABELA PRINCIPAL) ---
+            # --- 1. BUSCA DE EMPREGOS/MATRÍCULAS ---
             try:
                 df_emp = pd.read_sql(f"SELECT convenio, matricula, dados_extras FROM banco_pf.pf_emprego_renda WHERE {col_fk} = %s", conn, params=(cpf_norm,))
             except:
@@ -211,13 +212,16 @@ def carregar_dados_completos(cpf):
                             })
                             nomes_existentes.add(nome_conv)
             except Exception as e:
-                print(f"Aviso: Erro ao carregar cpf_convenio extra: {e}")
+                pass
 
         except Exception as e: print(f"Erro carregamento: {e}") 
         finally: conn.close()
     return dados
 
 def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="novo", cpf_original=None):
+    """
+    Função de salvamento completo (usada principalmente para NOVOS cadastros)
+    """
     conn = get_conn()
     if not conn: return False, "Erro de conexão."
     try:
@@ -260,7 +264,6 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
         if not df_emp.empty:
             for _, r in df_emp.iterrows():
                 if r.get('matricula') and r.get('matricula') != 'Via CPF':
-                    # --- CORREÇÃO: Usar UPSEERT para permitir atualização de dados extras se matricula existir ---
                     sql_upsert = f"""
                         INSERT INTO banco_pf.pf_emprego_renda ({col_fk}, convenio, matricula, dados_extras) 
                         VALUES (%s, %s, %s, %s) 
@@ -273,13 +276,77 @@ def salvar_pf(dados_gerais, df_tel, df_email, df_end, df_emp, df_contr, modo="no
                     cur.execute(sql_upsert, (cpf_limpo, r.get('convenio'), r.get('matricula'), r.get('dados_extras', '')))
                     
                     if r.get('convenio'):
-                        cur.execute("INSERT INTO banco_pf.cpf_convenio (cpf, convenio) VALUES (%s, %s)", (cpf_limpo, r.get('convenio')))
+                        cur.execute("INSERT INTO banco_pf.cpf_convenio (cpf, convenio) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, r.get('convenio')))
 
         conn.commit(); conn.close()
         return True, "✅ Dados salvos com sucesso!"
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         return False, f"❌ Erro ao salvar: {str(e)}"
+
+def salvar_edicao_parcial(cpf, grupo, lista_alteracoes):
+    """
+    Salva apenas as alterações confirmadas no modo de edição
+    """
+    conn = get_conn()
+    if not conn: return False, "Erro de conexão"
+    try:
+        cur = conn.cursor()
+        cpf_limpo = limpar_normalizar_cpf(cpf)
+
+        if grupo == "Dados Cadastrais":
+            # Assume que lista_alteracoes tem um dict com os dados atualizados
+            if lista_alteracoes:
+                dados = lista_alteracoes[0]
+                set_clauses = []
+                vals = []
+                for k, v in dados.items():
+                    if k != 'cpf': 
+                        set_clauses.append(f"{k} = %s")
+                        if isinstance(v, (date, datetime)): v = v.strftime('%Y-%m-%d')
+                        # Uppercase para textos
+                        if isinstance(v, str): v = v.upper()
+                        vals.append(v)
+                
+                if set_clauses:
+                    vals.append(cpf_limpo)
+                    sql = f"UPDATE banco_pf.pf_dados SET {', '.join(set_clauses)} WHERE cpf = %s"
+                    cur.execute(sql, vals)
+
+        elif grupo == "Contatos":
+            for item in lista_alteracoes:
+                if 'telefone' in item:
+                    cur.execute("INSERT INTO banco_pf.pf_telefones (cpf, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING", (cpf_limpo, item['telefone']))
+                if 'email' in item:
+                    cur.execute("INSERT INTO banco_pf.pf_emails (cpf, email) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, item['email']))
+
+        elif grupo == "Endereços":
+             for r in lista_alteracoes:
+                 cur.execute("INSERT INTO banco_pf.pf_enderecos (cpf, cep, rua, bairro, cidade, uf) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", 
+                            (cpf_limpo, r.get('cep'), r.get('rua'), r.get('bairro'), r.get('cidade'), r.get('uf')))
+
+        elif grupo == "Vínculos":
+             for r in lista_alteracoes:
+                 sql_upsert = """
+                        INSERT INTO banco_pf.pf_emprego_renda (cpf, convenio, matricula, dados_extras) 
+                        VALUES (%s, %s, %s, %s) 
+                        ON CONFLICT (matricula) 
+                        DO UPDATE SET 
+                            convenio = EXCLUDED.convenio,
+                            dados_extras = EXCLUDED.dados_extras,
+                            data_atualizacao = CURRENT_TIMESTAMP
+                    """
+                 cur.execute(sql_upsert, (cpf_limpo, r.get('convenio'), r.get('matricula'), r.get('dados_extras', '')))
+                 if r.get('convenio'):
+                        cur.execute("INSERT INTO banco_pf.cpf_convenio (cpf, convenio) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, r.get('convenio')))
+
+        conn.commit()
+        return True, "✅ Alterações confirmadas e salvas!"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"❌ Erro ao salvar edição: {str(e)}"
+    finally:
+        if conn: conn.close()
 
 def excluir_pf(cpf):
     conn = get_conn()
@@ -297,7 +364,7 @@ def dialog_excluir_pf(cpf, nome):
     if st.button("Confirmar Exclusão", type="primary"):
         if excluir_pf(cpf): st.success("Apagado!"); time.sleep(1); st.rerun()
 
-# --- FUNÇÕES DE BUSCA (SIMPLES E AMPLA) ---
+# --- FUNÇÕES DE BUSCA ---
 
 def buscar_pf_simples(termo, pagina=1, itens_por_pagina=50):
     conn = get_conn()
@@ -308,8 +375,7 @@ def buscar_pf_simples(termo, pagina=1, itens_por_pagina=50):
             try:
                 cur_cols = conn.cursor()
                 cur_cols.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'banco_pf' AND table_name = 'pf_telefones' AND column_name = 'cpf_ref'")
-                if cur_cols.fetchone():
-                    col_fk_tel = 'cpf_ref'
+                if cur_cols.fetchone(): col_fk_tel = 'cpf_ref'
                 cur_cols.close()
             except: pass
 
@@ -343,10 +409,7 @@ def buscar_pf_ampla(filtros_ativos):
         conditions = []
         params = []
         
-        mapa_tabelas = {
-            'pf_dados': 'd', 'pf_enderecos': 'ende', 'pf_telefones': 'tel',
-            'pf_emails': 'mail', 'pf_emprego_renda': 'emp', 'cpf_convenio': 'conv'
-        }
+        mapa_tabelas = {'pf_dados': 'd', 'pf_enderecos': 'ende', 'pf_telefones': 'tel', 'pf_emails': 'mail', 'pf_emprego_renda': 'emp', 'cpf_convenio': 'conv'}
         tabelas_usadas = set()
         
         for f in filtros_ativos:
@@ -354,10 +417,7 @@ def buscar_pf_ampla(filtros_ativos):
             alias = mapa_tabelas.get(tab_nome, 'gen')
             
             if alias != 'd' and tab_nome not in tabelas_usadas:
-                if tab_nome == 'cpf_convenio':
-                    joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf")
-                else:
-                    joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf") 
+                joins.append(f"LEFT JOIN banco_pf.{tab_nome} {alias} ON d.cpf = {alias}.cpf") 
                 tabelas_usadas.add(tab_nome)
             
             operador = f['operador']
@@ -373,15 +433,9 @@ def buscar_pf_ampla(filtros_ativos):
         sql_full = f"{select_clause} {from_clause} {' '.join(joins)}"
         if conditions: sql_full += " WHERE " + " AND ".join(conditions)
         
-        cur = conn.cursor()
-        count_sql = f"SELECT COUNT(*) FROM ({sql_full}) as sub"
-        cur.execute(count_sql, tuple(params))
-        total = cur.fetchone()[0]
-        
-        sql_full += " ORDER BY d.nome LIMIT 100"
-        df = pd.read_sql(sql_full, conn, params=tuple(params))
+        df = pd.read_sql(f"{sql_full} ORDER BY d.nome LIMIT 100", conn, params=tuple(params))
         conn.close()
-        return df, total
+        return df, len(df)
     except Exception as e:
         st.error(f"Erro na pesquisa ampla: {e}"); 
         if conn: conn.close()
@@ -403,7 +457,7 @@ def get_colunas_filtro(tabela):
     return cols
 
 CONFIG_CADASTRO = {
-    "Dados Pessoais": [
+    "Dados Cadastrais": [
         {"label": "Nome Completo", "key": "nome", "tabela": "geral", "tipo": "texto", "obrigatorio": True},
         {"label": "CPF", "key": "cpf", "tabela": "geral", "tipo": "cpf", "obrigatorio": True},
         {"label": "RG", "key": "rg", "tabela": "geral", "tipo": "texto"},
@@ -411,22 +465,11 @@ CONFIG_CADASTRO = {
         {"label": "Nome da Mãe", "key": "nome_mae", "tabela": "geral", "tipo": "texto"},
         {"label": "Nome do Pai", "key": "nome_pai", "tabela": "geral", "tipo": "texto"},
         {"label": "UF do RG", "key": "uf_rg", "tabela": "geral", "tipo": "texto"},
-    ],
-    "Contatos": [
-        {"label": "Telefone", "key": "numero", "tabela": "telefones", "tipo": "telefone", "multiplo": True},
-        {"label": "E-mail", "key": "email", "tabela": "emails", "tipo": "email", "multiplo": True},
-    ],
-    "Endereços": [
-        {"label": "CEP", "key": "cep", "tabela": "enderecos", "tipo": "cep", "multiplo": True}, 
-        {"label": "Logradouro", "key": "rua", "tabela": "enderecos", "tipo": "texto", "multiplo": True},
-        {"label": "Bairro", "key": "bairro", "tabela": "enderecos", "tipo": "texto", "multiplo": True},
-        {"label": "Cidade", "key": "cidade", "tabela": "enderecos", "tipo": "texto", "multiplo": True},
-        {"label": "UF", "key": "uf", "tabela": "enderecos", "tipo": "texto", "multiplo": True},
     ]
 }
 
 # ==============================================================================
-# 2. CAMADA DE INTERFACE (VIEWS UNIFICADAS)
+# 2. CAMADA DE INTERFACE
 # ==============================================================================
 
 def view_pesquisa_lista():
@@ -434,25 +477,21 @@ def view_pesquisa_lista():
     tab_rapida, tab_ampla = st.tabs(["🔍 Busca Rápida", "🔬 Pesquisa Ampla"])
     
     with tab_rapida:
-        termo = st.text_input("Buscar por Nome, CPF ou Telefone para Localizar ou Cadastrar", key="busca_unificada", placeholder="Digite para pesquisar...")
+        termo = st.text_input("Buscar por Nome, CPF ou Telefone", key="busca_unificada", placeholder="Digite para pesquisar...")
         st.divider()
         if termo:
             df, total = buscar_pf_simples(termo)
             if not df.empty:
                 renderizar_tabela_resultados(df, total)
             else:
-                st.warning("Nenhum cadastro localizado com este termo.")
+                st.warning("Nenhum cadastro localizado.")
                 if st.button(f"📝 Cadastrar novo: {termo}", type="primary"):
-                    st.session_state['pf_view_ativa'] = 'formulario'
-                    st.session_state['pf_modo'] = 'novo'
-                    st.session_state['pf_cpf_selecionado'] = None
-                    st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
+                    ir_para_novo()
                     termo_numerico = limpar_apenas_numeros(termo)
                     if termo_numerico and len(termo_numerico) == 11:
                         st.session_state['dados_staging']['geral']['cpf'] = termo_numerico
                     else:
                         st.session_state['dados_staging']['geral']['nome'] = termo.upper()
-                    st.session_state['form_loaded'] = True
                     st.rerun()
 
     with tab_ampla:
@@ -470,23 +509,22 @@ def view_pesquisa_lista():
         if c5.button("➕ Add", key="btn_add_filt"):
             if tab_sel and col_sel and val_sel:
                 st.session_state['filtros_ativos'].append({'tabela': tab_sel, 'coluna': col_sel, 'operador': op_sel, 'valor': val_sel})
-            else: st.warning("Preencha tudo.")
+        
         if st.session_state['filtros_ativos']:
             st.markdown("---")
-            st.caption("Filtros Aplicados:")
             for i, f in enumerate(st.session_state['filtros_ativos']):
                 cc1, cc2 = st.columns([8, 1])
                 cc1.markdown(f"🔹 **{f['tabela']}**.{f['coluna']} *{f['operador']}* `{f['valor']}`")
                 if cc2.button("❌", key=f"del_filt_{i}"):
                     st.session_state['filtros_ativos'].pop(i); st.rerun()
             st.divider()
-            if st.button("🚀 Executar Pesquisa Ampla", type="primary"):
+            if st.button("🚀 Executar Pesquisa", type="primary"):
                 df_ampla, total_ampla = buscar_pf_ampla(st.session_state['filtros_ativos'])
                 renderizar_tabela_resultados(df_ampla, total_ampla)
 
 def renderizar_tabela_resultados(df, total):
     if not df.empty:
-        st.success(f"Encontrados: {total} registros (Limitado a 100 na visualização)")
+        st.success(f"Encontrados: {total} registros")
         st.markdown("""<div style="background-color: #f0f0f0; padding: 8px; font-weight: bold; display: flex;"><div style="flex: 1;">Ações</div><div style="flex: 2;">CPF</div><div style="flex: 4;">Nome</div></div>""", unsafe_allow_html=True)
         for _, row in df.iterrows():
             c1, c2, c3 = st.columns([1, 2, 4])
@@ -498,105 +536,207 @@ def renderizar_tabela_resultados(df, total):
             c2.write(formatar_cpf_visual(row['cpf']))
             c3.write(row['nome'])
             st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
-    else: st.warning("Nenhum resultado encontrado para os critérios informados.")
 
 def view_formulario_cadastro():
-    is_edit = st.session_state.get('pf_modo') == 'editar'
-    titulo = "✏️ Editar Cliente" if is_edit else "➕ Novo Cadastro"
-    c_back, c_tit = st.columns([1, 5])
-    if c_back.button("⬅️ Voltar"): ir_para_lista(); st.rerun()
-    c_tit.markdown(f"### {titulo}")
+    pf_modo = st.session_state.get('pf_modo', 'novo')
+    cpf_alvo = st.session_state.get('pf_cpf_selecionado')
     
-    if not st.session_state.get('form_loaded'):
-        if is_edit:
-            st.session_state['dados_staging'] = carregar_dados_completos(st.session_state['pf_cpf_selecionado'])
-        else:
-            st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': [], 'dados_clt': []}
-        st.session_state['form_loaded'] = True
-    
-    staging = st.session_state['dados_staging']
-    t1, t2, t3 = st.tabs(["Dados Pessoais", "Contatos & Endereço", "Vínculos & Planilhas"])
-    
-    with t1:
-        for campo in CONFIG_CADASTRO["Dados Pessoais"]:
-            key = campo['key']
-            val_atual = staging['geral'].get(key, '')
-            if campo['tipo'] == 'data':
-                if isinstance(val_atual, str) and val_atual:
-                    try: val_atual = datetime.strptime(val_atual, '%Y-%m-%d').date()
-                    except: val_atual = None
-                if val_atual is None or pd.isna(val_atual) or not isinstance(val_atual, (date, datetime)):
-                    val_atual = date.today()
-                novo_val = st.date_input(campo['label'], value=val_atual, format="DD/MM/YYYY")
-                if isinstance(novo_val, date): novo_val = novo_val.strftime('%Y-%m-%d')
-            else:
-                novo_val = st.text_input(campo['label'], value=val_atual, disabled=(key=='cpf' and is_edit))
-            staging['geral'][key] = novo_val
-
-    with t2:
-        c1, c2 = st.columns(2)
-        with c1:
-            ntel = st.text_input("Novo Telefone", placeholder="(00) 00000-0000")
-            if st.button("Adicionar Tel"):
-                if ntel: staging['telefones'].append({'numero': ntel}); st.rerun()
-            for i, t in enumerate(staging.get('telefones', [])): 
-                st.caption(f"- {formatar_telefone_visual(t.get('numero'))}")
-        with c2:
-            nmail = st.text_input("Novo E-mail")
-            if st.button("Adicionar Email"):
-                if nmail: staging['emails'].append({'email': nmail}); st.rerun()
-            for m in staging.get('emails', []): st.caption(f"- {m.get('email')}")
-        st.divider()
-        st.markdown("###### Endereço")
-        cep = st.text_input("CEP"); rua = st.text_input("Rua"); bairro = st.text_input("Bairro"); cidade = st.text_input("Cidade"); uf = st.text_input("UF")
-        if st.button("Adicionar Endereço"):
-            staging['enderecos'].append({'cep': cep, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf}); st.rerun()
-        for e in staging.get('enderecos', []): st.caption(f"🏠 {e.get('rua')} - {e.get('cidade')}/{e.get('uf')}")
-
-    with t3:
-        st.markdown("###### 💼 Vínculos (Emprego)")
-        conv = st.text_input("Convênio")
-        matr = st.text_input("Matrícula")
-        d_extras = st.text_input("Dados Extras / Observações", placeholder="Ex: Detalhes, margem, origem...") # Novo campo
-
-        if st.button("Adicionar Vínculo"):
-            staging['empregos'].append({'convenio': conv, 'matricula': matr, 'dados_extras': d_extras}); st.rerun()
+    # --- FLUXO 1: NOVO CADASTRO (Mantido Original) ---
+    if pf_modo == 'novo':
+        c_back, c_tit = st.columns([1, 5])
+        if c_back.button("⬅️ Voltar"): ir_para_lista(); st.rerun()
+        c_tit.markdown("### ➕ Novo Cadastro")
         
-        # Lista com visual melhorado e botão excluir
-        if staging.get('empregos'):
-            st.markdown("---")
-            for i, emp in enumerate(staging.get('empregos', [])): 
-                c_info, c_del = st.columns([5, 1])
-                with c_info:
-                    texto_extra = f" | ℹ️ {emp.get('dados_extras')}" if emp.get('dados_extras') else ""
-                    st.markdown(f"🏢 **{emp.get('convenio')}** | Matrícula: `{emp.get('matricula')}`{texto_extra}")
-                with c_del:
-                    if st.button("🗑️", key=f"del_vinculo_{i}"):
-                        staging['empregos'].pop(i)
+        if not st.session_state.get('form_loaded'):
+            st.session_state['dados_staging'] = {'geral': {}, 'telefones': [], 'emails': [], 'enderecos': [], 'empregos': [], 'contratos': []}
+            st.session_state['form_loaded'] = True
+        
+        staging = st.session_state['dados_staging']
+        t1, t2, t3 = st.tabs(["Dados Pessoais", "Contatos & Endereço", "Vínculos"])
+        
+        with t1:
+            for campo in CONFIG_CADASTRO["Dados Cadastrais"]:
+                key = campo['key']
+                val = staging['geral'].get(key, '')
+                if campo['tipo'] == 'data':
+                    new_val = st.date_input(campo['label'], value=val if val else date.today(), format="DD/MM/YYYY")
+                    if isinstance(new_val, date): new_val = new_val.strftime('%Y-%m-%d')
+                else:
+                    new_val = st.text_input(campo['label'], value=val)
+                staging['geral'][key] = new_val
+        
+        with t2:
+            c1, c2 = st.columns(2)
+            with c1:
+                ntel = st.text_input("Novo Telefone")
+                if st.button("Adicionar Tel") and ntel: staging['telefones'].append({'numero': ntel}); st.rerun()
+                for t in staging.get('telefones', []): st.caption(f"- {t.get('numero')}")
+            with c2:
+                nmail = st.text_input("Novo E-mail")
+                if st.button("Adicionar Email") and nmail: staging['emails'].append({'email': nmail}); st.rerun()
+                for m in staging.get('emails', []): st.caption(f"- {m.get('email')}")
+            
+            st.divider()
+            cep = st.text_input("CEP"); rua = st.text_input("Rua"); bairro = st.text_input("Bairro"); cidade = st.text_input("Cidade"); uf = st.text_input("UF")
+            if st.button("Adicionar Endereço"):
+                staging['enderecos'].append({'cep': cep, 'rua': rua, 'bairro': bairro, 'cidade': cidade, 'uf': uf}); st.rerun()
+            for e in staging.get('enderecos', []): st.caption(f"🏠 {e.get('rua')} - {e.get('cidade')}")
+
+        with t3:
+            conv = st.text_input("Convênio"); matr = st.text_input("Matrícula"); extra = st.text_input("Dados Extras")
+            if st.button("Adicionar Vínculo"):
+                staging['empregos'].append({'convenio': conv, 'matricula': matr, 'dados_extras': extra}); st.rerun()
+            for emp in staging.get('empregos', []): st.caption(f"🏢 {emp.get('convenio')} | {emp.get('matricula')}")
+
+        st.divider()
+        if st.button("💾 SALVAR NOVO CLIENTE", type="primary", use_container_width=True):
+            if not staging['geral'].get('nome') or not staging['geral'].get('cpf'):
+                st.error("Nome e CPF são obrigatórios.")
+            else:
+                ok, msg = salvar_pf(
+                    staging['geral'], pd.DataFrame(staging['telefones']), pd.DataFrame(staging['emails']),
+                    pd.DataFrame(staging['enderecos']), pd.DataFrame(staging['empregos']), pd.DataFrame(), "novo"
+                )
+                if ok: st.success(msg); time.sleep(1); ir_para_lista(); st.rerun()
+                else: st.error(msg)
+
+    # --- FLUXO 2: EDITAR CADASTRO (Novo Fluxo Solicitado) ---
+    else:
+        # Carrega dados do DB apenas na primeira vez
+        if not st.session_state.get('form_loaded'):
+            st.session_state['dados_originais'] = carregar_dados_completos(cpf_alvo)
+            st.session_state['form_loaded'] = True
+            st.session_state['edit_cache'] = [] # Cache de alterações
+            st.session_state['grupo_em_edicao'] = None # Controle de bloqueio
+
+        dados = st.session_state['dados_originais']
+        g = dados.get('geral', {})
+        
+        # Header fixo
+        c_back, c_tit = st.columns([1, 5])
+        if c_back.button("⬅️ Voltar"): ir_para_lista(); st.rerun()
+        c_tit.markdown(f"### ✏️ Editar: {g.get('nome', 'Cliente')}")
+        st.info(f"CPF: {formatar_cpf_visual(g.get('cpf'))} (Não editável)")
+        
+        # Layout Split: Dados Atuais vs Alterações
+        col_dados, col_cache = st.columns(2)
+        
+        with col_dados:
+            st.markdown("#### 1. Selecione o Grupo")
+            opcoes_grupos = ["Dados Cadastrais", "Contatos", "Endereços", "Vínculos"]
+            
+            # Bloqueio de seleção se houver cache pendente de outro grupo
+            grupo_bloqueado = st.session_state.get('grupo_em_edicao')
+            idx_sel = 0
+            disabled_sel = False
+            
+            if grupo_bloqueado:
+                idx_sel = opcoes_grupos.index(grupo_bloqueado)
+                disabled_sel = True
+                st.warning(f"⚠️ Termine de confirmar as alterações de '{grupo_bloqueado}' antes de mudar.")
+            
+            grupo_selecionado = st.selectbox("Grupo de Dados:", opcoes_grupos, index=idx_sel, disabled=disabled_sel)
+            st.divider()
+            
+            # --- ÁREA DE INPUTS POR GRUPO ---
+            if grupo_selecionado == "Dados Cadastrais":
+                st.caption("Altere os dados nos campos abaixo:")
+                novos_dados_pessoais = {}
+                for campo in CONFIG_CADASTRO["Dados Cadastrais"]:
+                    key = campo['key']
+                    label = campo['label']
+                    val_atual = g.get(key, '')
+                    
+                    if key == 'cpf': continue # Pula CPF
+                    
+                    if campo['tipo'] == 'data':
+                        try: val_dt = datetime.strptime(str(val_atual), '%Y-%m-%d').date() if val_atual else None
+                        except: val_dt = None
+                        new_val = st.date_input(label, value=val_dt, format="DD/MM/YYYY", key=f"input_{key}")
+                    else:
+                        new_val = st.text_input(label, value=val_atual, key=f"input_{key}")
+                    
+                    if new_val != val_atual:
+                        novos_dados_pessoais[key] = new_val
+                
+                if st.button("Inserir Alteração", use_container_width=True):
+                    if novos_dados_pessoais:
+                        st.session_state['edit_cache'].append(novos_dados_pessoais)
+                        st.session_state['grupo_em_edicao'] = "Dados Cadastrais"
+                        st.rerun()
+                    else:
+                        st.info("Nenhuma mudança detectada nos campos.")
+
+            elif grupo_selecionado == "Contatos":
+                st.markdown("**Atuais:**")
+                for t in dados.get('telefones', []): st.text(f"📞 {formatar_telefone_visual(t['numero'])}")
+                for e in dados.get('emails', []): st.text(f"📧 {e['email']}")
+                
+                st.markdown("**Adicionar Novo:**")
+                tipo_ctt = st.radio("Tipo", ["Telefone", "E-mail"], horizontal=True)
+                val_ctt = st.text_input("Valor")
+                
+                if st.button("Inserir Contato", use_container_width=True):
+                    if val_ctt:
+                        item = {'telefone': val_ctt} if tipo_ctt == "Telefone" else {'email': val_ctt}
+                        st.session_state['edit_cache'].append(item)
+                        st.session_state['grupo_em_edicao'] = "Contatos"
                         st.rerun()
 
-    st.divider()
-    if st.button("💾 SALVAR DADOS", type="primary", use_container_width=True):
-        geral = staging['geral']
-        if not geral.get('nome') or not geral.get('cpf'):
-            st.error("Nome e CPF são obrigatórios.")
-        else:
-            cpf_orig = st.session_state.get('pf_cpf_selecionado') if is_edit else None
-            ok, msg = salvar_pf(
-                geral, 
-                pd.DataFrame(staging.get('telefones', [])), 
-                pd.DataFrame(staging.get('emails', [])), 
-                pd.DataFrame(staging.get('enderecos', [])), 
-                pd.DataFrame(staging.get('empregos', [])), 
-                pd.DataFrame(staging.get('contratos', [])),
-                modo="editar" if is_edit else "novo",
-                cpf_original=cpf_orig
-            )
-            if ok:
-                st.success(msg); time.sleep(1); ir_para_lista(); st.rerun()
-            else: st.error(msg)
+            elif grupo_selecionado == "Endereços":
+                st.markdown("**Atuais:**")
+                for end in dados.get('enderecos', []): st.text(f"🏠 {end.get('rua')} - {end.get('cidade')}")
+                
+                st.markdown("**Novo Endereço:**")
+                n_cep = st.text_input("CEP"); n_rua = st.text_input("Rua"); n_cid = st.text_input("Cidade"); n_uf = st.text_input("UF")
+                
+                if st.button("Inserir Endereço", use_container_width=True):
+                    if n_rua:
+                        st.session_state['edit_cache'].append({'cep': n_cep, 'rua': n_rua, 'cidade': n_cid, 'uf': n_uf})
+                        st.session_state['grupo_em_edicao'] = "Endereços"
+                        st.rerun()
 
-# --- TELA 3: VISUALIZAÇÃO (REFORMULADA - ÚNICA TELA) ---
+            elif grupo_selecionado == "Vínculos":
+                st.markdown("**Atuais:**")
+                for emp in dados.get('empregos', []): st.text(f"🏢 {emp.get('convenio')} | {emp.get('matricula')}")
+                
+                st.markdown("**Novo/Atualizar Vínculo:**")
+                v_conv = st.text_input("Convênio"); v_matr = st.text_input("Matrícula"); v_ext = st.text_input("Obs/Dados Extras")
+                
+                if st.button("Inserir Vínculo", use_container_width=True):
+                    if v_conv and v_matr:
+                        st.session_state['edit_cache'].append({'convenio': v_conv, 'matricula': v_matr, 'dados_extras': v_ext})
+                        st.session_state['grupo_em_edicao'] = "Vínculos"
+                        st.rerun()
+                    else: st.warning("Convênio e Matrícula obrigatórios.")
+
+        with col_cache:
+            st.markdown("#### 2. Dados para Alteração (Cache)")
+            if st.session_state['edit_cache']:
+                st.success(f"Alterações Pendentes: {len(st.session_state['edit_cache'])}")
+                st.write(st.session_state['edit_cache'])
+                
+                c_conf, c_limp = st.columns([2, 1])
+                if c_conf.button("✅ Confirmar Alterações", type="primary", use_container_width=True):
+                    ok, msg = salvar_edicao_parcial(cpf_alvo, st.session_state['grupo_em_edicao'], st.session_state['edit_cache'])
+                    if ok:
+                        st.success(msg)
+                        st.session_state['edit_cache'] = []
+                        st.session_state['grupo_em_edicao'] = None
+                        st.session_state['form_loaded'] = False # Força recarga dos dados originais
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                
+                if c_limp.button("Limpar Cache"):
+                    st.session_state['edit_cache'] = []
+                    st.session_state['grupo_em_edicao'] = None
+                    st.rerun()
+            else:
+                st.info("Nenhuma alteração pendente.")
+
+# --- TELA 3: VISUALIZAÇÃO ---
 def view_detalhes_cliente():
     cpf = st.session_state.get('pf_cpf_selecionado')
     if st.button("⬅️ Voltar"): ir_para_lista(); st.rerun()
@@ -604,7 +744,6 @@ def view_detalhes_cliente():
     dados = carregar_dados_completos(cpf)
     g = dados.get('geral', {})
     
-    # 1. Header
     st.markdown(f"### 👤 {g.get('nome', 'Sem Nome')}")
     st.markdown(f"**CPF:** {formatar_cpf_visual(g.get('cpf'))}")
     st.divider()
