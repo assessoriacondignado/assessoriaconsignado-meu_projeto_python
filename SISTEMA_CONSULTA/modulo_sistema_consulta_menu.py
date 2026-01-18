@@ -22,17 +22,18 @@ def importar_modulo_interno(nome_modulo):
         st.error(f"Erro ao carregar {nome_modulo}: {e}")
         return None
 
-# Tenta importar os módulos funcionais (que criaremos nos próximos passos)
+# Tenta importar os módulos funcionais
 modulo_cadastro = importar_modulo_interno("modulo_sistema_consulta_cadastro")
 modulo_planilhas = importar_modulo_interno("modulo_sistema_consulta_planilhas")
 modulo_crm = importar_modulo_interno("modulo_sistema_consulta_crm")
+modulo_importacao = importar_modulo_interno("modulo_sistema_consulta_importacao") # Novo Módulo
 
 def app_sistema_consulta():
     st.markdown("## 👥 CRM CONSULTA")
 
     # --- MENU SUPERIOR (Conforme DOC ) ---
     # Opções do menu baseadas no e layout 
-    menu_opcoes = ["Cadastro / Pesquisa", "Planilhas (Tabelas)", "CRM / Gestão"]
+    menu_opcoes = ["Cadastro / Pesquisa", "Planilhas (Tabelas)", "CRM / Gestão", "Importação"]
     
     # Armazena a escolha no session_state para persistência durante a navegação
     if 'menu_consulta_selecionado' not in st.session_state:
@@ -57,7 +58,6 @@ def app_sistema_consulta():
             modulo_cadastro.app_cadastro()
         else:
             st.warning("⚠️ Módulo 'Cadastro' (modulo_sistema_consulta_cadastro.py) não encontrado ou em construção.")
-            st.info("O próximo passo é criar este arquivo.")
 
     elif escolha == "Planilhas (Tabelas)":
         if modulo_planilhas:
@@ -70,6 +70,12 @@ def app_sistema_consulta():
             modulo_crm.app_crm()
         else:
             st.warning("⚠️ Módulo 'CRM' (modulo_sistema_consulta_crm.py) não encontrado.")
+
+    elif escolha == "Importação":
+        if modulo_importacao:
+            modulo_importacao.tela_importacao()
+        else:
+            st.warning("⚠️ Módulo 'Importação' (modulo_sistema_consulta_importacao.py) não encontrado.")
 
 # Bloco para teste individual do módulo
 if __name__ == "__main__":
