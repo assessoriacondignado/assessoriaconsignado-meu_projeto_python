@@ -354,9 +354,8 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     if 'modo_edicao' not in st.session_state:
         st.session_state['modo_edicao'] = False
 
-    col_back, col_space, col_view, col_edit, col_del = st.columns([1.5, 3, 1.5, 1.5, 1.5])
-    
-    if col_back.button("⬅️ Voltar"):
+    # --- BOTÃO VOLTAR (TOPO) ---
+    if st.button("⬅️ Voltar"):
         st.session_state['cliente_ativo_cpf'] = None
         st.session_state['modo_visualizacao'] = None
         st.session_state['modo_edicao'] = False
@@ -387,24 +386,34 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     dados = carregar_dados_cliente_completo(cpf)
     pessoal = dados.get('pessoal', {})
     
-    with col_view:
-        if st.session_state['modo_edicao']:
-             if st.button("👁️ Exibir", help="Sair do modo edição"):
-                 st.session_state['modo_edicao'] = False
-                 st.rerun()
+    # --- LAYOUT CABEÇALHO (NOME + BOTÕES LADO A LADO) ---
+    c_head_nome, c_head_btns = st.columns([0.6, 0.4])
     
-    with col_edit:
-        if not st.session_state['modo_edicao']:
-            if st.button("✏️ Editar", type="secondary"):
-                st.session_state['modo_edicao'] = True
-                st.rerun()
-    
-    with col_del:
-        if st.button("🗑️ Excluir", type="primary"):
-            modal_confirmar_exclusao(cpf)
+    with c_head_nome:
+        st.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
+        st.markdown(f"**CPF:** {pessoal.get('cpf', '')} {'🔒 (Não editável)' if st.session_state['modo_edicao'] else ''}")
 
-    st.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
-    st.markdown(f"**CPF:** {pessoal.get('cpf', '')} {'🔒 (Não editável)' if st.session_state['modo_edicao'] else ''}")
+    with c_head_btns:
+        st.write("") # Espaçamento
+        st.write("") 
+        c_btn_edit, c_btn_del = st.columns(2)
+        
+        with c_btn_edit:
+            if st.session_state['modo_edicao']:
+                 if st.button("👁️ Exibir", help="Sair do modo edição", use_container_width=True):
+                     st.session_state['modo_edicao'] = False
+                     st.rerun()
+            else:
+                # TYPE PRIMARY (Vermelho/Destaque)
+                if st.button("✏️ Editar", type="primary", use_container_width=True):
+                    st.session_state['modo_edicao'] = True
+                    st.rerun()
+        
+        with c_btn_del:
+            # TYPE PRIMARY (Vermelho/Destaque)
+            if st.button("🗑️ Excluir", type="primary", use_container_width=True):
+                modal_confirmar_exclusao(cpf)
+
     st.divider()
 
     # --- CONTAINER ISOLADO (FIX RENDERIZAÇÃO) ---
