@@ -478,84 +478,76 @@ def tela_pesquisa():
                 st.session_state['resultados_pesquisa'] = resultados
                 if not resultados: st.warning("Nenhum cliente localizado.")
 
-    # --- TAB 2: PESQUISA COMPLETA (CORRIGIDO) ---
+    # --- TAB 2: PESQUISA COMPLETA (LAYOUT 3 PARTES) ---
     with tab2:
-        # 1. SELEÇÃO DE COLUNAS
-        for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
-            with st.expander(f"📂 {grupo}", expanded=False):
-                cols_layout = st.columns(3)
-                for i, (nome_campo, config) in enumerate(campos.items()):
-                    # CRIA CHECKBOX COM CHAVE ÚNICA (O estado é persistido automaticamente no session_state pelo 'key')
-                    cols_layout[i % 3].checkbox(nome_campo, key=f"chk_col_{config['col']}_{i}")
-
-        st.divider()
-
-        col_filtros, col_resultados = st.columns([1.2, 2.5])
+        # PARTE 1: ÁREA SUPERIOR (SELEÇÃO + FILTROS)
+        # 40% Esquerda (Seleção) | 60% Direita (Filtros)
+        col_selecao, col_filtros = st.columns([2, 3])
+        
         filtros_para_query = []
 
+        # --- ESQUERDA: COLUNAS PARA SELECIONAR ---
+        with col_selecao:
+            st.markdown("##### 📂 Selecionar Colunas")
+            for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
+                with st.expander(f"{grupo}", expanded=False):
+                    # Layout de 2 colunas para checkboxes ficar melhor em espaço reduzido
+                    cols_chk = st.columns(2)
+                    for i, (nome_campo, config) in enumerate(campos.items()):
+                        # Checkbox com state nativo
+                        cols_chk[i % 2].checkbox(nome_campo, key=f"chk_col_{config['col']}_{i}")
+
+        # --- DIREITA: LOCAL PARA APLICAR O FILTRO ---
         with col_filtros:
-            # --- ÁREA DE FILTROS (LARANJA) ---
-            with st.warning("🌪️ Filtros Ativos"):
-                
+            # Container Laranja
+            with st.warning("🌪️ Filtros Ativos (Configure abaixo)"):
                 count_ativos = 0
                 
-                # RE-ITERA PARA VERIFICAR O QUE ESTÁ MARCADO
+                # Itera para renderizar inputs dos selecionados
                 for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        
-                        # Verifica se a chave do checkbox está True no session_state
                         chave_chk = f"chk_col_{config['col']}_{i}"
+                        
                         if st.session_state.get(chave_chk, False):
                             count_ativos += 1
                             st.markdown(f"**{nome_campo}**")
                             
-                            # --- RENDERIZA O INPUT DE FILTRO ---
+                            # Opções
                             tipo_ops = 'texto'
                             if config['tipo'] == 'data': tipo_ops = 'data'
                             elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
                             elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
                             opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
-                            
-                            # Chaves únicas para inputs de filtro
                             op_key = f"op_input_{config['col']}_{i}"
                             val_key = f"val_input_{config['col']}_{i}"
                             
-                            operador_escolhido = st.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
-                            desc_op = OPERADORES_SQL[tipo_ops][operador_escolhido]['desc']
-                            st.caption(f"ℹ️ {desc_op}")
-
+                            c_op, c_val = st.columns([1.5, 2.5])
+                            
+                            operador_escolhido = c_op.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
                             sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
+                            
                             valor_final = None
                             
-                            # Lógica de Vazio
+                            # Renderiza Input
                             if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
-                                valor_final = "ignore" 
-                            
-                            # Lógica Data
+                                c_val.info("Sem valor necessário")
+                                valor_final = "ignore"
                             elif config['tipo'] == 'data':
-                                c_d1, c_d2 = st.columns(2)
-                                d1 = c_d1.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY")
-                                d2 = c_d2.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY")
-                                if d1 and d2: valor_final = [converter_data_iso(d1), converter_data_iso(d2)]
-                                elif d1: valor_final = [converter_data_iso(d1), converter_data_iso(d1)]
-                            
-                            # Lógica Idade
+                                d1 = c_val.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY")
+                                d2 = c_val.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY")
+                                if d1: valor_final = [converter_data_iso(d1), converter_data_iso(d2) if d2 else converter_data_iso(d1)]
                             elif config['tipo'] == 'numero_calculado':
                                 if operador_escolhido == "Entre (><)":
-                                    c_n1, c_n2 = st.columns(2)
-                                    n1 = c_n1.number_input("De", step=1, key=f"n1_{val_key}")
-                                    n2 = c_n2.number_input("Até", step=1, key=f"n2_{val_key}")
+                                    n1 = c_val.number_input("De", step=1, key=f"n1_{val_key}")
+                                    n2 = c_val.number_input("Até", step=1, key=f"n2_{val_key}")
                                     valor_final = [n1, n2]
                                 else:
-                                    valor_final = st.number_input("Valor", step=1, key=f"num_{val_key}")
-                            
-                            # Lógica Texto
+                                    valor_final = c_val.number_input("Valor", step=1, key=f"num_{val_key}")
                             else:
-                                valor_input = st.text_input("Valor", key=f"txt_{val_key}", placeholder="Ex: joao;maria")
+                                valor_input = c_val.text_input("Valor", key=f"txt_{val_key}", placeholder="Ex: maria;joao")
                                 if valor_input: valor_final = valor_input
 
-                            # Adiciona à lista de filtros se válido
                             if valor_final is not None:
                                 filtros_para_query.append({
                                     'col': config['col'],
@@ -568,23 +560,29 @@ def tela_pesquisa():
                             st.divider()
 
                 if count_ativos == 0:
-                    st.info("Nenhuma coluna selecionada.")
-
-                if filtros_para_query or any("IS NULL" in f['op'] for f in filtros_para_query):
-                    if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
+                    st.caption("Selecione campos na esquerda para filtrar.")
+                
+                # Botão de Pesquisa dentro da área de filtros
+                if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
+                    if filtros_para_query or any("IS NULL" in f['op'] for f in filtros_para_query):
                         res_completa = buscar_cliente_dinamica(filtros_para_query)
                         st.session_state['resultados_pesquisa'] = res_completa
                         if not res_completa:
-                            st.warning("Nenhum registro encontrado.")
+                            st.toast("Nenhum registro encontrado.", icon="⚠️")
+                    else:
+                        st.warning("Configure pelo menos um filtro.")
 
-        # 3. RESULTADOS
-        with col_resultados:
+        # PARTE 2: PARTE DE BAIXO (RESULTADOS)
+        st.divider()
+        with st.container():
             if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
-                st.markdown(f"### 📋 Resultados: {len(st.session_state['resultados_pesquisa'])}")
+                st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
+                
+                # Cabeçalho da Tabela
                 cols_head = st.columns([1, 4, 2, 2, 1])
                 cols_head[0].write("**ID**"); cols_head[1].write("**Nome**"); cols_head[2].write("**CPF**"); cols_head[3].write("**RG**"); cols_head[4].write("**Ação**")
-                st.divider()
-
+                
+                # Linhas
                 for row in st.session_state['resultados_pesquisa']:
                     c = st.columns([1, 4, 2, 2, 1])
                     c[0].write(str(row[0]))
