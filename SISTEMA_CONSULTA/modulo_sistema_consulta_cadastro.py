@@ -468,15 +468,25 @@ def tela_pesquisa():
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
-        c1, c2 = st.columns([4, 1])
-        termo = c1.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João")
-        if c2.button("Pesquisar", use_container_width=True):
+        # Layout Ajustado (Input menor e botões alinhados à esquerda)
+        c_input, c_btn_search, c_btn_new, c_space = st.columns([3, 1.5, 2, 3.5])
+        
+        termo = c_input.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João", label_visibility="collapsed")
+        
+        # Botão Pesquisar (Vermelho/Primary)
+        if c_btn_search.button("🔍 Pesquisar", type="primary", use_container_width=True):
             if len(termo) < 3:
                 st.warning("Digite min. 3 caracteres.")
             else:
                 resultados = buscar_cliente_rapida(termo)
                 st.session_state['resultados_pesquisa'] = resultados
                 if not resultados: st.warning("Nenhum cliente localizado.")
+        
+        # Botão Novo Cadastro (Vermelho/Primary) - Ao lado do pesquisar
+        if c_btn_new.button("➕ Novo Cadastro", type="primary", use_container_width=True):
+            st.session_state['cliente_ativo_cpf'] = None
+            st.session_state['modo_visualizacao'] = 'novo'
+            st.rerun()
 
     # --- TAB 2: PESQUISA COMPLETA (LAYOUT VERTICAL ÚNICO) ---
     with tab2:
@@ -581,27 +591,26 @@ def tela_pesquisa():
             st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
             
             # Cabeçalho da Tabela
-            cols_head = st.columns([1, 4, 2, 2, 1])
-            cols_head[0].write("**ID**"); cols_head[1].write("**Nome**"); cols_head[2].write("**CPF**"); cols_head[3].write("**RG**"); cols_head[4].write("**Ação**")
+            # Colunas: ID, Nome, CPF, Ação (RG removido)
+            cols_head = st.columns([1, 4, 3, 2])
+            cols_head[0].write("**ID**")
+            cols_head[1].write("**Nome**")
+            cols_head[2].write("**CPF**")
+            cols_head[3].write("**Ação**")
             
             # Linhas
             for row in st.session_state['resultados_pesquisa']:
-                c = st.columns([1, 4, 2, 2, 1])
-                c[0].write(str(row[0]))
-                c[1].write(row[1])
-                c[2].write(row[2])
-                c[3].write(row[3])
-                if c[4].button("🔎", key=f"btn_res_{row[0]}"):
+                c = st.columns([1, 4, 3, 2])
+                c[0].write(str(row[0])) # ID
+                c[1].write(row[1])      # Nome
+                c[2].write(row[2])      # CPF
+                
+                # Ação (Visualizar)
+                if c[3].button("🔎 Abrir", key=f"btn_res_{row[0]}", use_container_width=True):
                     st.session_state['cliente_ativo_cpf'] = row[2]
                     st.session_state['modo_visualizacao'] = 'visualizar'
                     st.session_state['modo_edicao'] = False
                     st.rerun()
-
-    st.divider()
-    if st.button("➕ NOVO CADASTRO", type="primary"):
-        st.session_state['cliente_ativo_cpf'] = None
-        st.session_state['modo_visualizacao'] = 'novo'
-        st.rerun()
 
 def tela_ficha_cliente(cpf, modo='visualizar'):
     if 'modo_edicao' not in st.session_state:
