@@ -494,8 +494,10 @@ def tela_pesquisa():
                     # Layout de 2 colunas para checkboxes ficar melhor em espaço reduzido
                     cols_chk = st.columns(2)
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        # Checkbox com state nativo
-                        cols_chk[i % 2].checkbox(nome_campo, key=f"chk_col_{config['col']}_{i}")
+                        # Checkbox com state nativo, USANDO CHAVE SEGURA
+                        # Alteração: removido o índice 'i' da chave para evitar conflito
+                        safe_key = f"chk_{config['col']}".replace(".", "_").replace(" ", "_")
+                        cols_chk[i % 2].checkbox(nome_campo, key=safe_key)
 
         # --- DIREITA: LOCAL PARA APLICAR O FILTRO ---
         with col_filtros:
@@ -506,9 +508,10 @@ def tela_pesquisa():
                 # Itera para renderizar inputs dos selecionados
                 for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        chave_chk = f"chk_col_{config['col']}_{i}"
+                        # Alteração: usando a mesma chave segura da esquerda
+                        safe_key = f"chk_{config['col']}".replace(".", "_").replace(" ", "_")
                         
-                        if st.session_state.get(chave_chk, False):
+                        if st.session_state.get(safe_key, False):
                             count_ativos += 1
                             st.markdown(f"**{nome_campo}**")
                             
@@ -519,8 +522,9 @@ def tela_pesquisa():
                             elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
                             opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
-                            op_key = f"op_input_{config['col']}_{i}"
-                            val_key = f"val_input_{config['col']}_{i}"
+                            # Chave única também para os inputs
+                            op_key = f"op_input_{safe_key}"
+                            val_key = f"val_input_{safe_key}"
                             
                             c_op, c_val = st.columns([1.5, 2.5])
                             
@@ -652,8 +656,8 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         with c_btn_edit:
             if st.session_state['modo_edicao']:
                  if st.button("👁️ Exibir", help="Sair do modo edição", use_container_width=True):
-                     st.session_state['modo_edicao'] = False
-                     st.rerun()
+                      st.session_state['modo_edicao'] = False
+                      st.rerun()
             else:
                 if st.button("✏️ Editar", type="primary", use_container_width=True):
                     st.session_state['modo_edicao'] = True
