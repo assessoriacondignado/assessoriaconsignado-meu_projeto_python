@@ -12,36 +12,49 @@ except ImportError:
 
 # --- CONSTANTES E CONFIGURAÇÕES DE PESQUISA ---
 
-# Mapeamento de Nome Visual -> Coluna no Banco e Tipo de Dado
+# Mapeamento de Nome Visual -> Coluna/Tabela e Tipo de Dado
 MAPA_CAMPOS_PESQUISA = {
     "Dados Pessoais": {
-        "Nome do Cliente": {"col": "nome", "tipo": "texto"},
-        "CPF": {"col": "cpf", "tipo": "texto"},
-        "RG (Identidade)": {"col": "identidade", "tipo": "texto"},
-        "Data de Nascimento": {"col": "data_nascimento", "tipo": "data"},
-        "Sexo": {"col": "sexo", "tipo": "texto"},
+        "Nome do Cliente": {"col": "t.nome", "tipo": "texto"},
+        "CPF": {"col": "t.cpf", "tipo": "texto"},
+        "RG (Identidade)": {"col": "t.identidade", "tipo": "texto"},
+        "Data de Nascimento": {"col": "t.data_nascimento", "tipo": "data"},
+        "Idade": {"col": "age(t.data_nascimento)", "tipo": "numero_calculado"}, # Calculado via SQL
+        "Sexo": {"col": "t.sexo", "tipo": "texto"},
+    },
+    "Contatos e Endereço": {
+        "Telefone": {"col": "tel.telefone", "table": "sistema_consulta_dados_cadastrais_telefone", "alias": "tel", "tipo": "texto_vinculado"},
+        "E-mail": {"col": "mail.email", "table": "sistema_consulta_dados_cadastrais_email", "alias": "mail", "tipo": "texto_vinculado"},
+        "Endereço (Rua/Cidade)": {"col": "endr", "table": "sistema_consulta_dados_cadastrais_endereco", "alias": "endr", "tipo": "endereco_vinculado"},
     },
     "Filiação e Outros": {
-        "Nome da Mãe": {"col": "nome_mae", "tipo": "texto"},
-        "Título de Eleitor": {"col": "titulo_eleitoral", "tipo": "texto"},
-        "CNH": {"col": "cnh", "tipo": "texto"},
+        "Nome da Mãe": {"col": "t.nome_mae", "tipo": "texto"},
+        "Título de Eleitor": {"col": "t.titulo_eleitoral", "tipo": "texto"},
+        "CNH": {"col": "t.cnh", "tipo": "texto"},
     }
 }
 
 # Operadores com Símbolos e SQL correspondente
 OPERADORES_SQL = {
     "texto": {
-        "Contém (..aa..)": {"sql": "ILIKE", "mask": "%{}%", "desc": "Contém o texto digitado"},
+        "Contém (..aa..)": {"sql": "ILIKE", "mask": "%{}%", "desc": "Contém o texto"},
         "Igual (=)": {"sql": "=", "mask": "{}", "desc": "Exatamente igual"},
         "Começa com (^aa)": {"sql": "ILIKE", "mask": "{}%", "desc": "Começa com..."},
         "Termina com (aa$)": {"sql": "ILIKE", "mask": "%{}", "desc": "Termina com..."},
-        "Diferente (!=)": {"sql": "!=", "mask": "{}", "desc": "Não é igual a"}
+        "Diferente (!=)": {"sql": "!=", "mask": "{}", "desc": "Não é igual a"},
+        "Vazio (Ø)": {"sql": "IS NULL", "mask": "", "desc": "Campo está vazio"},
+        "Não Vazio": {"sql": "IS NOT NULL", "mask": "", "desc": "Campo preenchido"}
     },
     "data": {
+        "Entre Datas (><)": {"sql": "BETWEEN", "mask": "{}", "desc": "Intervalo de datas"},
         "Igual (=)": {"sql": "=", "mask": "{}", "desc": "Data exata"},
-        "Maior que (>)": {"sql": ">", "mask": "{}", "desc": "Depois de..."},
-        "Menor que (<)": {"sql": "<", "mask": "{}", "desc": "Antes de..."},
-        "Entre (><)": {"sql": "BETWEEN", "mask": "{}", "desc": "Entre datas (use ; para separar)"} 
+        "Vazio (Ø)": {"sql": "IS NULL", "mask": "", "desc": "Sem data"}
+    },
+    "numero": {
+        "Igual (=)": {"sql": "=", "mask": "{}", "desc": "Igual a"},
+        "Maior que (>)": {"sql": ">", "mask": "{}", "desc": "Maior que"},
+        "Menor que (<)": {"sql": "<", "mask": "{}", "desc": "Menor que"},
+        "Entre (><)": {"sql": "BETWEEN", "mask": "{}", "desc": "Faixa de valores"}
     }
 }
 
@@ -55,12 +68,11 @@ def limpar_texto(valor):
         return ""
     return s_valor
 
-def converter_data_br_iso(data_str):
-    """Tenta converter DD/MM/YYYY para YYYY-MM-DD"""
-    try:
-        return datetime.strptime(data_str.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
-    except:
-        return data_str # Retorna original se falhar (deixa o banco tentar tratar ou falhar na query)
+def converter_data_iso(data_obj):
+    """Garante formato YYYY-MM-DD para SQL"""
+    if isinstance(data_obj, (date, datetime)):
+        return data_obj.strftime("%Y-%m-%d")
+    return str(data_obj)
 
 # --- FUNÇÕES DE BANCO DE DADOS ---
 
@@ -104,60 +116,106 @@ def buscar_cliente_rapida(termo):
 
 def buscar_cliente_dinamica(filtros_aplicados):
     """
-    Constrói query dinâmica baseada nos filtros.
-    filtros_aplicados = [{'col': 'nome', 'op': 'ILIKE', 'val': 'joao;maria', 'mask': '%{}%', 'tipo': 'texto'}, ...]
+    Constrói query dinâmica com JOINs e Subqueries conforme necessário.
     """
     conn = get_db_connection()
     if not conn: return []
 
-    base_query = "SELECT id, nome, cpf, identidade FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE 1=1 "
+    # Query Base (Alias t para a tabela principal)
+    base_query = """
+        SELECT DISTINCT t.id, t.nome, t.cpf, t.identidade 
+        FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
+    """
+    
+    # Cláusulas WHERE
+    where_clauses = ["1=1"]
     params = []
 
     for filtro in filtros_aplicados:
         coluna = filtro['col']
         operador_sql = filtro['op']
-        valores_raw = filtro['val'].split(';') # Regra 1.2: Split por ;
-        mascara = filtro['mask']
         tipo_dado = filtro['tipo']
-
-        # Monta cláusula OR para múltiplos valores (ex: nome contem maria OR nome contem joao)
-        clausulas_or = []
         
-        for v in valores_raw:
-            v = v.strip()
-            if not v: continue
+        # Tratamento especial para tabelas vinculadas (EXISTS)
+        if tipo_dado in ['texto_vinculado', 'endereco_vinculado']:
+            tabela_satelite = filtro['table']
             
-            # Tratamento de Data
-            if tipo_dado == 'data':
-                v = converter_data_br_iso(v)
+            # Subquery baseada no tipo
+            if tipo_dado == 'texto_vinculado': # Telefone, Email
+                sub_where = f"{coluna} {operador_sql} %s"
+                val_final = filtro['mask'].format(filtro['val']) if '{}' in filtro['mask'] else filtro['val']
+                
+                # Vazio
+                if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
+                     exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {coluna} {operador_sql})"
+                     where_clauses.append(exists_clause)
+                else:
+                    # Busca normal
+                    exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {sub_where})"
+                    where_clauses.append(exists_clause)
+                    params.append(val_final)
 
-            if operador_sql == "BETWEEN":
-                # Lógica especial para Between (espera 2 datas separadas por algo, mas aqui o ; separa valores do filtro)
-                # Para simplificar na regra do ; vamos assumir que Between não suporta múltiplos intervalos nesta versão simples,
-                # ou que o usuario digitou "data1" e o sistema espera "data2" em outro lugar. 
-                # AJUSTE: Se for BETWEEN, pegamos os 2 primeiros valores do split se existirem
-                if len(valores_raw) >= 2:
-                    clausulas_or.append(f"{coluna} BETWEEN %s AND %s")
-                    params.append(converter_data_br_iso(valores_raw[0]))
-                    params.append(converter_data_br_iso(valores_raw[1]))
-                    break # Between consome tudo
+            elif tipo_dado == 'endereco_vinculado':
+                # Busca em Rua OU Cidade OU UF
+                val_final = f"%{filtro['val']}%"
+                if "IS NULL" in operador_sql:
+                     where_clauses.append(f"NOT EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf)")
+                elif "IS NOT NULL" in operador_sql:
+                     where_clauses.append(f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf)")
+                else:
+                    exists_clause = f"""
+                        EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} 
+                        WHERE cpf = t.cpf AND (rua ILIKE %s OR cidade ILIKE %s))
+                    """
+                    where_clauses.append(exists_clause)
+                    params.append(val_final)
+                    params.append(val_final)
+
+        elif tipo_dado == 'numero_calculado': # Idade
+            # Extract Year from Age
+            if operador_sql == 'BETWEEN':
+                where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) BETWEEN %s AND %s")
+                params.append(filtro['val'][0]) # Min
+                params.append(filtro['val'][1]) # Max
             else:
-                # Padrão
-                clausulas_or.append(f"{coluna} {operador_sql} %s")
-                valor_final = mascara.format(v) if '{}' in mascara else v
-                params.append(valor_final)
-        
-        if clausulas_or:
-            base_query += f" AND ({' OR '.join(clausulas_or)})"
+                where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) {operador_sql} %s")
+                params.append(filtro['val'])
 
-    base_query += " LIMIT 50" # Limite de segurança
+        else: # Campos normais da tabela principal (Texto ou Data)
+            if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
+                # Tratamento para Vazio (Null ou String Vazia)
+                if "NOT" in operador_sql:
+                    where_clauses.append(f"({coluna} IS NOT NULL AND {coluna} != '')")
+                else:
+                    where_clauses.append(f"({coluna} IS NULL OR {coluna} = '')")
+            
+            elif operador_sql == 'BETWEEN' and tipo_dado == 'data':
+                where_clauses.append(f"{coluna} BETWEEN %s AND %s")
+                params.append(filtro['val'][0]) # Data Ini
+                params.append(filtro['val'][1]) # Data Fim
+            
+            else:
+                # Texto com ; (OR)
+                valores = str(filtro['val']).split(';')
+                ors = []
+                for v in valores:
+                    v = v.strip()
+                    if v:
+                        ors.append(f"{coluna} {operador_sql} %s")
+                        val_final = filtro['mask'].format(v) if '{}' in filtro['mask'] else v
+                        params.append(val_final)
+                
+                if ors:
+                    where_clauses.append(f"({' OR '.join(ors)})")
+
+    full_query = f"{base_query} WHERE {' AND '.join(where_clauses)} LIMIT 50"
 
     try:
         with conn.cursor() as cur:
-            cur.execute(base_query, tuple(params))
+            cur.execute(full_query, tuple(params))
             return cur.fetchall()
     except Exception as e:
-        st.error(f"Erro na pesquisa SQL: {e}")
+        st.error(f"Erro SQL: {e}")
         return []
     finally:
         conn.close()
@@ -402,13 +460,11 @@ def modal_confirmar_exclusao(cpf):
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
     
-    # Gerencia seleção de campos na sessão
     if 'campos_selecionados_pesquisa' not in st.session_state:
         st.session_state['campos_selecionados_pesquisa'] = []
 
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
-    # --- TAB 1: PESQUISA RÁPIDA (Mantida) ---
     with tab1:
         c1, c2 = st.columns([4, 1])
         termo = c1.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João")
@@ -420,17 +476,14 @@ def tela_pesquisa():
                 st.session_state['resultados_pesquisa'] = resultados
                 if not resultados: st.warning("Nenhum cliente localizado.")
 
-    # --- TAB 2: PESQUISA COMPLETA (Nova Implementação) ---
+    # --- TAB 2: PESQUISA COMPLETA ---
     with tab2:
-        st.caption("Selecione as colunas abaixo para habilitar os filtros na lateral.")
-        
-        # 1. SELEÇÃO DE COLUNAS (Expansores)
+        # 1. SELEÇÃO DE COLUNAS
         for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
             with st.expander(f"📂 {grupo}", expanded=False):
                 cols_layout = st.columns(3)
                 for i, (nome_campo, config) in enumerate(campos.items()):
-                    # Checkbox para ativar o campo
-                    if cols_layout[i % 3].checkbox(nome_campo, key=f"chk_{config['col']}"):
+                    if cols_layout[i % 3].checkbox(nome_campo, key=f"chk_{nome_campo}"):
                         if nome_campo not in st.session_state['campos_selecionados_pesquisa']:
                             st.session_state['campos_selecionados_pesquisa'].append(nome_campo)
                     else:
@@ -439,74 +492,101 @@ def tela_pesquisa():
 
         st.divider()
 
-        # 2. ÁREA DE FILTROS E RESULTADOS (Layout Colunas)
-        col_filtros, col_resultados = st.columns([1, 2.5])
-        
+        col_filtros, col_resultados = st.columns([1.2, 2.5]) # Ajuste largura
         filtros_para_query = []
 
         with col_filtros:
-            st.markdown("##### 🌪️ Filtros Ativos")
-            if not st.session_state['campos_selecionados_pesquisa']:
-                st.info("Nenhuma coluna selecionada.")
-            
-            # Gera os inputs baseados na seleção
-            for nome_campo in st.session_state['campos_selecionados_pesquisa']:
-                # Encontra configuração do campo
-                config_campo = None
-                for grp in MAPA_CAMPOS_PESQUISA.values():
-                    if nome_campo in grp:
-                        config_campo = grp[nome_campo]
-                        break
+            # --- ÁREA LARANJA CLARO ---
+            with st.warning("🌪️ Filtros Ativos"): # Container Laranja nativo
+                if not st.session_state['campos_selecionados_pesquisa']:
+                    st.info("Nenhuma coluna selecionada.")
                 
-                if config_campo:
-                    st.markdown(f"**{nome_campo}**")
-                    tipo_dado = config_campo['tipo']
-                    opcoes_ops = list(OPERADORES_SQL[tipo_dado].keys())
+                for nome_campo in st.session_state['campos_selecionados_pesquisa']:
+                    # Encontra configuração
+                    config_campo = None
+                    for grp in MAPA_CAMPOS_PESQUISA.values():
+                        if nome_campo in grp:
+                            config_campo = grp[nome_campo]
+                            break
                     
-                    c_op, c_val = st.columns([1.5, 2.5])
-                    operador_escolhido = c_op.selectbox(
-                        "Op", opcoes_ops, key=f"op_{config_campo['col']}", 
-                        help="Selecione o operador lógico"
-                    )
-                    
-                    # Tooltip do operador selecionado
-                    desc_op = OPERADORES_SQL[tipo_dado][operador_escolhido]['desc']
-                    c_op.caption(f"ℹ️ {desc_op}")
+                    if config_campo:
+                        st.markdown(f"**{nome_campo}**")
+                        
+                        # Definição do Tipo de Operador
+                        tipo_ops = 'texto'
+                        if config_campo['tipo'] == 'data': tipo_ops = 'data'
+                        elif config_campo['tipo'] == 'numero_calculado': tipo_ops = 'numero'
+                        elif config_campo['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
-                    valor_input = c_val.text_input(
-                        "Valor", key=f"val_{config_campo['col']}",
-                        placeholder="Ex: joao;maria" if tipo_dado == 'texto' else "DD/MM/YYYY"
-                    )
+                        opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
+                        
+                        # Layout Operador
+                        operador_escolhido = st.selectbox("Op", opcoes_ops, key=f"op_{nome_campo}", label_visibility="collapsed")
+                        desc_op = OPERADORES_SQL[tipo_ops][operador_escolhido]['desc']
+                        st.caption(f"ℹ️ {desc_op}")
 
-                    if valor_input:
-                        op_config = OPERADORES_SQL[tipo_dado][operador_escolhido]
-                        filtros_para_query.append({
-                            'col': config_campo['col'],
-                            'op': op_config['sql'],
-                            'mask': op_config['mask'],
-                            'val': valor_input,
-                            'tipo': tipo_dado
-                        })
-                    st.divider()
+                        # Inputs de Valor
+                        sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
+                        
+                        # Logica para campos vazios
+                        if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
+                            valor_final = None # Não precisa de valor
+                        
+                        # Lógica para DATAS (Intervalo)
+                        elif config_campo['tipo'] == 'data':
+                            c_d1, c_d2 = st.columns(2)
+                            d1 = c_d1.date_input("De", value=None, key=f"d1_{nome_campo}", format="DD/MM/YYYY")
+                            d2 = c_d2.date_input("Até", value=None, key=f"d2_{nome_campo}", format="DD/MM/YYYY")
+                            if d1 and d2:
+                                valor_final = [converter_data_iso(d1), converter_data_iso(d2)]
+                            elif d1: # Se só preencher um, considera igual ou maior
+                                valor_final = [converter_data_iso(d1), converter_data_iso(d1)] 
+                            else:
+                                valor_final = None
 
-            if filtros_para_query:
-                if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
-                    res_completa = buscar_cliente_dinamica(filtros_para_query)
-                    st.session_state['resultados_pesquisa'] = res_completa
-                    if not res_completa:
-                        st.warning("Nenhum registro encontrado com esses critérios.")
+                        # Lógica para IDADE (Número)
+                        elif config_campo['tipo'] == 'numero_calculado':
+                            if operador_escolhido == "Entre (><)":
+                                c_n1, c_n2 = st.columns(2)
+                                n1 = c_n1.number_input("De", step=1, key=f"n1_{nome_campo}")
+                                n2 = c_n2.number_input("Até", step=1, key=f"n2_{nome_campo}")
+                                valor_final = [n1, n2]
+                            else:
+                                valor_final = st.number_input("Valor", step=1, key=f"n_val_{nome_campo}")
 
-        # 3. EXIBIÇÃO DE RESULTADOS (Compartilhada)
+                        # Lógica Padrão (Texto)
+                        else:
+                            valor_input = st.text_input("Valor", key=f"val_{nome_campo}", placeholder="Ex: joao;maria")
+                            valor_final = valor_input
+
+                        # Adiciona ao filtro se valido
+                        # Se for operador de Vazio, adiciona mesmo sem valor
+                        if valor_final is not None or "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
+                            filtros_para_query.append({
+                                'col': config_campo['col'],
+                                'op': sql_op_code,
+                                'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
+                                'val': valor_final,
+                                'tipo': config_campo['tipo'],
+                                'table': config_campo.get('table')
+                            })
+                        st.divider()
+
+                if filtros_para_query:
+                    if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
+                        res_completa = buscar_cliente_dinamica(filtros_para_query)
+                        st.session_state['resultados_pesquisa'] = res_completa
+                        if not res_completa:
+                            st.warning("Nenhum registro encontrado.")
+
+        # 3. RESULTADOS
         with col_resultados:
             if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
                 st.markdown(f"### 📋 Resultados: {len(st.session_state['resultados_pesquisa'])}")
-                
-                # Cabeçalho Fixo
                 cols_head = st.columns([1, 4, 2, 2, 1])
                 cols_head[0].write("**ID**"); cols_head[1].write("**Nome**"); cols_head[2].write("**CPF**"); cols_head[3].write("**RG**"); cols_head[4].write("**Ação**")
                 st.divider()
 
-                # Lista Scrollável (Simulada)
                 for row in st.session_state['resultados_pesquisa']:
                     c = st.columns([1, 4, 2, 2, 1])
                     c[0].write(str(row[0]))
