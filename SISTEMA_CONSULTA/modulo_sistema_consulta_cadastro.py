@@ -115,29 +115,52 @@ def salvar_novo_cliente(dados_form):
         conn.close()
 
 def inserir_dado_extra(tipo, cpf, dados):
-    """Função genérica para inserir dados nas tabelas satélites"""
+    """
+    Função genérica para inserir dados nas tabelas satélites.
+    Verifica duplicidade antes de inserir.
+    Retorna: 'sucesso', 'duplicado' ou 'erro'
+    """
     conn = get_db_connection()
-    if not conn: return False
+    if not conn: return "erro"
     
     try:
         with conn.cursor() as cur:
+            # --- VALIDAÇÃO DE DUPLICIDADE ---
             if tipo == "Telefone":
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s AND telefone = %s", (cpf, dados['valor']))
+                if cur.fetchone():
+                    return "duplicado"
+                
                 cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf, dados['valor']))
+            
             elif tipo == "E-mail":
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s AND email = %s", (cpf, dados['valor']))
+                if cur.fetchone():
+                    return "duplicado"
+
                 cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) VALUES (%s, %s)", (cpf, dados['valor']))
+            
             elif tipo == "Endereço":
+                # Endereços podem ser complexos para validar duplicidade exata, inserção padrão mantida
                 cur.execute("""
                     INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
                     (cpf, cep, rua, cidade, uf) VALUES (%s, %s, %s, %s, %s)
                 """, (cpf, dados['cep'], dados['rua'], dados['cidade'], dados['uf']))
+            
             elif tipo == "Convênio":
+                # Verifica se o convênio já existe para o cliente
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, dados['valor']))
+                if cur.fetchone():
+                     return "duplicado"
+
                 cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, dados['valor']))
             
             conn.commit()
-            return True
+            return "sucesso"
+            
     except Exception as e:
         st.error(f"Erro ao inserir dado extra: {e}")
-        return False
+        return "erro"
     finally:
         conn.close()
 
@@ -169,14 +192,17 @@ def modal_inserir_dados(cpf, nome_cliente):
         
         # Botão de confirmação
         if st.form_submit_button("✅ Salvar Inclusão"):
-            sucesso = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
+            # Chama a função e captura o status
+            status = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
             
-            if sucesso:
+            if status == "sucesso":
                 st.success(f"{tipo_insercao} inserido com sucesso!")
                 time.sleep(1)
                 st.rerun()
+            elif status == "duplicado":
+                st.warning(f"Atenção: Este {tipo_insercao} já consta no cadastro deste cliente.")
             else:
-                st.error("Erro ao inserir.")
+                st.error("Erro ao inserir no banco de dados.")
 
 # --- INTERFACE GRÁFICA ---
 

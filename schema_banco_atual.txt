@@ -1,5 +1,5 @@
 === ESTRUTURA COMPLETA DO BANCO DE DADOS ===
-Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
+Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistema_consulta
 
 --- SCHEMA: ADMIN ---
 
@@ -653,6 +653,80 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public
    - descricao (text) NULL
    - status (character varying(10)) NULL
    - nivel (text) NULL
+
+========================================
+
+--- SCHEMA: SISTEMA_CONSULTA ---
+
+[TABELA: sistema_consulta.sistema_consulta_cpf]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NOT NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NOT NULL
+   - agrupamento (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_convenio]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - convenio (character varying(100)) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_cpf]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NOT NULL
+   - nome (text) NULL
+   - data_nascimento (date) NULL
+   - identidade (text) NULL
+   - data_expedicao_rg (date) NULL
+   - sexo (character varying(20)) NULL
+   - cnh (text) NULL
+   - data_expedicao_cnh (date) NULL
+   - titulo_eleitoral (text) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_email]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - email (character varying(255)) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_endereco]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - complemento (character varying(100)) NULL
+   - rua (text) NULL
+   - bairro (character varying(100)) NULL
+   - cidade (character varying(100)) NULL
+   - uf (character varying(10)) NULL
+   - cep (character varying(20)) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_historico_consulta_usuario]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NULL
+   - nome_usuario (text) NULL
+   - data_hora_consulta (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_lista_convenio]
+   - id (integer) NOT NULL
+   - convenio (character varying(100)) NOT NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_telefone]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NOT NULL
+   - telefone (character varying(20)) NULL
+   - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_telefone_qualificacao]
+   - id (integer) NOT NULL
+   - telefone (character varying(20)) NOT NULL
+   - qualificacao (text) NULL
+   - data_criacao (timestamp without time zone) NULL
 
 ========================================
 
