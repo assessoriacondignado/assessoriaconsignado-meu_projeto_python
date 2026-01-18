@@ -96,21 +96,23 @@ def buscar_cliente_rapida(termo):
     termo = termo.strip()
     termo_limpo = ''.join(filter(str.isdigit, termo))
     
+    # Alteração: Adicionado 't' alias e JOIN/EXISTS para buscar telefone também
     query = """
-        SELECT id, nome, cpf, identidade 
-        FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf
+        SELECT t.id, t.nome, t.cpf, t.identidade 
+        FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
         WHERE 
-            nome ILIKE %s OR 
-            cpf ILIKE %s OR
-            cpf = %s
+            t.nome ILIKE %s OR 
+            t.cpf ILIKE %s OR
+            t.cpf = %s OR
+            EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = t.cpf AND telefone ILIKE %s)
         LIMIT 30
     """
-    param_nome = f"%{termo}%"
-    param_cpf = f"%{termo}%"
+    param_termo = f"%{termo}%"
     
     try:
         with conn.cursor() as cur:
-            cur.execute(query, (param_nome, param_cpf, termo_limpo if termo_limpo else '00000000000'))
+            # Passamos o parametro termo para o telefone também
+            cur.execute(query, (param_termo, param_termo, termo_limpo if termo_limpo else '00000000000', param_termo))
             return cur.fetchall()
     finally:
         conn.close()
@@ -494,8 +496,9 @@ def tela_pesquisa():
                     # Layout de 2 colunas para checkboxes ficar melhor em espaço reduzido
                     cols_chk = st.columns(2)
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        # Checkbox com state nativo
-                        cols_chk[i % 2].checkbox(nome_campo, key=f"chk_col_{config['col']}_{i}")
+                        # Checkbox com state nativo, USANDO CHAVE SEGURA
+                        safe_key = f"chk_{config['col']}".replace(".", "_").replace(" ", "_")
+                        cols_chk[i % 2].checkbox(nome_campo, key=safe_key)
 
         # --- DIREITA: LOCAL PARA APLICAR O FILTRO ---
         with col_filtros:
@@ -506,9 +509,10 @@ def tela_pesquisa():
                 # Itera para renderizar inputs dos selecionados
                 for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        chave_chk = f"chk_col_{config['col']}_{i}"
+                        # Alteração: usando a mesma chave segura da esquerda
+                        safe_key = f"chk_{config['col']}".replace(".", "_").replace(" ", "_")
                         
-                        if st.session_state.get(chave_chk, False):
+                        if st.session_state.get(safe_key, False):
                             count_ativos += 1
                             st.markdown(f"**{nome_campo}**")
                             
@@ -519,8 +523,9 @@ def tela_pesquisa():
                             elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
                             opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
-                            op_key = f"op_input_{config['col']}_{i}"
-                            val_key = f"val_input_{config['col']}_{i}"
+                            # Chave única também para os inputs
+                            op_key = f"op_input_{safe_key}"
+                            val_key = f"val_input_{safe_key}"
                             
                             c_op, c_val = st.columns([1.5, 2.5])
                             
@@ -572,28 +577,29 @@ def tela_pesquisa():
                     else:
                         st.warning("Configure pelo menos um filtro.")
 
-        # PARTE 2: PARTE DE BAIXO (RESULTADOS)
-        st.divider()
-        with st.container():
-            if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
-                st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
-                
-                # Cabeçalho da Tabela
-                cols_head = st.columns([1, 4, 2, 2, 1])
-                cols_head[0].write("**ID**"); cols_head[1].write("**Nome**"); cols_head[2].write("**CPF**"); cols_head[3].write("**RG**"); cols_head[4].write("**Ação**")
-                
-                # Linhas
-                for row in st.session_state['resultados_pesquisa']:
-                    c = st.columns([1, 4, 2, 2, 1])
-                    c[0].write(str(row[0]))
-                    c[1].write(row[1])
-                    c[2].write(row[2])
-                    c[3].write(row[3])
-                    if c[4].button("🔎", key=f"btn_res_{row[0]}"):
-                        st.session_state['cliente_ativo_cpf'] = row[2]
-                        st.session_state['modo_visualizacao'] = 'visualizar'
-                        st.session_state['modo_edicao'] = False
-                        st.rerun()
+    # PARTE 2: PARTE DE BAIXO (RESULTADOS)
+    # Alteração: Movi este bloco para fora do 'with tab2' para aparecer em ambas as abas
+    st.divider()
+    with st.container():
+        if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
+            st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
+            
+            # Cabeçalho da Tabela
+            cols_head = st.columns([1, 4, 2, 2, 1])
+            cols_head[0].write("**ID**"); cols_head[1].write("**Nome**"); cols_head[2].write("**CPF**"); cols_head[3].write("**RG**"); cols_head[4].write("**Ação**")
+            
+            # Linhas
+            for row in st.session_state['resultados_pesquisa']:
+                c = st.columns([1, 4, 2, 2, 1])
+                c[0].write(str(row[0]))
+                c[1].write(row[1])
+                c[2].write(row[2])
+                c[3].write(row[3])
+                if c[4].button("🔎", key=f"btn_res_{row[0]}"):
+                    st.session_state['cliente_ativo_cpf'] = row[2]
+                    st.session_state['modo_visualizacao'] = 'visualizar'
+                    st.session_state['modo_edicao'] = False
+                    st.rerun()
 
     st.divider()
     if st.button("➕ NOVO CADASTRO", type="primary"):
@@ -652,8 +658,8 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         with c_btn_edit:
             if st.session_state['modo_edicao']:
                  if st.button("👁️ Exibir", help="Sair do modo edição", use_container_width=True):
-                     st.session_state['modo_edicao'] = False
-                     st.rerun()
+                      st.session_state['modo_edicao'] = False
+                      st.rerun()
             else:
                 if st.button("✏️ Editar", type="primary", use_container_width=True):
                     st.session_state['modo_edicao'] = True
