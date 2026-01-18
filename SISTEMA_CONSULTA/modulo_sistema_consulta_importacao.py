@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
-import shutil
 from datetime import datetime
 import time
 
@@ -16,7 +15,8 @@ except ImportError:
 PASTA_ARQUIVOS = "SISTEMA_CONSULTA/ARQUIVOS_IMPORTADOS"
 os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
 
-# Mapeamento dos campos do sistema para destino no banco
+# --- CONFIGURAÇÃO DOS CAMPOS DE MAPEAMENTO ---
+# Define os campos básicos
 CAMPOS_SISTEMA = {
     "CPF (Obrigatório)": "cpf",
     "Nome do Cliente": "nome",
@@ -26,16 +26,23 @@ CAMPOS_SISTEMA = {
     "Nome da Mãe": "nome_mae",
     "CNH": "cnh",
     "Título Eleitor": "titulo_eleitoral",
-    "Telefone (Principal)": "telefone",
-    "E-mail": "email",
+    "Convênio": "convenio",
+    # Endereço (1 Endereço)
     "CEP": "cep",
     "Rua": "rua",
     "Cidade": "cidade",
-    "UF": "uf",
-    "Convênio": "convenio"
+    "UF": "uf"
 }
 
-# --- FUNÇÕES AUXILIARES (REPLICADAS DO CADASTRO) ---
+# Adiciona Opção de até 10 Telefones
+for i in range(1, 11):
+    CAMPOS_SISTEMA[f"Telefone {i}"] = f"telefone_{i}"
+
+# Adiciona Opção de até 3 E-mails
+for i in range(1, 4):
+    CAMPOS_SISTEMA[f"E-mail {i}"] = f"email_{i}"
+
+# --- FUNÇÕES AUXILIARES ---
 def limpar_texto(valor):
     """Remove espaços e trata None"""
     if pd.isna(valor) or valor is None:
@@ -51,11 +58,9 @@ def converter_data_iso(valor):
     """Tenta converter formatos diversos para YYYY-MM-DD"""
     if not valor or pd.isna(valor): return None
     try:
-        # Tenta converter string DD/MM/YYYY
         return datetime.strptime(str(valor), "%d/%m/%Y").date()
     except:
         try:
-            # Tenta converter string YYYY-MM-DD
             return datetime.strptime(str(valor), "%Y-%m-%d").date()
         except:
             return None
@@ -102,7 +107,7 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
         conn.close()
         return "erro_cpf"
 
-    status = "atualizado" # Assume atualização, se não existir vira novo
+    status = "atualizado"
 
     try:
         with conn.cursor() as cur:
@@ -110,10 +115,19 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
             cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf_valor,))
             existe = cur.fetchone()
             
-            # Mapeia valores básicos
+            # Mapeia valores básicos (Ignora campos satélites no loop principal)
             campos_basicos = {}
+            campos_satelites_prefixos = ['telefone_', 'email_', 'cep', 'rua', 'cidade', 'uf', 'convenio']
+            
             for sis_key, sis_col in CAMPOS_SISTEMA.items():
-                if sis_col in ['telefone', 'email', 'cep', 'rua', 'cidade', 'uf', 'convenio']: continue
+                # Pula se for campo satélite (começa com prefixo ou está na lista)
+                eh_satelite = False
+                for p in campos_satelites_prefixos:
+                    if sis_col.startswith(p) or sis_col == p:
+                        eh_satelite = True
+                        break
+                
+                if eh_satelite: continue
                 
                 col_planilha = mapeamento_reverso.get(sis_col)
                 if col_planilha:
@@ -126,12 +140,10 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
             # INSERT ou UPDATE Tabela Principal
             if not existe:
                 status = "novo"
-                # Garante inserção na tabela de controle de CPF
                 cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (cpf_valor,))
                 
                 cols = list(campos_basicos.keys())
                 vals = list(campos_basicos.values())
-                # Adiciona CPF nos campos
                 cols.append('cpf')
                 vals.append(cpf_valor)
                 
@@ -140,7 +152,6 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
                 sql = f"INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf ({columns}) VALUES ({placeholders})"
                 cur.execute(sql, vals)
             else:
-                # Update apenas se houver campos mapeados
                 if campos_basicos:
                     set_clause = ", ".join([f"{k} = %s" for k in campos_basicos.keys()])
                     vals = list(campos_basicos.values())
@@ -148,30 +159,43 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
                     sql = f"UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf SET {set_clause} WHERE cpf = %s"
                     cur.execute(sql, vals)
 
-            # 2. Dados Satélites (Inserir apenas se não existir igual)
-            
-            # Telefone
-            col_tel = mapeamento_reverso.get("telefone")
-            if col_tel:
-                tel_val = limpar_texto(dados_linha.get(col_tel))
-                if tel_val:
-                    cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) SELECT %s, %s WHERE NOT EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf=%s AND telefone=%s)", (cpf_valor, tel_val, cpf_valor, tel_val))
+            # 2. Telefones (Loop 1 a 10)
+            for i in range(1, 11):
+                col_tel = mapeamento_reverso.get(f"telefone_{i}")
+                if col_tel:
+                    tel_val = limpar_texto(dados_linha.get(col_tel))
+                    if tel_val:
+                        # Insere se não existir
+                        cur.execute("""
+                            INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) 
+                            SELECT %s, %s 
+                            WHERE NOT EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf=%s AND telefone=%s)
+                        """, (cpf_valor, tel_val, cpf_valor, tel_val))
 
-            # Email
-            col_mail = mapeamento_reverso.get("email")
-            if col_mail:
-                mail_val = limpar_texto(dados_linha.get(col_mail))
-                if mail_val:
-                    cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) SELECT %s, %s WHERE NOT EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf=%s AND email=%s)", (cpf_valor, mail_val, cpf_valor, mail_val))
+            # 3. Emails (Loop 1 a 3)
+            for i in range(1, 4):
+                col_mail = mapeamento_reverso.get(f"email_{i}")
+                if col_mail:
+                    mail_val = limpar_texto(dados_linha.get(col_mail))
+                    if mail_val:
+                        cur.execute("""
+                            INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) 
+                            SELECT %s, %s 
+                            WHERE NOT EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf=%s AND email=%s)
+                        """, (cpf_valor, mail_val, cpf_valor, mail_val))
 
-            # Convênio
+            # 4. Convênio
             col_conv = mapeamento_reverso.get("convenio")
             if col_conv:
                 conv_val = limpar_texto(dados_linha.get(col_conv))
                 if conv_val:
-                    cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) SELECT %s, %s WHERE NOT EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf=%s AND convenio=%s)", (cpf_valor, conv_val, cpf_valor, conv_val))
+                    cur.execute("""
+                        INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) 
+                        SELECT %s, %s 
+                        WHERE NOT EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf=%s AND convenio=%s)
+                    """, (cpf_valor, conv_val, cpf_valor, conv_val))
 
-            # Endereço (Lógica simplificada: insere novo se vier dados)
+            # 5. Endereço
             col_cep = mapeamento_reverso.get("cep")
             col_rua = mapeamento_reverso.get("rua")
             if col_cep or col_rua:
@@ -204,39 +228,58 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
 def modal_detalhes_amostra(linha_dict, mapeamento):
     st.markdown(f"### CPF: {linha_dict.get(mapeamento.get('cpf', ''), 'Não Identificado')}")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.caption("Dados Pessoais")
+    tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos (Tels/Emails)", "Endereço"])
+    
+    with tab1:
         nome_col = mapeamento.get('nome')
         st.text_input("Nome", value=linha_dict.get(nome_col, '') if nome_col else '', disabled=True)
-        
         nasc_col = mapeamento.get('data_nascimento')
         st.text_input("Nascimento", value=linha_dict.get(nasc_col, '') if nasc_col else '', disabled=True)
+        rg_col = mapeamento.get('identidade')
+        st.text_input("RG", value=linha_dict.get(rg_col, '') if rg_col else '', disabled=True)
 
-    with col2:
-        st.caption("Contatos")
-        tel_col = mapeamento.get('telefone')
-        st.text_input("Telefone", value=linha_dict.get(tel_col, '') if tel_col else '', disabled=True)
+    with tab2:
+        st.markdown("##### 📞 Telefones")
+        for i in range(1, 11):
+            col_tel = mapeamento.get(f'telefone_{i}')
+            if col_tel:
+                val = linha_dict.get(col_tel, '')
+                if val: st.text_input(f"Telefone {i}", value=val, disabled=True, key=f"amostra_tel_{i}")
         
-        mail_col = mapeamento.get('email')
-        st.text_input("E-mail", value=linha_dict.get(mail_col, '') if mail_col else '', disabled=True)
+        st.markdown("##### 📧 E-mails")
+        for i in range(1, 4):
+            col_mail = mapeamento.get(f'email_{i}')
+            if col_mail:
+                val = linha_dict.get(col_mail, '')
+                if val: st.text_input(f"E-mail {i}", value=val, disabled=True, key=f"amostra_mail_{i}")
+
+    with tab3:
+        rua_col = mapeamento.get('rua')
+        cidade_col = mapeamento.get('cidade')
+        uf_col = mapeamento.get('uf')
+        cep_col = mapeamento.get('cep')
+        
+        st.text_input("Rua", value=linha_dict.get(rua_col, '') if rua_col else '', disabled=True)
+        c1, c2, c3 = st.columns([2, 1, 1])
+        c1.text_input("Cidade", value=linha_dict.get(cidade_col, '') if cidade_col else '', disabled=True)
+        c2.text_input("UF", value=linha_dict.get(uf_col, '') if uf_col else '', disabled=True)
+        c3.text_input("CEP", value=linha_dict.get(cep_col, '') if cep_col else '', disabled=True)
 
 # --- INTERFACE ---
 
 def tela_importacao():
     st.markdown("## 📥 Importar Dados - Sistema Consulta")
-    st.info("Importe planilhas (CSV/Excel) para alimentar a base de consultas unificada.")
-
+    
     if 'etapa_importacao' not in st.session_state:
         st.session_state['etapa_importacao'] = 'upload'
     
     # 1. UPLOAD
     if st.session_state['etapa_importacao'] == 'upload':
-        arquivo = st.file_uploader("Selecione o arquivo", type=['csv', 'xlsx'])
+        arquivo = st.file_uploader("Selecione o arquivo (CSV ou Excel)", type=['csv', 'xlsx'])
         if arquivo:
             try:
                 if arquivo.name.endswith('.csv'):
-                    df = pd.read_csv(arquivo, sep=';', dtype=str) # Tenta ponto e vírgula
+                    df = pd.read_csv(arquivo, sep=';', dtype=str)
                     if df.shape[1] < 2: 
                         arquivo.seek(0)
                         df = pd.read_csv(arquivo, sep=',', dtype=str)
@@ -246,6 +289,7 @@ def tela_importacao():
                 st.session_state['df_importacao'] = df
                 st.session_state['nome_arquivo_importacao'] = arquivo.name
                 st.session_state['etapa_importacao'] = 'mapeamento'
+                st.session_state['amostra_gerada'] = False # Reset flag
                 st.rerun()
             except Exception as e:
                 st.error(f"Erro ao ler arquivo: {e}")
@@ -255,131 +299,137 @@ def tela_importacao():
         df = st.session_state['df_importacao']
         colunas_arquivo = ["(Ignorar)"] + list(df.columns)
         
-        st.write(f"Arquivo carregado: **{st.session_state['nome_arquivo_importacao']}** ({len(df)} linhas)")
+        st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
         
         with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
-            st.warning("Selecione qual coluna do seu arquivo corresponde a cada campo do sistema.")
-            
-            cols_map = st.columns(3)
+            # Layout compactado com 6 colunas
+            cols_map = st.columns(6)
             mapeamento_usuario = {}
             
-            for i, (label_sistema, key_sistema) in enumerate(CAMPOS_SISTEMA.items()):
+            # Itera sobre campos e distribui nas 6 colunas
+            lista_campos = list(CAMPOS_SISTEMA.items())
+            
+            for i, (label_sistema, key_sistema) in enumerate(lista_campos):
                 # Tenta sugerir automaticamente
                 index_sugestao = 0
                 for idx, col_file in enumerate(colunas_arquivo):
-                    if key_sistema.lower() in col_file.lower():
+                    if key_sistema.split('_')[0] in col_file.lower(): # Sugestão básica
                         index_sugestao = idx
                         break
                 
-                escolha = cols_map[i % 3].selectbox(
+                col_container = cols_map[i % 6]
+                escolha = col_container.selectbox(
                     f"{label_sistema}", 
                     colunas_arquivo, 
                     index=index_sugestao,
-                    key=f"map_{key_sistema}"
+                    key=f"map_{key_sistema}",
+                    help=f"Coluna destino: {key_sistema}"
                 )
                 if escolha != "(Ignorar)":
                     mapeamento_usuario[key_sistema] = escolha
 
         # Validação Mínima
         if 'cpf' not in mapeamento_usuario:
-            st.error("⚠️ É obrigatório mapear a coluna de **CPF**.")
+            st.error("⚠️ Obrigatório mapear **CPF**.")
         else:
             st.divider()
-            st.subheader("🔍 Amostra dos Dados (5 primeiros)")
-            st.caption("Clique no botão 'Ver' para simular a ficha do cliente.")
+            
+            # Botão para Gerar Amostra
+            if not st.session_state.get('amostra_gerada'):
+                if st.button("🎲 GERAR AMOSTRA (5 Linhas)", type="primary"):
+                    st.session_state['amostra_gerada'] = True
+                    st.rerun()
+            
+            # Exibe Amostra se gerada
+            if st.session_state.get('amostra_gerada'):
+                st.subheader("🔍 Amostra Processada")
+                amostra = df.head(5).copy()
+                
+                # Cabeçalho da tabela de amostra
+                ch1, ch2, ch3 = st.columns([2, 4, 1])
+                ch1.markdown("**CPF**")
+                ch2.markdown("**Nome**")
+                ch3.markdown("**Ação**")
+                st.divider()
 
-            # Exibe Amostra como Tabela Interativa
-            amostra = df.head(5).copy()
-            # Mostra apenas colunas mapeadas para facilitar
-            cols_visuais = [v for k, v in mapeamento_usuario.items()]
-            
-            # Loop visual da amostra
-            for idx, row in amostra.iterrows():
-                c1, c2, c3, c4 = st.columns([3, 3, 3, 1])
-                
-                # Pega valores mapeados
-                val_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else "---"
-                val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
-                
-                c1.write(f"**CPF:** {val_cpf}")
-                c2.write(f"**Nome:** {val_nome}")
-                c3.caption("Linha " + str(idx + 1))
-                
-                if c4.button("👁️ Ver", key=f"btn_ver_{idx}"):
-                    modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
-            
-            st.divider()
-            
-            col_act1, col_act2 = st.columns([1, 1])
-            
-            if col_act1.button("❌ Cancelar Importação", type="secondary"):
-                del st.session_state['df_importacao']
-                del st.session_state['etapa_importacao']
-                st.rerun()
-            
-            if col_act2.button("✅ FINALIZAR IMPORTAÇÃO", type="primary"):
-                # Inicia Processamento Real
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                total = len(df)
-                novos = 0
-                atualizados = 0
-                erros = 0
-                
-                # Inverte o mapeamento para facilitar busca (Sistema -> Coluna Planilha)
-                mapeamento_final = mapeamento_usuario
-                
-                lista_erros = []
-
-                for i, (_, row) in enumerate(df.iterrows()):
-                    # Atualiza barra a cada 10%
-                    if i % (max(1, total // 10)) == 0:
-                        progress_bar.progress(i / total)
-                        status_text.text(f"Processando linha {i+1}/{total}...")
+                for idx, row in amostra.iterrows():
+                    c1, c2, c3 = st.columns([2, 4, 1])
                     
-                    res = processar_linha_banco(row.to_dict(), mapeamento_final)
+                    val_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else "---"
+                    val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
                     
-                    if res == "novo": novos += 1
-                    elif res == "atualizado": atualizados += 1
-                    else: 
-                        erros += 1
-                        lista_erros.append(row.to_dict())
+                    c1.write(val_cpf)
+                    c2.write(val_nome)
+                    
+                    if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
+                        modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
+                
+                st.divider()
+                
+                # Botões Finais
+                col_act1, col_act2 = st.columns([1, 1])
+                
+                if col_act1.button("❌ Cancelar", type="secondary", use_container_width=True):
+                    del st.session_state['df_importacao']
+                    del st.session_state['etapa_importacao']
+                    del st.session_state['amostra_gerada']
+                    st.rerun()
+                
+                if col_act2.button("✅ FINALIZAR IMPORTAÇÃO", type="primary", use_container_width=True):
+                    # Inicia Processamento Real
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    total = len(df)
+                    novos = 0
+                    atualizados = 0
+                    erros = 0
+                    
+                    mapeamento_final = mapeamento_usuario
+                    lista_erros = []
 
-                progress_bar.progress(100)
-                status_text.text("Concluído!")
-                
-                # Salva Arquivo Original
-                timestamp = datetime.now().strftime("%Y%m%d%H%M")
-                nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
-                path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
-                
-                # Como df está na memória, salvamos o CSV correspondente
-                df.to_csv(path_final, sep=';', index=False)
-                
-                path_erro_final = ""
-                if lista_erros:
-                    path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
-                    pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
+                    for i, (_, row) in enumerate(df.iterrows()):
+                        if i % (max(1, total // 20)) == 0:
+                            progress_bar.progress(i / total)
+                            status_text.text(f"Processando {i+1}/{total}...")
+                        
+                        res = processar_linha_banco(row.to_dict(), mapeamento_final)
+                        
+                        if res == "novo": novos += 1
+                        elif res == "atualizado": atualizados += 1
+                        else: 
+                            erros += 1
+                            lista_erros.append(row.to_dict())
 
-                # Grava Log no Banco
-                salvar_historico_importacao(
-                    st.session_state['nome_arquivo_importacao'],
-                    novos, atualizados, erros,
-                    path_final, path_erro_final
-                )
+                    progress_bar.progress(100)
+                    status_text.text("Concluído!")
+                    
+                    # Salva logs (Mantido igual)
+                    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+                    nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
+                    path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
+                    df.to_csv(path_final, sep=';', index=False)
+                    
+                    path_erro_final = ""
+                    if lista_erros:
+                        path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
+                        pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
 
-                st.success(f"Importação Finalizada! ✅")
-                st.markdown(f"""
-                - **Novos Cadastros:** {novos}
-                - **Atualizados:** {atualizados}
-                - **Erros/Ignorados:** {erros}
-                """)
-                
-                time.sleep(4)
-                del st.session_state['df_importacao']
-                del st.session_state['etapa_importacao']
-                st.rerun()
+                    salvar_historico_importacao(
+                        st.session_state['nome_arquivo_importacao'],
+                        novos, atualizados, erros,
+                        path_final, path_erro_final
+                    )
+
+                    st.balloons()
+                    st.success(f"Importação Finalizada!")
+                    st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros: {erros}")
+                    
+                    time.sleep(5)
+                    del st.session_state['df_importacao']
+                    del st.session_state['etapa_importacao']
+                    del st.session_state['amostra_gerada']
+                    st.rerun()
 
 if __name__ == "__main__":
     tela_importacao()
