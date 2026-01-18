@@ -465,18 +465,6 @@ def modal_confirmar_exclusao(cpf):
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
     
-    if 'campos_selecionados_pesquisa' not in st.session_state:
-        st.session_state['campos_selecionados_pesquisa'] = []
-
-    # FUNÇÃO CALLBACK PARA CHECKBOXES
-    def alternar_campo(campo_nome):
-        lista_atual = st.session_state.get('campos_selecionados_pesquisa', [])
-        if campo_nome in lista_atual:
-            lista_atual.remove(campo_nome)
-        else:
-            lista_atual.append(campo_nome)
-        st.session_state['campos_selecionados_pesquisa'] = lista_atual
-
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
@@ -490,21 +478,15 @@ def tela_pesquisa():
                 st.session_state['resultados_pesquisa'] = resultados
                 if not resultados: st.warning("Nenhum cliente localizado.")
 
-    # --- TAB 2: PESQUISA COMPLETA ---
+    # --- TAB 2: PESQUISA COMPLETA (CORRIGIDO) ---
     with tab2:
         # 1. SELEÇÃO DE COLUNAS
         for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
             with st.expander(f"📂 {grupo}", expanded=False):
                 cols_layout = st.columns(3)
                 for i, (nome_campo, config) in enumerate(campos.items()):
-                    # CORREÇÃO: Checkbox usa Callback on_change para atualizar estado
-                    cols_layout[i % 3].checkbox(
-                        nome_campo, 
-                        value=(nome_campo in st.session_state['campos_selecionados_pesquisa']),
-                        key=f"chk_{nome_campo}",
-                        on_change=alternar_campo,
-                        args=(nome_campo,)
-                    )
+                    # CRIA CHECKBOX COM CHAVE ÚNICA (O estado é persistido automaticamente no session_state pelo 'key')
+                    cols_layout[i % 3].checkbox(nome_campo, key=f"chk_col_{config['col']}_{i}")
 
         st.divider()
 
@@ -514,80 +496,79 @@ def tela_pesquisa():
         with col_filtros:
             # --- ÁREA DE FILTROS (LARANJA) ---
             with st.warning("🌪️ Filtros Ativos"):
-                if not st.session_state['campos_selecionados_pesquisa']:
-                    st.info("Nenhuma coluna selecionada.")
                 
-                # Validação para remover campos órfãos
-                campos_validos = []
-                for nc in st.session_state['campos_selecionados_pesquisa']:
-                    encontrado = False
-                    for grp in MAPA_CAMPOS_PESQUISA.values():
-                        if nc in grp:
-                            encontrado = True
-                            break
-                    if encontrado: campos_validos.append(nc)
-                st.session_state['campos_selecionados_pesquisa'] = campos_validos
-
-                for nome_campo in st.session_state['campos_selecionados_pesquisa']:
-                    config_campo = None
-                    for grp in MAPA_CAMPOS_PESQUISA.values():
-                        if nome_campo in grp:
-                            config_campo = grp[nome_campo]
-                            break
-                    
-                    if config_campo:
-                        st.markdown(f"**{nome_campo}**")
+                count_ativos = 0
+                
+                # RE-ITERA PARA VERIFICAR O QUE ESTÁ MARCADO
+                for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
+                    for i, (nome_campo, config) in enumerate(campos.items()):
                         
-                        # Definição do Tipo de Operador
-                        tipo_ops = 'texto'
-                        if config_campo['tipo'] == 'data': tipo_ops = 'data'
-                        elif config_campo['tipo'] == 'numero_calculado': tipo_ops = 'numero'
-                        elif config_campo['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
-
-                        opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
-                        
-                        operador_escolhido = st.selectbox("Op", opcoes_ops, key=f"op_{nome_campo}", label_visibility="collapsed")
-                        desc_op = OPERADORES_SQL[tipo_ops][operador_escolhido]['desc']
-                        st.caption(f"ℹ️ {desc_op}")
-
-                        sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
-                        
-                        # Inputs
-                        valor_final = None
-                        
-                        if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
-                            valor_final = "ignore" # Marcador
-                        
-                        elif config_campo['tipo'] == 'data':
-                            c_d1, c_d2 = st.columns(2)
-                            d1 = c_d1.date_input("De", value=None, key=f"d1_{nome_campo}", format="DD/MM/YYYY")
-                            d2 = c_d2.date_input("Até", value=None, key=f"d2_{nome_campo}", format="DD/MM/YYYY")
-                            if d1 and d2: valor_final = [converter_data_iso(d1), converter_data_iso(d2)]
-                            elif d1: valor_final = [converter_data_iso(d1), converter_data_iso(d1)] 
+                        # Verifica se a chave do checkbox está True no session_state
+                        chave_chk = f"chk_col_{config['col']}_{i}"
+                        if st.session_state.get(chave_chk, False):
+                            count_ativos += 1
+                            st.markdown(f"**{nome_campo}**")
                             
-                        elif config_campo['tipo'] == 'numero_calculado':
-                            if operador_escolhido == "Entre (><)":
-                                c_n1, c_n2 = st.columns(2)
-                                n1 = c_n1.number_input("De", step=1, key=f"n1_{nome_campo}")
-                                n2 = c_n2.number_input("Até", step=1, key=f"n2_{nome_campo}")
-                                valor_final = [n1, n2]
-                            else:
-                                valor_final = st.number_input("Valor", step=1, key=f"n_val_{nome_campo}")
-                        
-                        else:
-                            valor_input = st.text_input("Valor", key=f"val_{nome_campo}", placeholder="Ex: joao;maria")
-                            if valor_input: valor_final = valor_input
+                            # --- RENDERIZA O INPUT DE FILTRO ---
+                            tipo_ops = 'texto'
+                            if config['tipo'] == 'data': tipo_ops = 'data'
+                            elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
+                            elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
-                        if valor_final is not None:
-                            filtros_para_query.append({
-                                'col': config_campo['col'],
-                                'op': sql_op_code,
-                                'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
-                                'val': valor_final,
-                                'tipo': config_campo['tipo'],
-                                'table': config_campo.get('table')
-                            })
-                        st.divider()
+                            opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
+                            
+                            # Chaves únicas para inputs de filtro
+                            op_key = f"op_input_{config['col']}_{i}"
+                            val_key = f"val_input_{config['col']}_{i}"
+                            
+                            operador_escolhido = st.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
+                            desc_op = OPERADORES_SQL[tipo_ops][operador_escolhido]['desc']
+                            st.caption(f"ℹ️ {desc_op}")
+
+                            sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
+                            valor_final = None
+                            
+                            # Lógica de Vazio
+                            if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
+                                valor_final = "ignore" 
+                            
+                            # Lógica Data
+                            elif config['tipo'] == 'data':
+                                c_d1, c_d2 = st.columns(2)
+                                d1 = c_d1.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY")
+                                d2 = c_d2.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY")
+                                if d1 and d2: valor_final = [converter_data_iso(d1), converter_data_iso(d2)]
+                                elif d1: valor_final = [converter_data_iso(d1), converter_data_iso(d1)]
+                            
+                            # Lógica Idade
+                            elif config['tipo'] == 'numero_calculado':
+                                if operador_escolhido == "Entre (><)":
+                                    c_n1, c_n2 = st.columns(2)
+                                    n1 = c_n1.number_input("De", step=1, key=f"n1_{val_key}")
+                                    n2 = c_n2.number_input("Até", step=1, key=f"n2_{val_key}")
+                                    valor_final = [n1, n2]
+                                else:
+                                    valor_final = st.number_input("Valor", step=1, key=f"num_{val_key}")
+                            
+                            # Lógica Texto
+                            else:
+                                valor_input = st.text_input("Valor", key=f"txt_{val_key}", placeholder="Ex: joao;maria")
+                                if valor_input: valor_final = valor_input
+
+                            # Adiciona à lista de filtros se válido
+                            if valor_final is not None:
+                                filtros_para_query.append({
+                                    'col': config['col'],
+                                    'op': sql_op_code,
+                                    'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
+                                    'val': valor_final,
+                                    'tipo': config['tipo'],
+                                    'table': config.get('table')
+                                })
+                            st.divider()
+
+                if count_ativos == 0:
+                    st.info("Nenhuma coluna selecionada.")
 
                 if filtros_para_query or any("IS NULL" in f['op'] for f in filtros_para_query):
                     if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
