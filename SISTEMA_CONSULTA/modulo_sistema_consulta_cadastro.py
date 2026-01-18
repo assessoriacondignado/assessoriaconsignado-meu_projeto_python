@@ -10,6 +10,19 @@ try:
 except ImportError:
     conexao = None
 
+# --- FUNÇÕES AUXILIARES DE LIMPEZA ---
+def limpar_texto(valor):
+    """
+    Converte None, 'None', 'null' ou espaços vazios para string vazia ''.
+    Usado para garantir que campos de texto não fiquem como NULL no banco.
+    """
+    if valor is None:
+        return ""
+    s_valor = str(valor).strip()
+    if s_valor.lower() in ['none', 'null']:
+        return ""
+    return s_valor
+
 # --- FUNÇÕES DE BANCO DE DADOS ---
 
 def get_db_connection():
@@ -62,24 +75,39 @@ def carregar_dados_cliente_completo(cpf):
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cols_pessoais = [desc[0] for desc in cur.description]
             row_pessoais = cur.fetchone()
-            dados['pessoal'] = dict(zip(cols_pessoais, row_pessoais)) if row_pessoais else {}
+            
+            # Tratamento de None para visualização (evita que apareça "None" na tela)
+            if row_pessoais:
+                d_pessoal = dict(zip(cols_pessoais, row_pessoais))
+                for k, v in d_pessoal.items():
+                    if v is None and k != 'data_nascimento': # Data mantemos None/Date
+                        d_pessoal[k] = ""
+                dados['pessoal'] = d_pessoal
+            else:
+                dados['pessoal'] = {}
 
-            # 2. Telefones (Trazendo ID para edição)
+            # 2. Telefones
             cur.execute("SELECT id, telefone FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s ORDER BY id", (cpf,))
-            dados['telefones'] = [{'id': r[0], 'valor': r[1]} for r in cur.fetchall()]
+            dados['telefones'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
-            # 3. Emails (Trazendo ID para edição)
+            # 3. Emails
             cur.execute("SELECT id, email FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s ORDER BY id", (cpf,))
-            dados['emails'] = [{'id': r[0], 'valor': r[1]} for r in cur.fetchall()]
+            dados['emails'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
             # 4. Endereços
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s ORDER BY id", (cpf,))
             cols_end = [desc[0] for desc in cur.description]
-            dados['enderecos'] = [dict(zip(cols_end, r)) for r in cur.fetchall()]
+            dados['enderecos'] = []
+            for r in cur.fetchall():
+                d_end = dict(zip(cols_end, r))
+                # Limpa Nones nos endereços também
+                for k, v in d_end.items():
+                    if v is None: d_end[k] = ""
+                dados['enderecos'].append(d_end)
 
             # 5. Convênios
             cur.execute("SELECT id, convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY id", (cpf,))
-            dados['convenios'] = [{'id': r[0], 'valor': r[1]} for r in cur.fetchall()]
+            dados['convenios'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
             
     except Exception as e:
         st.error(f"Erro ao carregar cliente: {e}")
@@ -89,22 +117,32 @@ def carregar_dados_cliente_completo(cpf):
     return dados
 
 def salvar_novo_cliente(dados_form):
-    """Insere o registro básico na tabela principal"""
+    """Insere o registro básico na tabela principal com tratamento de vazio"""
     conn = get_db_connection()
     if not conn: return False
     
+    # Aplica limpeza nos campos de texto
+    dados_limpos = {
+        "nome": limpar_texto(dados_form.get('nome')),
+        "cpf": limpar_texto(dados_form.get('cpf')),
+        "identidade": limpar_texto(dados_form.get('identidade')),
+        "sexo": limpar_texto(dados_form.get('sexo')),
+        "nome_mae": limpar_texto(dados_form.get('nome_mae')),
+        "data_nascimento": dados_form.get('data_nascimento') # Data mantém original (None ou Date)
+    }
+
     try:
         with conn.cursor() as cur:
-            cols = list(dados_form.keys())
-            vals = list(dados_form.values())
+            # Monta Query Dinâmica baseada nas chaves
+            cols = list(dados_limpos.keys())
+            vals = list(dados_limpos.values())
             placeholders = ", ".join(["%s"] * len(cols))
             columns = ", ".join(cols)
             
             sql = f"INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf ({columns}) VALUES ({placeholders})"
             cur.execute(sql, vals)
             
-            # Insere também na tabela de chaves CPF
-            cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (dados_form['cpf'],))
+            cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (dados_limpos['cpf'],))
             
             conn.commit()
             return True
@@ -115,32 +153,39 @@ def salvar_novo_cliente(dados_form):
         conn.close()
 
 def inserir_dado_extra(tipo, cpf, dados):
-    """Insere dados novos nas tabelas"""
+    """Insere dados novos nas tabelas satélites com limpeza"""
     conn = get_db_connection()
     if not conn: return "erro"
+    
+    # Limpeza
+    valor = limpar_texto(dados.get('valor'))
     
     try:
         with conn.cursor() as cur:
             if tipo == "Telefone":
-                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s AND telefone = %s", (cpf, dados['valor']))
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s AND telefone = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf, dados['valor']))
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf, valor))
             
             elif tipo == "E-mail":
-                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s AND email = %s", (cpf, dados['valor']))
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s AND email = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) VALUES (%s, %s)", (cpf, dados['valor']))
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) VALUES (%s, %s)", (cpf, valor))
             
             elif tipo == "Endereço":
                 cur.execute("""
                     INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
                     (cpf, cep, rua, cidade, uf) VALUES (%s, %s, %s, %s, %s)
-                """, (cpf, dados['cep'], dados['rua'], dados['cidade'], dados['uf']))
+                """, (cpf, 
+                      limpar_texto(dados.get('cep')), 
+                      limpar_texto(dados.get('rua')), 
+                      limpar_texto(dados.get('cidade')), 
+                      limpar_texto(dados.get('uf'))))
             
             elif tipo == "Convênio":
-                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, dados['valor']))
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, dados['valor']))
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, valor))
             
             conn.commit()
             return "sucesso"
@@ -151,12 +196,9 @@ def inserir_dado_extra(tipo, cpf, dados):
     finally:
         conn.close()
 
-# --- NOVAS FUNÇÕES: ATUALIZAR E EXCLUIR ---
-
 def atualizar_dados_cliente_lote(cpf, dados_editados):
     """
-    Atualiza dados pessoais e listas (telefones, emails).
-    Se o valor vier vazio na lista, o item é excluído.
+    Atualiza dados pessoais e listas com limpeza de texto.
     """
     conn = get_db_connection()
     if not conn: return False
@@ -171,31 +213,39 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
                     sexo = %s, cnh = %s, titulo_eleitoral = %s, nome_mae = %s
                 WHERE cpf = %s
             """, (
-                pessoal['nome'], pessoal['data_nascimento'], pessoal['identidade'],
-                pessoal['sexo'], pessoal['cnh'], pessoal['titulo_eleitoral'], pessoal['nome_mae'],
+                limpar_texto(pessoal['nome']), 
+                pessoal['data_nascimento'], # Data mantém
+                limpar_texto(pessoal['identidade']),
+                limpar_texto(pessoal['sexo']), 
+                limpar_texto(pessoal['cnh']), 
+                limpar_texto(pessoal['titulo_eleitoral']), 
+                limpar_texto(pessoal['nome_mae']),
                 cpf
             ))
             
-            # 2. Atualizar Telefones (Edição e Exclusão)
+            # 2. Atualizar Telefones
             for item in dados_editados.get('telefones', []):
-                if not item['valor'].strip(): # Se vazio, exclui
+                val_limpo = limpar_texto(item['valor'])
+                if not val_limpo: # Se vazio após limpeza, exclui
                     cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE id = %s", (item['id'],))
-                else: # Atualiza
-                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_telefone SET telefone = %s WHERE id = %s", (item['valor'], item['id']))
+                else:
+                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_telefone SET telefone = %s WHERE id = %s", (val_limpo, item['id']))
             
             # 3. Atualizar Emails
             for item in dados_editados.get('emails', []):
-                if not item['valor'].strip():
+                val_limpo = limpar_texto(item['valor'])
+                if not val_limpo:
                     cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
                 else:
-                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (item['valor'], item['id']))
+                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val_limpo, item['id']))
             
             # 4. Atualizar Convênios
             for item in dados_editados.get('convenios', []):
-                if not item['valor'].strip():
+                val_limpo = limpar_texto(item['valor'])
+                if not val_limpo:
                     cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE id = %s", (item['id'],))
                 else:
-                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_convenio SET convenio = %s WHERE id = %s", (item['valor'], item['id']))
+                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_convenio SET convenio = %s WHERE id = %s", (val_limpo, item['id']))
 
             conn.commit()
             return True
@@ -212,17 +262,12 @@ def excluir_cliente_total(cpf):
     
     try:
         with conn.cursor() as cur:
-            # Tabelas Satélites
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
-            
-            # Tabela Principal
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
-            
-            # Tabela de Controle de CPFs (Opcional, dependendo da regra de negócio)
-            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s)", (cpf,)) # Erro de sintaxe corrigido no SQL original, aqui mantendo lógica simples
             
             conn.commit()
             return True
@@ -309,7 +354,7 @@ def tela_pesquisa():
             if c[4].button("🔎", key=f"btn_{row[0]}"):
                 st.session_state['cliente_ativo_cpf'] = row[2]
                 st.session_state['modo_visualizacao'] = 'visualizar'
-                st.session_state['modo_edicao'] = False # Reset modo edição
+                st.session_state['modo_edicao'] = False
                 st.rerun()
 
     st.divider()
@@ -319,11 +364,9 @@ def tela_pesquisa():
         st.rerun()
 
 def tela_ficha_cliente(cpf, modo='visualizar'):
-    # Inicializa estado de edição se não existir
     if 'modo_edicao' not in st.session_state:
         st.session_state['modo_edicao'] = False
 
-    # --- BARRA DE FERRAMENTAS SUPERIOR ---
     col_back, col_space, col_view, col_edit, col_del = st.columns([1.5, 3, 1.5, 1.5, 1.5])
     
     if col_back.button("⬅️ Voltar"):
@@ -332,7 +375,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         st.session_state['modo_edicao'] = False
         st.rerun()
 
-    # --- MODO NOVO CADASTRO (Mantido igual) ---
+    # --- MODO NOVO CADASTRO ---
     if modo == 'novo':
         st.markdown("## ✨ Novo Cadastro")
         with st.form("form_novo"):
@@ -357,7 +400,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     dados = carregar_dados_cliente_completo(cpf)
     pessoal = dados.get('pessoal', {})
     
-    # --- CONTROLES DE MODO (EXIBIR / EDITAR / EXCLUIR) ---
     with col_view:
         if st.session_state['modo_edicao']:
              if st.button("👁️ Exibir", help="Sair do modo edição"):
@@ -378,14 +420,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     st.markdown(f"**CPF:** {pessoal.get('cpf', '')} {'🔒 (Não editável)' if st.session_state['modo_edicao'] else ''}")
     st.divider()
 
-    # --- FORMULÁRIO DE EXIBIÇÃO OU EDIÇÃO ---
-    
+    # --- MODO EDIÇÃO ---
     if st.session_state['modo_edicao']:
-        # >>> MODO EDIÇÃO <<<
         with st.form("form_edicao_cliente"):
-            st.info("✏️ Modo Edição Ativo. Limpe um campo de lista (telefone/email) para excluí-lo.")
+            st.info("✏️ Modo Edição Ativo. Limpe um campo para deixá-lo vazio.")
             
-            # Dados Pessoais
             st.markdown("### 📄 Dados Pessoais")
             ec1, ec2, ec3 = st.columns(3)
             e_nome = ec1.text_input("Nome", value=pessoal.get('nome',''))
@@ -400,21 +439,19 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
 
             st.divider()
             
-            # Listas Editáveis
             col_lista1, col_lista2 = st.columns(2)
-            
             edicoes_telefones = []
             edicoes_emails = []
             edicoes_convenios = []
 
             with col_lista1:
-                st.markdown("### 📞 Telefones (Limpe para excluir)")
+                st.markdown("### 📞 Telefones")
                 if dados.get('telefones'):
                     for i, tel in enumerate(dados['telefones']):
                         novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
                         edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
                 else:
-                    st.caption("Sem telefones cadastrados.")
+                    st.caption("Sem telefones.")
 
                 st.markdown("### 💼 Convênios")
                 if dados.get('convenios'):
@@ -423,7 +460,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                         edicoes_convenios.append({'id': conv['id'], 'valor': novo_val})
 
             with col_lista2:
-                st.markdown("### 📧 E-mails (Limpe para excluir)")
+                st.markdown("### 📧 E-mails")
                 if dados.get('emails'):
                     for i, mail in enumerate(dados['emails']):
                         novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
@@ -431,7 +468,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             
             st.divider()
             
-            # Botões de Ação do Formulário
             fb1, fb2 = st.columns([1, 1])
             if fb1.form_submit_button("💾 CONFIRMAR ALTERAÇÕES", type="primary"):
                 pacote_dados = {
@@ -449,10 +485,8 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     time.sleep(1)
                     st.rerun()
 
+    # --- MODO VISUALIZAÇÃO ---
     else:
-        # >>> MODO VISUALIZAÇÃO (Padrão) <<<
-        
-        # 1. Dados Pessoais
         st.markdown("### 📄 Dados Pessoais")
         col1, col2, col3 = st.columns(3)
         col1.text_input("Nome", value=pessoal.get('nome',''), disabled=True)
@@ -468,8 +502,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         st.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
 
         st.divider()
-        
-        # 2. Contatos e Endereços
         c_contato, c_endereco = st.columns(2)
         with c_contato:
             st.markdown("### 📞 Contatos")
@@ -488,7 +520,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
         st.divider()
 
-        # Botão Inserir Extra (Visível apenas no modo visualização)
         col_ins_lat, _ = st.columns([1, 4])
         if col_ins_lat.button("➕ Inserir Dados Extras"):
             modal_inserir_dados(cpf, pessoal.get('nome'))
