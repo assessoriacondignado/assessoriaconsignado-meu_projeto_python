@@ -10,6 +10,18 @@ try:
 except ImportError:
     conexao = None
 
+# --- FUNÇÕES AUXILIARES DE LIMPEZA ---
+def limpar_texto(valor):
+    """
+    Converte None, 'None', 'null' ou espaços vazios para string vazia ''.
+    """
+    if valor is None:
+        return ""
+    s_valor = str(valor).strip()
+    if s_valor.lower() in ['none', 'null']:
+        return ""
+    return s_valor
+
 # --- FUNÇÕES DE BANCO DE DADOS ---
 
 def get_db_connection():
@@ -51,7 +63,7 @@ def buscar_cliente_rapida(termo):
         conn.close()
 
 def carregar_dados_cliente_completo(cpf):
-    """Carrega todos os dados vinculados a um CPF"""
+    """Carrega todos os dados vinculados a um CPF (Formato Dict para Edição)"""
     conn = get_db_connection()
     if not conn: return {}
     
@@ -62,24 +74,38 @@ def carregar_dados_cliente_completo(cpf):
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cols_pessoais = [desc[0] for desc in cur.description]
             row_pessoais = cur.fetchone()
-            dados['pessoal'] = dict(zip(cols_pessoais, row_pessoais)) if row_pessoais else {}
+            
+            if row_pessoais:
+                d_pessoal = dict(zip(cols_pessoais, row_pessoais))
+                # Limpeza de None para visualização
+                for k, v in d_pessoal.items():
+                    if v is None and k != 'data_nascimento':
+                        d_pessoal[k] = ""
+                dados['pessoal'] = d_pessoal
+            else:
+                dados['pessoal'] = {}
 
-            # 2. Telefones
-            cur.execute("SELECT telefone FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s", (cpf,))
-            dados['telefones'] = [r[0] for r in cur.fetchall()]
+            # 2. Telefones (COM ID E VALOR)
+            cur.execute("SELECT id, telefone FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s ORDER BY id", (cpf,))
+            dados['telefones'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
-            # 3. Emails
-            cur.execute("SELECT email FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s", (cpf,))
-            dados['emails'] = [r[0] for r in cur.fetchall()]
+            # 3. Emails (COM ID E VALOR)
+            cur.execute("SELECT id, email FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s ORDER BY id", (cpf,))
+            dados['emails'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
             # 4. Endereços
-            cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
+            cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s ORDER BY id", (cpf,))
             cols_end = [desc[0] for desc in cur.description]
-            dados['enderecos'] = [dict(zip(cols_end, r)) for r in cur.fetchall()]
+            dados['enderecos'] = []
+            for r in cur.fetchall():
+                d_end = dict(zip(cols_end, r))
+                for k, v in d_end.items():
+                    if v is None: d_end[k] = ""
+                dados['enderecos'].append(d_end)
 
-            # 5. Convênios
-            cur.execute("SELECT convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
-            dados['convenios'] = [r[0] for r in cur.fetchall()]
+            # 5. Convênios (COM ID E VALOR)
+            cur.execute("SELECT id, convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY id", (cpf,))
+            dados['convenios'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
             
     except Exception as e:
         st.error(f"Erro ao carregar cliente: {e}")
@@ -93,18 +119,27 @@ def salvar_novo_cliente(dados_form):
     conn = get_db_connection()
     if not conn: return False
     
+    # Aplica limpeza
+    dados_limpos = {
+        "nome": limpar_texto(dados_form.get('nome')),
+        "cpf": limpar_texto(dados_form.get('cpf')),
+        "identidade": limpar_texto(dados_form.get('identidade')),
+        "sexo": limpar_texto(dados_form.get('sexo')),
+        "nome_mae": limpar_texto(dados_form.get('nome_mae')),
+        "data_nascimento": dados_form.get('data_nascimento')
+    }
+
     try:
         with conn.cursor() as cur:
-            cols = list(dados_form.keys())
-            vals = list(dados_form.values())
+            cols = list(dados_limpos.keys())
+            vals = list(dados_limpos.values())
             placeholders = ", ".join(["%s"] * len(cols))
             columns = ", ".join(cols)
             
             sql = f"INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf ({columns}) VALUES ({placeholders})"
             cur.execute(sql, vals)
             
-            # Insere também na tabela de chaves CPF
-            cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (dados_form['cpf'],))
+            cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (dados_limpos['cpf'],))
             
             conn.commit()
             return True
@@ -115,103 +150,187 @@ def salvar_novo_cliente(dados_form):
         conn.close()
 
 def inserir_dado_extra(tipo, cpf, dados):
-    """Função genérica para inserir dados nas tabelas satélites"""
+    """Insere dados novos nas tabelas satélites com verificação e limpeza"""
+    conn = get_db_connection()
+    if not conn: return "erro"
+    
+    valor = limpar_texto(dados.get('valor'))
+    
+    try:
+        with conn.cursor() as cur:
+            if tipo == "Telefone":
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s AND telefone = %s", (cpf, valor))
+                if cur.fetchone(): return "duplicado"
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf, valor))
+            
+            elif tipo == "E-mail":
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s AND email = %s", (cpf, valor))
+                if cur.fetchone(): return "duplicado"
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) VALUES (%s, %s)", (cpf, valor))
+            
+            elif tipo == "Endereço":
+                cur.execute("""
+                    INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
+                    (cpf, cep, rua, cidade, uf) VALUES (%s, %s, %s, %s, %s)
+                """, (cpf, limpar_texto(dados.get('cep')), limpar_texto(dados.get('rua')), 
+                      limpar_texto(dados.get('cidade')), limpar_texto(dados.get('uf'))))
+            
+            elif tipo == "Convênio":
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, valor))
+                if cur.fetchone(): return "duplicado"
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, valor))
+            
+            conn.commit()
+            return "sucesso"
+            
+    except Exception as e:
+        st.error(f"Erro ao inserir dado extra: {e}")
+        return "erro"
+    finally:
+        conn.close()
+
+def atualizar_dados_cliente_lote(cpf, dados_editados):
+    """Atualiza dados pessoais e listas (telefones, emails) com limpeza"""
     conn = get_db_connection()
     if not conn: return False
     
     try:
         with conn.cursor() as cur:
-            if tipo == "Telefone":
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf, dados['valor']))
-            elif tipo == "E-mail":
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) VALUES (%s, %s)", (cpf, dados['valor']))
-            elif tipo == "Endereço":
-                cur.execute("""
-                    INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
-                    (cpf, cep, rua, cidade, uf) VALUES (%s, %s, %s, %s, %s)
-                """, (cpf, dados['cep'], dados['rua'], dados['cidade'], dados['uf']))
-            elif tipo == "Convênio":
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, dados['valor']))
+            # 1. Atualizar Dados Pessoais
+            pessoal = dados_editados['pessoal']
+            cur.execute("""
+                UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf
+                SET nome = %s, data_nascimento = %s, identidade = %s, 
+                    sexo = %s, cnh = %s, titulo_eleitoral = %s, nome_mae = %s
+                WHERE cpf = %s
+            """, (
+                limpar_texto(pessoal['nome']), pessoal['data_nascimento'], limpar_texto(pessoal['identidade']),
+                limpar_texto(pessoal['sexo']), limpar_texto(pessoal['cnh']), 
+                limpar_texto(pessoal['titulo_eleitoral']), limpar_texto(pessoal['nome_mae']),
+                cpf
+            ))
             
+            # 2. Atualizar Telefones
+            for item in dados_editados.get('telefones', []):
+                val = limpar_texto(item['valor'])
+                if not val: # Se vazio, exclui
+                    cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE id = %s", (item['id'],))
+                else:
+                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_telefone SET telefone = %s WHERE id = %s", (val, item['id']))
+            
+            # 3. Atualizar Emails
+            for item in dados_editados.get('emails', []):
+                val = limpar_texto(item['valor'])
+                if not val:
+                    cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
+                else:
+                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
+            
+            # 4. Atualizar Convênios
+            for item in dados_editados.get('convenios', []):
+                val = limpar_texto(item['valor'])
+                if not val:
+                    cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE id = %s", (item['id'],))
+                else:
+                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_convenio SET convenio = %s WHERE id = %s", (val, item['id']))
+
             conn.commit()
             return True
     except Exception as e:
-        st.error(f"Erro ao inserir dado extra: {e}")
+        st.error(f"Erro ao atualizar: {e}")
         return False
     finally:
         conn.close()
 
-# --- COMPONENTE MODAL (NOVO) ---
+def excluir_cliente_total(cpf):
+    """Exclusão em cascata de todos os dados do CPF"""
+    conn = get_db_connection()
+    if not conn: return False
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
+            
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Erro ao excluir cliente: {e}")
+        return False
+    finally:
+        conn.close()
+
+# --- COMPONENTE MODAL ---
 @st.dialog("➕ Inserir Dados Extras")
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
-    
-    # Opções para digitar
     tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Convênio"])
     
     with st.form("form_insercao_modal"):
         dados_submit = {}
-        
         if tipo_insercao == "Telefone":
             dados_submit['valor'] = st.text_input("Novo Telefone", placeholder="(00) 00000-0000")
-        
         elif tipo_insercao == "E-mail":
             dados_submit['valor'] = st.text_input("Novo E-mail")
-        
         elif tipo_insercao == "Endereço":
             dados_submit['cep'] = st.text_input("CEP")
             dados_submit['rua'] = st.text_input("Rua")
             dados_submit['cidade'] = st.text_input("Cidade")
             dados_submit['uf'] = st.text_input("UF", max_chars=2)
-        
         elif tipo_insercao == "Convênio":
                 dados_submit['valor'] = st.text_input("Nome do Convênio")
         
-        # Botão de confirmação
         if st.form_submit_button("✅ Salvar Inclusão"):
-            sucesso = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
-            
-            if sucesso:
+            status = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
+            if status == "sucesso":
                 st.success(f"{tipo_insercao} inserido com sucesso!")
                 time.sleep(1)
                 st.rerun()
+            elif status == "duplicado":
+                st.warning("Dado já existente!")
             else:
                 st.error("Erro ao inserir.")
+
+# --- DIALOG EXCLUSÃO ---
+@st.dialog("⚠️ Confirmar Exclusão")
+def modal_confirmar_exclusao(cpf):
+    st.warning("Tem certeza que deseja excluir TODO o cadastro deste cliente? Essa ação não pode ser desfeita.")
+    if st.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary"):
+        if excluir_cliente_total(cpf):
+            st.success("Cliente excluído com sucesso!")
+            st.session_state['cliente_ativo_cpf'] = None
+            st.session_state['modo_visualizacao'] = None
+            st.session_state['resultados_pesquisa'] = []
+            time.sleep(1.5)
+            st.rerun()
 
 # --- INTERFACE GRÁFICA ---
 
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
-    
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
         c1, c2 = st.columns([4, 1])
-        termo = c1.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João da Silva")
+        termo = c1.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João")
         if c2.button("Pesquisar", use_container_width=True):
             if len(termo) < 3:
-                st.warning("Digite pelo menos 3 caracteres.")
+                st.warning("Digite min. 3 caracteres.")
             else:
                 resultados = buscar_cliente_rapida(termo)
                 st.session_state['resultados_pesquisa'] = resultados
-                if not resultados:
-                    st.warning("Nenhum cliente localizado.")
-                    st.session_state['exibir_novo_cadastro'] = True 
-    
-    with tab2:
-        st.info("Funcionalidade de Pesquisa Completa em desenvolvimento.")
+                if not resultados: st.warning("Nenhum cliente localizado.")
 
-    # Resultados
     if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
         st.divider()
-        st.markdown(f"**Resultados Encontrados:** {len(st.session_state['resultados_pesquisa'])}")
+        st.markdown(f"**Resultados:** {len(st.session_state['resultados_pesquisa'])}")
         
         cols = st.columns([1, 4, 2, 2, 1])
-        cols[0].write("**ID**")
-        cols[1].write("**Nome**")
-        cols[2].write("**CPF**")
-        cols[3].write("**RG**")
-        cols[4].write("**Ação**")
+        cols[0].write("**ID**"); cols[1].write("**Nome**"); cols[2].write("**CPF**"); cols[3].write("**RG**"); cols[4].write("**Ver**")
         
         for row in st.session_state['resultados_pesquisa']:
             c = st.columns([1, 4, 2, 2, 1])
@@ -219,10 +338,10 @@ def tela_pesquisa():
             c[1].write(row[1])
             c[2].write(row[2])
             c[3].write(row[3])
-            if c[4].button("🔎", key=f"btn_ver_{row[0]}"):
+            if c[4].button("🔎", key=f"btn_{row[0]}"):
                 st.session_state['cliente_ativo_cpf'] = row[2]
                 st.session_state['modo_visualizacao'] = 'visualizar'
-                st.session_state['modo_edicao'] = False # Reset modo edição
+                st.session_state['modo_edicao'] = False
                 st.rerun()
 
     st.divider()
@@ -232,11 +351,9 @@ def tela_pesquisa():
         st.rerun()
 
 def tela_ficha_cliente(cpf, modo='visualizar'):
-    # Inicializa estado de edição se não existir
     if 'modo_edicao' not in st.session_state:
         st.session_state['modo_edicao'] = False
 
-    # --- BARRA DE FERRAMENTAS SUPERIOR ---
     col_back, col_space, col_view, col_edit, col_del = st.columns([1.5, 3, 1.5, 1.5, 1.5])
     
     if col_back.button("⬅️ Voltar"):
@@ -270,7 +387,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     dados = carregar_dados_cliente_completo(cpf)
     pessoal = dados.get('pessoal', {})
     
-    # --- CONTROLES DE MODO (EXIBIR / EDITAR / EXCLUIR) ---
     with col_view:
         if st.session_state['modo_edicao']:
              if st.button("👁️ Exibir", help="Sair do modo edição"):
@@ -291,14 +407,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     st.markdown(f"**CPF:** {pessoal.get('cpf', '')} {'🔒 (Não editável)' if st.session_state['modo_edicao'] else ''}")
     st.divider()
 
-    # --- FIX DE RENDERIZAÇÃO: CONTAINER ISOLADO ---
-    # Cria uma chave única para o container baseada no modo atual.
-    # Isso força o Streamlit a recriar o container do zero ao trocar de modo,
-    # evitando o erro 'NotFoundError: Failed to execute removeChild'.
+    # --- CONTAINER ISOLADO (FIX RENDERIZAÇÃO) ---
     chave_container = f"container_ficha_{'edicao' if st.session_state['modo_edicao'] else 'visualizacao'}"
     
-    with st.container(border=False): # Container principal sem chave para estrutura
-        with st.container(key=chave_container): # Container dinâmico interno
+    with st.container(border=False):
+        with st.container(key=chave_container):
             
             # --- MODO EDIÇÃO ---
             if st.session_state['modo_edicao']:
@@ -365,7 +478,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                             time.sleep(1)
                             st.rerun()
 
-            # --- MODO VISUALIZAÇÃO (Padrão) ---
+            # --- MODO VISUALIZAÇÃO ---
             else:
                 st.markdown("### 📄 Dados Pessoais")
                 col1, col2, col3 = st.columns(3)
@@ -382,7 +495,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                 st.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
 
                 st.divider()
-                
                 c_contato, c_endereco = st.columns(2)
                 with c_contato:
                     st.markdown("### 📞 Contatos")
