@@ -26,6 +26,7 @@ pastas_modulos = [
     "COMERCIAL/TAREFAS",
     "COMERCIAL/RENOVACAO_E_FEEDBACK",
     "CONEXÕES",
+    "SISTEMA_CONSULTA",  # <--- NOVA PASTA ADICIONADA
     "" 
 ]
 
@@ -90,6 +91,10 @@ try:
     modulo_comercial_geral = carregar_modulo_por_caminho("COMERCIAL/modulo_comercial_geral.py", "modulo_comercial_geral")
 
     modulo_conexoes = carregar_modulo_por_caminho("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
+
+    # --- NOVO MÓDULO CRM CONSULTA ---
+    modulo_sistema_consulta_menu = carregar_modulo_por_caminho("SISTEMA_CONSULTA/modulo_sistema_consulta_menu.py", "modulo_sistema_consulta_menu")
+
 
 except Exception as e:
     st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
@@ -228,6 +233,7 @@ def renderizar_menu_lateral():
         botoes = {
             "🏠 Início": "Início",
             "👥 Clientes": "Clientes",
+            "🔍 CRM Consulta": "CRM_Consulta",  # <--- NOVO BOTÃO ADICIONADO
             "💼 Comercial": "Comercial",
             "🏦 Banco de Dados": "BancoDados",
             "💬 WhatsApp": "WhatsApp",
@@ -301,6 +307,13 @@ def main():
             
         elif pagina == "Conexoes":
             modulo_conexoes.app_conexoes() if modulo_conexoes else st.warning("Módulo Conexões Off")
+
+        # --- NOVA ROTA CRM CONSULTA ---
+        elif pagina == "CRM_Consulta":
+            if modulo_sistema_consulta_menu:
+                modulo_sistema_consulta_menu.app_sistema_consulta()
+            else:
+                st.warning("Módulo CRM Consulta não carregado. Verifique a pasta e o arquivo de menu.")
 
 if __name__ == "__main__":
     main()
