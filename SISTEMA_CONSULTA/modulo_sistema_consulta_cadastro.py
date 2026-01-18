@@ -468,6 +468,15 @@ def tela_pesquisa():
     if 'campos_selecionados_pesquisa' not in st.session_state:
         st.session_state['campos_selecionados_pesquisa'] = []
 
+    # FUNÇÃO CALLBACK PARA CHECKBOXES
+    def alternar_campo(campo_nome):
+        lista_atual = st.session_state.get('campos_selecionados_pesquisa', [])
+        if campo_nome in lista_atual:
+            lista_atual.remove(campo_nome)
+        else:
+            lista_atual.append(campo_nome)
+        st.session_state['campos_selecionados_pesquisa'] = lista_atual
+
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
@@ -488,14 +497,14 @@ def tela_pesquisa():
             with st.expander(f"📂 {grupo}", expanded=False):
                 cols_layout = st.columns(3)
                 for i, (nome_campo, config) in enumerate(campos.items()):
-                    # CORREÇÃO: Checkbox com 'value' vinculado ao estado
-                    is_selected = nome_campo in st.session_state['campos_selecionados_pesquisa']
-                    if cols_layout[i % 3].checkbox(nome_campo, value=is_selected, key=f"chk_{nome_campo}"):
-                        if not is_selected:
-                            st.session_state['campos_selecionados_pesquisa'].append(nome_campo)
-                    else:
-                        if is_selected:
-                            st.session_state['campos_selecionados_pesquisa'].remove(nome_campo)
+                    # CORREÇÃO: Checkbox usa Callback on_change para atualizar estado
+                    cols_layout[i % 3].checkbox(
+                        nome_campo, 
+                        value=(nome_campo in st.session_state['campos_selecionados_pesquisa']),
+                        key=f"chk_{nome_campo}",
+                        on_change=alternar_campo,
+                        args=(nome_campo,)
+                    )
 
         st.divider()
 
@@ -508,7 +517,7 @@ def tela_pesquisa():
                 if not st.session_state['campos_selecionados_pesquisa']:
                     st.info("Nenhuma coluna selecionada.")
                 
-                # Validação para remover campos órfãos (ex: se o código mudou chaves)
+                # Validação para remover campos órfãos
                 campos_validos = []
                 for nc in st.session_state['campos_selecionados_pesquisa']:
                     encontrado = False
