@@ -132,10 +132,18 @@ def processar_linha_banco(dados_linha, mapeamento_reverso):
                 col_planilha = mapeamento_reverso.get(sis_col)
                 if col_planilha:
                     val = dados_linha.get(col_planilha)
+                    val = limpar_texto(val)
+                    
+                    # --- NOVA REGRA: Tratamento de Sexo ---
+                    if sis_col == 'sexo':
+                        if val.upper() == 'F': val = 'Feminino'
+                        elif val.upper() == 'M': val = 'Masculino'
+                    # --------------------------------------
+
                     if sis_col == 'data_nascimento':
                         campos_basicos[sis_col] = converter_data_iso(val)
                     else:
-                        campos_basicos[sis_col] = limpar_texto(val)
+                        campos_basicos[sis_col] = val
             
             # INSERT ou UPDATE Tabela Principal
             if not existe:
@@ -233,6 +241,13 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
     with tab1:
         nome_col = mapeamento.get('nome')
         st.text_input("Nome", value=linha_dict.get(nome_col, '') if nome_col else '', disabled=True)
+        
+        sexo_col = mapeamento.get('sexo')
+        val_sexo = linha_dict.get(sexo_col, '') if sexo_col else ''
+        if val_sexo.upper() == 'F': val_sexo = 'Feminino'
+        elif val_sexo.upper() == 'M': val_sexo = 'Masculino'
+        st.text_input("Sexo", value=val_sexo, disabled=True)
+
         nasc_col = mapeamento.get('data_nascimento')
         st.text_input("Nascimento", value=linha_dict.get(nasc_col, '') if nasc_col else '', disabled=True)
         rg_col = mapeamento.get('identidade')
@@ -297,40 +312,52 @@ def tela_importacao():
     # 2. MAPEAMENTO & AMOSTRA
     elif st.session_state['etapa_importacao'] == 'mapeamento':
         df = st.session_state['df_importacao']
-        colunas_arquivo = ["(Ignorar)"] + list(df.columns)
+        colunas_arquivo = list(df.columns)
         
         st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
         
-        with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
+        with st.expander("⚙️ Mapeamento de Colunas (Selecione a que corresponde)", expanded=True):
             # Layout compactado com 6 colunas
             cols_map = st.columns(6)
             mapeamento_usuario = {}
             
-            # Itera sobre campos e distribui nas 6 colunas
-            lista_campos = list(CAMPOS_SISTEMA.items())
+            # Opções do sistema (invertido)
+            opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
             
-            for i, (label_sistema, key_sistema) in enumerate(lista_campos):
+            # Itera sobre AS COLUNAS DO ARQUIVO
+            for i, col_arquivo in enumerate(colunas_arquivo):
                 # Tenta sugerir automaticamente
                 index_sugestao = 0
-                for idx, col_file in enumerate(colunas_arquivo):
-                    if key_sistema.split('_')[0] in col_file.lower(): # Sugestão básica
+                for idx, op in enumerate(opcoes_sistema):
+                    if op == "(Selecione)": continue
+                    # Pega a chave interna para comparar
+                    sys_key = CAMPOS_SISTEMA[op]
+                    # Compara nome da coluna com chave do sistema ou label
+                    if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
                         index_sugestao = idx
                         break
                 
                 col_container = cols_map[i % 6]
+                
+                # Exibe o NOME DA COLUNA DO ARQUIVO em negrito
+                col_container.markdown(f"**{col_arquivo}**")
+                
                 escolha = col_container.selectbox(
-                    f"{label_sistema}", 
-                    colunas_arquivo, 
+                    "Corresponde a:", 
+                    opcoes_sistema, 
                     index=index_sugestao,
-                    key=f"map_{key_sistema}",
-                    help=f"Coluna destino: {key_sistema}"
+                    key=f"map_col_{i}",
+                    label_visibility="collapsed" # Esconde label redundante
                 )
-                if escolha != "(Ignorar)":
-                    mapeamento_usuario[key_sistema] = escolha
+                
+                if escolha != "(Selecione)":
+                    # Mapeia: Chave do Sistema = Nome da Coluna do Arquivo
+                    chave_sistema = CAMPOS_SISTEMA[escolha]
+                    mapeamento_usuario[chave_sistema] = col_arquivo
 
         # Validação Mínima
         if 'cpf' not in mapeamento_usuario:
-            st.error("⚠️ Obrigatório mapear **CPF**.")
+            st.error("⚠️ É obrigatório selecionar a coluna correspondente ao **CPF**.")
         else:
             st.divider()
             
@@ -345,7 +372,6 @@ def tela_importacao():
                 st.subheader("🔍 Amostra Processada")
                 amostra = df.head(5).copy()
                 
-                # Cabeçalho da tabela de amostra
                 ch1, ch2, ch3 = st.columns([2, 4, 1])
                 ch1.markdown("**CPF**")
                 ch2.markdown("**Nome**")
@@ -376,7 +402,6 @@ def tela_importacao():
                     st.rerun()
                 
                 if col_act2.button("✅ FINALIZAR IMPORTAÇÃO", type="primary", use_container_width=True):
-                    # Inicia Processamento Real
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
@@ -404,7 +429,6 @@ def tela_importacao():
                     progress_bar.progress(100)
                     status_text.text("Concluído!")
                     
-                    # Salva logs (Mantido igual)
                     timestamp = datetime.now().strftime("%Y%m%d%H%M")
                     nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
                     path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
