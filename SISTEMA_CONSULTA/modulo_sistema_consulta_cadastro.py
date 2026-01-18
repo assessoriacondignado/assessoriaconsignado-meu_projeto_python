@@ -10,17 +10,57 @@ try:
 except ImportError:
     conexao = None
 
+# --- CONSTANTES E CONFIGURAÇÕES DE PESQUISA ---
+
+# Mapeamento de Nome Visual -> Coluna no Banco e Tipo de Dado
+MAPA_CAMPOS_PESQUISA = {
+    "Dados Pessoais": {
+        "Nome do Cliente": {"col": "nome", "tipo": "texto"},
+        "CPF": {"col": "cpf", "tipo": "texto"},
+        "RG (Identidade)": {"col": "identidade", "tipo": "texto"},
+        "Data de Nascimento": {"col": "data_nascimento", "tipo": "data"},
+        "Sexo": {"col": "sexo", "tipo": "texto"},
+    },
+    "Filiação e Outros": {
+        "Nome da Mãe": {"col": "nome_mae", "tipo": "texto"},
+        "Título de Eleitor": {"col": "titulo_eleitoral", "tipo": "texto"},
+        "CNH": {"col": "cnh", "tipo": "texto"},
+    }
+}
+
+# Operadores com Símbolos e SQL correspondente
+OPERADORES_SQL = {
+    "texto": {
+        "Contém (..aa..)": {"sql": "ILIKE", "mask": "%{}%", "desc": "Contém o texto digitado"},
+        "Igual (=)": {"sql": "=", "mask": "{}", "desc": "Exatamente igual"},
+        "Começa com (^aa)": {"sql": "ILIKE", "mask": "{}%", "desc": "Começa com..."},
+        "Termina com (aa$)": {"sql": "ILIKE", "mask": "%{}", "desc": "Termina com..."},
+        "Diferente (!=)": {"sql": "!=", "mask": "{}", "desc": "Não é igual a"}
+    },
+    "data": {
+        "Igual (=)": {"sql": "=", "mask": "{}", "desc": "Data exata"},
+        "Maior que (>)": {"sql": ">", "mask": "{}", "desc": "Depois de..."},
+        "Menor que (<)": {"sql": "<", "mask": "{}", "desc": "Antes de..."},
+        "Entre (><)": {"sql": "BETWEEN", "mask": "{}", "desc": "Entre datas (use ; para separar)"} 
+    }
+}
+
 # --- FUNÇÕES AUXILIARES DE LIMPEZA ---
 def limpar_texto(valor):
-    """
-    Converte None, 'None', 'null' ou espaços vazios para string vazia ''.
-    """
+    """Converte None ou 'None' para string vazia."""
     if valor is None:
         return ""
     s_valor = str(valor).strip()
     if s_valor.lower() in ['none', 'null']:
         return ""
     return s_valor
+
+def converter_data_br_iso(data_str):
+    """Tenta converter DD/MM/YYYY para YYYY-MM-DD"""
+    try:
+        return datetime.strptime(data_str.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+    except:
+        return data_str # Retorna original se falhar (deixa o banco tentar tratar ou falhar na query)
 
 # --- FUNÇÕES DE BANCO DE DADOS ---
 
@@ -62,6 +102,66 @@ def buscar_cliente_rapida(termo):
     finally:
         conn.close()
 
+def buscar_cliente_dinamica(filtros_aplicados):
+    """
+    Constrói query dinâmica baseada nos filtros.
+    filtros_aplicados = [{'col': 'nome', 'op': 'ILIKE', 'val': 'joao;maria', 'mask': '%{}%', 'tipo': 'texto'}, ...]
+    """
+    conn = get_db_connection()
+    if not conn: return []
+
+    base_query = "SELECT id, nome, cpf, identidade FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE 1=1 "
+    params = []
+
+    for filtro in filtros_aplicados:
+        coluna = filtro['col']
+        operador_sql = filtro['op']
+        valores_raw = filtro['val'].split(';') # Regra 1.2: Split por ;
+        mascara = filtro['mask']
+        tipo_dado = filtro['tipo']
+
+        # Monta cláusula OR para múltiplos valores (ex: nome contem maria OR nome contem joao)
+        clausulas_or = []
+        
+        for v in valores_raw:
+            v = v.strip()
+            if not v: continue
+            
+            # Tratamento de Data
+            if tipo_dado == 'data':
+                v = converter_data_br_iso(v)
+
+            if operador_sql == "BETWEEN":
+                # Lógica especial para Between (espera 2 datas separadas por algo, mas aqui o ; separa valores do filtro)
+                # Para simplificar na regra do ; vamos assumir que Between não suporta múltiplos intervalos nesta versão simples,
+                # ou que o usuario digitou "data1" e o sistema espera "data2" em outro lugar. 
+                # AJUSTE: Se for BETWEEN, pegamos os 2 primeiros valores do split se existirem
+                if len(valores_raw) >= 2:
+                    clausulas_or.append(f"{coluna} BETWEEN %s AND %s")
+                    params.append(converter_data_br_iso(valores_raw[0]))
+                    params.append(converter_data_br_iso(valores_raw[1]))
+                    break # Between consome tudo
+            else:
+                # Padrão
+                clausulas_or.append(f"{coluna} {operador_sql} %s")
+                valor_final = mascara.format(v) if '{}' in mascara else v
+                params.append(valor_final)
+        
+        if clausulas_or:
+            base_query += f" AND ({' OR '.join(clausulas_or)})"
+
+    base_query += " LIMIT 50" # Limite de segurança
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(base_query, tuple(params))
+            return cur.fetchall()
+    except Exception as e:
+        st.error(f"Erro na pesquisa SQL: {e}")
+        return []
+    finally:
+        conn.close()
+
 def carregar_dados_cliente_completo(cpf):
     """Carrega todos os dados vinculados a um CPF (Formato Dict para Edição)"""
     conn = get_db_connection()
@@ -77,7 +177,6 @@ def carregar_dados_cliente_completo(cpf):
             
             if row_pessoais:
                 d_pessoal = dict(zip(cols_pessoais, row_pessoais))
-                # Limpeza de None para visualização
                 for k, v in d_pessoal.items():
                     if v is None and k != 'data_nascimento':
                         d_pessoal[k] = ""
@@ -85,11 +184,11 @@ def carregar_dados_cliente_completo(cpf):
             else:
                 dados['pessoal'] = {}
 
-            # 2. Telefones (COM ID E VALOR)
+            # 2. Telefones
             cur.execute("SELECT id, telefone FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s ORDER BY id", (cpf,))
             dados['telefones'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
-            # 3. Emails (COM ID E VALOR)
+            # 3. Emails
             cur.execute("SELECT id, email FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s ORDER BY id", (cpf,))
             dados['emails'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
@@ -103,7 +202,7 @@ def carregar_dados_cliente_completo(cpf):
                     if v is None: d_end[k] = ""
                 dados['enderecos'].append(d_end)
 
-            # 5. Convênios (COM ID E VALOR)
+            # 5. Convênios
             cur.execute("SELECT id, convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY id", (cpf,))
             dados['convenios'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
             
@@ -119,7 +218,6 @@ def salvar_novo_cliente(dados_form):
     conn = get_db_connection()
     if not conn: return False
     
-    # Aplica limpeza
     dados_limpos = {
         "nome": limpar_texto(dados_form.get('nome')),
         "cpf": limpar_texto(dados_form.get('cpf')),
@@ -150,7 +248,7 @@ def salvar_novo_cliente(dados_form):
         conn.close()
 
 def inserir_dado_extra(tipo, cpf, dados):
-    """Insere dados novos nas tabelas satélites com verificação e limpeza"""
+    """Insere dados novos nas tabelas satélites"""
     conn = get_db_connection()
     if not conn: return "erro"
     
@@ -162,19 +260,16 @@ def inserir_dado_extra(tipo, cpf, dados):
                 cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s AND telefone = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
                 cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf, valor))
-            
             elif tipo == "E-mail":
                 cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s AND email = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
                 cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email) VALUES (%s, %s)", (cpf, valor))
-            
             elif tipo == "Endereço":
                 cur.execute("""
                     INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
                     (cpf, cep, rua, cidade, uf) VALUES (%s, %s, %s, %s, %s)
                 """, (cpf, limpar_texto(dados.get('cep')), limpar_texto(dados.get('rua')), 
                       limpar_texto(dados.get('cidade')), limpar_texto(dados.get('uf'))))
-            
             elif tipo == "Convênio":
                 cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
@@ -182,7 +277,6 @@ def inserir_dado_extra(tipo, cpf, dados):
             
             conn.commit()
             return "sucesso"
-            
     except Exception as e:
         st.error(f"Erro ao inserir dado extra: {e}")
         return "erro"
@@ -190,13 +284,12 @@ def inserir_dado_extra(tipo, cpf, dados):
         conn.close()
 
 def atualizar_dados_cliente_lote(cpf, dados_editados):
-    """Atualiza dados pessoais e listas (telefones, emails) com limpeza"""
+    """Atualiza dados pessoais e listas"""
     conn = get_db_connection()
     if not conn: return False
     
     try:
         with conn.cursor() as cur:
-            # 1. Atualizar Dados Pessoais
             pessoal = dados_editados['pessoal']
             cur.execute("""
                 UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf
@@ -210,15 +303,13 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
                 cpf
             ))
             
-            # 2. Atualizar Telefones
             for item in dados_editados.get('telefones', []):
                 val = limpar_texto(item['valor'])
-                if not val: # Se vazio, exclui
+                if not val:
                     cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE id = %s", (item['id'],))
                 else:
                     cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_telefone SET telefone = %s WHERE id = %s", (val, item['id']))
             
-            # 3. Atualizar Emails
             for item in dados_editados.get('emails', []):
                 val = limpar_texto(item['valor'])
                 if not val:
@@ -226,7 +317,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
                 else:
                     cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
             
-            # 4. Atualizar Convênios
             for item in dados_editados.get('convenios', []):
                 val = limpar_texto(item['valor'])
                 if not val:
@@ -243,7 +333,7 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
         conn.close()
 
 def excluir_cliente_total(cpf):
-    """Exclusão em cascata de todos os dados do CPF"""
+    """Exclusão em cascata"""
     conn = get_db_connection()
     if not conn: return False
     
@@ -255,7 +345,6 @@ def excluir_cliente_total(cpf):
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
-            
             conn.commit()
             return True
     except Exception as e:
@@ -312,8 +401,14 @@ def modal_confirmar_exclusao(cpf):
 
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
+    
+    # Gerencia seleção de campos na sessão
+    if 'campos_selecionados_pesquisa' not in st.session_state:
+        st.session_state['campos_selecionados_pesquisa'] = []
+
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
+    # --- TAB 1: PESQUISA RÁPIDA (Mantida) ---
     with tab1:
         c1, c2 = st.columns([4, 1])
         termo = c1.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João")
@@ -325,24 +420,104 @@ def tela_pesquisa():
                 st.session_state['resultados_pesquisa'] = resultados
                 if not resultados: st.warning("Nenhum cliente localizado.")
 
-    if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
+    # --- TAB 2: PESQUISA COMPLETA (Nova Implementação) ---
+    with tab2:
+        st.caption("Selecione as colunas abaixo para habilitar os filtros na lateral.")
+        
+        # 1. SELEÇÃO DE COLUNAS (Expansores)
+        for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
+            with st.expander(f"📂 {grupo}", expanded=False):
+                cols_layout = st.columns(3)
+                for i, (nome_campo, config) in enumerate(campos.items()):
+                    # Checkbox para ativar o campo
+                    if cols_layout[i % 3].checkbox(nome_campo, key=f"chk_{config['col']}"):
+                        if nome_campo not in st.session_state['campos_selecionados_pesquisa']:
+                            st.session_state['campos_selecionados_pesquisa'].append(nome_campo)
+                    else:
+                        if nome_campo in st.session_state['campos_selecionados_pesquisa']:
+                            st.session_state['campos_selecionados_pesquisa'].remove(nome_campo)
+
         st.divider()
-        st.markdown(f"**Resultados:** {len(st.session_state['resultados_pesquisa'])}")
+
+        # 2. ÁREA DE FILTROS E RESULTADOS (Layout Colunas)
+        col_filtros, col_resultados = st.columns([1, 2.5])
         
-        cols = st.columns([1, 4, 2, 2, 1])
-        cols[0].write("**ID**"); cols[1].write("**Nome**"); cols[2].write("**CPF**"); cols[3].write("**RG**"); cols[4].write("**Ver**")
-        
-        for row in st.session_state['resultados_pesquisa']:
-            c = st.columns([1, 4, 2, 2, 1])
-            c[0].write(str(row[0]))
-            c[1].write(row[1])
-            c[2].write(row[2])
-            c[3].write(row[3])
-            if c[4].button("🔎", key=f"btn_{row[0]}"):
-                st.session_state['cliente_ativo_cpf'] = row[2]
-                st.session_state['modo_visualizacao'] = 'visualizar'
-                st.session_state['modo_edicao'] = False
-                st.rerun()
+        filtros_para_query = []
+
+        with col_filtros:
+            st.markdown("##### 🌪️ Filtros Ativos")
+            if not st.session_state['campos_selecionados_pesquisa']:
+                st.info("Nenhuma coluna selecionada.")
+            
+            # Gera os inputs baseados na seleção
+            for nome_campo in st.session_state['campos_selecionados_pesquisa']:
+                # Encontra configuração do campo
+                config_campo = None
+                for grp in MAPA_CAMPOS_PESQUISA.values():
+                    if nome_campo in grp:
+                        config_campo = grp[nome_campo]
+                        break
+                
+                if config_campo:
+                    st.markdown(f"**{nome_campo}**")
+                    tipo_dado = config_campo['tipo']
+                    opcoes_ops = list(OPERADORES_SQL[tipo_dado].keys())
+                    
+                    c_op, c_val = st.columns([1.5, 2.5])
+                    operador_escolhido = c_op.selectbox(
+                        "Op", opcoes_ops, key=f"op_{config_campo['col']}", 
+                        help="Selecione o operador lógico"
+                    )
+                    
+                    # Tooltip do operador selecionado
+                    desc_op = OPERADORES_SQL[tipo_dado][operador_escolhido]['desc']
+                    c_op.caption(f"ℹ️ {desc_op}")
+
+                    valor_input = c_val.text_input(
+                        "Valor", key=f"val_{config_campo['col']}",
+                        placeholder="Ex: joao;maria" if tipo_dado == 'texto' else "DD/MM/YYYY"
+                    )
+
+                    if valor_input:
+                        op_config = OPERADORES_SQL[tipo_dado][operador_escolhido]
+                        filtros_para_query.append({
+                            'col': config_campo['col'],
+                            'op': op_config['sql'],
+                            'mask': op_config['mask'],
+                            'val': valor_input,
+                            'tipo': tipo_dado
+                        })
+                    st.divider()
+
+            if filtros_para_query:
+                if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
+                    res_completa = buscar_cliente_dinamica(filtros_para_query)
+                    st.session_state['resultados_pesquisa'] = res_completa
+                    if not res_completa:
+                        st.warning("Nenhum registro encontrado com esses critérios.")
+
+        # 3. EXIBIÇÃO DE RESULTADOS (Compartilhada)
+        with col_resultados:
+            if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
+                st.markdown(f"### 📋 Resultados: {len(st.session_state['resultados_pesquisa'])}")
+                
+                # Cabeçalho Fixo
+                cols_head = st.columns([1, 4, 2, 2, 1])
+                cols_head[0].write("**ID**"); cols_head[1].write("**Nome**"); cols_head[2].write("**CPF**"); cols_head[3].write("**RG**"); cols_head[4].write("**Ação**")
+                st.divider()
+
+                # Lista Scrollável (Simulada)
+                for row in st.session_state['resultados_pesquisa']:
+                    c = st.columns([1, 4, 2, 2, 1])
+                    c[0].write(str(row[0]))
+                    c[1].write(row[1])
+                    c[2].write(row[2])
+                    c[3].write(row[3])
+                    if c[4].button("🔎", key=f"btn_res_{row[0]}"):
+                        st.session_state['cliente_ativo_cpf'] = row[2]
+                        st.session_state['modo_visualizacao'] = 'visualizar'
+                        st.session_state['modo_edicao'] = False
+                        st.rerun()
 
     st.divider()
     if st.button("➕ NOVO CADASTRO", type="primary"):
@@ -404,13 +579,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                      st.session_state['modo_edicao'] = False
                      st.rerun()
             else:
-                # TYPE PRIMARY (Vermelho/Destaque)
                 if st.button("✏️ Editar", type="primary", use_container_width=True):
                     st.session_state['modo_edicao'] = True
                     st.rerun()
         
         with c_btn_del:
-            # TYPE PRIMARY (Vermelho/Destaque)
             if st.button("🗑️ Excluir", type="primary", use_container_width=True):
                 modal_confirmar_exclusao(cpf)
 
