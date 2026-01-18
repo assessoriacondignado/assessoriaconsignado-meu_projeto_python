@@ -96,7 +96,6 @@ def buscar_cliente_rapida(termo):
     termo = termo.strip()
     termo_limpo = ''.join(filter(str.isdigit, termo))
     
-    # Alteração: Adicionado 't' alias e JOIN/EXISTS para buscar telefone também
     query = """
         SELECT t.id, t.nome, t.cpf, t.identidade 
         FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
@@ -111,7 +110,6 @@ def buscar_cliente_rapida(termo):
     
     try:
         with conn.cursor() as cur:
-            # Passamos o parametro termo para o telefone também
             cur.execute(query, (param_termo, param_termo, termo_limpo if termo_limpo else '00000000000', param_termo))
             return cur.fetchall()
     finally:
@@ -467,6 +465,20 @@ def modal_confirmar_exclusao(cpf):
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
     
+    # --- Alteração: Inicialização do Set de Controle de Filtros ---
+    if 'filtros_ativos_set' not in st.session_state:
+        st.session_state['filtros_ativos_set'] = set()
+
+    # --- Alteração: Função de Callback para Sincronizar ---
+    def atualizar_set_filtros(chave_segura):
+        # A chave do widget é diferente da chave lógica para controle
+        widget_key = f"chk_widget_{chave_segura}"
+        if st.session_state.get(widget_key):
+             st.session_state['filtros_ativos_set'].add(chave_segura)
+        else:
+            if chave_segura in st.session_state['filtros_ativos_set']:
+                st.session_state['filtros_ativos_set'].remove(chave_segura)
+
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
@@ -496,9 +508,20 @@ def tela_pesquisa():
                     # Layout de 2 colunas para checkboxes ficar melhor em espaço reduzido
                     cols_chk = st.columns(2)
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        # Checkbox com state nativo, USANDO CHAVE SEGURA
+                        # Gera chave única baseada no nome da coluna
                         safe_key = f"chk_{config['col']}".replace(".", "_").replace(" ", "_")
-                        cols_chk[i % 2].checkbox(nome_campo, key=safe_key)
+                        
+                        # Verifica se está no SET seguro
+                        esta_ativo = safe_key in st.session_state['filtros_ativos_set']
+
+                        # Checkbox com Callback para garantir persistência
+                        cols_chk[i % 2].checkbox(
+                            nome_campo, 
+                            value=esta_ativo,
+                            key=f"chk_widget_{safe_key}", # Chave do widget visual
+                            on_change=atualizar_set_filtros, # Ação ao clicar
+                            args=(safe_key,) # Argumento para a função
+                        )
 
         # --- DIREITA: LOCAL PARA APLICAR O FILTRO ---
         with col_filtros:
@@ -509,10 +532,10 @@ def tela_pesquisa():
                 # Itera para renderizar inputs dos selecionados
                 for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        # Alteração: usando a mesma chave segura da esquerda
                         safe_key = f"chk_{config['col']}".replace(".", "_").replace(" ", "_")
                         
-                        if st.session_state.get(safe_key, False):
+                        # --- Alteração: Verificação robusta pelo SET ---
+                        if safe_key in st.session_state['filtros_ativos_set']:
                             count_ativos += 1
                             st.markdown(f"**{nome_campo}**")
                             
@@ -578,7 +601,6 @@ def tela_pesquisa():
                         st.warning("Configure pelo menos um filtro.")
 
     # PARTE 2: PARTE DE BAIXO (RESULTADOS)
-    # Alteração: Movi este bloco para fora do 'with tab2' para aparecer em ambas as abas
     st.divider()
     with st.container():
         if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
