@@ -141,6 +141,43 @@ def inserir_dado_extra(tipo, cpf, dados):
     finally:
         conn.close()
 
+# --- COMPONENTE MODAL (NOVO) ---
+@st.dialog("➕ Inserir Dados Extras")
+def modal_inserir_dados(cpf, nome_cliente):
+    st.write(f"Cliente: **{nome_cliente}**")
+    
+    # Opções para digitar
+    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Convênio"])
+    
+    with st.form("form_insercao_modal"):
+        dados_submit = {}
+        
+        if tipo_insercao == "Telefone":
+            dados_submit['valor'] = st.text_input("Novo Telefone", placeholder="(00) 00000-0000")
+        
+        elif tipo_insercao == "E-mail":
+            dados_submit['valor'] = st.text_input("Novo E-mail")
+        
+        elif tipo_insercao == "Endereço":
+            dados_submit['cep'] = st.text_input("CEP")
+            dados_submit['rua'] = st.text_input("Rua")
+            dados_submit['cidade'] = st.text_input("Cidade")
+            dados_submit['uf'] = st.text_input("UF", max_chars=2)
+        
+        elif tipo_insercao == "Convênio":
+                dados_submit['valor'] = st.text_input("Nome do Convênio")
+        
+        # Botão de confirmação
+        if st.form_submit_button("✅ Salvar Inclusão"):
+            sucesso = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
+            
+            if sucesso:
+                st.success(f"{tipo_insercao} inserido com sucesso!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Erro ao inserir.")
+
 # --- INTERFACE GRÁFICA ---
 
 def tela_pesquisa():
@@ -199,7 +236,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     if st.button("⬅️ Voltar"):
         st.session_state['cliente_ativo_cpf'] = None
         st.session_state['modo_visualizacao'] = None
-        st.session_state['sidebar_inserir_ativo'] = False
         st.rerun()
     
     # --- MODO NOVO CADASTRO ---
@@ -304,56 +340,9 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
 
     st.divider()
 
-    # --- BARRA DE AÇÕES ---
-    col_btns = st.columns([1, 1, 1, 3])
-    with col_btns[1]:
-        # Botão que ativa a Sidebar
-        if st.button("➕ Inserir Dados"):
-            st.session_state['sidebar_inserir_ativo'] = True
-
-    # --- SIDEBAR DE INSERÇÃO (AJUSTE SOLICITADO) ---
-    if st.session_state.get('sidebar_inserir_ativo'):
-        with st.sidebar:
-            st.markdown("### ➕ Inserir Dados")
-            st.info(f"Cliente: {pessoal.get('nome')}")
-            
-            # Opções para digitar
-            tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Convênio"])
-            
-            with st.form("form_insercao_lateral"):
-                dados_submit = {}
-                
-                if tipo_insercao == "Telefone":
-                    dados_submit['valor'] = st.text_input("Novo Telefone", placeholder="(00) 00000-0000")
-                
-                elif tipo_insercao == "E-mail":
-                    dados_submit['valor'] = st.text_input("Novo E-mail")
-                
-                elif tipo_insercao == "Endereço":
-                    dados_submit['cep'] = st.text_input("CEP")
-                    dados_submit['rua'] = st.text_input("Rua")
-                    dados_submit['cidade'] = st.text_input("Cidade")
-                    dados_submit['uf'] = st.text_input("UF", max_chars=2)
-                
-                elif tipo_insercao == "Convênio":
-                     dados_submit['valor'] = st.text_input("Nome do Convênio")
-                
-                # Botão de confirmação
-                if st.form_submit_button("✅ Salvar Inclusão"):
-                    # Simula a inserção (ou chama a função real se ajustada)
-                    sucesso = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
-                    
-                    if sucesso:
-                        st.success(f"{tipo_insercao} inserido com sucesso!")
-                        time.sleep(1)
-                        st.session_state['sidebar_inserir_ativo'] = False
-                        st.rerun()
-                    else:
-                        st.error("Erro ao inserir.")
-            
-            if st.button("Fechar Aba"):
-                st.session_state['sidebar_inserir_ativo'] = False
-                st.rerun()
+    # --- BOTÃO PARA ABRIR O POP-UP ---
+    if st.button("➕ Inserir Dados Extras", type="secondary"):
+        modal_inserir_dados(cpf, pessoal.get('nome'))
 
 def app_cadastro():
     if 'modo_visualizacao' not in st.session_state:
