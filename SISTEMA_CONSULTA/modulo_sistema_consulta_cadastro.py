@@ -19,7 +19,7 @@ MAPA_CAMPOS_PESQUISA = {
         "CPF": {"col": "t.cpf", "tipo": "texto"},
         "RG (Identidade)": {"col": "t.identidade", "tipo": "texto"},
         "Data de Nascimento": {"col": "t.data_nascimento", "tipo": "data"},
-        "Idade": {"col": "age(t.data_nascimento)", "tipo": "numero_calculado"}, # Calculado via SQL
+        "Idade": {"col": "age(t.data_nascimento)", "tipo": "numero_calculado"}, 
         "Sexo": {"col": "t.sexo", "tipo": "texto"},
     },
     "Contatos e Endereço": {
@@ -54,7 +54,8 @@ OPERADORES_SQL = {
         "Igual (=)": {"sql": "=", "mask": "{}", "desc": "Igual a"},
         "Maior que (>)": {"sql": ">", "mask": "{}", "desc": "Maior que"},
         "Menor que (<)": {"sql": "<", "mask": "{}", "desc": "Menor que"},
-        "Entre (><)": {"sql": "BETWEEN", "mask": "{}", "desc": "Faixa de valores"}
+        "Entre (><)": {"sql": "BETWEEN", "mask": "{}", "desc": "Faixa de valores"},
+        "Vazio (Ø)": {"sql": "IS NULL", "mask": "", "desc": "Sem valor"}
     }
 }
 
@@ -172,14 +173,17 @@ def buscar_cliente_dinamica(filtros_aplicados):
                     params.append(val_final)
 
         elif tipo_dado == 'numero_calculado': # Idade
-            # Extract Year from Age
-            if operador_sql == 'BETWEEN':
-                where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) BETWEEN %s AND %s")
-                params.append(filtro['val'][0]) # Min
-                params.append(filtro['val'][1]) # Max
+            # Extract Year from Age for calculation
+            if "IS NULL" in operador_sql:
+                 where_clauses.append(f"t.data_nascimento IS NULL")
             else:
-                where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) {operador_sql} %s")
-                params.append(filtro['val'])
+                if operador_sql == 'BETWEEN':
+                    where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) BETWEEN %s AND %s")
+                    params.append(filtro['val'][0]) # Min
+                    params.append(filtro['val'][1]) # Max
+                else:
+                    where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) {operador_sql} %s")
+                    params.append(filtro['val'])
 
         else: # Campos normais da tabela principal (Texto ou Data)
             if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
@@ -196,17 +200,18 @@ def buscar_cliente_dinamica(filtros_aplicados):
             
             else:
                 # Texto com ; (OR)
-                valores = str(filtro['val']).split(';')
-                ors = []
-                for v in valores:
-                    v = v.strip()
-                    if v:
-                        ors.append(f"{coluna} {operador_sql} %s")
-                        val_final = filtro['mask'].format(v) if '{}' in filtro['mask'] else v
-                        params.append(val_final)
-                
-                if ors:
-                    where_clauses.append(f"({' OR '.join(ors)})")
+                if filtro['val']:
+                    valores = str(filtro['val']).split(';')
+                    ors = []
+                    for v in valores:
+                        v = v.strip()
+                        if v:
+                            ors.append(f"{coluna} {operador_sql} %s")
+                            val_final = filtro['mask'].format(v) if '{}' in filtro['mask'] else v
+                            params.append(val_final)
+                    
+                    if ors:
+                        where_clauses.append(f"({' OR '.join(ors)})")
 
     full_query = f"{base_query} WHERE {' AND '.join(where_clauses)} LIMIT 50"
 
@@ -483,26 +488,38 @@ def tela_pesquisa():
             with st.expander(f"📂 {grupo}", expanded=False):
                 cols_layout = st.columns(3)
                 for i, (nome_campo, config) in enumerate(campos.items()):
-                    if cols_layout[i % 3].checkbox(nome_campo, key=f"chk_{nome_campo}"):
-                        if nome_campo not in st.session_state['campos_selecionados_pesquisa']:
+                    # CORREÇÃO: Checkbox com 'value' vinculado ao estado
+                    is_selected = nome_campo in st.session_state['campos_selecionados_pesquisa']
+                    if cols_layout[i % 3].checkbox(nome_campo, value=is_selected, key=f"chk_{nome_campo}"):
+                        if not is_selected:
                             st.session_state['campos_selecionados_pesquisa'].append(nome_campo)
                     else:
-                        if nome_campo in st.session_state['campos_selecionados_pesquisa']:
+                        if is_selected:
                             st.session_state['campos_selecionados_pesquisa'].remove(nome_campo)
 
         st.divider()
 
-        col_filtros, col_resultados = st.columns([1.2, 2.5]) # Ajuste largura
+        col_filtros, col_resultados = st.columns([1.2, 2.5])
         filtros_para_query = []
 
         with col_filtros:
-            # --- ÁREA LARANJA CLARO ---
-            with st.warning("🌪️ Filtros Ativos"): # Container Laranja nativo
+            # --- ÁREA DE FILTROS (LARANJA) ---
+            with st.warning("🌪️ Filtros Ativos"):
                 if not st.session_state['campos_selecionados_pesquisa']:
                     st.info("Nenhuma coluna selecionada.")
                 
+                # Validação para remover campos órfãos (ex: se o código mudou chaves)
+                campos_validos = []
+                for nc in st.session_state['campos_selecionados_pesquisa']:
+                    encontrado = False
+                    for grp in MAPA_CAMPOS_PESQUISA.values():
+                        if nc in grp:
+                            encontrado = True
+                            break
+                    if encontrado: campos_validos.append(nc)
+                st.session_state['campos_selecionados_pesquisa'] = campos_validos
+
                 for nome_campo in st.session_state['campos_selecionados_pesquisa']:
-                    # Encontra configuração
                     config_campo = None
                     for grp in MAPA_CAMPOS_PESQUISA.values():
                         if nome_campo in grp:
@@ -520,31 +537,25 @@ def tela_pesquisa():
 
                         opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
                         
-                        # Layout Operador
                         operador_escolhido = st.selectbox("Op", opcoes_ops, key=f"op_{nome_campo}", label_visibility="collapsed")
                         desc_op = OPERADORES_SQL[tipo_ops][operador_escolhido]['desc']
                         st.caption(f"ℹ️ {desc_op}")
 
-                        # Inputs de Valor
                         sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
                         
-                        # Logica para campos vazios
-                        if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
-                            valor_final = None # Não precisa de valor
+                        # Inputs
+                        valor_final = None
                         
-                        # Lógica para DATAS (Intervalo)
+                        if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
+                            valor_final = "ignore" # Marcador
+                        
                         elif config_campo['tipo'] == 'data':
                             c_d1, c_d2 = st.columns(2)
                             d1 = c_d1.date_input("De", value=None, key=f"d1_{nome_campo}", format="DD/MM/YYYY")
                             d2 = c_d2.date_input("Até", value=None, key=f"d2_{nome_campo}", format="DD/MM/YYYY")
-                            if d1 and d2:
-                                valor_final = [converter_data_iso(d1), converter_data_iso(d2)]
-                            elif d1: # Se só preencher um, considera igual ou maior
-                                valor_final = [converter_data_iso(d1), converter_data_iso(d1)] 
-                            else:
-                                valor_final = None
-
-                        # Lógica para IDADE (Número)
+                            if d1 and d2: valor_final = [converter_data_iso(d1), converter_data_iso(d2)]
+                            elif d1: valor_final = [converter_data_iso(d1), converter_data_iso(d1)] 
+                            
                         elif config_campo['tipo'] == 'numero_calculado':
                             if operador_escolhido == "Entre (><)":
                                 c_n1, c_n2 = st.columns(2)
@@ -553,15 +564,12 @@ def tela_pesquisa():
                                 valor_final = [n1, n2]
                             else:
                                 valor_final = st.number_input("Valor", step=1, key=f"n_val_{nome_campo}")
-
-                        # Lógica Padrão (Texto)
+                        
                         else:
                             valor_input = st.text_input("Valor", key=f"val_{nome_campo}", placeholder="Ex: joao;maria")
-                            valor_final = valor_input
+                            if valor_input: valor_final = valor_input
 
-                        # Adiciona ao filtro se valido
-                        # Se for operador de Vazio, adiciona mesmo sem valor
-                        if valor_final is not None or "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
+                        if valor_final is not None:
                             filtros_para_query.append({
                                 'col': config_campo['col'],
                                 'op': sql_op_code,
@@ -572,7 +580,7 @@ def tela_pesquisa():
                             })
                         st.divider()
 
-                if filtros_para_query:
+                if filtros_para_query or any("IS NULL" in f['op'] for f in filtros_para_query):
                     if st.button("🚀 EXECUTAR PESQUISA", type="primary", use_container_width=True):
                         res_completa = buscar_cliente_dinamica(filtros_para_query)
                         st.session_state['resultados_pesquisa'] = res_completa
