@@ -124,7 +124,6 @@ def get_tipos_importacao():
     if not conn: return []
     try:
         with conn.cursor() as cur:
-            # Verifica se a tabela existe
             cur.execute("SELECT to_regclass('sistema_consulta.sistema_importacao_tipo')")
             if cur.fetchone()[0] is None: return []
             
@@ -149,6 +148,38 @@ def salvar_tipo_importacao(convenio, planilha, colunas_json):
             return True
     except Exception as e:
         st.error(f"Erro ao salvar configuração: {e}")
+        return False
+    finally:
+        conn.close()
+
+def atualizar_tipo_importacao(id_tipo, convenio, planilha, colunas_json):
+    conn = get_db_connection()
+    if not conn: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE sistema_consulta.sistema_importacao_tipo 
+                SET convenio = %s, nome_planilha = %s, colunas_filtro = %s
+                WHERE id = %s
+            """, (convenio, planilha, colunas_json, id_tipo))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Erro ao atualizar configuração: {e}")
+        return False
+    finally:
+        conn.close()
+
+def excluir_tipo_importacao(id_tipo):
+    conn = get_db_connection()
+    if not conn: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sistema_consulta.sistema_importacao_tipo WHERE id = %s", (id_tipo,))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Erro ao excluir configuração: {e}")
         return False
     finally:
         conn.close()
@@ -224,7 +255,7 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         c_cid.text_input("Cidade", value=get_val('cidade'), disabled=True)
         c_uf.text_input("UF", value=get_val('uf'), disabled=True)
 
-# --- PROCESSAMENTO EM LOTE (USANDO TABELA DE STAGING DO CONFIG) ---
+# --- PROCESSAMENTO EM LOTE ---
 
 def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabela_destino):
     conn = get_db_connection()
@@ -233,7 +264,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
-    # Colunas que o sistema espera para o staging (ordem fixa para o CSV buffer)
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                     'nome_pai', 'campanhas',
                     'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf']
@@ -243,8 +273,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     df_staging = pd.DataFrame()
     df_staging['sessao_id'] = [sessao_id] * len(df)
 
-    # Regras de tratamento
     df_staging['cpf'] = df[mapeamento_usuario['cpf']].apply(limpar_formatar_cpf)
+    
     mask_cpf_valido = df_staging['cpf'].str.len() == 11
     df_erros_cpf = df[~mask_cpf_valido] 
     if not df_erros_cpf.empty:
@@ -287,15 +317,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
-        # INSERÇÃO DIRETA NA TABELA DE STAGING DEFINIDA NA CONFIG
-        # OBS: A tabela já deve existir no banco com as colunas corretas.
-        
-        # COPY para a tabela de destino
         cur.copy_expert(f"COPY {tabela_destino} ({','.join(cols_staging)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
         
-        # DISTRIBUIÇÃO (Lendo da tabela de destino)
-        
-        # A) CPFs
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf)
             SELECT DISTINCT cpf FROM {tabela_destino} WHERE sessao_id = %s
@@ -304,7 +327,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 
         id_imp_str = str(id_importacao_db)
 
-        # B) Dados Cadastrais (UPSERT)
         cur.execute(f"""
             WITH rows_to_insert AS (
                 SELECT * FROM {tabela_destino} WHERE sessao_id = %s
@@ -347,7 +369,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        # C) Telefones
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT s.cpf, t.tel
@@ -358,7 +379,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # D) Emails
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email)
             SELECT DISTINCT s.cpf, e.mail
@@ -368,7 +388,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # E) Convênios
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio)
             SELECT DISTINCT cpf, convenio FROM {tabela_destino}
@@ -376,7 +395,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # F) Endereços
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, bairro, cidade, uf)
             SELECT DISTINCT cpf, cep, rua, bairro, cidade, uf FROM {tabela_destino} s
@@ -387,9 +405,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             )
         """, (sessao_id,))
 
-        # LIMPEZA DA STAGING
         cur.execute(f"DELETE FROM {tabela_destino} WHERE sessao_id = %s", (sessao_id,))
-        
         conn.commit()
         return qtd_novos, qtd_atualizados, len(lista_erros), lista_erros
 
@@ -421,7 +437,7 @@ def tela_importacao():
             if not tipos:
                 st.warning("Nenhum tipo de importação configurado. Vá para a aba 'Config' e crie um.")
             else:
-                opcoes_tipos = {t[1]: t for t in tipos} # Nome (Convenio) -> Dados
+                opcoes_tipos = {t[1]: t for t in tipos} # Nome -> Tupla
                 escolha = st.selectbox("Tipo de Importação:", ["(Selecione)"] + list(opcoes_tipos.keys()))
                 
                 if escolha != "(Selecione)":
@@ -607,39 +623,104 @@ def tela_importacao():
     # === ABA CONFIG (Submenu) ===
     with tab_config:
         st.subheader("⚙️ Configurar Novo Tipo de Importação")
-        st.info("Define quais colunas serão exibidas no mapeamento para este tipo de convênio.")
         
+        # Variáveis de Controle de Edição
+        if 'config_editando_id' not in st.session_state:
+            st.session_state['config_editando_id'] = None
+            st.session_state['config_convenio'] = ""
+            st.session_state['config_planilha'] = ""
+            st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+
         with st.form("form_config_importacao"):
-            conf_convenio = st.text_input("Nome do Convênio (Ex: INSS, SIAPE)")
-            conf_planilha = st.text_input("Nome da Tabela de Destino (Ex: sistema_consulta.importacao_staging)")
+            conf_convenio = st.text_input("Nome do Convênio (Tipo)", value=st.session_state['config_convenio'])
+            conf_planilha = st.text_input("Nome da Planilha (Referência)", value=st.session_state['config_planilha'])
             
             st.markdown("Selecione as colunas que devem aparecer para mapeamento:")
             opcoes_campos = list(CAMPOS_SISTEMA.keys())
-            default_opts = ["CPF (Obrigatório)", "Nome do Cliente"]
-            conf_colunas = st.multiselect("Colunas para Filtro", options=opcoes_campos, default=default_opts)
             
-            if st.form_submit_button("💾 Salvar Configuração"):
-                if not conf_convenio or not conf_planilha:
-                    st.error("Nome do convênio e Tabela de Destino são obrigatórios.")
+            # Garante que as colunas salvas no estado estejam nas opções disponíveis
+            default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_campos]
+            if not default_opts: default_opts = ["CPF (Obrigatório)", "Nome do Cliente"]
+            
+            conf_colunas = st.multiselect("Colunas para Filtro (Mapeamento)", options=opcoes_campos, default=default_opts)
+            
+            # Botões do Formulário
+            c_submit, c_cancel = st.columns([1, 1])
+            
+            label_btn = "💾 Salvar Configuração" if not st.session_state['config_editando_id'] else "🔄 Atualizar Configuração"
+            submitted = c_submit.form_submit_button(label_btn)
+            
+            # Botão Cancelar fora do form_submit_button padrão (gambiarra visual ou usar state change fora)
+            # Como st.form tem limitações, o cancelamento é melhor gerido fora se precisar de lógica imediata,
+            # mas aqui colocaremos um botão fora do form para cancelar a edição.
+
+            if submitted:
+                if not conf_convenio:
+                    st.error("O nome do convênio é obrigatório.")
                 else:
                     json_colunas = json.dumps(conf_colunas)
-                    if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
-                        st.success(f"Configuração '{conf_convenio}' salva com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
+                    
+                    if st.session_state['config_editando_id']:
+                        # ATUALIZAR
+                        if atualizar_tipo_importacao(st.session_state['config_editando_id'], conf_convenio, conf_planilha, json_colunas):
+                            st.success(f"Configuração '{conf_convenio}' atualizada!")
+                            # Limpar estado
+                            st.session_state['config_editando_id'] = None
+                            st.session_state['config_convenio'] = ""
+                            st.session_state['config_planilha'] = ""
+                            st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+                            time.sleep(1)
+                            st.rerun()
+                    else:
+                        # SALVAR NOVO
+                        if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
+                            st.success(f"Configuração '{conf_convenio}' salva com sucesso!")
+                            st.session_state['config_convenio'] = ""
+                            st.session_state['config_planilha'] = ""
+                            st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+                            time.sleep(1)
+                            st.rerun()
+
+        # Botão Cancelar Edição (fora do form)
+        if st.session_state['config_editando_id']:
+            if st.button("❌ Cancelar Edição"):
+                st.session_state['config_editando_id'] = None
+                st.session_state['config_convenio'] = ""
+                st.session_state['config_planilha'] = ""
+                st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+                st.rerun()
         
         st.divider()
         st.markdown("#### Configurações Existentes")
         lista_tipos = get_tipos_importacao()
+        
         if lista_tipos:
             for item in lista_tipos:
+                # item: (id, convenio, nome_planilha, colunas_filtro)
                 with st.expander(f"📂 {item[1]}"):
-                    st.write(f"**Tabela Destino:** {item[2]}")
+                    st.write(f"**Planilha Ref:** {item[2]}")
+                    colunas_list = []
                     try:
-                        cols = json.loads(item[3])
-                        st.code(", ".join(cols), language="text")
+                        colunas_list = json.loads(item[3])
+                        st.code(", ".join(colunas_list), language="text")
                     except:
                         st.write("Erro ao ler colunas.")
+                    
+                    # Botões de Ação
+                    c_edit, c_del = st.columns([1, 1])
+                    
+                    if c_edit.button("✏️ Editar", key=f"btn_edit_{item[0]}"):
+                        st.session_state['config_editando_id'] = item[0]
+                        st.session_state['config_convenio'] = item[1]
+                        st.session_state['config_planilha'] = item[2]
+                        st.session_state['config_colunas'] = colunas_list
+                        st.rerun()
+                        
+                    if c_del.button("🗑️ Excluir", key=f"btn_del_{item[0]}", type="primary"):
+                        if excluir_tipo_importacao(item[0]):
+                            st.success("Configuração excluída.")
+                            time.sleep(1)
+                            st.rerun()
         else:
             st.info("Nenhuma configuração cadastrada.")
 
