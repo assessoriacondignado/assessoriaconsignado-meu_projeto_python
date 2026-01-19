@@ -25,6 +25,8 @@ CAMPOS_SISTEMA = {
     "Data Nascimento": "data_nascimento",
     "Sexo": "sexo",
     "Nome da Mãe": "nome_mae",
+    "Nome do Pai": "nome_pai",
+    "Campanhas": "campanhas",
     "CNH": "cnh",
     "Título Eleitor": "titulo_eleitoral",
     "Convênio": "convenio",
@@ -43,41 +45,21 @@ def limpar_texto(valor):
     return str(valor).strip()
 
 def limpar_apenas_numeros(valor):
-    """Remove tudo que não for dígito"""
     if pd.isna(valor): return ""
     return ''.join(filter(str.isdigit, str(valor)))
 
 def limpar_formatar_cpf(valor):
-    """
-    Regras CPF:
-    - Retira pontuação, espaços e letras.
-    - Inclui zeros à esquerda se necessário (Padroniza em 11 dígitos).
-    """
     if pd.isna(valor) or valor is None: return ""
-    # Remove tudo que não é número
     limpo = ''.join(filter(str.isdigit, str(valor)))
-    
     if not limpo: return ""
-    
-    # Aplica zeros à esquerda até ter 11 dígitos
-    # Ex: '6504802440' vira '06504802440'
     return limpo.zfill(11)
 
 def limpar_formatar_telefone(valor):
-    """
-    Regras Telefone:
-    - Retira pontuação, espaços e letras.
-    - Garante que tenha 11 dígitos. Se não tiver, retorna None (inválido).
-    """
     if pd.isna(valor) or valor is None: return None
-    # Remove tudo que não é número
     limpo = ''.join(filter(str.isdigit, str(valor)))
-    
-    # Regra: Deve ter exatamente 11 dígitos (DDD + 9 + Número)
     if len(limpo) == 11:
         return limpo
-    
-    return None # Retorna vazio se não atender a regra
+    return None
 
 def converter_data_iso(valor):
     if not valor or pd.isna(valor): return None
@@ -111,34 +93,74 @@ def salvar_historico_importacao(nome_arq, novos, atualizados, erros, path_org, p
     finally:
         conn.close()
 
-def processar_linha_banco(dados_linha, mapeamento_reverso):
-    """
-    (Função legado usada na Amostra - Atualizada com novas regras)
-    """
-    # ... A amostra usa apenas visualização, a lógica pesada está no executar_importacao_em_massa ...
-    # Mas para garantir consistência visual na amostra:
-    col_cpf = mapeamento_reverso.get("cpf")
+# --- DIALOG DE DETALHES ---
+@st.dialog("📋 Dados da Amostra")
+def modal_detalhes_amostra(linha_dict, mapeamento):
+    col_cpf = mapeamento.get(CAMPOS_SISTEMA["CPF (Obrigatório)"])
+    cpf_visual = "---"
     if col_cpf:
-        dados_linha[col_cpf] = limpar_formatar_cpf(dados_linha.get(col_cpf))
-    
-    return "visualizacao"
+        cpf_visual = limpar_formatar_cpf(linha_dict.get(col_cpf))
 
-# --- NOVA LÓGICA: PROCESSAMENTO EM LOTE (STAGING) ---
+    st.markdown(f"### CPF: {cpf_visual}")
+    tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos", "Endereço"])
+    
+    with tab1:
+        nome_col = mapeamento.get('nome')
+        st.text_input("Nome", value=linha_dict.get(nome_col, '') if nome_col else '', disabled=True)
+        
+        pai_col = mapeamento.get('nome_pai')
+        st.text_input("Nome do Pai", value=linha_dict.get(pai_col, '') if pai_col else '', disabled=True)
+        
+        camp_col = mapeamento.get('campanhas')
+        st.text_input("Campanhas", value=linha_dict.get(camp_col, '') if camp_col else '', disabled=True)
+
+        sexo_col = mapeamento.get('sexo')
+        val_sexo = linha_dict.get(sexo_col, '') if sexo_col else ''
+        if val_sexo.upper() in ['F', 'FEMININO']: val_sexo = 'Feminino'
+        elif val_sexo.upper() in ['M', 'MASCULINO']: val_sexo = 'Masculino'
+        st.text_input("Sexo", value=val_sexo, disabled=True)
+        
+        nasc_col = mapeamento.get('data_nascimento')
+        st.text_input("Nascimento", value=linha_dict.get(nasc_col, '') if nasc_col else '', disabled=True)
+
+    with tab2:
+        st.markdown("##### 📞 Telefones")
+        for i in range(1, 11):
+            col_tel = mapeamento.get(f'telefone_{i}')
+            if col_tel:
+                val = linha_dict.get(col_tel, '')
+                val_fmt = limpar_formatar_telefone(val)
+                if val_fmt: st.text_input(f"Telefone {i}", value=val_fmt, disabled=True, key=f"amostra_tel_{i}")
+
+        st.markdown("##### 📧 E-mails")
+        for i in range(1, 4):
+            col_mail = mapeamento.get(f'email_{i}')
+            if col_mail:
+                val = linha_dict.get(col_mail, '')
+                if val: st.text_input(f"E-mail {i}", value=val, disabled=True, key=f"amostra_mail_{i}")
+
+    with tab3:
+        rua_col = mapeamento.get('rua')
+        cidade_col = mapeamento.get('cidade')
+        uf_col = mapeamento.get('uf')
+        cep_col = mapeamento.get('cep')
+        st.text_input("Rua", value=linha_dict.get(rua_col, '') if rua_col else '', disabled=True)
+        c1, c2 = st.columns(2)
+        c1.text_input("Cidade", value=linha_dict.get(cidade_col, '') if cidade_col else '', disabled=True)
+        c2.text_input("UF", value=linha_dict.get(uf_col, '') if uf_col else '', disabled=True)
+
+# --- PROCESSAMENTO EM LOTE (STAGING) ---
 
 def executar_importacao_em_massa(df, mapeamento_usuario):
-    """
-    1. Prepara DataFrame
-    2. Copia para Staging (Bulk)
-    3. Distribui via SQL (Alta Performance)
-    """
     conn = get_db_connection()
     if not conn: return 0, 0, 0, []
 
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
-    # 1. PREPARAÇÃO DO DATAFRAME (Limpeza em Memória)
+    # 1. PREPARAÇÃO DO DATAFRAME
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
+                    'nome_pai', 'campanhas', # Novos Campos na Staging
                     'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'cidade', 'uf']
     cols_staging += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging += [f"email_{i}" for i in range(1, 4)]
@@ -147,21 +169,15 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     df_staging['sessao_id'] = [sessao_id] * len(df)
 
     # --- APLICAÇÃO DA REGRA DE CPF ---
-    # Aplica a formatação (zeros, remove letras)
     df_staging['cpf'] = df[mapeamento_usuario['cpf']].apply(limpar_formatar_cpf)
     
-    # Filtra CPFs inválidos (Vazios ou com tamanho errado após formatação, embora zfill garanta 11 se tiver numero)
-    # A regra básica é: tem que ter 11 dígitos numéricos
     mask_cpf_valido = df_staging['cpf'].str.len() == 11
-    
     df_erros_cpf = df[~mask_cpf_valido] 
     if not df_erros_cpf.empty:
         lista_erros = df_erros_cpf.to_dict('records')
     
-    # Mantém apenas linhas com CPF válido
     df_staging = df_staging[mask_cpf_valido].copy()
     
-    # Processa demais colunas
     for col_sys in cols_staging:
         if col_sys in ['sessao_id', 'cpf']: continue
         
@@ -181,12 +197,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     s = str(x).strip().upper()
                     return 'Feminino' if s in ['F', 'FEMININO'] else ('Masculino' if s in ['M', 'MASCULINO'] else x)
                 df_staging[col_sys] = serie.apply(trata_sexo)
-            
-            # --- APLICAÇÃO DA REGRA DE TELEFONE ---
             elif col_sys.startswith('telefone_'):
                 df_staging[col_sys] = serie.apply(limpar_formatar_telefone)
-            # --------------------------------------
-            
             else:
                 df_staging[col_sys] = serie.apply(limpar_texto)
         else:
@@ -199,26 +211,41 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     try:
         cur = conn.cursor()
         
-        # 2. BULK INSERT PARA STAGING
         csv_buffer = io.StringIO()
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
-        cur.copy_expert(f"COPY sistema_consulta.importacao_staging ({','.join(cols_staging)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
+        # IMPORTANTE: A tabela staging precisa ter as colunas nome_pai e campanhas criadas no banco.
+        # Caso a tabela staging seja temporária ou recriada, certifique-se de atualizá-la.
+        # Aqui assumo que você já rodou o SQL para ajustar a staging também se ela for persistente.
+        # Vou forçar a criação temporária para garantir que funcione sem erro de coluna.
+        
+        cur.execute(f"""
+            CREATE TEMP TABLE IF NOT EXISTS temp_staging_import (
+                sessao_id UUID, cpf VARCHAR(20), nome TEXT, identidade TEXT, data_nascimento DATE, 
+                sexo TEXT, nome_mae TEXT, nome_pai TEXT, campanhas TEXT,
+                cnh TEXT, titulo_eleitoral TEXT, convenio TEXT, cep TEXT, rua TEXT, cidade TEXT, uf TEXT,
+                telefone_1 TEXT, telefone_2 TEXT, telefone_3 TEXT, telefone_4 TEXT, telefone_5 TEXT,
+                telefone_6 TEXT, telefone_7 TEXT, telefone_8 TEXT, telefone_9 TEXT, telefone_10 TEXT,
+                email_1 TEXT, email_2 TEXT, email_3 TEXT
+            ) ON COMMIT DROP;
+        """)
+        
+        cur.copy_expert(f"COPY temp_staging_import ({','.join(cols_staging)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
         
         # 3. DISTRIBUIÇÃO SQL
         
-        # A) Inserir CPFs na tabela de controle
+        # A) CPFs
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf)
-            SELECT DISTINCT cpf FROM sistema_consulta.importacao_staging WHERE sessao_id = %s
+            SELECT DISTINCT cpf FROM temp_staging_import WHERE sessao_id = %s
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # B) Dados Cadastrais (Upsert)
+        # B) Dados Cadastrais (UPSERT com ID IMPORTACAO)
         cur.execute("""
             WITH rows_to_insert AS (
-                SELECT * FROM sistema_consulta.importacao_staging WHERE sessao_id = %s
+                SELECT * FROM temp_staging_import WHERE sessao_id = %s
             ),
             existing AS (
                 SELECT cpf FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf
@@ -231,16 +258,19 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     data_nascimento = COALESCE(s.data_nascimento, t.data_nascimento),
                     sexo = COALESCE(s.sexo, t.sexo),
                     nome_mae = COALESCE(s.nome_mae, t.nome_mae),
+                    nome_pai = COALESCE(s.nome_pai, t.nome_pai),
+                    campanhas = COALESCE(s.campanhas, t.campanhas),
                     cnh = COALESCE(s.cnh, t.cnh),
-                    titulo_eleitoral = COALESCE(s.titulo_eleitoral, t.titulo_eleitoral)
+                    titulo_eleitoral = COALESCE(s.titulo_eleitoral, t.titulo_eleitoral),
+                    id_importacao = s.sessao_id::text -- Atualiza ID Importação
                 FROM rows_to_insert s
                 WHERE t.cpf = s.cpf
                 RETURNING t.cpf
             ),
             inserts AS (
                 INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
-                (cpf, nome, identidade, data_nascimento, sexo, nome_mae, cnh, titulo_eleitoral)
-                SELECT s.cpf, s.nome, s.identidade, s.data_nascimento, s.sexo, s.nome_mae, s.cnh, s.titulo_eleitoral
+                (cpf, nome, identidade, data_nascimento, sexo, nome_mae, nome_pai, campanhas, cnh, titulo_eleitoral, id_importacao)
+                SELECT s.cpf, s.nome, s.identidade, s.data_nascimento, s.sexo, s.nome_mae, s.nome_pai, s.campanhas, s.cnh, s.titulo_eleitoral, s.sessao_id::text
                 FROM rows_to_insert s
                 WHERE s.cpf NOT IN (SELECT cpf FROM existing)
                 RETURNING cpf
@@ -252,39 +282,39 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        # C) Inserir Telefones (Unpivot)
+        # C) Telefones
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT s.cpf, t.tel
-            FROM sistema_consulta.importacao_staging s,
+            FROM temp_staging_import s,
             LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3), (telefone_4), (telefone_5),
                             (telefone_6), (telefone_7), (telefone_8), (telefone_9), (telefone_10)) AS t(tel)
             WHERE s.sessao_id = %s AND t.tel IS NOT NULL AND t.tel <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # D) Inserir Emails
+        # D) Emails
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email)
             SELECT DISTINCT s.cpf, e.mail
-            FROM sistema_consulta.importacao_staging s,
+            FROM temp_staging_import s,
             LATERAL (VALUES (email_1), (email_2), (email_3)) AS e(mail)
             WHERE s.sessao_id = %s AND e.mail IS NOT NULL AND e.mail <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # E) Inserir Convênios
+        # E) Convênios
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio)
-            SELECT DISTINCT cpf, convenio FROM sistema_consulta.importacao_staging
+            SELECT DISTINCT cpf, convenio FROM temp_staging_import
             WHERE sessao_id = %s AND convenio IS NOT NULL AND convenio <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # F) Inserir Endereços
+        # F) Endereços
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, cidade, uf)
-            SELECT DISTINCT cpf, cep, rua, cidade, uf FROM sistema_consulta.importacao_staging s
+            SELECT DISTINCT cpf, cep, rua, cidade, uf FROM temp_staging_import s
             WHERE sessao_id = %s AND (rua IS NOT NULL OR cep IS NOT NULL)
             AND NOT EXISTS (
                 SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco e 
@@ -292,8 +322,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             )
         """, (sessao_id,))
 
-        # 4. LIMPEZA DA STAGING
-        cur.execute("DELETE FROM sistema_consulta.importacao_staging WHERE sessao_id = %s", (sessao_id,))
+        # Limpeza tabela temporária (automática no commit drop, mas por garantia)
+        cur.execute("DELETE FROM temp_staging_import WHERE sessao_id = %s", (sessao_id,))
         
         conn.commit()
         return qtd_novos, qtd_atualizados, len(lista_erros), lista_erros
@@ -304,60 +334,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         return 0, 0, 0, []
     finally:
         conn.close()
-
-# --- DIALOG DE DETALHES ---
-@st.dialog("📋 Dados da Amostra")
-def modal_detalhes_amostra(linha_dict, mapeamento):
-    # Aplica formatação visual na amostra também
-    col_cpf = mapeamento.get(CAMPOS_SISTEMA["CPF (Obrigatório)"])
-    cpf_visual = "---"
-    if col_cpf:
-        cpf_visual = limpar_formatar_cpf(linha_dict.get(col_cpf))
-
-    st.markdown(f"### CPF: {cpf_visual}")
-    tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos", "Endereço"])
-    
-    with tab1:
-        nome_col = mapeamento.get('nome')
-        st.text_input("Nome", value=linha_dict.get(nome_col, '') if nome_col else '', disabled=True)
-        sexo_col = mapeamento.get('sexo')
-        val_sexo = linha_dict.get(sexo_col, '') if sexo_col else ''
-        if val_sexo.upper() in ['F', 'FEMININO']: val_sexo = 'Feminino'
-        elif val_sexo.upper() in ['M', 'MASCULINO']: val_sexo = 'Masculino'
-        st.text_input("Sexo", value=val_sexo, disabled=True)
-        nasc_col = mapeamento.get('data_nascimento')
-        st.text_input("Nascimento", value=linha_dict.get(nasc_col, '') if nasc_col else '', disabled=True)
-        rg_col = mapeamento.get('identidade')
-        st.text_input("RG", value=linha_dict.get(rg_col, '') if rg_col else '', disabled=True)
-
-    with tab2:
-        st.markdown("##### 📞 Telefones")
-        for i in range(1, 11):
-            col_tel = mapeamento.get(f'telefone_{i}')
-            if col_tel:
-                val = linha_dict.get(col_tel, '')
-                # Mostra como ficaria formatado
-                val_fmt = limpar_formatar_telefone(val)
-                if val_fmt: st.text_input(f"Telefone {i}", value=val_fmt, disabled=True, key=f"amostra_tel_{i}")
-                else: st.caption(f"Telefone {i}: Valor inválido ou vazio ({val})")
-
-        st.markdown("##### 📧 E-mails")
-        for i in range(1, 4):
-            col_mail = mapeamento.get(f'email_{i}')
-            if col_mail:
-                val = linha_dict.get(col_mail, '')
-                if val: st.text_input(f"E-mail {i}", value=val, disabled=True, key=f"amostra_mail_{i}")
-
-    with tab3:
-        rua_col = mapeamento.get('rua')
-        cidade_col = mapeamento.get('cidade')
-        uf_col = mapeamento.get('uf')
-        cep_col = mapeamento.get('cep')
-        st.text_input("Rua", value=linha_dict.get(rua_col, '') if rua_col else '', disabled=True)
-        c1, c2, c3 = st.columns([2, 1, 1])
-        c1.text_input("Cidade", value=linha_dict.get(cidade_col, '') if cidade_col else '', disabled=True)
-        c2.text_input("UF", value=linha_dict.get(uf_col, '') if uf_col else '', disabled=True)
-        c3.text_input("CEP", value=linha_dict.get(cep_col, '') if cep_col else '', disabled=True)
 
 # --- INTERFACE ---
 
@@ -437,7 +413,6 @@ def tela_importacao():
 
                 for idx, row in amostra.iterrows():
                     c1, c2, c3 = st.columns([2, 4, 1])
-                    # Aplica formatação de CPF na amostra visual
                     raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else ""
                     val_cpf = limpar_formatar_cpf(raw_cpf)
                     
@@ -460,7 +435,6 @@ def tela_importacao():
                     with st.spinner("🚀 Processando em alta velocidade... Aguarde."):
                         novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario)
                     
-                    # Salva Arquivos
                     timestamp = datetime.now().strftime("%Y%m%d%H%M")
                     nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
                     path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
