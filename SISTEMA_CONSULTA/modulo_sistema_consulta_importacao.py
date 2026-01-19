@@ -211,7 +211,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
     conn = get_db_connection()
     if not conn: return 0, 0, 0, []
 
-    # UUID usado apenas para controle da tabela temporária (Staging)
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
@@ -295,7 +294,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
         """, (sessao_id,))
 
         # B) Dados Cadastrais (UPSERT com ID IMPORTACAO DO BANCO)
-        # Nota: Usamos str(id_importacao_db) para concatenar ou inserir
         id_imp_str = str(id_importacao_db)
 
         cur.execute("""
@@ -380,9 +378,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
             )
         """, (sessao_id,))
 
-        # Limpeza tabela temporária
         cur.execute("DELETE FROM temp_staging_import WHERE sessao_id = %s", (sessao_id,))
-        
         conn.commit()
         return qtd_novos, qtd_atualizados, len(lista_erros), lista_erros
 
@@ -398,154 +394,164 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
 def tela_importacao():
     st.markdown("## 📥 Importar Dados (Enterprise Mode)")
     
-    if 'etapa_importacao' not in st.session_state:
-        st.session_state['etapa_importacao'] = 'upload'
+    # --- ABAS PRINCIPAIS ---
+    tab_import, tab_config = st.tabs(["Importação", "Config"])
     
-    # 1. UPLOAD
-    if st.session_state['etapa_importacao'] == 'upload':
-        arquivo = st.file_uploader("Selecione o arquivo (CSV ou Excel)", type=['csv', 'xlsx'])
-        if arquivo:
-            try:
-                if arquivo.name.endswith('.csv'):
-                    df = pd.read_csv(arquivo, sep=';', dtype=str)
-                    if df.shape[1] < 2: 
-                        arquivo.seek(0)
-                        df = pd.read_csv(arquivo, sep=',', dtype=str)
-                else:
-                    df = pd.read_excel(arquivo, dtype=str)
-                
-                st.session_state['df_importacao'] = df
-                st.session_state['nome_arquivo_importacao'] = arquivo.name
-                st.session_state['etapa_importacao'] = 'mapeamento'
-                st.session_state['amostra_gerada'] = False 
+    # === ABA IMPORTAÇÃO ===
+    with tab_import:
+        if 'etapa_importacao' not in st.session_state:
+            st.session_state['etapa_importacao'] = 'upload'
+        
+        # 1. UPLOAD
+        if st.session_state['etapa_importacao'] == 'upload':
+            arquivo = st.file_uploader("Selecione o arquivo (CSV ou Excel)", type=['csv', 'xlsx'])
+            if arquivo:
+                try:
+                    if arquivo.name.endswith('.csv'):
+                        df = pd.read_csv(arquivo, sep=';', dtype=str)
+                        if df.shape[1] < 2: 
+                            arquivo.seek(0)
+                            df = pd.read_csv(arquivo, sep=',', dtype=str)
+                    else:
+                        df = pd.read_excel(arquivo, dtype=str)
+                    
+                    st.session_state['df_importacao'] = df
+                    st.session_state['nome_arquivo_importacao'] = arquivo.name
+                    st.session_state['etapa_importacao'] = 'mapeamento'
+                    st.session_state['amostra_gerada'] = False 
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao ler arquivo: {e}")
+
+        # 2. MAPEAMENTO & AMOSTRA
+        elif st.session_state['etapa_importacao'] == 'mapeamento':
+            df = st.session_state['df_importacao']
+            colunas_arquivo = list(df.columns)
+            
+            st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
+
+            # --- BOTÕES DE AÇÃO SUPERIORES ---
+            c_act1, c_act2, c_act3 = st.columns([1.5, 1.5, 4])
+            
+            if c_act1.button("🧹 Limpar Filtro", use_container_width=True):
+                for i in range(len(colunas_arquivo)):
+                    if f"map_col_{i}" in st.session_state:
+                        st.session_state[f"map_col_{i}"] = "(Selecione)"
                 st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao ler arquivo: {e}")
 
-    # 2. MAPEAMENTO & AMOSTRA
-    elif st.session_state['etapa_importacao'] == 'mapeamento':
-        df = st.session_state['df_importacao']
-        colunas_arquivo = list(df.columns)
-        
-        st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
-
-        # --- BOTÕES DE AÇÃO SUPERIORES ---
-        c_act1, c_act2, c_act3 = st.columns([1.5, 1.5, 4])
-        
-        if c_act1.button("🧹 Limpar Filtro", use_container_width=True):
-            for i in range(len(colunas_arquivo)):
-                if f"map_col_{i}" in st.session_state:
-                    st.session_state[f"map_col_{i}"] = "(Selecione)"
-            st.rerun()
-
-        if c_act2.button("❌ Cancelar", type="secondary", use_container_width=True):
-            del st.session_state['df_importacao']
-            del st.session_state['etapa_importacao']
-            if 'amostra_gerada' in st.session_state:
-                del st.session_state['amostra_gerada']
-            st.rerun()
-        
-        with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
-            cols_map = st.columns(6)
-            mapeamento_usuario = {}
-            opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
-            
-            for i, col_arquivo in enumerate(colunas_arquivo):
-                index_sugestao = 0
-                if f"map_col_{i}" not in st.session_state:
-                    for idx, op in enumerate(opcoes_sistema):
-                        if op == "(Selecione)": continue
-                        sys_key = CAMPOS_SISTEMA[op]
-                        if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
-                            index_sugestao = idx
-                            break
-                
-                col_container = cols_map[i % 6]
-                col_container.markdown(f"**{col_arquivo}**")
-                
-                escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
-                
-                if escolha != "(Selecione)":
-                    mapeamento_usuario[CAMPOS_SISTEMA[escolha]] = col_arquivo
-
-        if 'cpf' not in mapeamento_usuario:
-            st.error("⚠️ Obrigatório mapear **CPF**.")
-        else:
-            st.divider()
-            
-            if not st.session_state.get('amostra_gerada'):
-                if st.button("🎲 GERAR AMOSTRA (5 Linhas)", type="primary"):
-                    st.session_state['amostra_gerada'] = True
-                    st.rerun()
-            
-            if st.session_state.get('amostra_gerada'):
-                st.subheader("🔍 Amostra Processada")
-                amostra = df.head(5).copy()
-                ch1, ch2, ch3 = st.columns([2, 4, 1])
-                ch1.markdown("**CPF**")
-                ch2.markdown("**Nome**")
-                ch3.markdown("**Ação**")
-                st.divider()
-
-                for idx, row in amostra.iterrows():
-                    c1, c2, c3 = st.columns([2, 4, 1])
-                    raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else ""
-                    val_cpf = limpar_formatar_cpf(raw_cpf)
-                    
-                    val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
-                    c1.write(val_cpf)
-                    c2.write(val_nome)
-                    if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
-                        modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
-                
-                st.divider()
-                col_act1, col_act2 = st.columns([1, 1])
-                
-                if col_act1.button("❌ Cancelar (Inferior)", type="secondary", use_container_width=True):
-                    del st.session_state['df_importacao']
-                    del st.session_state['etapa_importacao']
+            if c_act2.button("❌ Cancelar", type="secondary", use_container_width=True):
+                del st.session_state['df_importacao']
+                del st.session_state['etapa_importacao']
+                if 'amostra_gerada' in st.session_state:
                     del st.session_state['amostra_gerada']
-                    st.rerun()
+                st.rerun()
+            
+            with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
+                cols_map = st.columns(6)
+                mapeamento_usuario = {}
+                opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
                 
-                if col_act2.button("✅ FINALIZAR (Processamento Rápido)", type="primary", use_container_width=True):
+                for i, col_arquivo in enumerate(colunas_arquivo):
+                    index_sugestao = 0
+                    if f"map_col_{i}" not in st.session_state:
+                        for idx, op in enumerate(opcoes_sistema):
+                            if op == "(Selecione)": continue
+                            sys_key = CAMPOS_SISTEMA[op]
+                            if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
+                                index_sugestao = idx
+                                break
                     
-                    timestamp = datetime.now().strftime("%Y%m%d%H%M")
-                    nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
+                    col_container = cols_map[i % 6]
+                    col_container.markdown(f"**{col_arquivo}**")
                     
-                    # 1. Salvar Arquivo Original
-                    path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
-                    df.to_csv(path_final, sep=';', index=False)
+                    escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
+                    
+                    if escolha != "(Selecione)":
+                        mapeamento_usuario[CAMPOS_SISTEMA[escolha]] = col_arquivo
 
-                    # 2. Registrar Início da Importação e Pegar ID
-                    user_id = st.session_state.get('usuario_id', '0')
-                    user_nome = st.session_state.get('usuario_nome', 'Sistema')
-                    
-                    id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
-                    
-                    if id_imp:
-                        with st.spinner(f"🚀 Processando Importação ID: {id_imp}... Aguarde."):
-                            # 3. Executar Importação usando o ID do Banco
-                            novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp)
+            if 'cpf' not in mapeamento_usuario:
+                st.error("⚠️ Obrigatório mapear **CPF**.")
+            else:
+                st.divider()
+                
+                if not st.session_state.get('amostra_gerada'):
+                    if st.button("🎲 GERAR AMOSTRA (5 Linhas)", type="primary"):
+                        st.session_state['amostra_gerada'] = True
+                        st.rerun()
+                
+                if st.session_state.get('amostra_gerada'):
+                    st.subheader("🔍 Amostra Processada")
+                    amostra = df.head(5).copy()
+                    ch1, ch2, ch3 = st.columns([2, 4, 1])
+                    ch1.markdown("**CPF**")
+                    ch2.markdown("**Nome**")
+                    ch3.markdown("**Ação**")
+                    st.divider()
+
+                    for idx, row in amostra.iterrows():
+                        c1, c2, c3 = st.columns([2, 4, 1])
+                        raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else ""
+                        val_cpf = limpar_formatar_cpf(raw_cpf)
                         
-                        path_erro_final = ""
-                        if lista_erros:
-                            path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
-                            pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
-
-                        # 4. Atualizar Registro Final
-                        atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_erro_final)
-
-                        st.balloons()
-                        st.success(f"Importação #{id_imp} Finalizada com Sucesso! 🚀")
-                        st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
-                        
-                        time.sleep(5)
+                        val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
+                        c1.write(val_cpf)
+                        c2.write(val_nome)
+                        if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
+                            modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
+                    
+                    st.divider()
+                    col_act1, col_act2 = st.columns([1, 1])
+                    
+                    if col_act1.button("❌ Cancelar (Inferior)", type="secondary", use_container_width=True):
                         del st.session_state['df_importacao']
                         del st.session_state['etapa_importacao']
                         del st.session_state['amostra_gerada']
                         st.rerun()
-                    else:
-                        st.error("Falha ao inicializar registro de importação. Tente novamente.")
+                    
+                    if col_act2.button("✅ FINALIZAR (Processamento Rápido)", type="primary", use_container_width=True):
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d%H%M")
+                        nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
+                        
+                        # 1. Salvar Arquivo Original
+                        path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
+                        df.to_csv(path_final, sep=';', index=False)
+
+                        # 2. Registrar Início da Importação e Pegar ID
+                        user_id = st.session_state.get('usuario_id', '0')
+                        user_nome = st.session_state.get('usuario_nome', 'Sistema')
+                        
+                        id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
+                        
+                        if id_imp:
+                            with st.spinner(f"🚀 Processando Importação ID: {id_imp}... Aguarde."):
+                                # 3. Executar Importação usando o ID do Banco
+                                novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp)
+                            
+                            path_erro_final = ""
+                            if lista_erros:
+                                path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
+                                pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
+
+                            # 4. Atualizar Registro Final
+                            atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_erro_final)
+
+                            st.balloons()
+                            st.success(f"Importação #{id_imp} Finalizada com Sucesso! 🚀")
+                            st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
+                            
+                            time.sleep(5)
+                            del st.session_state['df_importacao']
+                            del st.session_state['etapa_importacao']
+                            del st.session_state['amostra_gerada']
+                            st.rerun()
+                        else:
+                            st.error("Falha ao inicializar registro de importação. Tente novamente.")
+
+    # === ABA CONFIG (Submenu) ===
+    with tab_config:
+        st.info("Configurações do sistema de importação (Em desenvolvimento)")
+        # Futura implementação de CRUD para a tabela sistema_importacao_tipo
 
 if __name__ == "__main__":
     tela_importacao()
