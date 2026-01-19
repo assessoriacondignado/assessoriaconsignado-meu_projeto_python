@@ -22,17 +22,24 @@ MAPA_CAMPOS_PESQUISA = {
         "Idade": {"col": "age(t.data_nascimento)", "tipo": "numero_calculado"}, 
         "Sexo": {"col": "t.sexo", "tipo": "texto"},
     },
-    "Contatos e Endereço": {
-        "Telefone": {"col": "tel.telefone", "table": "sistema_consulta_dados_cadastrais_telefone", "alias": "tel", "tipo": "texto_vinculado"},
-        "E-mail": {"col": "mail.email", "table": "sistema_consulta_dados_cadastrais_email", "alias": "mail", "tipo": "texto_vinculado"},
-        "Endereço (Rua/Cidade)": {"col": "endr", "table": "sistema_consulta_dados_cadastrais_endereco", "alias": "endr", "tipo": "endereco_vinculado"},
+    "Contatos": {
+        "Telefone": {"col": "telefone", "table": "sistema_consulta_dados_cadastrais_telefone", "tipo": "texto_vinculado"},
+        "E-mail": {"col": "email", "table": "sistema_consulta_dados_cadastrais_email", "tipo": "texto_vinculado"},
     },
-    "Filiação e Outros": {
+    "Endereço": {
+        "Rua": {"col": "rua", "table": "sistema_consulta_dados_cadastrais_endereco", "tipo": "texto_vinculado"},
+        "Bairro": {"col": "bairro", "table": "sistema_consulta_dados_cadastrais_endereco", "tipo": "texto_vinculado"},
+        "Cidade": {"col": "cidade", "table": "sistema_consulta_dados_cadastrais_endereco", "tipo": "texto_vinculado"},
+        "UF": {"col": "uf", "table": "sistema_consulta_dados_cadastrais_endereco", "tipo": "texto_vinculado"},
+        "CEP": {"col": "cep", "table": "sistema_consulta_dados_cadastrais_endereco", "tipo": "texto_vinculado"},
+    },
+    "Filiação e Sistema": {
         "Nome da Mãe": {"col": "t.nome_mae", "tipo": "texto"},
-        "Nome do Pai": {"col": "t.nome_pai", "tipo": "texto"}, # Novo Campo
-        "Campanhas": {"col": "t.campanhas", "tipo": "texto"},   # Novo Campo
+        "Nome do Pai": {"col": "t.nome_pai", "tipo": "texto"},
+        "Campanhas": {"col": "t.campanhas", "tipo": "texto"},
         "Título de Eleitor": {"col": "t.titulo_eleitoral", "tipo": "texto"},
         "CNH": {"col": "t.cnh", "tipo": "texto"},
+        "ID Importação": {"col": "t.id_importacao", "tipo": "texto"},
     }
 }
 
@@ -98,7 +105,6 @@ def buscar_cliente_rapida(termo):
     termo = termo.strip()
     termo_limpo = ''.join(filter(str.isdigit, termo))
     
-    # Atualizado para incluir Nome do Pai e Campanhas na busca
     query = """
         SELECT t.id, t.nome, t.cpf, t.identidade 
         FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
@@ -108,6 +114,7 @@ def buscar_cliente_rapida(termo):
             t.cpf = %s OR
             t.nome_pai ILIKE %s OR
             t.campanhas ILIKE %s OR
+            t.id_importacao ILIKE %s OR
             EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = t.cpf AND telefone ILIKE %s)
         LIMIT 30
     """
@@ -115,13 +122,13 @@ def buscar_cliente_rapida(termo):
     
     try:
         with conn.cursor() as cur:
-            # Passa o termo repetidas vezes para cada cláusula do OR
             cur.execute(query, (
                 param_termo,    # nome
                 param_termo,    # cpf ilike
                 termo_limpo if termo_limpo else '00000000000', # cpf exato
                 param_termo,    # nome_pai
                 param_termo,    # campanhas
+                param_termo,    # id_importacao
                 param_termo     # telefone
             ))
             return cur.fetchall()
@@ -137,7 +144,7 @@ def buscar_cliente_dinamica(filtros_aplicados):
 
     # Query Base (Alias t para a tabela principal)
     base_query = """
-        SELECT DISTINCT t.id, t.nome, t.cpf, t.identidade 
+        SELECT DISTINCT t.id, t.nome, t.cpf, t.identidade, t.id_importacao
         FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
     """
     
@@ -151,39 +158,22 @@ def buscar_cliente_dinamica(filtros_aplicados):
         tipo_dado = filtro['tipo']
         
         # Tratamento especial para tabelas vinculadas (EXISTS)
-        if tipo_dado in ['texto_vinculado', 'endereco_vinculado']:
+        if tipo_dado == 'texto_vinculado':
             tabela_satelite = filtro['table']
             
             # Subquery baseada no tipo
-            if tipo_dado == 'texto_vinculado': # Telefone, Email
-                sub_where = f"{coluna} {operador_sql} %s"
-                val_final = filtro['mask'].format(filtro['val']) if '{}' in filtro['mask'] else filtro['val']
-                
-                # Vazio
-                if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
-                     exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {coluna} {operador_sql})"
-                     where_clauses.append(exists_clause)
-                else:
-                    # Busca normal
-                    exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {sub_where})"
-                    where_clauses.append(exists_clause)
-                    params.append(val_final)
-
-            elif tipo_dado == 'endereco_vinculado':
-                # Busca em Rua OU Cidade OU UF
-                val_final = f"%{filtro['val']}%"
-                if "IS NULL" in operador_sql:
-                     where_clauses.append(f"NOT EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf)")
-                elif "IS NOT NULL" in operador_sql:
-                     where_clauses.append(f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf)")
-                else:
-                    exists_clause = f"""
-                        EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} 
-                        WHERE cpf = t.cpf AND (rua ILIKE %s OR cidade ILIKE %s))
-                    """
-                    where_clauses.append(exists_clause)
-                    params.append(val_final)
-                    params.append(val_final)
+            sub_where = f"{coluna} {operador_sql} %s"
+            val_final = filtro['mask'].format(filtro['val']) if '{}' in filtro['mask'] else filtro['val']
+            
+            # Vazio
+            if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
+                 exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {coluna} {operador_sql})"
+                 where_clauses.append(exists_clause)
+            else:
+                # Busca normal
+                exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {sub_where})"
+                where_clauses.append(exists_clause)
+                params.append(val_final)
 
         elif tipo_dado == 'numero_calculado': # Idade
             # Extract Year from Age for calculation
@@ -246,7 +236,7 @@ def carregar_dados_cliente_completo(cpf):
     dados = {}
     try:
         with conn.cursor() as cur:
-            # 1. Dados Pessoais (SELECT * pega as novas colunas nome_pai e campanhas)
+            # 1. Dados Pessoais (SELECT * pega as novas colunas)
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cols_pessoais = [desc[0] for desc in cur.description]
             row_pessoais = cur.fetchone()
@@ -281,6 +271,11 @@ def carregar_dados_cliente_completo(cpf):
             # 5. Convênios
             cur.execute("SELECT id, convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY id", (cpf,))
             dados['convenios'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
+
+            # 6. Agrupamentos
+            cur.execute("SELECT agrupamento FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
+            agrups = cur.fetchall()
+            dados['agrupamentos'] = [r[0] for r in agrups if r[0]]
             
     except Exception as e:
         st.error(f"Erro ao carregar cliente: {e}")
@@ -300,8 +295,8 @@ def salvar_novo_cliente(dados_form):
         "identidade": limpar_texto(dados_form.get('identidade')),
         "sexo": limpar_texto(dados_form.get('sexo')),
         "nome_mae": limpar_texto(dados_form.get('nome_mae')),
-        "nome_pai": limpar_texto(dados_form.get('nome_pai')), # Novo
-        "campanhas": limpar_texto(dados_form.get('campanhas')), # Novo
+        "nome_pai": limpar_texto(dados_form.get('nome_pai')),
+        "campanhas": limpar_texto(dados_form.get('campanhas')),
         "data_nascimento": dados_form.get('data_nascimento')
     }
 
@@ -345,9 +340,9 @@ def inserir_dado_extra(tipo, cpf, dados):
             elif tipo == "Endereço":
                 cur.execute("""
                     INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
-                    (cpf, cep, rua, cidade, uf) VALUES (%s, %s, %s, %s, %s)
+                    (cpf, cep, rua, bairro, cidade, uf) VALUES (%s, %s, %s, %s, %s, %s)
                 """, (cpf, limpar_texto(dados.get('cep')), limpar_texto(dados.get('rua')), 
-                      limpar_texto(dados.get('cidade')), limpar_texto(dados.get('uf'))))
+                      limpar_texto(dados.get('bairro')), limpar_texto(dados.get('cidade')), limpar_texto(dados.get('uf'))))
             elif tipo == "Convênio":
                 cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, valor))
                 if cur.fetchone(): return "duplicado"
@@ -369,7 +364,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
     try:
         with conn.cursor() as cur:
             pessoal = dados_editados['pessoal']
-            # Atualizado para incluir nome_pai e campanhas no UPDATE
             cur.execute("""
                 UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf
                 SET nome = %s, data_nascimento = %s, identidade = %s, 
@@ -424,6 +418,7 @@ def excluir_cliente_total(cpf):
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
             conn.commit()
@@ -449,6 +444,7 @@ def modal_inserir_dados(cpf, nome_cliente):
         elif tipo_insercao == "Endereço":
             dados_submit['cep'] = st.text_input("CEP")
             dados_submit['rua'] = st.text_input("Rua")
+            dados_submit['bairro'] = st.text_input("Bairro")
             dados_submit['cidade'] = st.text_input("Cidade")
             dados_submit['uf'] = st.text_input("UF", max_chars=2)
         elif tipo_insercao == "Convênio":
@@ -486,12 +482,9 @@ def tela_pesquisa():
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
-        # Layout Ajustado (Input menor e botões alinhados à esquerda)
         c_input, c_btn_search, c_btn_new, c_space = st.columns([3, 1.5, 2, 3.5])
-        
         termo = c_input.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João", label_visibility="collapsed")
         
-        # Botão Pesquisar (Vermelho/Primary)
         if c_btn_search.button("🔍 Pesquisar", type="primary", use_container_width=True):
             if len(termo) < 3:
                 st.warning("Digite min. 3 caracteres.")
@@ -500,16 +493,13 @@ def tela_pesquisa():
                 st.session_state['resultados_pesquisa'] = resultados
                 if not resultados: st.warning("Nenhum cliente localizado.")
         
-        # Botão Novo Cadastro (Vermelho/Primary) - Ao lado do pesquisar
         if c_btn_new.button("➕ Novo Cadastro", type="primary", use_container_width=True):
             st.session_state['cliente_ativo_cpf'] = None
             st.session_state['modo_visualizacao'] = 'novo'
             st.rerun()
 
-    # --- TAB 2: PESQUISA COMPLETA (LAYOUT GRID DUAS COLUNAS) ---
     with tab2:
         st.markdown("Configure os filtros abaixo para uma busca detalhada.")
-        
         if st.button("🧹 Limpar Filtros", type="secondary"):
             st.session_state['resultados_pesquisa'] = []
             for key in list(st.session_state.keys()):
@@ -524,45 +514,34 @@ def tela_pesquisa():
             
             for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
                 with st.expander(f"📂 {grupo}", expanded=True):
-                    # --- CRIA GRADE DE 2 COLUNAS ---
                     col_esq, col_dir = st.columns(2, gap="large")
-                    
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        # Alterna entre coluna esquerda e direita
                         col_atual = col_esq if i % 2 == 0 else col_dir
-                        
                         with col_atual:
-                            safe_key = f"{config['col']}".replace(".", "_").replace(" ", "_")
-                            
-                            # --- LINHA 1: TÍTULO + OPERADOR ---
+                            safe_key = f"{config['col']}_{config.get('table','')}".replace(".", "_").replace(" ", "_")
                             c_tit, c_op = st.columns([2, 1.5])
                             c_tit.markdown(f"**{nome_campo}**")
                             
                             tipo_ops = 'texto'
                             if config['tipo'] == 'data': tipo_ops = 'data'
                             elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
-                            elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
                             opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
                             op_key = f"op_input_{safe_key}"
                             operador_escolhido = c_op.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
                             sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
                             
-                            # --- LINHA 2: INPUT (ABAIXO) ---
                             val_key = f"val_input_{safe_key}"
                             valor_final = None
 
                             if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
                                 st.info("--- (Sem valor)")
                                 valor_final = "ignore"
-                            
                             elif config['tipo'] == 'data':
-                                # Se data, coloca inputs lado a lado
                                 cd1, cd2 = st.columns(2)
                                 d1 = cd1.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
                                 d2 = cd2.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
                                 if d1: valor_final = [converter_data_iso(d1), converter_data_iso(d2) if d2 else converter_data_iso(d1)]
-                            
                             elif config['tipo'] == 'numero_calculado':
                                 if operador_escolhido == "Entre (><)":
                                     cn1, cn2 = st.columns(2)
@@ -585,8 +564,7 @@ def tela_pesquisa():
                                     'tipo': config['tipo'],
                                     'table': config.get('table')
                                 })
-                            
-                            st.write("") # Espaçamento entre linhas
+                            st.write("") 
 
             st.write("")
             submitted = st.form_submit_button("🚀 APLICAR FILTROS", type="primary", use_container_width=True)
@@ -600,27 +578,22 @@ def tela_pesquisa():
                 else:
                     st.warning("Preencha pelo menos um campo para filtrar.")
 
-    # PARTE 2: PARTE DE BAIXO (RESULTADOS)
     st.divider()
     with st.container():
         if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
             st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
             
-            # Cabeçalho da Tabela
             cols_head = st.columns([1, 4, 3, 2])
             cols_head[0].write("**ID**")
             cols_head[1].write("**Nome**")
             cols_head[2].write("**CPF**")
             cols_head[3].write("**Ação**")
             
-            # Linhas
             for row in st.session_state['resultados_pesquisa']:
                 c = st.columns([1, 4, 3, 2])
-                c[0].write(str(row[0])) # ID
-                c[1].write(row[1])      # Nome
-                c[2].write(row[2])      # CPF
-                
-                # Ação (Visualizar)
+                c[0].write(str(row[0]))
+                c[1].write(row[1])
+                c[2].write(row[2])
                 if c[3].button("🔎 Abrir", key=f"btn_res_{row[0]}", use_container_width=True):
                     st.session_state['cliente_ativo_cpf'] = row[2]
                     st.session_state['modo_visualizacao'] = 'visualizar'
@@ -631,12 +604,15 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     if 'modo_edicao' not in st.session_state:
         st.session_state['modo_edicao'] = False
 
-    # --- BOTÃO VOLTAR (TOPO) ---
-    if st.button("⬅️ Voltar"):
-        st.session_state['cliente_ativo_cpf'] = None
-        st.session_state['modo_visualizacao'] = None
-        st.session_state['modo_edicao'] = False
-        st.rerun()
+    # --- LAYOUT DO TOPO (BOTÕES) ---
+    c_back, c_space, c_actions = st.columns([1, 2, 4])
+    
+    with c_back:
+        if st.button("⬅️ Voltar", use_container_width=True):
+            st.session_state['cliente_ativo_cpf'] = None
+            st.session_state['modo_visualizacao'] = None
+            st.session_state['modo_edicao'] = False
+            st.rerun()
 
     # --- MODO NOVO CADASTRO ---
     if modo == 'novo':
@@ -652,13 +628,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             sexo = c5.selectbox("Sexo", ["Masculino", "Feminino", "Outros"])
             mae = c6.text_input("Nome da Mãe")
             
-            # Novos Campos (Pai e Campanhas)
             c7, c8 = st.columns(2)
             pai = c7.text_input("Nome do Pai")
             campanhas = c8.text_input("Campanhas (Separar por vírgula)")
 
             if st.form_submit_button("💾 Salvar"):
-                # Salva com os novos campos
                 if salvar_novo_cliente({
                     "nome": nome, "cpf": cpf_in, "data_nascimento": nasc, 
                     "identidade": rg, "sexo": sexo, "nome_mae": mae,
@@ -675,35 +649,34 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     dados = carregar_dados_cliente_completo(cpf)
     pessoal = dados.get('pessoal', {})
     
-    # --- LAYOUT CABEÇALHO (NOME + BOTÕES LADO A LADO) ---
-    c_head_nome, c_head_btns = st.columns([0.6, 0.4])
-    
-    with c_head_nome:
-        st.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
-        st.markdown(f"**CPF:** {pessoal.get('cpf', '')} {'🔒 (Não editável)' if st.session_state['modo_edicao'] else ''}")
-
-    with c_head_btns:
-        st.write("") # Espaçamento
-        st.write("") 
-        c_btn_edit, c_btn_del = st.columns(2)
-        
-        with c_btn_edit:
-            if st.session_state['modo_edicao']:
-                 if st.button("👁️ Exibir", help="Sair do modo edição", use_container_width=True):
-                      st.session_state['modo_edicao'] = False
-                      st.rerun()
-            else:
-                if st.button("✏️ Editar", type="primary", use_container_width=True):
-                    st.session_state['modo_edicao'] = True
-                    st.rerun()
-        
-        with c_btn_del:
-            if st.button("🗑️ Excluir", type="primary", use_container_width=True):
-                modal_confirmar_exclusao(cpf)
-
+    # --- CABEÇALHO DO CLIENTE + AÇÕES ---
     st.divider()
+    c_head_info, c_head_act = st.columns([3, 2])
+    
+    with c_head_info:
+        st.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
+        st.caption(f"CPF: {pessoal.get('cpf', '')}")
 
-    # --- CONTAINER ISOLADO (FIX RENDERIZAÇÃO) ---
+    with c_head_act:
+        if modo != 'novo':
+            c_ins, c_edit, c_del = st.columns(3)
+            with c_ins:
+                if st.button("➕ Extra", help="Inserir telefone, email, etc", use_container_width=True):
+                    modal_inserir_dados(cpf, pessoal.get('nome'))
+            with c_edit:
+                if st.session_state['modo_edicao']:
+                     if st.button("👁️ Ver", help="Sair do modo edição", use_container_width=True):
+                          st.session_state['modo_edicao'] = False
+                          st.rerun()
+                else:
+                    if st.button("✏️ Editar", type="primary", use_container_width=True):
+                        st.session_state['modo_edicao'] = True
+                        st.rerun()
+            with c_del:
+                if st.button("🗑️ Excluir", type="primary", use_container_width=True):
+                    modal_confirmar_exclusao(cpf)
+
+    # --- CONTAINER ISOLADO ---
     chave_container = f"container_ficha_{'edicao' if st.session_state['modo_edicao'] else 'visualizacao'}"
     
     with st.container(border=False):
@@ -726,7 +699,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
                     e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
                     
-                    # Novos Campos de Edição
                     ec7, ec8 = st.columns(2)
                     e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
                     e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
@@ -795,12 +767,18 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                 col4.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
                 col5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
                 
-                # Filiação e Campanhas
                 col6, col7 = st.columns(2)
                 col6.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
                 col7.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
                 
                 st.text_input("Campanhas", value=pessoal.get('campanhas',''), disabled=True)
+
+                # --- NOVOS CAMPOS VISUAIS: ID IMPORTAÇÃO E AGRUPAMENTO ---
+                ci1, ci2 = st.columns(2)
+                ci1.text_input("🆔 ID Importação", value=pessoal.get('id_importacao', '---'), disabled=True)
+                
+                agrupamentos_str = ", ".join(dados.get('agrupamentos', [])) if dados.get('agrupamentos') else "---"
+                ci2.text_input("📑 Agrupamento", value=agrupamentos_str, disabled=True)
 
                 st.divider()
                 c_contato, c_endereco = st.columns(2)
@@ -814,17 +792,12 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                 with c_endereco:
                     st.markdown("### 🏠 Endereços")
                     for end in dados.get('enderecos', []):
-                        st.info(f"{end.get('rua')}, {end.get('cidade')}/{end.get('uf')} - CEP: {end.get('cep')}")
+                        st.info(f"{end.get('rua', '')}, {end.get('bairro','')} - {end.get('cidade','')}/{end.get('uf','')} - CEP: {end.get('cep','')}")
 
                 st.divider()
                 st.markdown("### 💼 Convênios")
                 st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
-                st.divider()
-
-                col_ins_lat, _ = st.columns([1, 4])
-                if col_ins_lat.button("➕ Inserir Dados Extras"):
-                    modal_inserir_dados(cpf, pessoal.get('nome'))
-
+                
 def app_cadastro():
     if 'modo_visualizacao' not in st.session_state:
         st.session_state['modo_visualizacao'] = None
