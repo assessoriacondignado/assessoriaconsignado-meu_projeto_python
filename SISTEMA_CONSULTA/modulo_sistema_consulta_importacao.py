@@ -242,7 +242,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # B) Dados Cadastrais (UPSERT com ID IMPORTACAO)
+        # B) Dados Cadastrais (UPSERT com ID IMPORTACAO CONCATENADO)
         cur.execute("""
             WITH rows_to_insert AS (
                 SELECT * FROM temp_staging_import WHERE sessao_id = %s
@@ -262,7 +262,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     campanhas = COALESCE(s.campanhas, t.campanhas),
                     cnh = COALESCE(s.cnh, t.cnh),
                     titulo_eleitoral = COALESCE(s.titulo_eleitoral, t.titulo_eleitoral),
-                    id_importacao = s.sessao_id::text -- Atualiza ID Importação
+                    id_importacao = CASE 
+                        WHEN t.id_importacao IS NULL OR t.id_importacao = '' THEN s.sessao_id::text 
+                        ELSE t.id_importacao || ';' || s.sessao_id::text 
+                    END
                 FROM rows_to_insert s
                 WHERE t.cpf = s.cpf
                 RETURNING t.cpf
