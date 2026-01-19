@@ -9,3 +9,4 @@ textColor="#262730"
 runOnSave = true
 fileWatcherType = "auto"
 headless = true
+maxUploadSize = 1024
