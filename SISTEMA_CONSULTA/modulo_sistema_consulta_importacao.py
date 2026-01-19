@@ -19,7 +19,9 @@ PASTA_ARQUIVOS = "SISTEMA_CONSULTA/ARQUIVOS_IMPORTADOS"
 os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
 
 # --- CONFIGURAÇÃO DOS CAMPOS DE MAPEAMENTO (GLOBAL) ---
+# Dicionário: Nome Visual -> Nome na Coluna do Banco de Dados (Staging e Final)
 CAMPOS_SISTEMA = {
+    # DADOS PESSOAIS
     "CPF (Obrigatório)": "cpf",
     "Nome do Cliente": "nome",
     "RG": "identidade",
@@ -31,13 +33,29 @@ CAMPOS_SISTEMA = {
     "CNH": "cnh",
     "Título Eleitor": "titulo_eleitoral",
     "Convênio": "convenio",
+    
+    # ENDEREÇO
     "CEP": "cep",
     "Rua": "rua",
     "Bairro": "bairro",
     "Cidade": "cidade",
-    "UF": "uf"
+    "UF": "uf",
+
+    # DADOS CLT / MATRÍCULA (NOVOS)
+    "Matrícula": "matricula",
+    "CNPJ Nome": "cnpj_nome",
+    "CNPJ Número": "cnpj_numero",
+    "Qtd Funcionários": "qtd_funcionarios",
+    "Data Abertura Empresa": "data_abertura_empresa",
+    "CNAE Nome": "cnae_nome",
+    "CNAE Código": "cnae_codigo",
+    "Data Admissão": "data_admissao",
+    "CBO Código": "cbo_codigo",
+    "CBO Nome": "cbo_nome",
+    "Data Início Emprego": "data_inicio_emprego"
 }
 
+# Adiciona Telefones e Emails dinamicamente
 for i in range(1, 11): CAMPOS_SISTEMA[f"Telefone {i}"] = f"telefone_{i}"
 for i in range(1, 4): CAMPOS_SISTEMA[f"E-mail {i}"] = f"email_{i}"
 
@@ -264,7 +282,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
-    # LISTA FIXA DE COLUNAS DA STAGING
+    # LISTA FIXA DE COLUNAS QUE O SISTEMA ESPERA PARA O STAGING "PADRÃO"
+    # Nota: Se estiver usando tabela de Staging Personalizada (CLT),
+    # certifique-se que ela tenha pelo menos estas colunas OU que o código seja adaptado para ela.
+    # Por segurança, mantemos a lista padrão + novos campos se couberem no modelo genérico.
     cols_staging_order = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                           'nome_pai', 'campanhas',
                           'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf']
@@ -281,12 +302,13 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     else:
         df_staging['cpf'] = None
 
-    mask_cpf_valido = df_staging['cpf'].str.len() == 11
-    df_erros_cpf = df[~mask_cpf_valido] 
-    if not df_erros_cpf.empty:
-        lista_erros = df_erros_cpf.to_dict('records')
-    
-    df_staging = df_staging[mask_cpf_valido].copy()
+    # Validação simples de CPF (Apenas se CPF existir)
+    if 'cpf' in df_staging.columns and not df_staging['cpf'].isnull().all():
+        mask_cpf_valido = df_staging['cpf'].str.len() == 11
+        df_erros_cpf = df[~mask_cpf_valido] 
+        if not df_erros_cpf.empty:
+            lista_erros = df_erros_cpf.to_dict('records')
+        df_staging = df_staging[mask_cpf_valido].copy()
     
     for col_sys in cols_staging_order:
         if col_sys in ['sessao_id', 'cpf']: continue
@@ -298,7 +320,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                 break
         
         if col_excel:
-            serie = df.loc[mask_cpf_valido, col_excel]
+            serie = df.loc[df.index, col_excel] # Usa index alinhado
             if col_sys == 'data_nascimento':
                 df_staging[col_sys] = serie.apply(converter_data_iso)
             elif col_sys == 'sexo':
@@ -331,7 +353,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         # A) CPFs
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf)
-            SELECT DISTINCT cpf FROM {tabela_destino} WHERE sessao_id = %s
+            SELECT DISTINCT cpf FROM {tabela_destino} WHERE sessao_id = %s AND cpf IS NOT NULL
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
@@ -538,8 +560,10 @@ def tela_importacao():
                     opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
                 else:
                     opcoes_filtradas = [k for k in CAMPOS_SISTEMA.keys() if k in colunas_permitidas]
-                    if "CPF (Obrigatório)" not in opcoes_filtradas:
-                        opcoes_filtradas.insert(0, "CPF (Obrigatório)")
+                    # CPF é obrigatório para a importação padrão, mas pode ser opcional para outros tipos.
+                    # Mantemos nas opções, mas a validação de obrigatoriedade ocorre abaixo
+                    if "CPF (Obrigatório)" not in opcoes_filtradas and "cpf" not in [CAMPOS_SISTEMA[k] for k in opcoes_filtradas]:
+                         opcoes_filtradas.insert(0, "CPF (Obrigatório)")
                     opcoes_sistema = ["(Selecione)"] + opcoes_filtradas
                 
                 for i, col_arquivo in enumerate(colunas_arquivo):
@@ -559,84 +583,88 @@ def tela_importacao():
                     if escolha != "(Selecione)":
                         mapeamento_usuario[CAMPOS_SISTEMA[escolha]] = col_arquivo
 
+            # Verifica obrigatoriedade de CPF apenas se for uma importação padrão que usa dados_cadastrais
+            # (Simplificação: verifica se 'cpf' foi mapeado, se não, emite aviso)
             if 'cpf' not in mapeamento_usuario:
-                st.error("⚠️ Obrigatório mapear **CPF**.")
-            else:
+                 st.warning("⚠️ **CPF** não foi mapeado. Se esta importação exige vínculo com pessoa física, ela pode falhar.")
+            
+            st.divider()
+            
+            if not st.session_state.get('amostra_gerada'):
+                if st.button("🎲 GERAR AMOSTRA (5 Linhas)", type="primary"):
+                    st.session_state['amostra_gerada'] = True
+                    st.rerun()
+            
+            if st.session_state.get('amostra_gerada'):
+                st.subheader("🔍 Amostra Processada")
+                amostra = df.head(5).copy()
+                ch1, ch2, ch3 = st.columns([2, 4, 1])
+                ch1.markdown("**CPF**")
+                ch2.markdown("**Nome**")
+                ch3.markdown("**Ação**")
                 st.divider()
-                
-                if not st.session_state.get('amostra_gerada'):
-                    if st.button("🎲 GERAR AMOSTRA (5 Linhas)", type="primary"):
-                        st.session_state['amostra_gerada'] = True
-                        st.rerun()
-                
-                if st.session_state.get('amostra_gerada'):
-                    st.subheader("🔍 Amostra Processada")
-                    amostra = df.head(5).copy()
-                    ch1, ch2, ch3 = st.columns([2, 4, 1])
-                    ch1.markdown("**CPF**")
-                    ch2.markdown("**Nome**")
-                    ch3.markdown("**Ação**")
-                    st.divider()
 
-                    for idx, row in amostra.iterrows():
-                        c1, c2, c3 = st.columns([2, 4, 1])
-                        raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else ""
-                        val_cpf = limpar_formatar_cpf(raw_cpf)
+                for idx, row in amostra.iterrows():
+                    c1, c2, c3 = st.columns([2, 4, 1])
+                    raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else "---"
+                    val_cpf = limpar_formatar_cpf(raw_cpf) if 'cpf' in mapeamento_usuario else "---"
+                    
+                    val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
+                    c1.write(val_cpf)
+                    c2.write(val_nome)
+                    if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
+                        modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
+                
+                st.divider()
+                col_act1, col_act2 = st.columns([1, 1])
+                
+                if col_act1.button("❌ Cancelar (Inferior)", type="secondary", use_container_width=True):
+                    del st.session_state['df_importacao']
+                    del st.session_state['etapa_importacao']
+                    del st.session_state['amostra_gerada']
+                    st.rerun()
+                
+                if col_act2.button("✅ FINALIZAR (Processamento Rápido)", type="primary", use_container_width=True):
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+                    nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
+                    
+                    path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
+                    df.to_csv(path_final, sep=';', index=False)
+
+                    user_id = st.session_state.get('usuario_id', '0')
+                    user_nome = st.session_state.get('usuario_nome', 'Sistema')
+                    
+                    # ID da importação
+                    id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
+                    
+                    # Tabela de destino (Do Config)
+                    tabela_destino = st.session_state['import_tipo_selecionado'][2]
+                    if not tabela_destino:
+                        tabela_destino = "sistema_consulta.importacao_staging"
+
+                    if id_imp:
+                        with st.spinner(f"🚀 Processando Importação ID: {id_imp} na tabela {tabela_destino}... Aguarde."):
+                            novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
                         
-                        val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
-                        c1.write(val_cpf)
-                        c2.write(val_nome)
-                        if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
-                            modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
-                    
-                    st.divider()
-                    col_act1, col_act2 = st.columns([1, 1])
-                    
-                    if col_act1.button("❌ Cancelar (Inferior)", type="secondary", use_container_width=True):
+                        path_erro_final = ""
+                        if lista_erros:
+                            path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
+                            pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
+
+                        atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_erro_final)
+
+                        st.balloons()
+                        st.success(f"Importação #{id_imp} Finalizada com Sucesso! 🚀")
+                        st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
+                        
+                        time.sleep(5)
                         del st.session_state['df_importacao']
                         del st.session_state['etapa_importacao']
                         del st.session_state['amostra_gerada']
                         st.rerun()
-                    
-                    if col_act2.button("✅ FINALIZAR (Processamento Rápido)", type="primary", use_container_width=True):
-                        
-                        timestamp = datetime.now().strftime("%Y%m%d%H%M")
-                        nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
-                        
-                        path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
-                        df.to_csv(path_final, sep=';', index=False)
-
-                        user_id = st.session_state.get('usuario_id', '0')
-                        user_nome = st.session_state.get('usuario_nome', 'Sistema')
-                        
-                        id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
-                        
-                        tabela_destino = st.session_state['import_tipo_selecionado'][2]
-                        if not tabela_destino:
-                            tabela_destino = "sistema_consulta.importacao_staging"
-
-                        if id_imp:
-                            with st.spinner(f"🚀 Processando Importação ID: {id_imp} na tabela {tabela_destino}... Aguarde."):
-                                novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
-                            
-                            path_erro_final = ""
-                            if lista_erros:
-                                path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
-                                pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
-
-                            atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_erro_final)
-
-                            st.balloons()
-                            st.success(f"Importação #{id_imp} Finalizada com Sucesso! 🚀")
-                            st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
-                            
-                            time.sleep(5)
-                            del st.session_state['df_importacao']
-                            del st.session_state['etapa_importacao']
-                            del st.session_state['amostra_gerada']
-                            st.rerun()
-                        else:
-                            st.error("Falha ao inicializar registro de importação. Tente novamente.")
+                    else:
+                        st.error("Falha ao inicializar registro de importação. Tente novamente.")
 
     # === ABA CONFIG (Submenu) ===
     with tab_config:
@@ -655,6 +683,7 @@ def tela_importacao():
             st.markdown("Selecione as colunas que devem aparecer para mapeamento:")
             opcoes_campos = list(CAMPOS_SISTEMA.keys())
             
+            # Filtra defaults válidos
             default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_campos]
             if not default_opts: default_opts = ["CPF (Obrigatório)", "Nome do Cliente"]
             
