@@ -80,18 +80,43 @@ def get_db_connection():
         st.error(f"Erro de conexão: {e}")
         return None
 
-# --- ATUALIZADO: SALVAR HISTÓRICO COM USUÁRIO ---
-def salvar_historico_importacao(nome_arq, novos, atualizados, erros, path_org, path_err, id_usr, nome_usr):
+# --- GERENCIAMENTO DE HISTÓRICO DE IMPORTAÇÃO ---
+
+def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
+    """Cria o registro inicial e retorna o ID gerado"""
+    conn = get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO sistema_consulta.sistema_consulta_importacao 
+                (nome_arquivo, caminho_arquivo_original, id_usuario, nome_usuario, data_importacao, qtd_novos, qtd_atualizados, qtd_erros)
+                VALUES (%s, %s, %s, %s, NOW(), '0', '0', '0')
+                RETURNING id
+            """, (nome_arq, path_org, str(id_usr), str(nome_usr)))
+            id_gerado = cur.fetchone()[0]
+            conn.commit()
+            return id_gerado
+    except Exception as e:
+        st.error(f"Erro ao registrar início: {e}")
+        return None
+    finally:
+        conn.close()
+
+def atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_err):
+    """Atualiza o registro com os totais"""
     conn = get_db_connection()
     if not conn: return
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO sistema_consulta.sistema_consulta_importacao 
-                (nome_arquivo, qtd_novos, qtd_atualizados, qtd_erros, caminho_arquivo_original, caminho_arquivo_erro, id_usuario, nome_usuario)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (nome_arq, str(novos), str(atualizados), str(erros), path_org, path_err, str(id_usr), str(nome_usr)))
+                UPDATE sistema_consulta.sistema_consulta_importacao 
+                SET qtd_novos = %s, qtd_atualizados = %s, qtd_erros = %s, caminho_arquivo_erro = %s
+                WHERE id = %s
+            """, (str(novos), str(atualizados), str(erros), path_err, id_imp))
             conn.commit()
+    except Exception as e:
+        st.error(f"Erro ao finalizar registro: {e}")
     finally:
         conn.close()
 
@@ -122,7 +147,6 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         c2.text_input("RG", value=get_val('identidade'), disabled=True)
         
         raw_nasc = get_val('data_nascimento')
-        # Tenta formatar visualmente se possível
         val_nasc = str(raw_nasc)
         dt_obj = converter_data_iso(raw_nasc)
         if dt_obj: val_nasc = dt_obj.strftime("%d/%m/%Y")
@@ -183,10 +207,11 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
 
 # --- PROCESSAMENTO EM LOTE (STAGING) ---
 
-def executar_importacao_em_massa(df, mapeamento_usuario):
+def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
     conn = get_db_connection()
     if not conn: return 0, 0, 0, []
 
+    # UUID usado apenas para controle da tabela temporária (Staging)
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
@@ -269,7 +294,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # B) Dados Cadastrais (UPSERT com ID IMPORTACAO CONCATENADO)
+        # B) Dados Cadastrais (UPSERT com ID IMPORTACAO DO BANCO)
+        # Nota: Usamos str(id_importacao_db) para concatenar ou inserir
+        id_imp_str = str(id_importacao_db)
+
         cur.execute("""
             WITH rows_to_insert AS (
                 SELECT * FROM temp_staging_import WHERE sessao_id = %s
@@ -290,8 +318,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     cnh = COALESCE(s.cnh, t.cnh),
                     titulo_eleitoral = COALESCE(s.titulo_eleitoral, t.titulo_eleitoral),
                     id_importacao = CASE 
-                        WHEN t.id_importacao IS NULL OR t.id_importacao = '' THEN s.sessao_id::text 
-                        ELSE t.id_importacao || ';' || s.sessao_id::text 
+                        WHEN t.id_importacao IS NULL OR t.id_importacao = '' THEN %s 
+                        ELSE t.id_importacao || ';' || %s 
                     END
                 FROM rows_to_insert s
                 WHERE t.cpf = s.cpf
@@ -300,13 +328,13 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             inserts AS (
                 INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
                 (cpf, nome, identidade, data_nascimento, sexo, nome_mae, nome_pai, campanhas, cnh, titulo_eleitoral, id_importacao)
-                SELECT s.cpf, s.nome, s.identidade, s.data_nascimento, s.sexo, s.nome_mae, s.nome_pai, s.campanhas, s.cnh, s.titulo_eleitoral, s.sessao_id::text
+                SELECT s.cpf, s.nome, s.identidade, s.data_nascimento, s.sexo, s.nome_mae, s.nome_pai, s.campanhas, s.cnh, s.titulo_eleitoral, %s
                 FROM rows_to_insert s
                 WHERE s.cpf NOT IN (SELECT cpf FROM existing)
                 RETURNING cpf
             )
             SELECT (SELECT count(*) FROM inserts) as novos, (SELECT count(*) FROM updates) as atualizados;
-        """, (sessao_id,))
+        """, (sessao_id, id_imp_str, id_imp_str, id_imp_str))
         
         resultado = cur.fetchone()
         qtd_novos = resultado[0]
@@ -480,34 +508,44 @@ def tela_importacao():
                     st.rerun()
                 
                 if col_act2.button("✅ FINALIZAR (Processamento Rápido)", type="primary", use_container_width=True):
-                    with st.spinner("🚀 Processando em alta velocidade... Aguarde."):
-                        novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario)
                     
                     timestamp = datetime.now().strftime("%Y%m%d%H%M")
                     nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
+                    
+                    # 1. Salvar Arquivo Original
                     path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
                     df.to_csv(path_final, sep=';', index=False)
-                    
-                    path_erro_final = ""
-                    if lista_erros:
-                        path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
-                        pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
 
-                    # --- CAPTURA DADOS USUÁRIO PARA HISTÓRICO ---
+                    # 2. Registrar Início da Importação e Pegar ID
                     user_id = st.session_state.get('usuario_id', '0')
-                    user_nome = st.session_state.get('usuario_nome', 'Sistema/Desconhecido')
+                    user_nome = st.session_state.get('usuario_nome', 'Sistema')
                     
-                    salvar_historico_importacao(st.session_state['nome_arquivo_importacao'], novos, atualizados, erros, path_final, path_erro_final, user_id, user_nome)
+                    id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
+                    
+                    if id_imp:
+                        with st.spinner(f"🚀 Processando Importação ID: {id_imp}... Aguarde."):
+                            # 3. Executar Importação usando o ID do Banco
+                            novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp)
+                        
+                        path_erro_final = ""
+                        if lista_erros:
+                            path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
+                            pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
 
-                    st.balloons()
-                    st.success("Importação Finalizada com Sucesso! 🚀")
-                    st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
-                    
-                    time.sleep(5)
-                    del st.session_state['df_importacao']
-                    del st.session_state['etapa_importacao']
-                    del st.session_state['amostra_gerada']
-                    st.rerun()
+                        # 4. Atualizar Registro Final
+                        atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_erro_final)
+
+                        st.balloons()
+                        st.success(f"Importação #{id_imp} Finalizada com Sucesso! 🚀")
+                        st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
+                        
+                        time.sleep(5)
+                        del st.session_state['df_importacao']
+                        del st.session_state['etapa_importacao']
+                        del st.session_state['amostra_gerada']
+                        st.rerun()
+                    else:
+                        st.error("Falha ao inicializar registro de importação. Tente novamente.")
 
 if __name__ == "__main__":
     tela_importacao()
