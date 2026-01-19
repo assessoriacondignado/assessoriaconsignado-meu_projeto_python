@@ -32,7 +32,7 @@ CAMPOS_SISTEMA = {
     "Convênio": "convenio",
     "CEP": "cep",
     "Rua": "rua",
-    "Bairro": "bairro", # ADICIONADO
+    "Bairro": "bairro",
     "Cidade": "cidade",
     "UF": "uf"
 }
@@ -80,21 +80,22 @@ def get_db_connection():
         st.error(f"Erro de conexão: {e}")
         return None
 
-def salvar_historico_importacao(nome_arq, novos, atualizados, erros, path_org, path_err):
+# --- ATUALIZADO: SALVAR HISTÓRICO COM USUÁRIO ---
+def salvar_historico_importacao(nome_arq, novos, atualizados, erros, path_org, path_err, id_usr, nome_usr):
     conn = get_db_connection()
     if not conn: return
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO sistema_consulta.sistema_consulta_importacao 
-                (nome_arquivo, qtd_novos, qtd_atualizados, qtd_erros, caminho_arquivo_original, caminho_arquivo_erro)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (nome_arq, str(novos), str(atualizados), str(erros), path_org, path_err))
+                (nome_arquivo, qtd_novos, qtd_atualizados, qtd_erros, caminho_arquivo_original, caminho_arquivo_erro, id_usuario, nome_usuario)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (nome_arq, str(novos), str(atualizados), str(erros), path_org, path_err, str(id_usr), str(nome_usr)))
             conn.commit()
     finally:
         conn.close()
 
-# --- DIALOG DE DETALHES (ATUALIZADO) ---
+# --- DIALOG DE DETALHES ---
 @st.dialog("📋 Dados da Amostra (Visualização Completa)")
 def modal_detalhes_amostra(linha_dict, mapeamento):
     # Função auxiliar para pegar valor mapeado
@@ -173,7 +174,7 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         rua_val = get_val('rua')
         st.text_input("Rua", value=rua_val, disabled=True)
         
-        bairro_val = get_val('bairro') # Novo Campo
+        bairro_val = get_val('bairro')
         st.text_input("Bairro", value=bairro_val, disabled=True)
         
         c_cid, c_uf = st.columns([3, 1])
@@ -192,7 +193,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     # 1. PREPARAÇÃO DO DATAFRAME
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                     'nome_pai', 'campanhas',
-                    'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf'] # ADICIONADO 'bairro'
+                    'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf']
     cols_staging += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging += [f"email_{i}" for i in range(1, 4)]
 
@@ -246,7 +247,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
-        # Criação da tabela temporária (INCLUINDO BAIRRO)
         cur.execute(f"""
             CREATE TEMP TABLE IF NOT EXISTS temp_staging_import (
                 sessao_id UUID, cpf VARCHAR(20), nome TEXT, identidade TEXT, data_nascimento DATE, 
@@ -341,7 +341,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # F) Endereços (INCLUINDO BAIRRO)
+        # F) Endereços
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, bairro, cidade, uf)
             SELECT DISTINCT cpf, cep, rua, bairro, cidade, uf FROM temp_staging_import s
@@ -493,7 +493,11 @@ def tela_importacao():
                         path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
                         pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
 
-                    salvar_historico_importacao(st.session_state['nome_arquivo_importacao'], novos, atualizados, erros, path_final, path_erro_final)
+                    # --- CAPTURA DADOS USUÁRIO PARA HISTÓRICO ---
+                    user_id = st.session_state.get('usuario_id', '0')
+                    user_nome = st.session_state.get('usuario_nome', 'Sistema/Desconhecido')
+                    
+                    salvar_historico_importacao(st.session_state['nome_arquivo_importacao'], novos, atualizados, erros, path_final, path_erro_final, user_id, user_nome)
 
                     st.balloons()
                     st.success("Importação Finalizada com Sucesso! 🚀")
