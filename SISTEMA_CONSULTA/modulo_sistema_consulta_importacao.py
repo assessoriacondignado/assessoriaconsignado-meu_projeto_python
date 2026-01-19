@@ -373,6 +373,25 @@ def tela_importacao():
         colunas_arquivo = list(df.columns)
         
         st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
+
+        # --- BOTÕES DE AÇÃO SUPERIORES ---
+        c_act1, c_act2, c_act3 = st.columns([1.5, 1.5, 4])
+        
+        if c_act1.button("🧹 Limpar Filtro", use_container_width=True):
+            # Reseta todos os mapeamentos para "(Selecione)"
+            for i in range(len(colunas_arquivo)):
+                if f"map_col_{i}" in st.session_state:
+                    st.session_state[f"map_col_{i}"] = "(Selecione)"
+            st.rerun()
+
+        if c_act2.button("❌ Cancelar", type="secondary", use_container_width=True):
+            del st.session_state['df_importacao']
+            del st.session_state['etapa_importacao']
+            if 'amostra_gerada' in st.session_state:
+                del st.session_state['amostra_gerada']
+            st.rerun()
+        
+        # ---------------------------------
         
         with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
             cols_map = st.columns(6)
@@ -381,15 +400,22 @@ def tela_importacao():
             
             for i, col_arquivo in enumerate(colunas_arquivo):
                 index_sugestao = 0
-                for idx, op in enumerate(opcoes_sistema):
-                    if op == "(Selecione)": continue
-                    sys_key = CAMPOS_SISTEMA[op]
-                    if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
-                        index_sugestao = idx
-                        break
+                
+                # Só calcula sugestão se não estiver definido no session state (ou se for a primeira vez)
+                # Porém, como o Limpar Filtro define explicitamente, o comportamento do selectbox respeitará o key.
+                if f"map_col_{i}" not in st.session_state:
+                    for idx, op in enumerate(opcoes_sistema):
+                        if op == "(Selecione)": continue
+                        sys_key = CAMPOS_SISTEMA[op]
+                        if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
+                            index_sugestao = idx
+                            break
                 
                 col_container = cols_map[i % 6]
                 col_container.markdown(f"**{col_arquivo}**")
+                
+                # Se o botão limpar foi clicado, o session_state tem "(Selecione)", então o index deve ser 0.
+                # O selectbox usa o key para manter o estado.
                 escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
                 
                 if escolha != "(Selecione)":
@@ -428,7 +454,8 @@ def tela_importacao():
                 st.divider()
                 col_act1, col_act2 = st.columns([1, 1])
                 
-                if col_act1.button("❌ Cancelar", type="secondary", use_container_width=True):
+                # Botão Cancelar inferior (Mantido caso o usuário role para baixo)
+                if col_act1.button("❌ Cancelar (Inferior)", type="secondary", use_container_width=True):
                     del st.session_state['df_importacao']
                     del st.session_state['etapa_importacao']
                     del st.session_state['amostra_gerada']
