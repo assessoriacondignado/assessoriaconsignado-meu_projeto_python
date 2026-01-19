@@ -108,15 +108,16 @@ def buscar_relacao_auxiliar(tipo):
     try:
         with conn.cursor() as cur:
             if tipo == 'Importação':
+                # AJUSTE: Incluído o campo ID
                 cur.execute("""
-                    SELECT nome_arquivo, 
+                    SELECT id, nome_arquivo, 
                            TO_CHAR(data_importacao, 'DD/MM/YYYY HH24:MI') as data, 
                            qtd_novos, qtd_atualizados 
                     FROM sistema_consulta.sistema_consulta_importacao 
-                    ORDER BY data_importacao DESC LIMIT 100
+                    ORDER BY id DESC LIMIT 100
                 """)
                 dados = cur.fetchall()
-                colunas = ['Nome do Arquivo', 'Data', 'Novos', 'Atualizados']
+                colunas = ['ID', 'Nome do Arquivo', 'Data', 'Novos', 'Atualizados']
                 
             elif tipo == 'Agrupamento':
                 cur.execute("""
