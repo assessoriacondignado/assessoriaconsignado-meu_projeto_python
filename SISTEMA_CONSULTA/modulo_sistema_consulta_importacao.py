@@ -43,8 +43,41 @@ def limpar_texto(valor):
     return str(valor).strip()
 
 def limpar_apenas_numeros(valor):
+    """Remove tudo que não for dígito"""
     if pd.isna(valor): return ""
     return ''.join(filter(str.isdigit, str(valor)))
+
+def limpar_formatar_cpf(valor):
+    """
+    Regras CPF:
+    - Retira pontuação, espaços e letras.
+    - Inclui zeros à esquerda se necessário (Padroniza em 11 dígitos).
+    """
+    if pd.isna(valor) or valor is None: return ""
+    # Remove tudo que não é número
+    limpo = ''.join(filter(str.isdigit, str(valor)))
+    
+    if not limpo: return ""
+    
+    # Aplica zeros à esquerda até ter 11 dígitos
+    # Ex: '6504802440' vira '06504802440'
+    return limpo.zfill(11)
+
+def limpar_formatar_telefone(valor):
+    """
+    Regras Telefone:
+    - Retira pontuação, espaços e letras.
+    - Garante que tenha 11 dígitos. Se não tiver, retorna None (inválido).
+    """
+    if pd.isna(valor) or valor is None: return None
+    # Remove tudo que não é número
+    limpo = ''.join(filter(str.isdigit, str(valor)))
+    
+    # Regra: Deve ter exatamente 11 dígitos (DDD + 9 + Número)
+    if len(limpo) == 11:
+        return limpo
+    
+    return None # Retorna vazio se não atender a regra
 
 def converter_data_iso(valor):
     if not valor or pd.isna(valor): return None
@@ -78,6 +111,18 @@ def salvar_historico_importacao(nome_arq, novos, atualizados, erros, path_org, p
     finally:
         conn.close()
 
+def processar_linha_banco(dados_linha, mapeamento_reverso):
+    """
+    (Função legado usada na Amostra - Atualizada com novas regras)
+    """
+    # ... A amostra usa apenas visualização, a lógica pesada está no executar_importacao_em_massa ...
+    # Mas para garantir consistência visual na amostra:
+    col_cpf = mapeamento_reverso.get("cpf")
+    if col_cpf:
+        dados_linha[col_cpf] = limpar_formatar_cpf(dados_linha.get(col_cpf))
+    
+    return "visualizacao"
+
 # --- NOVA LÓGICA: PROCESSAMENTO EM LOTE (STAGING) ---
 
 def executar_importacao_em_massa(df, mapeamento_usuario):
@@ -93,35 +138,33 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     lista_erros = []
     
     # 1. PREPARAÇÃO DO DATAFRAME (Limpeza em Memória)
-    # Criamos um DF novo com as colunas exatas da tabela de staging
-    df_staging = pd.DataFrame()
-    df_staging['sessao_id'] = [sessao_id] * len(df)
-    
-    # Mapeia e limpa colunas
-    # Lista de colunas esperadas no staging (ordem importa para o COPY)
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                     'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'cidade', 'uf']
-    # Adiciona Tels e Emails
     cols_staging += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging += [f"email_{i}" for i in range(1, 4)]
 
-    # Preenche o DataFrame de Staging
-    df_staging['cpf'] = df[mapeamento_usuario['cpf']].apply(limpar_apenas_numeros)
+    df_staging = pd.DataFrame()
+    df_staging['sessao_id'] = [sessao_id] * len(df)
+
+    # --- APLICAÇÃO DA REGRA DE CPF ---
+    # Aplica a formatação (zeros, remove letras)
+    df_staging['cpf'] = df[mapeamento_usuario['cpf']].apply(limpar_formatar_cpf)
     
-    # Filtra CPFs inválidos antes de enviar
-    mask_cpf_valido = df_staging['cpf'].str.len() >= 11
-    df_erros_cpf = df[~mask_cpf_valido] # Guarda linhas originais com erro
+    # Filtra CPFs inválidos (Vazios ou com tamanho errado após formatação, embora zfill garanta 11 se tiver numero)
+    # A regra básica é: tem que ter 11 dígitos numéricos
+    mask_cpf_valido = df_staging['cpf'].str.len() == 11
+    
+    df_erros_cpf = df[~mask_cpf_valido] 
     if not df_erros_cpf.empty:
         lista_erros = df_erros_cpf.to_dict('records')
     
-    # Mantém apenas válidos
+    # Mantém apenas linhas com CPF válido
     df_staging = df_staging[mask_cpf_valido].copy()
     
     # Processa demais colunas
     for col_sys in cols_staging:
         if col_sys in ['sessao_id', 'cpf']: continue
         
-        # Busca qual coluna do Excel corresponde a este campo
         col_excel = None
         for k, v in mapeamento_usuario.items():
             if k == col_sys:
@@ -138,10 +181,16 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     s = str(x).strip().upper()
                     return 'Feminino' if s in ['F', 'FEMININO'] else ('Masculino' if s in ['M', 'MASCULINO'] else x)
                 df_staging[col_sys] = serie.apply(trata_sexo)
+            
+            # --- APLICAÇÃO DA REGRA DE TELEFONE ---
+            elif col_sys.startswith('telefone_'):
+                df_staging[col_sys] = serie.apply(limpar_formatar_telefone)
+            # --------------------------------------
+            
             else:
                 df_staging[col_sys] = serie.apply(limpar_texto)
         else:
-            df_staging[col_sys] = None # Campo não mapeado fica NULL
+            df_staging[col_sys] = None
 
     if df_staging.empty:
         conn.close()
@@ -151,24 +200,22 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         cur = conn.cursor()
         
         # 2. BULK INSERT PARA STAGING
-        # Transforma DF em CSV na memória
         csv_buffer = io.StringIO()
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
         cur.copy_expert(f"COPY sistema_consulta.importacao_staging ({','.join(cols_staging)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
         
-        # 3. DISTRIBUIÇÃO SQL (A MÁGICA ACONTECE AQUI)
+        # 3. DISTRIBUIÇÃO SQL
         
-        # A) Inserir CPFs na tabela de controle (se não existir)
+        # A) Inserir CPFs na tabela de controle
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf)
             SELECT DISTINCT cpf FROM sistema_consulta.importacao_staging WHERE sessao_id = %s
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # B) Dados Cadastrais (Upsert: Atualiza se existir, Insere se novo)
-        # Contamos novos vs atualizados baseados em quem já estava lá
+        # B) Dados Cadastrais (Upsert)
         cur.execute("""
             WITH rows_to_insert AS (
                 SELECT * FROM sistema_consulta.importacao_staging WHERE sessao_id = %s
@@ -205,8 +252,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        # C) Inserir Telefones (Transforma colunas em linhas e ignora duplicados)
-        # Usa LATERAL para fazer 'Unpivot' das 10 colunas
+        # C) Inserir Telefones (Unpivot)
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT s.cpf, t.tel
@@ -214,7 +260,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3), (telefone_4), (telefone_5),
                             (telefone_6), (telefone_7), (telefone_8), (telefone_9), (telefone_10)) AS t(tel)
             WHERE s.sessao_id = %s AND t.tel IS NOT NULL AND t.tel <> ''
-            ON CONFLICT DO NOTHING -- Ou use NOT EXISTS se não tiver chave única
+            ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
         # D) Inserir Emails
@@ -259,10 +305,16 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     finally:
         conn.close()
 
-# --- DIALOG DE DETALHES (Mantido igual) ---
+# --- DIALOG DE DETALHES ---
 @st.dialog("📋 Dados da Amostra")
 def modal_detalhes_amostra(linha_dict, mapeamento):
-    st.markdown(f"### CPF: {linha_dict.get(mapeamento.get('cpf', ''), 'Não Identificado')}")
+    # Aplica formatação visual na amostra também
+    col_cpf = mapeamento.get(CAMPOS_SISTEMA["CPF (Obrigatório)"])
+    cpf_visual = "---"
+    if col_cpf:
+        cpf_visual = limpar_formatar_cpf(linha_dict.get(col_cpf))
+
+    st.markdown(f"### CPF: {cpf_visual}")
     tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos", "Endereço"])
     
     with tab1:
@@ -284,7 +336,11 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
             col_tel = mapeamento.get(f'telefone_{i}')
             if col_tel:
                 val = linha_dict.get(col_tel, '')
-                if val: st.text_input(f"Telefone {i}", value=val, disabled=True, key=f"amostra_tel_{i}")
+                # Mostra como ficaria formatado
+                val_fmt = limpar_formatar_telefone(val)
+                if val_fmt: st.text_input(f"Telefone {i}", value=val_fmt, disabled=True, key=f"amostra_tel_{i}")
+                else: st.caption(f"Telefone {i}: Valor inválido ou vazio ({val})")
+
         st.markdown("##### 📧 E-mails")
         for i in range(1, 4):
             col_mail = mapeamento.get(f'email_{i}')
@@ -381,7 +437,10 @@ def tela_importacao():
 
                 for idx, row in amostra.iterrows():
                     c1, c2, c3 = st.columns([2, 4, 1])
-                    val_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else "---"
+                    # Aplica formatação de CPF na amostra visual
+                    raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else ""
+                    val_cpf = limpar_formatar_cpf(raw_cpf)
+                    
                     val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
                     c1.write(val_cpf)
                     c2.write(val_nome)
