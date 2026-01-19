@@ -658,6 +658,12 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 --- SCHEMA: SISTEMA_CONSULTA ---
 
+[TABELA: sistema_consulta.SISTEMA_IMPORTACAO_TIPO]
+   - Convenio (text) NULL
+   - Nome tabela (text) NULL
+   - Colunas para filtro (text) NULL
+   - tabela_importacao_staging (text) NULL
+
 [TABELA: sistema_consulta.importacao_staging]
    - sessao_id (uuid) NULL
    - cpf (character varying(20)) NULL
@@ -686,6 +692,9 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - email_1 (text) NULL
    - email_2 (text) NULL
    - email_3 (text) NULL
+   - nome_pai (text) NULL
+   - campanhas (text) NULL
+   - bairro (text) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_convenio_tipo]
    - id (integer) NOT NULL
@@ -723,6 +732,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - nome_mae (character varying(255)) NULL
    - nome_pai (text) NULL
    - campanhas (character varying(255)) NULL
+   - id_importacao (text) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_email]
    - id (integer) NOT NULL
@@ -773,6 +783,14 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - qtd_erros (text) NULL
    - caminho_arquivo_original (text) NULL
    - caminho_arquivo_erro (text) NULL
+   - id_usuario (text) NULL
+   - nome_usuario (text) NULL
+
+[TABELA: sistema_consulta.sistema_importacao_tipo]
+   - id (integer) NOT NULL
+   - convenio (text) NULL
+   - nome_planilha (text) NULL
+   - colunas_filtro (text) NULL
 
 ========================================
 
