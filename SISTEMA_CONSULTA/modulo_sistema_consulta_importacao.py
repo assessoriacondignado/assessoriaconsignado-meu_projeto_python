@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 import uuid
 import io
-import json # Import necessário para salvar a lista de colunas
+import json
 
 # Tenta importar a conexão do sistema principal
 try:
@@ -84,7 +84,6 @@ def get_db_connection():
 # --- GERENCIAMENTO DE HISTÓRICO E CONFIGURAÇÃO ---
 
 def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
-    """Cria o registro inicial e retorna o ID gerado"""
     conn = get_db_connection()
     if not conn: return None
     try:
@@ -105,7 +104,6 @@ def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
         conn.close()
 
 def atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_err):
-    """Atualiza o registro com os totais"""
     conn = get_db_connection()
     if not conn: return
     try:
@@ -122,11 +120,14 @@ def atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_err):
         conn.close()
 
 def get_tipos_importacao():
-    """Busca as configurações de importação salvas"""
     conn = get_db_connection()
     if not conn: return []
     try:
         with conn.cursor() as cur:
+            # Verifica se a tabela existe
+            cur.execute("SELECT to_regclass('sistema_consulta.sistema_importacao_tipo')")
+            if cur.fetchone()[0] is None: return []
+            
             cur.execute("SELECT id, convenio, nome_planilha, colunas_filtro FROM sistema_consulta.sistema_importacao_tipo ORDER BY convenio")
             return cur.fetchall()
     except Exception as e:
@@ -136,7 +137,6 @@ def get_tipos_importacao():
         conn.close()
 
 def salvar_tipo_importacao(convenio, planilha, colunas_json):
-    """Salva nova configuração de importação"""
     conn = get_db_connection()
     if not conn: return False
     try:
@@ -154,7 +154,7 @@ def salvar_tipo_importacao(convenio, planilha, colunas_json):
         conn.close()
 
 # --- DIALOG DE DETALHES ---
-@st.dialog("📋 Dados da Amostra (Visualização Completa)")
+@st.dialog("📋 Dados da Amostra")
 def modal_detalhes_amostra(linha_dict, mapeamento):
     def get_val(chave_sistema):
         col_arq = mapeamento.get(chave_sistema)
@@ -224,15 +224,16 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         c_cid.text_input("Cidade", value=get_val('cidade'), disabled=True)
         c_uf.text_input("UF", value=get_val('uf'), disabled=True)
 
-# --- PROCESSAMENTO EM LOTE (STAGING) ---
+# --- PROCESSAMENTO EM LOTE (USANDO TABELA DE STAGING DO CONFIG) ---
 
-def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
+def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabela_destino):
     conn = get_db_connection()
     if not conn: return 0, 0, 0, []
 
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
+    # Colunas que o sistema espera para o staging (ordem fixa para o CSV buffer)
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                     'nome_pai', 'campanhas',
                     'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf']
@@ -242,8 +243,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
     df_staging = pd.DataFrame()
     df_staging['sessao_id'] = [sessao_id] * len(df)
 
+    # Regras de tratamento
     df_staging['cpf'] = df[mapeamento_usuario['cpf']].apply(limpar_formatar_cpf)
-    
     mask_cpf_valido = df_staging['cpf'].str.len() == 11
     df_erros_cpf = df[~mask_cpf_valido] 
     if not df_erros_cpf.empty:
@@ -286,30 +287,27 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
+        # INSERÇÃO DIRETA NA TABELA DE STAGING DEFINIDA NA CONFIG
+        # OBS: A tabela já deve existir no banco com as colunas corretas.
+        
+        # COPY para a tabela de destino
+        cur.copy_expert(f"COPY {tabela_destino} ({','.join(cols_staging)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
+        
+        # DISTRIBUIÇÃO (Lendo da tabela de destino)
+        
+        # A) CPFs
         cur.execute(f"""
-            CREATE TEMP TABLE IF NOT EXISTS temp_staging_import (
-                sessao_id UUID, cpf VARCHAR(20), nome TEXT, identidade TEXT, data_nascimento DATE, 
-                sexo TEXT, nome_mae TEXT, nome_pai TEXT, campanhas TEXT,
-                cnh TEXT, titulo_eleitoral TEXT, convenio TEXT, cep TEXT, rua TEXT, bairro TEXT, cidade TEXT, uf TEXT,
-                telefone_1 TEXT, telefone_2 TEXT, telefone_3 TEXT, telefone_4 TEXT, telefone_5 TEXT,
-                telefone_6 TEXT, telefone_7 TEXT, telefone_8 TEXT, telefone_9 TEXT, telefone_10 TEXT,
-                email_1 TEXT, email_2 TEXT, email_3 TEXT
-            ) ON COMMIT DROP;
-        """)
-        
-        cur.copy_expert(f"COPY temp_staging_import ({','.join(cols_staging)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
-        
-        cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf)
-            SELECT DISTINCT cpf FROM temp_staging_import WHERE sessao_id = %s
+            SELECT DISTINCT cpf FROM {tabela_destino} WHERE sessao_id = %s
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
         id_imp_str = str(id_importacao_db)
 
-        cur.execute("""
+        # B) Dados Cadastrais (UPSERT)
+        cur.execute(f"""
             WITH rows_to_insert AS (
-                SELECT * FROM temp_staging_import WHERE sessao_id = %s
+                SELECT * FROM {tabela_destino} WHERE sessao_id = %s
             ),
             existing AS (
                 SELECT cpf FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf
@@ -349,35 +347,39 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        cur.execute("""
+        # C) Telefones
+        cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT s.cpf, t.tel
-            FROM temp_staging_import s,
+            FROM {tabela_destino} s,
             LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3), (telefone_4), (telefone_5),
                             (telefone_6), (telefone_7), (telefone_8), (telefone_9), (telefone_10)) AS t(tel)
             WHERE s.sessao_id = %s AND t.tel IS NOT NULL AND t.tel <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        cur.execute("""
+        # D) Emails
+        cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email)
             SELECT DISTINCT s.cpf, e.mail
-            FROM temp_staging_import s,
+            FROM {tabela_destino} s,
             LATERAL (VALUES (email_1), (email_2), (email_3)) AS e(mail)
             WHERE s.sessao_id = %s AND e.mail IS NOT NULL AND e.mail <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        cur.execute("""
+        # E) Convênios
+        cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio)
-            SELECT DISTINCT cpf, convenio FROM temp_staging_import
+            SELECT DISTINCT cpf, convenio FROM {tabela_destino}
             WHERE sessao_id = %s AND convenio IS NOT NULL AND convenio <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        cur.execute("""
+        # F) Endereços
+        cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, bairro, cidade, uf)
-            SELECT DISTINCT cpf, cep, rua, bairro, cidade, uf FROM temp_staging_import s
+            SELECT DISTINCT cpf, cep, rua, bairro, cidade, uf FROM {tabela_destino} s
             WHERE sessao_id = %s AND (rua IS NOT NULL OR cep IS NOT NULL)
             AND NOT EXISTS (
                 SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco e 
@@ -385,7 +387,9 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db):
             )
         """, (sessao_id,))
 
-        cur.execute("DELETE FROM temp_staging_import WHERE sessao_id = %s", (sessao_id,))
+        # LIMPEZA DA STAGING
+        cur.execute(f"DELETE FROM {tabela_destino} WHERE sessao_id = %s", (sessao_id,))
+        
         conn.commit()
         return qtd_novos, qtd_atualizados, len(lista_erros), lista_erros
 
@@ -417,38 +421,31 @@ def tela_importacao():
             if not tipos:
                 st.warning("Nenhum tipo de importação configurado. Vá para a aba 'Config' e crie um.")
             else:
-                opcoes_tipos = {t[1]: t for t in tipos} # Nome -> Tupla
+                opcoes_tipos = {t[1]: t for t in tipos} # Nome (Convenio) -> Dados
                 escolha = st.selectbox("Tipo de Importação:", ["(Selecione)"] + list(opcoes_tipos.keys()))
                 
                 if escolha != "(Selecione)":
                     dados_tipo = opcoes_tipos[escolha]
                     st.info(f"**Convênio:** {dados_tipo[1]} | **Planilha Ref:** {dados_tipo[2]}")
                     
-                    # PASSO 2: EXIBIR RELAÇÃO (Colunas Esperadas)
+                    # Carrega colunas da config
                     colunas_ativas = []
-                    try:
-                        colunas_ativas = json.loads(dados_tipo[3])
-                    except:
-                        colunas_ativas = []
+                    try: colunas_ativas = json.loads(dados_tipo[3])
+                    except: colunas_ativas = []
                     
                     if colunas_ativas:
-                        st.markdown("**Colunas Configuradas para Mapeamento:**")
-                        st.code(", ".join(colunas_ativas), language="text")
-                    
-                    # PASSO 3: SELEÇÃO DE MÓDULO
-                    st.subheader("2. Selecione o Módulo")
-                    modulo = st.selectbox("Módulo de Destino:", ["Cadastro (Padrão)", "Financeiro", "Operacional"])
+                        st.markdown("**Colunas Configuradas:**")
+                        st.caption(", ".join(colunas_ativas))
                     
                     if st.button("Próximo: Upload de Arquivo"):
                         st.session_state['import_tipo_selecionado'] = dados_tipo
                         st.session_state['import_colunas_ativas'] = colunas_ativas
-                        st.session_state['import_modulo'] = modulo
                         st.session_state['etapa_importacao'] = 'upload'
                         st.rerun()
 
-        # PASSO 4: UPLOAD
+        # PASSO 2: UPLOAD
         elif st.session_state['etapa_importacao'] == 'upload':
-            st.subheader(f"3. Upload de Arquivo ({st.session_state['import_tipo_selecionado'][1]})")
+            st.subheader(f"2. Upload de Arquivo ({st.session_state['import_tipo_selecionado'][1]})")
             if st.button("⬅️ Voltar"):
                 st.session_state['etapa_importacao'] = 'selecao_tipo'
                 st.rerun()
@@ -472,7 +469,7 @@ def tela_importacao():
                 except Exception as e:
                     st.error(f"Erro ao ler arquivo: {e}")
 
-        # PASSO 5: MAPEAMENTO
+        # PASSO 3: MAPEAMENTO
         elif st.session_state['etapa_importacao'] == 'mapeamento':
             df = st.session_state['df_importacao']
             colunas_arquivo = list(df.columns)
@@ -498,14 +495,12 @@ def tela_importacao():
                 cols_map = st.columns(6)
                 mapeamento_usuario = {}
                 
-                # FILTRAGEM DINÂMICA DAS OPÇÕES
+                # FILTRAGEM DINÂMICA
                 colunas_permitidas = st.session_state.get('import_colunas_ativas', [])
-                if not colunas_permitidas: # Se vazio, mostra todas (fallback)
+                if not colunas_permitidas:
                     opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
                 else:
-                    # Filtra chaves do CAMPOS_SISTEMA que estão na lista permitida
                     opcoes_filtradas = [k for k in CAMPOS_SISTEMA.keys() if k in colunas_permitidas]
-                    # Garante que CPF esteja sempre disponível se não foi selecionado
                     if "CPF (Obrigatório)" not in opcoes_filtradas:
                         opcoes_filtradas.insert(0, "CPF (Obrigatório)")
                     opcoes_sistema = ["(Selecione)"] + opcoes_filtradas
@@ -522,7 +517,6 @@ def tela_importacao():
                     
                     col_container = cols_map[i % 6]
                     col_container.markdown(f"**{col_arquivo}**")
-                    
                     escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
                     
                     if escolha != "(Selecione)":
@@ -578,11 +572,18 @@ def tela_importacao():
                         user_id = st.session_state.get('usuario_id', '0')
                         user_nome = st.session_state.get('usuario_nome', 'Sistema')
                         
+                        # ID da importação
                         id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
                         
+                        # Tabela de destino (Do Config)
+                        tabela_destino = st.session_state['import_tipo_selecionado'][2]
+                        if not tabela_destino:
+                            # Fallback caso vazio, para evitar crash
+                            tabela_destino = "sistema_consulta.importacao_staging"
+
                         if id_imp:
-                            with st.spinner(f"🚀 Processando Importação ID: {id_imp}... Aguarde."):
-                                novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp)
+                            with st.spinner(f"🚀 Processando Importação ID: {id_imp} na tabela {tabela_destino}... Aguarde."):
+                                novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
                             
                             path_erro_final = ""
                             if lista_erros:
@@ -606,20 +607,20 @@ def tela_importacao():
     # === ABA CONFIG (Submenu) ===
     with tab_config:
         st.subheader("⚙️ Configurar Novo Tipo de Importação")
+        st.info("Define quais colunas serão exibidas no mapeamento para este tipo de convênio.")
         
         with st.form("form_config_importacao"):
-            conf_convenio = st.text_input("Nome do Convênio (Tipo)")
-            conf_planilha = st.text_input("Nome da Planilha (Referência)")
+            conf_convenio = st.text_input("Nome do Convênio (Ex: INSS, SIAPE)")
+            conf_planilha = st.text_input("Nome da Tabela de Destino (Ex: sistema_consulta.importacao_staging)")
             
-            st.markdown("Select columns that should appear for mapping:")
+            st.markdown("Selecione as colunas que devem aparecer para mapeamento:")
             opcoes_campos = list(CAMPOS_SISTEMA.keys())
-            # Default includes mandatory fields
             default_opts = ["CPF (Obrigatório)", "Nome do Cliente"]
-            conf_colunas = st.multiselect("Colunas para Filtro (Mapeamento)", options=opcoes_campos, default=default_opts)
+            conf_colunas = st.multiselect("Colunas para Filtro", options=opcoes_campos, default=default_opts)
             
             if st.form_submit_button("💾 Salvar Configuração"):
-                if not conf_convenio:
-                    st.error("O nome do convênio é obrigatório.")
+                if not conf_convenio or not conf_planilha:
+                    st.error("Nome do convênio e Tabela de Destino são obrigatórios.")
                 else:
                     json_colunas = json.dumps(conf_colunas)
                     if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
@@ -633,7 +634,7 @@ def tela_importacao():
         if lista_tipos:
             for item in lista_tipos:
                 with st.expander(f"📂 {item[1]}"):
-                    st.write(f"**Planilha Ref:** {item[2]}")
+                    st.write(f"**Tabela Destino:** {item[2]}")
                     try:
                         cols = json.loads(item[3])
                         st.code(", ".join(cols), language="text")
