@@ -32,6 +32,7 @@ CAMPOS_SISTEMA = {
     "Convênio": "convenio",
     "CEP": "cep",
     "Rua": "rua",
+    "Bairro": "bairro", # ADICIONADO
     "Cidade": "cidade",
     "UF": "uf"
 }
@@ -93,61 +94,91 @@ def salvar_historico_importacao(nome_arq, novos, atualizados, erros, path_org, p
     finally:
         conn.close()
 
-# --- DIALOG DE DETALHES ---
-@st.dialog("📋 Dados da Amostra")
+# --- DIALOG DE DETALHES (ATUALIZADO) ---
+@st.dialog("📋 Dados da Amostra (Visualização Completa)")
 def modal_detalhes_amostra(linha_dict, mapeamento):
-    col_cpf = mapeamento.get(CAMPOS_SISTEMA["CPF (Obrigatório)"])
-    cpf_visual = "---"
-    if col_cpf:
-        cpf_visual = limpar_formatar_cpf(linha_dict.get(col_cpf))
+    # Função auxiliar para pegar valor mapeado
+    def get_val(chave_sistema):
+        col_arq = mapeamento.get(chave_sistema)
+        if col_arq:
+            return linha_dict.get(col_arq, '')
+        return ''
 
-    st.markdown(f"### CPF: {cpf_visual}")
-    tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos", "Endereço"])
+    # Cabeçalho
+    cpf_visual = limpar_formatar_cpf(get_val('cpf'))
+    nome_visual = get_val('nome')
+    st.markdown(f"## 👤 {nome_visual}")
+    st.caption(f"CPF: {cpf_visual}")
+
+    st.divider()
+
+    # Abas iguais ao cadastro
+    tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos & Convênios", "Endereço"])
     
     with tab1:
-        nome_col = mapeamento.get('nome')
-        st.text_input("Nome", value=linha_dict.get(nome_col, '') if nome_col else '', disabled=True)
+        c1, c2, c3 = st.columns(3)
+        c1.text_input("Nome", value=nome_visual, disabled=True)
+        c2.text_input("RG", value=get_val('identidade'), disabled=True)
         
-        pai_col = mapeamento.get('nome_pai')
-        st.text_input("Nome do Pai", value=linha_dict.get(pai_col, '') if pai_col else '', disabled=True)
+        raw_nasc = get_val('data_nascimento')
+        # Tenta formatar visualmente se possível
+        val_nasc = str(raw_nasc)
+        dt_obj = converter_data_iso(raw_nasc)
+        if dt_obj: val_nasc = dt_obj.strftime("%d/%m/%Y")
+        c3.text_input("Data Nasc.", value=val_nasc, disabled=True)
         
-        camp_col = mapeamento.get('campanhas')
-        st.text_input("Campanhas", value=linha_dict.get(camp_col, '') if camp_col else '', disabled=True)
-
-        sexo_col = mapeamento.get('sexo')
-        val_sexo = linha_dict.get(sexo_col, '') if sexo_col else ''
+        c4, c5 = st.columns(2)
+        c4.text_input("CNH", value=get_val('cnh'), disabled=True)
+        c5.text_input("Título Eleitor", value=get_val('titulo_eleitoral'), disabled=True)
+        
+        c6, c7 = st.columns(2)
+        c6.text_input("Nome da Mãe", value=get_val('nome_mae'), disabled=True)
+        c7.text_input("Nome do Pai", value=get_val('nome_pai'), disabled=True)
+        
+        st.text_input("Campanhas", value=get_val('campanhas'), disabled=True)
+        
+        val_sexo = get_val('sexo')
         if val_sexo.upper() in ['F', 'FEMININO']: val_sexo = 'Feminino'
         elif val_sexo.upper() in ['M', 'MASCULINO']: val_sexo = 'Masculino'
         st.text_input("Sexo", value=val_sexo, disabled=True)
-        
-        nasc_col = mapeamento.get('data_nascimento')
-        st.text_input("Nascimento", value=linha_dict.get(nasc_col, '') if nasc_col else '', disabled=True)
 
     with tab2:
-        st.markdown("##### 📞 Telefones")
-        for i in range(1, 11):
-            col_tel = mapeamento.get(f'telefone_{i}')
-            if col_tel:
-                val = linha_dict.get(col_tel, '')
-                val_fmt = limpar_formatar_telefone(val)
-                if val_fmt: st.text_input(f"Telefone {i}", value=val_fmt, disabled=True, key=f"amostra_tel_{i}")
-
-        st.markdown("##### 📧 E-mails")
-        for i in range(1, 4):
-            col_mail = mapeamento.get(f'email_{i}')
-            if col_mail:
-                val = linha_dict.get(col_mail, '')
+        c_contato, c_convenio = st.columns(2)
+        
+        with c_contato:
+            st.markdown("##### 📞 Telefones")
+            for i in range(1, 11):
+                raw = get_val(f'telefone_{i}')
+                fmt = limpar_formatar_telefone(raw)
+                if fmt: st.text_input(f"Telefone {i}", value=fmt, disabled=True, key=f"amostra_tel_{i}")
+            
+            st.markdown("##### 📧 E-mails")
+            for i in range(1, 4):
+                val = get_val(f'email_{i}')
                 if val: st.text_input(f"E-mail {i}", value=val, disabled=True, key=f"amostra_mail_{i}")
 
+        with c_convenio:
+            st.markdown("##### 💼 Convênio")
+            val_conv = get_val('convenio')
+            if val_conv:
+                st.text_input("Convênio", value=val_conv, disabled=True)
+            else:
+                st.caption("Nenhum convênio mapeado nesta linha.")
+
     with tab3:
-        rua_col = mapeamento.get('rua')
-        cidade_col = mapeamento.get('cidade')
-        uf_col = mapeamento.get('uf')
-        cep_col = mapeamento.get('cep')
-        st.text_input("Rua", value=linha_dict.get(rua_col, '') if rua_col else '', disabled=True)
-        c1, c2 = st.columns(2)
-        c1.text_input("Cidade", value=linha_dict.get(cidade_col, '') if cidade_col else '', disabled=True)
-        c2.text_input("UF", value=linha_dict.get(uf_col, '') if uf_col else '', disabled=True)
+        st.markdown("##### 🏠 Endereço")
+        cep_val = get_val('cep')
+        st.text_input("CEP", value=cep_val, disabled=True)
+        
+        rua_val = get_val('rua')
+        st.text_input("Rua", value=rua_val, disabled=True)
+        
+        bairro_val = get_val('bairro') # Novo Campo
+        st.text_input("Bairro", value=bairro_val, disabled=True)
+        
+        c_cid, c_uf = st.columns([3, 1])
+        c_cid.text_input("Cidade", value=get_val('cidade'), disabled=True)
+        c_uf.text_input("UF", value=get_val('uf'), disabled=True)
 
 # --- PROCESSAMENTO EM LOTE (STAGING) ---
 
@@ -160,8 +191,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     
     # 1. PREPARAÇÃO DO DATAFRAME
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
-                    'nome_pai', 'campanhas', # Novos Campos na Staging
-                    'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'cidade', 'uf']
+                    'nome_pai', 'campanhas',
+                    'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf'] # ADICIONADO 'bairro'
     cols_staging += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging += [f"email_{i}" for i in range(1, 4)]
 
@@ -215,16 +246,12 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
-        # IMPORTANTE: A tabela staging precisa ter as colunas nome_pai e campanhas criadas no banco.
-        # Caso a tabela staging seja temporária ou recriada, certifique-se de atualizá-la.
-        # Aqui assumo que você já rodou o SQL para ajustar a staging também se ela for persistente.
-        # Vou forçar a criação temporária para garantir que funcione sem erro de coluna.
-        
+        # Criação da tabela temporária (INCLUINDO BAIRRO)
         cur.execute(f"""
             CREATE TEMP TABLE IF NOT EXISTS temp_staging_import (
                 sessao_id UUID, cpf VARCHAR(20), nome TEXT, identidade TEXT, data_nascimento DATE, 
                 sexo TEXT, nome_mae TEXT, nome_pai TEXT, campanhas TEXT,
-                cnh TEXT, titulo_eleitoral TEXT, convenio TEXT, cep TEXT, rua TEXT, cidade TEXT, uf TEXT,
+                cnh TEXT, titulo_eleitoral TEXT, convenio TEXT, cep TEXT, rua TEXT, bairro TEXT, cidade TEXT, uf TEXT,
                 telefone_1 TEXT, telefone_2 TEXT, telefone_3 TEXT, telefone_4 TEXT, telefone_5 TEXT,
                 telefone_6 TEXT, telefone_7 TEXT, telefone_8 TEXT, telefone_9 TEXT, telefone_10 TEXT,
                 email_1 TEXT, email_2 TEXT, email_3 TEXT
@@ -314,10 +341,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # F) Endereços
+        # F) Endereços (INCLUINDO BAIRRO)
         cur.execute("""
-            INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, cidade, uf)
-            SELECT DISTINCT cpf, cep, rua, cidade, uf FROM temp_staging_import s
+            INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, bairro, cidade, uf)
+            SELECT DISTINCT cpf, cep, rua, bairro, cidade, uf FROM temp_staging_import s
             WHERE sessao_id = %s AND (rua IS NOT NULL OR cep IS NOT NULL)
             AND NOT EXISTS (
                 SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco e 
@@ -325,7 +352,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             )
         """, (sessao_id,))
 
-        # Limpeza tabela temporária (automática no commit drop, mas por garantia)
+        # Limpeza tabela temporária
         cur.execute("DELETE FROM temp_staging_import WHERE sessao_id = %s", (sessao_id,))
         
         conn.commit()
@@ -378,7 +405,6 @@ def tela_importacao():
         c_act1, c_act2, c_act3 = st.columns([1.5, 1.5, 4])
         
         if c_act1.button("🧹 Limpar Filtro", use_container_width=True):
-            # Reseta todos os mapeamentos para "(Selecione)"
             for i in range(len(colunas_arquivo)):
                 if f"map_col_{i}" in st.session_state:
                     st.session_state[f"map_col_{i}"] = "(Selecione)"
@@ -391,8 +417,6 @@ def tela_importacao():
                 del st.session_state['amostra_gerada']
             st.rerun()
         
-        # ---------------------------------
-        
         with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
             cols_map = st.columns(6)
             mapeamento_usuario = {}
@@ -400,9 +424,6 @@ def tela_importacao():
             
             for i, col_arquivo in enumerate(colunas_arquivo):
                 index_sugestao = 0
-                
-                # Só calcula sugestão se não estiver definido no session state (ou se for a primeira vez)
-                # Porém, como o Limpar Filtro define explicitamente, o comportamento do selectbox respeitará o key.
                 if f"map_col_{i}" not in st.session_state:
                     for idx, op in enumerate(opcoes_sistema):
                         if op == "(Selecione)": continue
@@ -414,8 +435,6 @@ def tela_importacao():
                 col_container = cols_map[i % 6]
                 col_container.markdown(f"**{col_arquivo}**")
                 
-                # Se o botão limpar foi clicado, o session_state tem "(Selecione)", então o index deve ser 0.
-                # O selectbox usa o key para manter o estado.
                 escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
                 
                 if escolha != "(Selecione)":
@@ -454,7 +473,6 @@ def tela_importacao():
                 st.divider()
                 col_act1, col_act2 = st.columns([1, 1])
                 
-                # Botão Cancelar inferior (Mantido caso o usuário role para baixo)
                 if col_act1.button("❌ Cancelar (Inferior)", type="secondary", use_container_width=True):
                     del st.session_state['df_importacao']
                     del st.session_state['etapa_importacao']
