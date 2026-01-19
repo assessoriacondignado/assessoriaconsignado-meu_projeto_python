@@ -488,91 +488,89 @@ def tela_pesquisa():
             st.session_state['modo_visualizacao'] = 'novo'
             st.rerun()
 
-    # --- TAB 2: PESQUISA COMPLETA (LAYOUT VERTICAL ÚNICO) ---
+    # --- TAB 2: PESQUISA COMPLETA (LAYOUT GRID DUAS COLUNAS) ---
     with tab2:
         st.markdown("Configure os filtros abaixo para uma busca detalhada.")
         
-        # Botão para limpar (fica fora do form para dar reload imediato)
         if st.button("🧹 Limpar Filtros", type="secondary"):
             st.session_state['resultados_pesquisa'] = []
-            # Gambiarra para limpar inputs: recarrega a página ou usa session_state
-            # Como o Streamlit mantém inputs baseados em key, o rerun limpa se não tiver valor default salvo
             for key in list(st.session_state.keys()):
                 if "val_input_" in key or "op_input_" in key:
                     del st.session_state[key]
             st.rerun()
         
-        st.write("") # Espaçamento
+        st.write("") 
 
-        # Formulário Único para Todos os Filtros
         with st.form("form_pesquisa_completa"):
             filtros_para_query = []
             
-            # Itera sobre todos os grupos e campos
             for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
                 with st.expander(f"📂 {grupo}", expanded=True):
+                    # --- CRIA GRADE DE 2 COLUNAS ---
+                    col_esq, col_dir = st.columns(2, gap="large")
+                    
                     for i, (nome_campo, config) in enumerate(campos.items()):
-                        # Gera chave única
-                        safe_key = f"{config['col']}".replace(".", "_").replace(" ", "_")
+                        # Alterna entre coluna esquerda e direita
+                        col_atual = col_esq if i % 2 == 0 else col_dir
                         
-                        # Layout da Linha: Rótulo (1) | Operador (2) | Valor (3)
-                        c_label, c_op, c_val = st.columns([2, 2, 3])
-                        
-                        with c_label:
-                            st.markdown(f"**{nome_campo}**")
-                        
-                        # Configura Tipos
-                        tipo_ops = 'texto'
-                        if config['tipo'] == 'data': tipo_ops = 'data'
-                        elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
-                        elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
+                        with col_atual:
+                            safe_key = f"{config['col']}".replace(".", "_").replace(" ", "_")
+                            
+                            # --- LINHA 1: TÍTULO + OPERADOR ---
+                            c_tit, c_op = st.columns([2, 1.5])
+                            c_tit.markdown(f"**{nome_campo}**")
+                            
+                            tipo_ops = 'texto'
+                            if config['tipo'] == 'data': tipo_ops = 'data'
+                            elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
+                            elif config['tipo'] in ['texto_vinculado', 'endereco_vinculado']: tipo_ops = 'texto'
 
-                        opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
-                        
-                        # Widget Operador
-                        op_key = f"op_input_{safe_key}"
-                        operador_escolhido = c_op.selectbox("Operador", opcoes_ops, key=op_key, label_visibility="collapsed")
-                        sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
-                        
-                        # Widget Valor
-                        val_key = f"val_input_{safe_key}"
-                        valor_final = None
+                            opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
+                            op_key = f"op_input_{safe_key}"
+                            operador_escolhido = c_op.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
+                            sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
+                            
+                            # --- LINHA 2: INPUT (ABAIXO) ---
+                            val_key = f"val_input_{safe_key}"
+                            valor_final = None
 
-                        with c_val:
                             if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
-                                st.info("---")
+                                st.info("--- (Sem valor)")
                                 valor_final = "ignore"
+                            
                             elif config['tipo'] == 'data':
-                                d1 = st.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY")
-                                d2 = st.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY")
+                                # Se data, coloca inputs lado a lado
+                                cd1, cd2 = st.columns(2)
+                                d1 = cd1.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
+                                d2 = cd2.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
                                 if d1: valor_final = [converter_data_iso(d1), converter_data_iso(d2) if d2 else converter_data_iso(d1)]
+                            
                             elif config['tipo'] == 'numero_calculado':
                                 if operador_escolhido == "Entre (><)":
-                                    n1 = st.number_input("De", step=1, key=f"n1_{val_key}")
-                                    n2 = st.number_input("Até", step=1, key=f"n2_{val_key}")
-                                    # Só considera se tiver input
+                                    cn1, cn2 = st.columns(2)
+                                    n1 = cn1.number_input("De", step=1, key=f"n1_{val_key}", label_visibility="collapsed")
+                                    n2 = cn2.number_input("Até", step=1, key=f"n2_{val_key}", label_visibility="collapsed")
                                     if n1 != 0 or n2 != 0: valor_final = [n1, n2]
                                 else:
-                                    n_val = st.number_input("Valor", step=1, key=f"num_{val_key}")
+                                    n_val = st.number_input("Valor", step=1, key=f"num_{val_key}", label_visibility="collapsed")
                                     if n_val != 0: valor_final = n_val
                             else:
-                                txt_val = st.text_input("Valor", key=f"txt_{val_key}", placeholder="Digite aqui...")
+                                txt_val = st.text_input("Valor", key=f"txt_{val_key}", placeholder="Digite...", label_visibility="collapsed")
                                 if txt_val: valor_final = txt_val
-                        
-                        # Se houver valor (ou for is null), adiciona à lista de processamento
-                        if valor_final is not None:
-                             filtros_para_query.append({
-                                'col': config['col'],
-                                'op': sql_op_code,
-                                'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
-                                'val': valor_final,
-                                'tipo': config['tipo'],
-                                'table': config.get('table')
-                            })
-                        
-                        st.divider()
+                            
+                            if valor_final is not None:
+                                filtros_para_query.append({
+                                    'col': config['col'],
+                                    'op': sql_op_code,
+                                    'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
+                                    'val': valor_final,
+                                    'tipo': config['tipo'],
+                                    'table': config.get('table')
+                                })
+                            
+                            st.write("") # Espaçamento entre linhas
 
-            # Botão de Submit do Formulário
+            st.write("")
             submitted = st.form_submit_button("🚀 APLICAR FILTROS", type="primary", use_container_width=True)
             
             if submitted:
@@ -591,7 +589,6 @@ def tela_pesquisa():
             st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
             
             # Cabeçalho da Tabela
-            # Colunas: ID, Nome, CPF, Ação (RG removido)
             cols_head = st.columns([1, 4, 3, 2])
             cols_head[0].write("**ID**")
             cols_head[1].write("**Nome**")
