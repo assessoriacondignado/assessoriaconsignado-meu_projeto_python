@@ -658,6 +658,39 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 --- SCHEMA: SISTEMA_CONSULTA ---
 
+[TABELA: sistema_consulta.importacao_staging]
+   - sessao_id (uuid) NULL
+   - cpf (character varying(20)) NULL
+   - nome (text) NULL
+   - identidade (text) NULL
+   - data_nascimento (date) NULL
+   - sexo (text) NULL
+   - nome_mae (text) NULL
+   - cnh (text) NULL
+   - titulo_eleitoral (text) NULL
+   - convenio (text) NULL
+   - cep (text) NULL
+   - rua (text) NULL
+   - cidade (text) NULL
+   - uf (text) NULL
+   - telefone_1 (text) NULL
+   - telefone_2 (text) NULL
+   - telefone_3 (text) NULL
+   - telefone_4 (text) NULL
+   - telefone_5 (text) NULL
+   - telefone_6 (text) NULL
+   - telefone_7 (text) NULL
+   - telefone_8 (text) NULL
+   - telefone_9 (text) NULL
+   - telefone_10 (text) NULL
+   - email_1 (text) NULL
+   - email_2 (text) NULL
+   - email_3 (text) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_convenio_tipo]
+   - id (integer) NOT NULL
+   - nome_convenio (text) NOT NULL
+
 [TABELA: sistema_consulta.sistema_consulta_cpf]
    - id (integer) NOT NULL
    - cpf (character varying(20)) NOT NULL
@@ -687,6 +720,9 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - data_expedicao_cnh (date) NULL
    - titulo_eleitoral (text) NULL
    - data_criacao (timestamp without time zone) NULL
+   - nome_mae (character varying(255)) NULL
+   - nome_pai (text) NULL
+   - campanhas (character varying(255)) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_email]
    - id (integer) NOT NULL
@@ -727,6 +763,16 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - telefone (character varying(20)) NOT NULL
    - qualificacao (text) NULL
    - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_importacao]
+   - id (integer) NOT NULL
+   - nome_arquivo (text) NULL
+   - data_importacao (timestamp without time zone) NULL
+   - qtd_novos (text) NULL
+   - qtd_atualizados (text) NULL
+   - qtd_erros (text) NULL
+   - caminho_arquivo_original (text) NULL
+   - caminho_arquivo_erro (text) NULL
 
 ========================================
 

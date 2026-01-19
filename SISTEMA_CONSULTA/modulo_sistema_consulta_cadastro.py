@@ -29,6 +29,8 @@ MAPA_CAMPOS_PESQUISA = {
     },
     "Filiação e Outros": {
         "Nome da Mãe": {"col": "t.nome_mae", "tipo": "texto"},
+        "Nome do Pai": {"col": "t.nome_pai", "tipo": "texto"}, # Novo Campo
+        "Campanhas": {"col": "t.campanhas", "tipo": "texto"},   # Novo Campo
         "Título de Eleitor": {"col": "t.titulo_eleitoral", "tipo": "texto"},
         "CNH": {"col": "t.cnh", "tipo": "texto"},
     }
@@ -89,13 +91,14 @@ def get_db_connection():
         return None
 
 def buscar_cliente_rapida(termo):
-    """Busca por Nome, CPF ou Telefone (limite 30)"""
+    """Busca por Nome, CPF, Telefone, Pai ou Campanha (limite 30)"""
     conn = get_db_connection()
     if not conn: return []
     
     termo = termo.strip()
     termo_limpo = ''.join(filter(str.isdigit, termo))
     
+    # Atualizado para incluir Nome do Pai e Campanhas na busca
     query = """
         SELECT t.id, t.nome, t.cpf, t.identidade 
         FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
@@ -103,6 +106,8 @@ def buscar_cliente_rapida(termo):
             t.nome ILIKE %s OR 
             t.cpf ILIKE %s OR
             t.cpf = %s OR
+            t.nome_pai ILIKE %s OR
+            t.campanhas ILIKE %s OR
             EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = t.cpf AND telefone ILIKE %s)
         LIMIT 30
     """
@@ -110,7 +115,15 @@ def buscar_cliente_rapida(termo):
     
     try:
         with conn.cursor() as cur:
-            cur.execute(query, (param_termo, param_termo, termo_limpo if termo_limpo else '00000000000', param_termo))
+            # Passa o termo repetidas vezes para cada cláusula do OR
+            cur.execute(query, (
+                param_termo,    # nome
+                param_termo,    # cpf ilike
+                termo_limpo if termo_limpo else '00000000000', # cpf exato
+                param_termo,    # nome_pai
+                param_termo,    # campanhas
+                param_termo     # telefone
+            ))
             return cur.fetchall()
     finally:
         conn.close()
@@ -233,7 +246,7 @@ def carregar_dados_cliente_completo(cpf):
     dados = {}
     try:
         with conn.cursor() as cur:
-            # 1. Dados Pessoais
+            # 1. Dados Pessoais (SELECT * pega as novas colunas nome_pai e campanhas)
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cols_pessoais = [desc[0] for desc in cur.description]
             row_pessoais = cur.fetchone()
@@ -287,6 +300,8 @@ def salvar_novo_cliente(dados_form):
         "identidade": limpar_texto(dados_form.get('identidade')),
         "sexo": limpar_texto(dados_form.get('sexo')),
         "nome_mae": limpar_texto(dados_form.get('nome_mae')),
+        "nome_pai": limpar_texto(dados_form.get('nome_pai')), # Novo
+        "campanhas": limpar_texto(dados_form.get('campanhas')), # Novo
         "data_nascimento": dados_form.get('data_nascimento')
     }
 
@@ -354,15 +369,18 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
     try:
         with conn.cursor() as cur:
             pessoal = dados_editados['pessoal']
+            # Atualizado para incluir nome_pai e campanhas no UPDATE
             cur.execute("""
                 UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf
                 SET nome = %s, data_nascimento = %s, identidade = %s, 
-                    sexo = %s, cnh = %s, titulo_eleitoral = %s, nome_mae = %s
+                    sexo = %s, cnh = %s, titulo_eleitoral = %s, nome_mae = %s,
+                    nome_pai = %s, campanhas = %s
                 WHERE cpf = %s
             """, (
                 limpar_texto(pessoal['nome']), pessoal['data_nascimento'], limpar_texto(pessoal['identidade']),
                 limpar_texto(pessoal['sexo']), limpar_texto(pessoal['cnh']), 
                 limpar_texto(pessoal['titulo_eleitoral']), limpar_texto(pessoal['nome_mae']),
+                limpar_texto(pessoal.get('nome_pai')), limpar_texto(pessoal.get('campanhas')),
                 cpf
             ))
             
@@ -628,12 +646,24 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             nome = c1.text_input("Nome*")
             cpf_in = c2.text_input("CPF*")
             nasc = c3.date_input("Nascimento", value=None, min_value=date(1900,1,1), max_value=date(2050,1,1), format="DD/MM/YYYY")
+            
             c4, c5, c6 = st.columns(3)
             rg = c4.text_input("RG")
             sexo = c5.selectbox("Sexo", ["Masculino", "Feminino", "Outros"])
             mae = c6.text_input("Nome da Mãe")
+            
+            # Novos Campos (Pai e Campanhas)
+            c7, c8 = st.columns(2)
+            pai = c7.text_input("Nome do Pai")
+            campanhas = c8.text_input("Campanhas (Separar por vírgula)")
+
             if st.form_submit_button("💾 Salvar"):
-                if salvar_novo_cliente({"nome": nome, "cpf": cpf_in, "data_nascimento": nasc, "identidade": rg, "sexo": sexo, "nome_mae": mae}):
+                # Salva com os novos campos
+                if salvar_novo_cliente({
+                    "nome": nome, "cpf": cpf_in, "data_nascimento": nasc, 
+                    "identidade": rg, "sexo": sexo, "nome_mae": mae,
+                    "nome_pai": pai, "campanhas": campanhas
+                }):
                     st.success("Cadastrado!")
                     st.session_state['cliente_ativo_cpf'] = cpf_in
                     st.session_state['modo_visualizacao'] = 'visualizar'
@@ -695,6 +725,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     e_titulo = ec5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
                     e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
                     e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
+                    
+                    # Novos Campos de Edição
+                    ec7, ec8 = st.columns(2)
+                    e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
+                    e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
 
                     st.divider()
                     
@@ -732,7 +767,8 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                         pacote_dados = {
                             "pessoal": {
                                 "nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc,
-                                "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae
+                                "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae,
+                                "nome_pai": e_pai, "campanhas": e_campanhas
                             },
                             "telefones": edicoes_telefones,
                             "emails": edicoes_emails,
@@ -758,7 +794,13 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                 col4, col5 = st.columns(2)
                 col4.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
                 col5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
-                st.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
+                
+                # Filiação e Campanhas
+                col6, col7 = st.columns(2)
+                col6.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
+                col7.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
+                
+                st.text_input("Campanhas", value=pessoal.get('campanhas',''), disabled=True)
 
                 st.divider()
                 c_contato, c_endereco = st.columns(2)
