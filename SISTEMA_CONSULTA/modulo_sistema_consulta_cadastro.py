@@ -97,6 +97,56 @@ def get_db_connection():
         st.error(f"Erro de conexão: {e}")
         return None
 
+def buscar_relacao_auxiliar(tipo):
+    """Busca listas de Importação, Agrupamento ou Campanha"""
+    conn = get_db_connection()
+    if not conn: return [], []
+    
+    dados = []
+    colunas = []
+    
+    try:
+        with conn.cursor() as cur:
+            if tipo == 'Importação':
+                cur.execute("""
+                    SELECT nome_arquivo, 
+                           TO_CHAR(data_importacao, 'DD/MM/YYYY HH24:MI') as data, 
+                           qtd_novos, qtd_atualizados 
+                    FROM sistema_consulta.sistema_consulta_importacao 
+                    ORDER BY data_importacao DESC LIMIT 100
+                """)
+                dados = cur.fetchall()
+                colunas = ['Nome do Arquivo', 'Data', 'Novos', 'Atualizados']
+                
+            elif tipo == 'Agrupamento':
+                cur.execute("""
+                    SELECT agrupamento, COUNT(*) 
+                    FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf 
+                    GROUP BY agrupamento 
+                    ORDER BY 2 DESC
+                """)
+                dados = cur.fetchall()
+                colunas = ['Nome Agrupamento', 'Qtd CPFs']
+                
+            elif tipo == 'Campanha':
+                # Busca campanhas distintas da tabela principal
+                cur.execute("""
+                    SELECT campanhas, COUNT(*) 
+                    FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
+                    WHERE campanhas IS NOT NULL AND campanhas <> '' 
+                    GROUP BY campanhas 
+                    ORDER BY 2 DESC
+                """)
+                dados = cur.fetchall()
+                colunas = ['Nome Campanha', 'Qtd CPFs']
+                
+            return dados, colunas
+    except Exception as e:
+        st.error(f"Erro ao buscar auxiliar: {e}")
+        return [], []
+    finally:
+        conn.close()
+
 def buscar_cliente_rapida(termo):
     """Busca por Nome, CPF, Telefone, Pai ou Campanha (limite 30)"""
     conn = get_db_connection()
@@ -429,7 +479,7 @@ def excluir_cliente_total(cpf):
     finally:
         conn.close()
 
-# --- COMPONENTE MODAL ---
+# --- COMPONENTE MODAL DADOS EXTRAS ---
 @st.dialog("➕ Inserir Dados Extras")
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
@@ -460,6 +510,22 @@ def modal_inserir_dados(cpf, nome_cliente):
                 st.warning("Dado já existente!")
             else:
                 st.error("Erro ao inserir.")
+
+# --- NOVO MODAL: AGRUPAMENTOS ---
+@st.dialog("📂 Visualizador de Agrupamentos")
+def modal_agrupamentos():
+    st.markdown("### Selecione o tipo para visualizar")
+    tipo = st.selectbox("Tipo:", ["Importação", "Agrupamento", "Campanha"])
+    
+    if tipo:
+        with st.spinner("Carregando dados..."):
+            dados, colunas = buscar_relacao_auxiliar(tipo)
+            
+        if dados:
+            df = pd.DataFrame(dados, columns=colunas)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum registro encontrado para esta categoria.")
 
 # --- DIALOG EXCLUSÃO ---
 @st.dialog("⚠️ Confirmar Exclusão")
@@ -500,12 +566,19 @@ def tela_pesquisa():
 
     with tab2:
         st.markdown("Configure os filtros abaixo para uma busca detalhada.")
-        if st.button("🧹 Limpar Filtros", type="secondary"):
+        
+        # --- ALTERADO: Botões de Ação (Limpar e Agrupamentos) ---
+        c_clear, c_group, c_vazio = st.columns([1.5, 1.5, 4])
+        
+        if c_clear.button("🧹 Limpar Filtros", type="secondary", use_container_width=True):
             st.session_state['resultados_pesquisa'] = []
             for key in list(st.session_state.keys()):
                 if "val_input_" in key or "op_input_" in key:
                     del st.session_state[key]
             st.rerun()
+            
+        if c_group.button("📂 Agrupamentos", use_container_width=True):
+            modal_agrupamentos()
         
         st.write("") 
 
