@@ -55,21 +55,11 @@ def limpar_formatar_cpf(valor):
     return limpo.zfill(11)
 
 def limpar_formatar_telefone(valor):
-    """
-    Regras Telefone:
-    - Retira pontuação, espaços e letras.
-    - Garante que tenha 11 dígitos. 
-    - Se vazio, nulo ou inválido, retorna string vazia "".
-    """
-    if pd.isna(valor) or valor is None: return ""
-    
+    if pd.isna(valor) or valor is None: return None
     limpo = ''.join(filter(str.isdigit, str(valor)))
-    
-    # Regra: Deve ter exatamente 11 dígitos (DDD + 9 + Número)
     if len(limpo) == 11:
         return limpo
-    
-    return "" # Retorna vazio se não atender a regra
+    return None
 
 def converter_data_iso(valor):
     if not valor or pd.isna(valor): return None
@@ -140,8 +130,7 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
             if col_tel:
                 val = linha_dict.get(col_tel, '')
                 val_fmt = limpar_formatar_telefone(val)
-                # Mostra input vazio se for inválido, em vez de ocultar ou mostrar None
-                st.text_input(f"Telefone {i}", value=val_fmt, disabled=True, key=f"amostra_tel_{i}")
+                if val_fmt: st.text_input(f"Telefone {i}", value=val_fmt, disabled=True, key=f"amostra_tel_{i}")
 
         st.markdown("##### 📧 E-mails")
         for i in range(1, 4):
@@ -171,7 +160,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
     
     # 1. PREPARAÇÃO DO DATAFRAME
     cols_staging = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
-                    'nome_pai', 'campanhas', 
+                    'nome_pai', 'campanhas', # Novos Campos na Staging
                     'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'cidade', 'uf']
     cols_staging += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging += [f"email_{i}" for i in range(1, 4)]
@@ -209,7 +198,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     return 'Feminino' if s in ['F', 'FEMININO'] else ('Masculino' if s in ['M', 'MASCULINO'] else x)
                 df_staging[col_sys] = serie.apply(trata_sexo)
             elif col_sys.startswith('telefone_'):
-                # Aplica a nova regra de telefone (retorna "" se inválido)
                 df_staging[col_sys] = serie.apply(limpar_formatar_telefone)
             else:
                 df_staging[col_sys] = serie.apply(limpar_texto)
@@ -227,7 +215,11 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         df_staging[cols_staging].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
-        # Garante tabela temporária compatível com as colunas
+        # IMPORTANTE: A tabela staging precisa ter as colunas nome_pai e campanhas criadas no banco.
+        # Caso a tabela staging seja temporária ou recriada, certifique-se de atualizá-la.
+        # Aqui assumo que você já rodou o SQL para ajustar a staging também se ela for persistente.
+        # Vou forçar a criação temporária para garantir que funcione sem erro de coluna.
+        
         cur.execute(f"""
             CREATE TEMP TABLE IF NOT EXISTS temp_staging_import (
                 sessao_id UUID, cpf VARCHAR(20), nome TEXT, identidade TEXT, data_nascimento DATE, 
@@ -270,7 +262,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
                     campanhas = COALESCE(s.campanhas, t.campanhas),
                     cnh = COALESCE(s.cnh, t.cnh),
                     titulo_eleitoral = COALESCE(s.titulo_eleitoral, t.titulo_eleitoral),
-                    id_importacao = s.sessao_id::text
+                    id_importacao = s.sessao_id::text -- Atualiza ID Importação
                 FROM rows_to_insert s
                 WHERE t.cpf = s.cpf
                 RETURNING t.cpf
@@ -290,7 +282,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        # C) Telefones (Filtra vazios '')
+        # C) Telefones
         cur.execute("""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT s.cpf, t.tel
@@ -330,6 +322,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
             )
         """, (sessao_id,))
 
+        # Limpeza tabela temporária (automática no commit drop, mas por garantia)
         cur.execute("DELETE FROM temp_staging_import WHERE sessao_id = %s", (sessao_id,))
         
         conn.commit()
@@ -341,6 +334,128 @@ def executar_importacao_em_massa(df, mapeamento_usuario):
         return 0, 0, 0, []
     finally:
         conn.close()
+
+# --- INTERFACE ---
+
+def tela_importacao():
+    st.markdown("## 📥 Importar Dados (Enterprise Mode)")
+    
+    if 'etapa_importacao' not in st.session_state:
+        st.session_state['etapa_importacao'] = 'upload'
+    
+    # 1. UPLOAD
+    if st.session_state['etapa_importacao'] == 'upload':
+        arquivo = st.file_uploader("Selecione o arquivo (CSV ou Excel)", type=['csv', 'xlsx'])
+        if arquivo:
+            try:
+                if arquivo.name.endswith('.csv'):
+                    df = pd.read_csv(arquivo, sep=';', dtype=str)
+                    if df.shape[1] < 2: 
+                        arquivo.seek(0)
+                        df = pd.read_csv(arquivo, sep=',', dtype=str)
+                else:
+                    df = pd.read_excel(arquivo, dtype=str)
+                
+                st.session_state['df_importacao'] = df
+                st.session_state['nome_arquivo_importacao'] = arquivo.name
+                st.session_state['etapa_importacao'] = 'mapeamento'
+                st.session_state['amostra_gerada'] = False 
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao ler arquivo: {e}")
+
+    # 2. MAPEAMENTO & AMOSTRA
+    elif st.session_state['etapa_importacao'] == 'mapeamento':
+        df = st.session_state['df_importacao']
+        colunas_arquivo = list(df.columns)
+        
+        st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
+        
+        with st.expander("⚙️ Mapeamento de Colunas", expanded=True):
+            cols_map = st.columns(6)
+            mapeamento_usuario = {}
+            opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
+            
+            for i, col_arquivo in enumerate(colunas_arquivo):
+                index_sugestao = 0
+                for idx, op in enumerate(opcoes_sistema):
+                    if op == "(Selecione)": continue
+                    sys_key = CAMPOS_SISTEMA[op]
+                    if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
+                        index_sugestao = idx
+                        break
+                
+                col_container = cols_map[i % 6]
+                col_container.markdown(f"**{col_arquivo}**")
+                escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
+                
+                if escolha != "(Selecione)":
+                    mapeamento_usuario[CAMPOS_SISTEMA[escolha]] = col_arquivo
+
+        if 'cpf' not in mapeamento_usuario:
+            st.error("⚠️ Obrigatório mapear **CPF**.")
+        else:
+            st.divider()
+            
+            if not st.session_state.get('amostra_gerada'):
+                if st.button("🎲 GERAR AMOSTRA (5 Linhas)", type="primary"):
+                    st.session_state['amostra_gerada'] = True
+                    st.rerun()
+            
+            if st.session_state.get('amostra_gerada'):
+                st.subheader("🔍 Amostra Processada")
+                amostra = df.head(5).copy()
+                ch1, ch2, ch3 = st.columns([2, 4, 1])
+                ch1.markdown("**CPF**")
+                ch2.markdown("**Nome**")
+                ch3.markdown("**Ação**")
+                st.divider()
+
+                for idx, row in amostra.iterrows():
+                    c1, c2, c3 = st.columns([2, 4, 1])
+                    raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else ""
+                    val_cpf = limpar_formatar_cpf(raw_cpf)
+                    
+                    val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
+                    c1.write(val_cpf)
+                    c2.write(val_nome)
+                    if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
+                        modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
+                
+                st.divider()
+                col_act1, col_act2 = st.columns([1, 1])
+                
+                if col_act1.button("❌ Cancelar", type="secondary", use_container_width=True):
+                    del st.session_state['df_importacao']
+                    del st.session_state['etapa_importacao']
+                    del st.session_state['amostra_gerada']
+                    st.rerun()
+                
+                if col_act2.button("✅ FINALIZAR (Processamento Rápido)", type="primary", use_container_width=True):
+                    with st.spinner("🚀 Processando em alta velocidade... Aguarde."):
+                        novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+                    nome_arq_safe = st.session_state['nome_arquivo_importacao'].replace(" ", "_")
+                    path_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_{nome_arq_safe}")
+                    df.to_csv(path_final, sep=';', index=False)
+                    
+                    path_erro_final = ""
+                    if lista_erros:
+                        path_erro_final = os.path.join(PASTA_ARQUIVOS, f"{timestamp}_ERROS_{nome_arq_safe}")
+                        pd.DataFrame(lista_erros).to_csv(path_erro_final, sep=';', index=False)
+
+                    salvar_historico_importacao(st.session_state['nome_arquivo_importacao'], novos, atualizados, erros, path_final, path_erro_final)
+
+                    st.balloons()
+                    st.success("Importação Finalizada com Sucesso! 🚀")
+                    st.info(f"Novos: {novos} | Atualizados: {atualizados} | Erros (CPF inválido): {erros}")
+                    
+                    time.sleep(5)
+                    del st.session_state['df_importacao']
+                    del st.session_state['etapa_importacao']
+                    del st.session_state['amostra_gerada']
+                    st.rerun()
 
 if __name__ == "__main__":
     tela_importacao()
