@@ -283,12 +283,13 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     lista_erros = []
     
     # LISTA FIXA DE COLUNAS QUE O SISTEMA ESPERA PARA O STAGING "PADRÃO"
-    # Nota: Se estiver usando tabela de Staging Personalizada (CLT),
-    # certifique-se que ela tenha pelo menos estas colunas OU que o código seja adaptado para ela.
-    # Por segurança, mantemos a lista padrão + novos campos se couberem no modelo genérico.
+    # Adicione aqui qualquer coluna nova que você criou nas tabelas de staging
     cols_staging_order = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                           'nome_pai', 'campanhas',
-                          'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf']
+                          'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf',
+                          'matricula', 'cnpj_nome', 'cnpj_numero', 'qtd_funcionarios', 'data_abertura_empresa',
+                          'cnae_nome', 'cnae_codigo', 'data_admissao', 'cbo_codigo', 'cbo_nome', 'data_inicio_emprego']
+    
     cols_staging_order += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging_order += [f"email_{i}" for i in range(1, 4)]
 
@@ -321,7 +322,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         
         if col_excel:
             serie = df.loc[df.index, col_excel] # Usa index alinhado
-            if col_sys == 'data_nascimento':
+            if 'data' in col_sys:
                 df_staging[col_sys] = serie.apply(converter_data_iso)
             elif col_sys == 'sexo':
                 def trata_sexo(x):
@@ -342,11 +343,20 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     try:
         cur = conn.cursor()
         csv_buffer = io.StringIO()
-        df_staging[cols_staging_order].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
+        # Garante que só tentamos exportar colunas que existem no DF e que a tabela SQL aceita
+        # IMPORTANTE: A tabela SQL deve ter essas colunas.
+        # Se alguma coluna nova (ex: matricula) não existir na tabela "importacao_staging" padrão, 
+        # o COPY vai falhar se a tabela destino for essa.
+        # Por isso a tabela destino configurada deve suportar as colunas.
+        
+        # Filtra colunas do staging que realmente vamos usar (evita erro se df_staging tiver colunas a mais/menos)
+        cols_final = [c for c in cols_staging_order if c in df_staging.columns]
+        
+        df_staging[cols_final].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
         # 1. Copia para Staging
-        cur.copy_expert(f"COPY {tabela_destino} ({','.join(cols_staging_order)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
+        cur.copy_expert(f"COPY {tabela_destino} ({','.join(cols_final)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
         
         # 2. Distribuição
         
@@ -359,7 +369,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 
         id_imp_str = str(id_importacao_db)
 
-        # B) Dados Cadastrais
+        # B) Dados Cadastrais (UPSERT)
+        # Nota: Só atualiza colunas que existem na tabela de dados cadastrais PRINCIPAL
+        # Se quiser salvar Matrícula/CNPJ, precisará de uma query separada para a tabela sistema_consulta_dados_ctt
+        # Abaixo mantém a lógica original para os dados PESSOAIS (Genéricos)
         cur.execute(f"""
             WITH rows_to_insert AS (
                 SELECT * FROM {tabela_destino} WHERE sessao_id = %s
@@ -402,7 +415,26 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        # C) Telefones
+        # C) Inserção na Tabela Específica de CLT (Se houver campos CLT)
+        # Verifica se alguma coluna CLT foi preenchida para tentar inserir na tabela sistema_consulta_dados_ctt
+        if 'matricula' in df_staging.columns: # Supõe que se tem matricula, tenta salvar CLT
+             try:
+                cur.execute(f"""
+                    INSERT INTO sistema_consulta.sistema_consulta_dados_ctt
+                    (cpf, matricula, convenio, cnpj_nome, cnpj_numero, qtd_funcionarios, 
+                     data_abertura_empresa, cnae_nome, cnae_codigo, data_admissao, 
+                     cbo_codigo, cbo_nome, data_inicio_emprego, importacao_id)
+                    SELECT cpf, matricula, convenio, cnpj_nome, cnpj_numero, qtd_funcionarios, 
+                           data_abertura_empresa, cnae_nome, cnae_codigo, data_admissao, 
+                           cbo_codigo, cbo_nome, data_inicio_emprego, %s
+                    FROM {tabela_destino}
+                    WHERE sessao_id = %s AND matricula IS NOT NULL
+                """, (id_imp_str, sessao_id))
+             except Exception as ex_clt:
+                 # Se a tabela staging não tiver as colunas, vai dar erro, ignoramos ou logamos
+                 print(f"Aviso: Não foi possível inserir dados CLT: {ex_clt}")
+
+        # D) Telefones
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT s.cpf, t.tel
@@ -413,7 +445,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # D) Emails
+        # E) Emails
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email)
             SELECT DISTINCT s.cpf, e.mail
@@ -423,7 +455,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # E) Convênios (COM VALIDAÇÃO DE DUPLICIDADE)
+        # F) Convênios (COM VALIDAÇÃO DE DUPLICIDADE)
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio)
             SELECT DISTINCT s.cpf, s.convenio 
@@ -438,7 +470,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
               )
         """, (sessao_id,))
 
-        # F) Endereços
+        # G) Endereços
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco (cpf, cep, rua, bairro, cidade, uf)
             SELECT DISTINCT cpf, cep, rua, bairro, cidade, uf FROM {tabela_destino} s
