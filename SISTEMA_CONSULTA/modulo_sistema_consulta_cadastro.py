@@ -1004,106 +1004,104 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         return
 
     # =========================================================================
-    # LAYOUT VISUALIZAÇÃO (NÃO EDIÇÃO)
+    # LAYOUT VISUALIZAÇÃO (NÃO EDIÇÃO) - AJUSTADO PARA EXPANDERS
     # =========================================================================
     
-    col_esquerda, col_direita = st.columns([6, 4], gap="medium")
-
-    with col_esquerda:
-        st.subheader("📄 Dados Cadastrais")
-        c1, c2 = st.columns([3, 2])
+    # 1. Dados Cadastrais e CLT
+    with st.expander("📄 Dados Cadastrais", expanded=False):
+        c1, c2, c3 = st.columns([3, 1.5, 1.5])
         c1.text_input("Nome Completo", value=pessoal.get('nome',''), disabled=True)
         c2.text_input("CPF", value=pessoal.get('cpf',''), disabled=True)
-        
-        c3, c4, c5 = st.columns(3)
         c3.text_input("RG", value=pessoal.get('identidade',''), disabled=True)
+        
+        c4, c5, c6, c7 = st.columns(4)
         dt_nasc = pessoal.get('data_nascimento')
         if dt_nasc: dt_nasc = dt_nasc.strftime('%d/%m/%Y')
         c4.text_input("Data Nasc.", value=str(dt_nasc), disabled=True)
         c5.text_input("Sexo", value=pessoal.get('sexo',''), disabled=True)
+        c6.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
+        c7.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
         
-        c6, c7 = st.columns(2)
-        c6.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
-        c7.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
-        
-        c8, c9 = st.columns(2)
-        c8.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
-        c9.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
-        st.text_input("Campanhas", value=pessoal.get('campanhas',''), disabled=True)
+        c8, c9, c10 = st.columns([2, 2, 2])
+        c8.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
+        c9.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
+        c10.text_input("Campanhas", value=pessoal.get('campanhas',''), disabled=True)
         
         if clt:
-            st.markdown("---")
-            st.markdown("##### 💼 Dados CLT")
-            cl1, cl2 = st.columns(2)
+            st.divider()
+            st.markdown("**💼 Dados CLT**")
+            cl1, cl2, cl3, cl4 = st.columns(4)
             cl1.text_input("Matrícula", value=clt.get('matricula',''), disabled=True)
             cl2.text_input("CNPJ", value=f"{clt.get('cnpj_nome','')} ({clt.get('cnpj_numero','')})", disabled=True)
-            cl3, cl4 = st.columns(2)
             cl3.text_input("CBO", value=f"{clt.get('cbo_codigo','')} - {clt.get('cbo_nome','')}", disabled=True)
             dt_adm = clt.get('data_admissao')
             if dt_adm: dt_adm = dt_adm.strftime('%d/%m/%Y')
             cl4.text_input("Admissão", value=str(dt_adm), disabled=True)
 
-    with col_direita:
-        st.subheader("📞 Telefones")
-        if dados.get('telefones'):
-            t_col1, t_col2 = st.columns(2)
-            for i, tel in enumerate(dados.get('telefones', [])):
-                col_alvo = t_col1 if i % 2 == 0 else t_col2
-                col_alvo.text_input(f"Tel {i+1}", value=tel['valor'], key=f"t_{i}", disabled=True, label_visibility="collapsed")
-        else:
-            st.info("Nenhum telefone.")
+    # 2. Contatos e Localização
+    with st.expander("📍 Contatos e Endereço", expanded=False):
+        col_cont, col_end = st.columns([1, 1])
+        
+        with col_cont:
+            st.markdown("**📞 Telefones e E-mails**")
+            if dados.get('telefones'):
+                for i, tel in enumerate(dados.get('telefones', [])):
+                    st.text_input(f"Telefone {i+1}", value=tel['valor'], disabled=True, key=f"view_tel_{i}")
+            else:
+                st.caption("Sem telefones.")
+                
+            if dados.get('emails'):
+                for i, mail in enumerate(dados.get('emails', [])):
+                    st.text_input(f"E-mail {i+1}", value=mail['valor'], disabled=True, key=f"view_email_{i}")
+            else:
+                st.caption("Sem e-mails.")
 
-        st.divider()
-        st.subheader("📧 E-mails")
-        if dados.get('emails'):
-            for i, mail in enumerate(dados.get('emails', [])):
-                st.text_input(f"Email {i+1}", value=mail['valor'], key=f"e_{i}", disabled=True, label_visibility="collapsed")
-        else:
-            st.info("Nenhum e-mail.")
+        with col_end:
+            st.markdown("**🏠 Endereço**")
+            if dados.get('enderecos'):
+                for i, end in enumerate(dados.get('enderecos', [])):
+                    st.text_area(f"Endereço {i+1}", 
+                                 value=f"{end.get('rua','')}, {end.get('bairro','')}\n{end.get('cidade','')} - {end.get('uf','')}\nCEP: {end.get('cep','')}",
+                                 height=100, disabled=True)
+            else:
+                st.caption("Sem endereço.")
 
-        st.divider()
-        st.subheader("🏠 Endereço")
-        if dados.get('enderecos'):
-            for i, end in enumerate(dados.get('enderecos', [])):
-                with st.container(border=True):
-                    st.caption(f"Endereço {i+1}")
-                    st.text(f"{end.get('rua','')}, {end.get('bairro','')}")
-                    st.text(f"{end.get('cidade','')} - {end.get('uf','')}")
-                    st.text(f"CEP: {end.get('cep','')}")
-        else:
-            st.info("Nenhum endereço.")
-            
-    st.divider()
-    st.subheader("📋 Convênios e Contratos")
-    
+    # 3. Convênios e Contratos
+    # Não precisa de st.divider() se já são expanders distintos visualmente
     if financeiro:
         for (nome_convenio, matricula), grupo in financeiro.items():
-            with st.container(border=True):
-                st.markdown(f"#### {nome_convenio} - Matrícula: {matricula}")
+            with st.expander(f"📋 {nome_convenio} - Matrícula: {matricula}", expanded=False):
                 col_dados_conv, col_contratos = st.columns([2, 3], gap="medium")
                 
                 with col_dados_conv:
-                    st.markdown("###### Dados do Convênio")
+                    st.markdown("**Dados do Convênio**")
                     dados_esp = grupo.get('dados_convenio')
                     if dados_esp:
-                        for k, v in dados_esp.items():
-                            if k not in ['id', 'cpf', 'matricula', 'nome']:
-                                st.text_input(k.replace('_', ' ').capitalize(), value=str(v), disabled=True, key=f"dconv_{matricula}_{k}")
+                        # Tentar fazer grid de 2 colunas para dados do convênio ficarem compactos
+                        chaves = [k for k in dados_esp.keys() if k not in ['id', 'cpf', 'matricula', 'nome']]
+                        for i in range(0, len(chaves), 2):
+                            rc1, rc2 = st.columns(2)
+                            key1 = chaves[i]
+                            rc1.text_input(key1.replace('_', ' ').capitalize(), value=str(dados_esp[key1]), disabled=True, key=f"v_dconv_{matricula}_{key1}")
+                            if i + 1 < len(chaves):
+                                key2 = chaves[i+1]
+                                rc2.text_input(key2.replace('_', ' ').capitalize(), value=str(dados_esp[key2]), disabled=True, key=f"v_dconv_{matricula}_{key2}")
                     else:
                         st.info("Sem dados adicionais.")
 
                 with col_contratos:
-                    st.markdown("###### Contratos")
+                    st.markdown("**Contratos**")
                     lista_contratos = grupo.get('contratos', [])
                     if lista_contratos:
                         df_contratos = pd.DataFrame(lista_contratos)
                         cols_view = ['numero_contrato', 'valor_parcela', 'prazo_total', 'prazo_aberto', 'saldo_devedor', 'taxa_juros']
                         cols_finais = [c for c in cols_view if c in df_contratos.columns]
-                        st.dataframe(df_contratos[cols_finais], use_container_width=True, hide_index=True, height=250)
+                        st.dataframe(df_contratos[cols_finais], use_container_width=True, hide_index=True, height=200)
                     else:
                         st.caption("Nenhum contrato ativo.")
     else:
-        st.info("Nenhum convênio ou contrato localizado.")
+        with st.expander("📋 Convênios e Contratos", expanded=False):
+            st.info("Nenhum convênio ou contrato localizado.")
 
 # --- TELA DE PESQUISA (Principal) ---
 
