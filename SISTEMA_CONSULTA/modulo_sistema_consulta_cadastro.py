@@ -1147,10 +1147,37 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                 lista_contratos = grupo.get('contratos', [])
                 if lista_contratos:
                     df_contratos = pd.DataFrame(lista_contratos)
-                    # Remove colunas técnicas redundantes antes de exibir
-                    cols_to_hide = ['id', 'cpf', 'matricula', 'convenio']
-                    df_show = df_contratos.drop(columns=[c for c in cols_to_hide if c in df_contratos.columns])
                     
+                    # 1. Definir Ordem
+                    colunas_ordenadas = [
+                        'numero_contrato', 'valor_parcela', 'prazo_aberto', 'prazo_pago',
+                        'prazo_total', 'taxa_juros', 'tipo_taxa', 'valor_contrato_inicial',
+                        'saldo_devedor', 'data_inicio', 'data_averbacao', 'data_final'
+                    ]
+                    
+                    # 2. Garantir que todas existam no DF (evitar Key Error se banco estiver desatualizado)
+                    cols_existentes = [c for c in colunas_ordenadas if c in df_contratos.columns]
+                    
+                    # 3. Filtrar e Ordenar
+                    df_show = df_contratos[cols_existentes].copy()
+                    
+                    # 4. Renomear para Display (Opcional, mas recomendado para "Layout Adjustment")
+                    renomear = {
+                        'numero_contrato': 'Nº Contrato',
+                        'valor_parcela': 'Vlr. Parc.',
+                        'prazo_aberto': 'Pz Aberto',
+                        'prazo_pago': 'Pz Pago',
+                        'prazo_total': 'Pz Total',
+                        'taxa_juros': 'Taxa %',
+                        'tipo_taxa': 'Tipo Taxa',
+                        'valor_contrato_inicial': 'Vlr. Inicial',
+                        'saldo_devedor': 'Saldo Dev.',
+                        'data_inicio': 'Dt Início',
+                        'data_averbacao': 'Dt Averb.',
+                        'data_final': 'Dt Final'
+                    }
+                    df_show.rename(columns=renomear, inplace=True)
+
                     st.table(df_show)
                 else:
                     st.caption("Nenhum contrato ativo.")
