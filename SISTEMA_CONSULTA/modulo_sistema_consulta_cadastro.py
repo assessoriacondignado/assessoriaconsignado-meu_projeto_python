@@ -301,6 +301,66 @@ def carregar_dados_cliente_completo(cpf):
     
     return dados
 
+# --- FUNÇÕES AUXILIARES PARA INSERÇÃO DINÂMICA ---
+
+def listar_contratos_cliente(cpf):
+    """Retorna uma lista de tuplas (matricula, convenio) únicas para o CPF."""
+    conn = get_db_connection()
+    if not conn: return []
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT matricula, convenio 
+                FROM sistema_consulta.sistema_consulta_contrato 
+                WHERE cpf = %s AND matricula IS NOT NULL AND convenio IS NOT NULL
+            """, (cpf,))
+            return cur.fetchall()
+    except Exception as e:
+        st.error(f"Erro ao listar contratos: {e}")
+        return []
+    finally:
+        conn.close()
+
+def buscar_tabela_por_convenio(nome_convenio):
+    """Retorna o nome da tabela satélite dado o nome do convênio."""
+    conn = get_db_connection()
+    if not conn: return None
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT tabela_referencia 
+                FROM sistema_consulta.sistema_consulta_convenio_tipo 
+                WHERE nome_convenio = %s
+            """, (nome_convenio,))
+            res = cur.fetchone()
+            return res[0] if res else None
+    except Exception as e:
+        st.error(f"Erro ao buscar tabela convenio: {e}")
+        return None
+    finally:
+        conn.close()
+
+def listar_colunas_tabela(nome_tabela):
+    """Retorna a lista de nomes de colunas de uma tabela."""
+    conn = get_db_connection()
+    if not conn: return []
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = 'sistema_consulta' 
+                AND table_name = %s
+            """, (nome_tabela.replace('sistema_consulta.', ''),))
+            return [row[0] for row in cur.fetchall()]
+    except Exception as e:
+        return []
+    finally:
+        conn.close()
+
 # --- FUNÇÃO: BUSCAR DADOS FINANCEIROS COMPLEXOS ---
 
 def buscar_hierarquia_financeira(cpf):
@@ -328,11 +388,8 @@ def buscar_hierarquia_financeira(cpf):
 
             for row in rows_contratos:
                 d_contrato = dict(zip(cols_contrato, row))
-                # Tratamento de dados para exibição inicial (pode ser sobrescrito na edição)
                 for k, v in d_contrato.items():
                     if v is None: d_contrato[k] = ""
-                    # Mantemos datas como objetos se possível, mas aqui é para exibir na tabela, então string ok.
-                    # Mas para o input de edição dos dados do convenio (não contratos) é diferente.
                 
                 nome_conv = d_contrato.get('convenio') or 'DESCONHECIDO'
                 num_matr = d_contrato.get('matricula') or 'S/N'
@@ -351,7 +408,6 @@ def buscar_hierarquia_financeira(cpf):
             convenios_unicos = list(set([k[0] for k in estrutura.keys()]))
             
             if convenios_unicos:
-                # CORREÇÃO AQUI: convenio -> nome_convenio
                 cur.execute("""
                     SELECT nome_convenio, tabela_referencia 
                     FROM sistema_consulta.sistema_consulta_convenio_tipo 
@@ -394,7 +450,6 @@ def buscar_hierarquia_financeira(cpf):
                         if row_dados:
                             cols_desc = [d[0] for d in cur.description]
                             dict_dados = dict(zip(cols_desc, row_dados))
-                            # Mantém None como None ou trata? Melhor tratar para vazio na exibição
                             for k, v in dict_dados.items():
                                 if v is None: dict_dados[k] = ""
                             dados_grupo['dados_convenio'] = dict_dados
@@ -453,7 +508,26 @@ def inserir_dado_extra(tipo, cpf, dados):
     
     try:
         with conn.cursor() as cur:
-            if tipo == "Contrato":
+            if tipo == "DadosDinâmicos":
+                tabela_alvo = dados.get('_tabela')
+                campos_dados = {k: v for k, v in dados.items() if not k.startswith('_')}
+                
+                if not tabela_alvo or not campos_dados:
+                    return "erro"
+
+                colunas = list(campos_dados.keys())
+                valores = list(campos_dados.values())
+                
+                # INSERT INTO sistema_consulta.TABELA (col1, col2) VALUES (%s, %s)
+                query = sql.SQL("INSERT INTO sistema_consulta.{} ({}) VALUES ({})").format(
+                    sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')),
+                    sql.SQL(', ').join(map(sql.Identifier, colunas)),
+                    sql.SQL(', ').join(sql.Placeholder() * len(colunas))
+                )
+                
+                cur.execute(query, valores)
+
+            elif tipo == "Contrato":
                 # Campos da tabela contrato
                 campos = [
                     "cpf", "matricula", "convenio", "numero_contrato", 
@@ -462,15 +536,11 @@ def inserir_dado_extra(tipo, cpf, dados):
                     "valor_contrato_inicial", "data_inicio", "data_final"
                 ]
                 
-                # Prepara valores, convertendo vazios para None onde for numérico/data se necessário
-                # Para simplificar o insert seguro, usamos placeholders
                 valores_insert = [cpf]
-                
                 valores_insert.append(limpar_texto(dados.get('matricula')))
                 valores_insert.append(limpar_texto(dados.get('convenio')))
                 valores_insert.append(limpar_texto(dados.get('numero_contrato')))
                 
-                # Tratamento de numeros
                 def trata_num(v):
                     if not v: return None
                     return v.replace(',', '.')
@@ -520,10 +590,6 @@ def inserir_dado_extra(tipo, cpf, dados):
         conn.close()
 
 def atualizar_dados_dinamicos(alteracoes_dinamicas):
-    """
-    Recebe uma lista de alterações:
-    [{'tabela': 'nome_tabela_sem_schema', 'id': 123, 'dados': {'campo': 'valor'}}]
-    """
     conn = get_db_connection()
     if not conn: return False
     
@@ -536,18 +602,14 @@ def atualizar_dados_dinamicos(alteracoes_dinamicas):
                 
                 if not campos_novos: continue
 
-                # Monta query dinâmica de UPDATE
-                # UPDATE sistema_consulta.TABELA SET col1 = val1, col2 = val2 WHERE id = ID
-                
                 set_clauses = []
                 values = []
                 
                 for col, val in campos_novos.items():
                     set_clauses.append(sql.SQL("{} = %s").format(sql.Identifier(col)))
-                    # Tratamento básico: string vazia vira string vazia, não NULL, para manter consistência
                     values.append(val)
                 
-                values.append(id_reg) # Para o WHERE
+                values.append(id_reg)
                 
                 query = sql.SQL("UPDATE sistema_consulta.{} SET {} WHERE id = %s").format(
                     sql.Identifier(tabela.replace('sistema_consulta.', '')),
@@ -603,17 +665,12 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
             
             conn.commit()
             
-            # 3. Dados Dinâmicos (Chama função dedicada se houver, mas reutilizando a conexão seria melhor. 
-            # Aqui chamamos separado por simplificação, mas ideal seria passar 'cur'.)
-            # Como a função 'atualizar_dados_dinamicos' abre conexão própria, vamos executá-la depois.
-            
     except Exception as e:
         st.error(f"Erro ao atualizar: {e}")
         return False
     finally:
         conn.close()
 
-    # Executa atualização dinâmica fora da transação principal (poderia ser integrado, mas mantém modularidade)
     if dados_dinamicos:
         atualizar_dados_dinamicos(dados_dinamicos)
         
@@ -645,12 +702,45 @@ def excluir_cliente_total(cpf):
 @st.dialog("➕ Inserir Dados Extras")
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
-    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Contrato"])
+    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Contrato", "Dados de Convênio"])
     
     with st.form("form_insercao_modal"):
         dados_submit = {}
         
-        if tipo_insercao == "Contrato":
+        if tipo_insercao == "Dados de Convênio":
+            # 1. Busca quais convenios/matriculas o cliente tem
+            lista_contratos = listar_contratos_cliente(cpf)
+            if not lista_contratos:
+                st.warning("Este cliente não possui contratos/matrículas cadastradas para vincular dados.")
+            else:
+                opcoes_matr = [f"{m} - {c}" for m, c in lista_contratos]
+                selecao = st.selectbox("Selecione a Matrícula", options=opcoes_matr)
+                
+                if selecao:
+                    matricula_sel, convenio_sel = selecao.split(" - ", 1)
+                    st.caption(f"Inserindo dados para: {convenio_sel}")
+                    
+                    # 2. Descobre a tabela alvo
+                    tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
+                    
+                    if tabela_alvo:
+                        # 3. Gera campos dinâmicos
+                        colunas = listar_colunas_tabela(tabela_alvo)
+                        dados_submit['_tabela'] = tabela_alvo # Campo de controle interno
+                        dados_submit['cpf'] = cpf
+                        dados_submit['matricula'] = matricula_sel
+                        
+                        cols_form = st.columns(2)
+                        idx = 0
+                        for col in colunas:
+                            if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
+                                with cols_form[idx % 2]:
+                                    dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize())
+                                idx += 1
+                    else:
+                        st.error(f"Tabela de dados não configurada para o convênio: {convenio_sel}")
+
+        elif tipo_insercao == "Contrato":
             c1, c2 = st.columns(2)
             dados_submit['matricula'] = c1.text_input("Matrícula")
             dados_submit['convenio'] = c2.text_input("Convênio")
@@ -684,7 +774,10 @@ def modal_inserir_dados(cpf, nome_cliente):
             dados_submit['uf'] = st.text_input("UF", max_chars=2)
         
         if st.form_submit_button("✅ Salvar Inclusão"):
-            status = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
+            # Se for dados dinamicos, passa tipo especial
+            tipo_envio = "DadosDinâmicos" if tipo_insercao == "Dados de Convênio" else tipo_insercao
+            
+            status = inserir_dado_extra(tipo_envio, cpf, dados_submit)
             if status == "sucesso":
                 st.success(f"{tipo_insercao} inserido com sucesso!")
                 time.sleep(1)
@@ -834,7 +927,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             with col_lista2:
                 st.markdown("### 📧 E-mails")
                 if dados.get('emails'):
-                    for i, mail in enumerate(dados.get('emails', [])):
+                    for i, mail in enumerate(dados['emails']):
                         novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
                         edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
             
