@@ -405,6 +405,20 @@ def listar_colunas_tabela(nome_tabela):
     finally:
         conn.close()
 
+# --- ATUALIZAÇÃO: NOVA FUNÇÃO DE BUSCA DE TIPOS ---
+def listar_tipos_convenio_disponiveis():
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT nome_convenio FROM sistema_consulta.sistema_consulta_convenio_tipo ORDER BY nome_convenio")
+            return [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        st.error(f"Erro ao listar tipos de convênio: {e}")
+        return []
+    finally:
+        conn.close()
+
 # --- FUNÇÃO: BUSCAR DADOS FINANCEIROS COMPLEXOS ---
 
 def buscar_hierarquia_financeira(cpf):
@@ -789,10 +803,19 @@ def modal_inserir_dados(cpf, nome_cliente):
             if selecao == "➕ Cadastrar Novo Convênio/Matrícula":
                 st.info("Informe os dados para criar um novo vínculo.")
                 c_new1, c_new2 = st.columns(2)
-                convenio_sel = c_new1.text_input("Nome do Convênio (Ex: INSS)")
+                
+                # --- ATUALIZAÇÃO: Selectbox para Tipos de Convênio ---
+                lista_tipos = listar_tipos_convenio_disponiveis()
+                convenio_sel = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos)
+                # -----------------------------------------------------
+                
                 matricula_sel = c_new2.text_input("Nova Matrícula")
-                if convenio_sel and matricula_sel:
+                if convenio_sel and convenio_sel != "(Selecione)" and matricula_sel:
                     criar_novo = True
+                else:
+                    # Reseta para não tentar buscar tabela se não estiver válido
+                    if convenio_sel == "(Selecione)": convenio_sel = None
+            
             elif selecao:
                 matricula_sel, convenio_sel = selecao.split(" - ", 1)
             # ------------------------------------------------------
