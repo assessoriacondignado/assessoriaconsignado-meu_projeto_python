@@ -736,12 +736,14 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         else:
             st.info("Nenhum endereço.")
             
-        st.divider()
-        st.subheader("📋 Convênios")
-        if dados.get('convenios'):
-             st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
-        else:
-             st.caption("Sem convênios.")
+    # --- 3ª PARTE: ABA INFERIOR (CONVÊNIOS E CONTRATOS) ---
+    st.divider()
+    st.subheader("📋 Convênios e Contratos")
+    
+    if dados.get('convenios'):
+            st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
+    else:
+            st.caption("Sem convênios cadastrados.")
 
 # --- TELA DE PESQUISA (Principal) ---
 
@@ -781,59 +783,77 @@ def tela_pesquisa():
         with st.form("form_pesquisa_completa"):
             filtros_para_query = []
             
-            for grupo, campos in MAPA_CAMPOS_PESQUISA.items():
-                with st.expander(f"📂 {grupo}", expanded=True):
-                    col_esq, col_dir = st.columns(2, gap="large")
-                    for i, (nome_campo, config) in enumerate(campos.items()):
-                        col_atual = col_esq if i % 2 == 0 else col_dir
-                        with col_atual:
-                            safe_key = f"{config['col']}_{config.get('table','')}".replace(".", "_").replace(" ", "_")
-                            c_tit, c_op = st.columns([2, 1.5])
-                            c_tit.markdown(f"**{nome_campo}**")
-                            
-                            tipo_ops = 'texto'
-                            if config['tipo'] == 'data': tipo_ops = 'data'
-                            elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
+            # CRIAÇÃO DAS ABAS (AJUSTE SOLICITADO)
+            tab_pessoais, tab_contatos, tab_outros = st.tabs(["👤 Dados Pessoais", "📍 Contatos e Endereço", "📋 Filiação e Sistema"])
+            
+            # Configuração que mapeia as abas para as chaves do dicionário MAPA_CAMPOS_PESQUISA
+            distribuicao_abas = [
+                (tab_pessoais, ["Dados Pessoais"]),
+                (tab_contatos, ["Contatos", "Endereço"]),
+                (tab_outros, ["Filiação e Sistema"])
+            ]
 
-                            opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
-                            op_key = f"op_input_{safe_key}"
-                            operador_escolhido = c_op.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
-                            sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
-                            
-                            val_key = f"val_input_{safe_key}"
-                            valor_final = None
+            for aba_atual, lista_grupos in distribuicao_abas:
+                with aba_atual:
+                    for grupo in lista_grupos:
+                        campos = MAPA_CAMPOS_PESQUISA.get(grupo)
+                        if not campos: continue
+                        
+                        # Se houver mais de um grupo na mesma aba (ex: Contatos e Endereço), coloca um subtítulo
+                        if len(lista_grupos) > 1:
+                            st.markdown(f"###### {grupo}")
+                        
+                        col_esq, col_dir = st.columns(2, gap="large")
+                        for i, (nome_campo, config) in enumerate(campos.items()):
+                            col_atual = col_esq if i % 2 == 0 else col_dir
+                            with col_atual:
+                                safe_key = f"{config['col']}_{config.get('table','')}".replace(".", "_").replace(" ", "_")
+                                c_tit, c_op = st.columns([2, 1.5])
+                                c_tit.markdown(f"**{nome_campo}**")
+                                
+                                tipo_ops = 'texto'
+                                if config['tipo'] == 'data': tipo_ops = 'data'
+                                elif config['tipo'] == 'numero_calculado': tipo_ops = 'numero'
 
-                            if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
-                                st.info("--- (Sem valor)")
-                                valor_final = "ignore"
-                            elif config['tipo'] == 'data':
-                                cd1, cd2 = st.columns(2)
-                                d1 = cd1.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
-                                d2 = cd2.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
-                                if d1: valor_final = [converter_data_iso(d1), converter_data_iso(d2) if d2 else converter_data_iso(d1)]
-                            elif config['tipo'] == 'numero_calculado':
-                                if operador_escolhido == "Entre (><)":
-                                    cn1, cn2 = st.columns(2)
-                                    n1 = cn1.number_input("De", step=1, key=f"n1_{val_key}", label_visibility="collapsed")
-                                    n2 = cn2.number_input("Até", step=1, key=f"n2_{val_key}", label_visibility="collapsed")
-                                    if n1 != 0 or n2 != 0: valor_final = [n1, n2]
+                                opcoes_ops = list(OPERADORES_SQL[tipo_ops].keys())
+                                op_key = f"op_input_{safe_key}"
+                                operador_escolhido = c_op.selectbox("Op", opcoes_ops, key=op_key, label_visibility="collapsed")
+                                sql_op_code = OPERADORES_SQL[tipo_ops][operador_escolhido]['sql']
+                                
+                                val_key = f"val_input_{safe_key}"
+                                valor_final = None
+
+                                if "IS NULL" in sql_op_code or "IS NOT NULL" in sql_op_code:
+                                    st.info("--- (Sem valor)")
+                                    valor_final = "ignore"
+                                elif config['tipo'] == 'data':
+                                    cd1, cd2 = st.columns(2)
+                                    d1 = cd1.date_input("De", value=None, key=f"d1_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
+                                    d2 = cd2.date_input("Até", value=None, key=f"d2_{val_key}", format="DD/MM/YYYY", label_visibility="collapsed")
+                                    if d1: valor_final = [converter_data_iso(d1), converter_data_iso(d2) if d2 else converter_data_iso(d1)]
+                                elif config['tipo'] == 'numero_calculado':
+                                    if operador_escolhido == "Entre (><)":
+                                        cn1, cn2 = st.columns(2)
+                                        n1 = cn1.number_input("De", step=1, key=f"n1_{val_key}", label_visibility="collapsed")
+                                        n2 = cn2.number_input("Até", step=1, key=f"n2_{val_key}", label_visibility="collapsed")
+                                        if n1 != 0 or n2 != 0: valor_final = [n1, n2]
+                                    else:
+                                        n_val = st.number_input("Valor", step=1, key=f"num_{val_key}", label_visibility="collapsed")
+                                        if n_val != 0: valor_final = n_val
                                 else:
-                                    n_val = st.number_input("Valor", step=1, key=f"num_{val_key}", label_visibility="collapsed")
-                                    if n_val != 0: valor_final = n_val
-                            else:
-                                txt_val = st.text_input("Valor", key=f"txt_{val_key}", placeholder="Digite...", label_visibility="collapsed")
-                                if txt_val: valor_final = txt_val
-                            
-                            if valor_final is not None:
-                                filtros_para_query.append({
-                                    'col': config['col'],
-                                    'op': sql_op_code,
-                                    'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
-                                    'val': valor_final,
-                                    'tipo': config['tipo'],
-                                    'table': config.get('table')
-                                })
-                            st.write("") 
+                                    txt_val = st.text_input("Valor", key=f"txt_{val_key}", placeholder="Digite...", label_visibility="collapsed")
+                                    if txt_val: valor_final = txt_val
+                                
+                                if valor_final is not None:
+                                    filtros_para_query.append({
+                                        'col': config['col'],
+                                        'op': sql_op_code,
+                                        'mask': OPERADORES_SQL[tipo_ops][operador_escolhido]['mask'],
+                                        'val': valor_final,
+                                        'tipo': config['tipo'],
+                                        'table': config.get('table')
+                                    })
+                                st.write("") 
 
             st.write("")
             submitted = st.form_submit_button("🚀 APLICAR FILTROS", type="primary", use_container_width=True)
