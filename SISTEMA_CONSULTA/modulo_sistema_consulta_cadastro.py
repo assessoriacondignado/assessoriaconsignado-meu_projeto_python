@@ -1147,9 +1147,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                 lista_contratos = grupo.get('contratos', [])
                 if lista_contratos:
                     df_contratos = pd.DataFrame(lista_contratos)
-                    cols_view = ['numero_contrato', 'valor_parcela', 'prazo_total', 'prazo_aberto', 'saldo_devedor', 'taxa_juros']
-                    cols_finais = [c for c in cols_view if c in df_contratos.columns]
-                    st.dataframe(df_contratos[cols_finais], use_container_width=True, hide_index=True)
+                    # Remove colunas técnicas redundantes antes de exibir
+                    cols_to_hide = ['id', 'cpf', 'matricula', 'convenio']
+                    df_show = df_contratos.drop(columns=[c for c in cols_to_hide if c in df_contratos.columns])
+                    
+                    st.table(df_show)
                 else:
                     st.caption("Nenhum contrato ativo.")
     else:
