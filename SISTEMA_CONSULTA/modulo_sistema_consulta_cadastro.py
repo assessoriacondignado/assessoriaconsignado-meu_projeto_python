@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+from psycopg2 import sql # Importação necessária para consultas dinâmicas seguras
 from datetime import datetime, date
 import time
 
@@ -290,9 +291,6 @@ def carregar_dados_cliente_completo(cpf):
                     if v is None: d_end[k] = ""
                 dados['enderecos'].append(d_end)
 
-            cur.execute("SELECT id, convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY id", (cpf,))
-            dados['convenios'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
-
             cur.execute("SELECT agrupamento FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
             dados['agrupamentos'] = [r[0] for r in cur.fetchall() if r[0]]
             
@@ -302,6 +300,141 @@ def carregar_dados_cliente_completo(cpf):
         conn.close()
     
     return dados
+
+# --- FUNÇÃO NOVA: BUSCAR DADOS FINANCEIROS COMPLEXOS (CONVÊNIOS + CONTRATOS) ---
+
+def buscar_hierarquia_financeira(cpf):
+    """
+    Retorna uma estrutura organizada:
+    {
+        ('Nome Convenio', 'Matricula'): {
+            'dados_convenio': { ... colunas do sistema_consulta_dados_X ... },
+            'contratos': [ ... lista de dicts da tabela contratos ... ]
+        }
+    }
+    """
+    conn = get_db_connection()
+    if not conn: return {}
+
+    estrutura = {}
+    
+    try:
+        with conn.cursor() as cur:
+            # 1. Buscar todos os contratos deste CPF
+            # Ordenamos por Convenio e Matricula para facilitar o agrupamento
+            cur.execute("""
+                SELECT * FROM sistema_consulta.sistema_consulta_contrato 
+                WHERE cpf = %s 
+                ORDER BY convenio, matricula, data_inicio DESC
+            """, (cpf,))
+            
+            cols_contrato = [desc[0] for desc in cur.description]
+            rows_contratos = cur.fetchall()
+
+            if not rows_contratos:
+                return {}
+
+            # 2. Agrupar Contratos na memória e identificar Convenios unicos
+            # Chave do grupo: (Convenio, Matricula)
+            
+            mapa_convenio_tabela = {} # Cache para não consultar o banco repetidamente para o mesmo convenio
+
+            for row in rows_contratos:
+                d_contrato = dict(zip(cols_contrato, row))
+                
+                # Tratamento de valores None para exibição
+                for k, v in d_contrato.items():
+                    if v is None: d_contrato[k] = ""
+                    elif isinstance(v, (date, datetime)): d_contrato[k] = v.strftime("%d/%m/%Y")
+                    elif isinstance(v, float): d_contrato[k] = f"{v:,.2f}"
+
+                nome_conv = d_contrato.get('convenio') or 'DESCONHECIDO'
+                num_matr = d_contrato.get('matricula') or 'S/N'
+                chave = (nome_conv, num_matr)
+
+                if chave not in estrutura:
+                    estrutura[chave] = {
+                        'contratos': [],
+                        'dados_convenio': {},
+                        'tabela_ref': None
+                    }
+                
+                estrutura[chave]['contratos'].append(d_contrato)
+
+            # 3. Para cada grupo (Convenio), buscar a tabela de referencia e os dados especificos
+            # Consulta a tabela sistema_consulta_convenio_tipo
+            
+            # Pegar convenios unicos para buscar a tabela
+            convenios_unicos = list(set([k[0] for k in estrutura.keys()]))
+            
+            if convenios_unicos:
+                cur.execute("""
+                    SELECT convenio, tabela_referencia 
+                    FROM sistema_consulta.sistema_consulta_covenio_tipo 
+                    WHERE convenio = ANY(%s)
+                """, (convenios_unicos,))
+                
+                for r in cur.fetchall():
+                    mapa_convenio_tabela[r[0]] = r[1]
+
+            # 4. Buscar os dados na tabela dinâmica
+            for (nome_conv, num_matr), dados_grupo in estrutura.items():
+                tabela_ref = mapa_convenio_tabela.get(nome_conv)
+                
+                if tabela_ref:
+                    dados_grupo['tabela_ref'] = tabela_ref
+                    
+                    # Montar query dinâmica
+                    # Tenta buscar pelo CPF e Matricula. Se a tabela não tiver Matricula, pode dar erro, 
+                    # então vamos tentar buscar genérico por CPF e filtrar no Python ou SQL seguro se tiver colunas.
+                    # Por segurança, vamos buscar por CPF e pegar o primeiro registro que bater a matrícula (se houver coluna matricula)
+                    # OBS: Assume-se que a tabela dinâmica tem 'cpf' e possivelmente 'matricula'
+                    
+                    try:
+                        # Verifica colunas da tabela dinâmica antes de consultar
+                        cur.execute(sql.SQL("""
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_schema = 'sistema_consulta' 
+                            AND table_name = %s
+                        """), (tabela_ref.replace('sistema_consulta.', ''),)) # Remove schema se vier no nome
+                        
+                        colunas_tabela_ref = [c[0] for c in cur.fetchall()]
+                        
+                        tem_col_matricula = 'matricula' in colunas_tabela_ref
+                        
+                        query_dinamica = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s").format(sql.Identifier(tabela_ref.replace('sistema_consulta.', '')))
+                        params_dinamica = [cpf]
+                        
+                        if tem_col_matricula:
+                             query_dinamica = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s LIMIT 1").format(sql.Identifier(tabela_ref.replace('sistema_consulta.', '')))
+                             params_dinamica.append(num_matr)
+                        else:
+                             # Se não tem matricula, limita a 1 para não quebrar
+                             query_dinamica = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s LIMIT 1").format(sql.Identifier(tabela_ref.replace('sistema_consulta.', '')))
+                        
+                        cur.execute(query_dinamica, params_dinamica)
+                        row_dados = cur.fetchone()
+                        
+                        if row_dados:
+                            cols_desc = [d[0] for d in cur.description]
+                            dict_dados = dict(zip(cols_desc, row_dados))
+                            # Limpeza
+                            for k, v in dict_dados.items():
+                                if v is None: dict_dados[k] = ""
+                            dados_grupo['dados_convenio'] = dict_dados
+                            
+                    except Exception as e:
+                        print(f"Erro ao buscar tabela dinâmica {tabela_ref}: {e}")
+                        # Mantém dados_convenio vazio
+                        pass
+
+    except Exception as e:
+        st.error(f"Erro na busca financeira: {e}")
+    finally:
+        conn.close()
+    
+    return estrutura
 
 # --- FUNÇÕES DE ESCRITA (CRUD) ---
 
@@ -362,10 +495,6 @@ def inserir_dado_extra(tipo, cpf, dados):
                     (cpf, cep, rua, bairro, cidade, uf) VALUES (%s, %s, %s, %s, %s, %s)
                 """, (cpf, limpar_texto(dados.get('cep')), limpar_texto(dados.get('rua')), 
                       limpar_texto(dados.get('bairro')), limpar_texto(dados.get('cidade')), limpar_texto(dados.get('uf'))))
-            elif tipo == "Convênio":
-                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, valor))
-                if cur.fetchone(): return "duplicado"
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, valor))
             
             conn.commit()
             return "sucesso"
@@ -410,13 +539,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
                 else:
                     cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
             
-            for item in dados_editados.get('convenios', []):
-                val = limpar_texto(item['valor'])
-                if not val:
-                    cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE id = %s", (item['id'],))
-                else:
-                    cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_convenio SET convenio = %s WHERE id = %s", (val, item['id']))
-
             conn.commit()
             return True
     except Exception as e:
@@ -430,12 +552,16 @@ def excluir_cliente_total(cpf):
     if not conn: return False
     try:
         with conn.cursor() as cur:
+            # Exclui tabelas satelites
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
-            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) # Exclui CLT também
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) 
+            # Exclui contrato se houver
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_contrato WHERE cpf = %s", (cpf,))
+            
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
             conn.commit()
@@ -450,7 +576,7 @@ def excluir_cliente_total(cpf):
 @st.dialog("➕ Inserir Dados Extras")
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
-    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Convênio"])
+    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço"])
     
     with st.form("form_insercao_modal"):
         dados_submit = {}
@@ -464,8 +590,6 @@ def modal_inserir_dados(cpf, nome_cliente):
             dados_submit['bairro'] = st.text_input("Bairro")
             dados_submit['cidade'] = st.text_input("Cidade")
             dados_submit['uf'] = st.text_input("UF", max_chars=2)
-        elif tipo_insercao == "Convênio":
-                dados_submit['valor'] = st.text_input("Nome do Convênio")
         
         if st.form_submit_button("✅ Salvar Inclusão"):
             status = inserir_dado_extra(tipo_insercao, cpf, dados_submit)
@@ -545,7 +669,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     st.rerun()
         return
 
-    # CARREGA DADOS
+    # CARREGA DADOS BASE
     dados = carregar_dados_cliente_completo(cpf)
     pessoal = dados.get('pessoal', {})
     clt = dados.get('clt', {})
@@ -579,7 +703,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     # --- MODO EDIÇÃO ---
     if st.session_state['modo_edicao']:
         with st.form("form_edicao_cliente"):
-            st.info("✏️ Modo Edição Ativo. Limpe um campo de lista para excluí-lo.")
+            st.info("✏️ Modo Edição Ativo.")
             
             st.markdown("### 📄 Dados Pessoais")
             ec1, ec2, ec3 = st.columns(3)
@@ -602,7 +726,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             col_lista1, col_lista2 = st.columns(2)
             edicoes_telefones = []
             edicoes_emails = []
-            edicoes_convenios = []
 
             with col_lista1:
                 st.markdown("### 📞 Telefones")
@@ -612,12 +735,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                         edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
                 else:
                     st.caption("Sem telefones.")
-
-                st.markdown("### 💼 Convênios")
-                if dados.get('convenios'):
-                    for i, conv in enumerate(dados['convenios']):
-                        novo_val = st.text_input(f"Convênio {i+1}", value=conv['valor'], key=f"conv_{conv['id']}")
-                        edicoes_convenios.append({'id': conv['id'], 'valor': novo_val})
 
             with col_lista2:
                 st.markdown("### 📧 E-mails")
@@ -637,8 +754,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                         "nome_pai": e_pai, "campanhas": e_campanhas
                     },
                     "telefones": edicoes_telefones,
-                    "emails": edicoes_emails,
-                    "convenios": edicoes_convenios
+                    "emails": edicoes_emails
                 }
                 if atualizar_dados_cliente_lote(cpf, pacote_dados):
                     st.success("Dados atualizados com sucesso!")
@@ -740,10 +856,55 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     st.divider()
     st.subheader("📋 Convênios e Contratos")
     
-    if dados.get('convenios'):
-            st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
+    # Busca Hierárquica Complexa
+    financeiro = buscar_hierarquia_financeira(cpf)
+    
+    if financeiro:
+        for (nome_convenio, matricula), grupo in financeiro.items():
+            
+            with st.container(border=True):
+                # Cabeçalho da Matrícula
+                st.markdown(f"#### {nome_convenio} - Matrícula: {matricula}")
+                
+                col_dados_conv, col_contratos = st.columns([2, 3], gap="medium") # Aprox 40% / 60%
+                
+                # COLUNA ESQUERDA (40%): DADOS DO CONVÊNIO
+                with col_dados_conv:
+                    st.markdown("###### Dados do Convênio")
+                    dados_esp = grupo.get('dados_convenio')
+                    if dados_esp:
+                        # Renderiza chave-valor
+                        for k, v in dados_esp.items():
+                            if k not in ['id', 'cpf', 'matricula', 'nome']: # Ignora chaves redundantes
+                                st.text_input(k.replace('_', ' ').capitalize(), value=str(v), disabled=True, key=f"dconv_{matricula}_{k}")
+                    else:
+                        st.info("Sem dados adicionais para este convênio.")
+
+                # COLUNA DIREITA (60%): TABELA DE CONTRATOS
+                with col_contratos:
+                    st.markdown("###### Contratos")
+                    lista_contratos = grupo.get('contratos', [])
+                    if lista_contratos:
+                        df_contratos = pd.DataFrame(lista_contratos)
+                        
+                        # Selecionar e renomear colunas para ficar bonito na tabela
+                        cols_view = [
+                            'numero_contrato', 'valor_parcela', 'prazo_total', 
+                            'prazo_aberto', 'saldo_devedor', 'taxa_juros'
+                        ]
+                        # Filtra só as que existem (segurança)
+                        cols_finais = [c for c in cols_view if c in df_contratos.columns]
+                        
+                        st.dataframe(
+                            df_contratos[cols_finais],
+                            use_container_width=True,
+                            hide_index=True,
+                            height=250
+                        )
+                    else:
+                        st.caption("Nenhum contrato ativo.")
     else:
-            st.caption("Sem convênios cadastrados.")
+        st.info("Nenhum convênio ou contrato localizado.")
 
 # --- TELA DE PESQUISA (Principal) ---
 
