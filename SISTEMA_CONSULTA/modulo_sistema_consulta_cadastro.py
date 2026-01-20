@@ -264,7 +264,7 @@ def carregar_dados_cliente_completo(cpf):
 
             # 2. Dados CLT (Se houver)
             try:
-                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s LIMIT 1", (cpf,))
+                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s LIMIT 1", (cpf,))
                 cols_clt = [desc[0] for desc in cur.description]
                 row_clt = cur.fetchone()
                 if row_clt:
@@ -726,6 +726,14 @@ def modal_inserir_dados(cpf, nome_cliente):
                     if tabela_alvo:
                         # 3. Gera campos dinâmicos
                         colunas = listar_colunas_tabela(tabela_alvo)
+                        
+                        # --- VERIFICAÇÃO DE SEGURANÇA ADICIONADA ---
+                        if not colunas:
+                            st.error(f"Tabela '{tabela_alvo}' não encontrada ou sem colunas acessíveis. Contate o administrador.")
+                            st.form_submit_button("❌ Salvar Bloqueado", disabled=True)
+                            return # Interrompe a renderização do formulário aqui
+                        # ---------------------------------------------
+
                         dados_submit['_tabela'] = tabela_alvo # Campo de controle interno
                         dados_submit['cpf'] = cpf
                         dados_submit['matricula'] = matricula_sel
