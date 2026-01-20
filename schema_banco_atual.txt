@@ -696,9 +696,45 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - campanhas (text) NULL
    - bairro (text) NULL
 
+[TABELA: sistema_consulta.importacao_staging_convenio_clt]
+   - sessao_id (uuid) NULL
+   - matricula (character varying(100)) NULL
+   - convenio (character varying(150)) NULL
+   - cnpj_nome (character varying(255)) NULL
+   - cnpj_numero (character varying(30)) NULL
+   - qtd_funcionarios (character varying(255)) NULL
+   - data_abertura_empresa (date) NULL
+   - cnae_nome (character varying(255)) NULL
+   - cnae_codigo (character varying(50)) NULL
+   - data_admissao (date) NULL
+   - cbo_codigo (character varying(50)) NULL
+   - cbo_nome (character varying(255)) NULL
+   - data_inicio_emprego (date) NULL
+   - importacao_id (character varying(255)) NULL
+   - cpf (character varying(20)) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_contrato]
+   - id (integer) NOT NULL
+   - cpf (character varying(20)) NOT NULL
+   - matricula (character varying(100)) NULL
+   - convenio (character varying(150)) NULL
+   - prazo_aberto (character varying(255)) NULL
+   - prazo_pago (character varying(30)) NULL
+   - prazo_total (character varying(255)) NULL
+   - valor_parcela (numeric) NULL
+   - taxa_juros (numeric) NULL
+   - valor_contrato_inicial (numeric) NULL
+   - saldo_devedor (numeric) NULL
+   - data_inicio (date) NULL
+   - data_averbacao (date) NULL
+   - data_final (date) NULL
+   - tipo_taxa (character varying(50)) NULL
+   - numero_contrato (character varying(255)) NULL
+
 [TABELA: sistema_consulta.sistema_consulta_convenio_tipo]
    - id (integer) NOT NULL
    - nome_convenio (text) NOT NULL
+   - tabela_referencia (text) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_cpf]
    - id (integer) NOT NULL
@@ -773,6 +809,25 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - telefone (character varying(20)) NOT NULL
    - qualificacao (text) NULL
    - data_criacao (timestamp without time zone) NULL
+
+[TABELA: sistema_consulta.sistema_consulta_dados_clt]
+   - id (integer) NOT NULL
+   - matricula (character varying(100)) NULL
+   - convenio (character varying(150)) NULL
+   - cnpj_nome (character varying(255)) NULL
+   - cnpj_numero (character varying(30)) NULL
+   - qtd_funcionarios (character varying(255)) NULL
+   - data_abertura_empresa (date) NULL
+   - cnae_nome (character varying(255)) NULL
+   - cnae_codigo (character varying(50)) NULL
+   - data_admissao (date) NULL
+   - cbo_codigo (character varying(50)) NULL
+   - cbo_nome (character varying(255)) NULL
+   - data_inicio_emprego (date) NULL
+   - importacao_id (character varying(255)) NULL
+   - data_criacao (timestamp without time zone) NULL
+   - data_atualizacao (timestamp without time zone) NULL
+   - cpf (character varying(20)) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_importacao]
    - id (integer) NOT NULL

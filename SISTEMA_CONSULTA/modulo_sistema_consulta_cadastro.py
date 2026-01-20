@@ -516,7 +516,9 @@ def inserir_dado_extra(tipo, cpf, dados):
                     return "erro"
 
                 colunas = list(campos_dados.keys())
+                # TRATAMENTO DE STRING VAZIA PARA NULL (CORREÇÃO DE DATA)
                 valores = list(campos_dados.values())
+                valores = [v if v != "" else None for v in valores]
                 
                 # INSERT INTO sistema_consulta.TABELA (col1, col2) VALUES (%s, %s)
                 query = sql.SQL("INSERT INTO sistema_consulta.{} ({}) VALUES ({})").format(
@@ -686,9 +688,8 @@ def excluir_cliente_total(cpf):
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
-            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) # <--- AQUI (era CTT) agora CLT? Não, o CTT é empregatício. O CLT novo é financeiro. Manter CTT se for tabela de emprego. Se renomeou no banco, aqui muda.
-            # Se renomeou no banco CTT -> CLT, muda aqui.
-            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s", (cpf,)) # <--- ATUALIZADO PARA CLT CONFORME SOLICITADO
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) 
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_contrato WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
@@ -729,12 +730,10 @@ def modal_inserir_dados(cpf, nome_cliente):
                         # 3. Gera campos dinâmicos
                         colunas = listar_colunas_tabela(tabela_alvo)
                         
-                        # --- VERIFICAÇÃO DE SEGURANÇA ADICIONADA ---
                         if not colunas:
                             st.error(f"Tabela '{tabela_alvo}' não encontrada ou sem colunas acessíveis. Contate o administrador.")
                             st.form_submit_button("❌ Salvar Bloqueado", disabled=True)
-                            return # Interrompe a renderização do formulário aqui
-                        # ---------------------------------------------
+                            return 
 
                         dados_submit['_tabela'] = tabela_alvo # Campo de controle interno
                         dados_submit['cpf'] = cpf
@@ -745,7 +744,11 @@ def modal_inserir_dados(cpf, nome_cliente):
                         for col in colunas:
                             if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
                                 with cols_form[idx % 2]:
-                                    dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize())
+                                    # SE FOR DATA -> DATE_INPUT
+                                    if 'data' in col.lower():
+                                        dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=None, format="DD/MM/YYYY")
+                                    else:
+                                        dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize())
                                 idx += 1
                     else:
                         st.error(f"Tabela de dados não configurada para o convênio: {convenio_sel}")
