@@ -262,9 +262,9 @@ def carregar_dados_cliente_completo(cpf):
             else:
                 dados['pessoal'] = {}
 
-            # 2. Dados CLT (Se houver)
+            # 2. Dados CLT (Se houver) -> ATUALIZADO DE _ctt PARA _clt
             try:
-                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s LIMIT 1", (cpf,))
+                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s LIMIT 1", (cpf,))
                 cols_clt = [desc[0] for desc in cur.description]
                 row_clt = cur.fetchone()
                 if row_clt:
@@ -686,7 +686,9 @@ def excluir_cliente_total(cpf):
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
-            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) 
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) # <--- AQUI (era CTT) agora CLT? Não, o CTT é empregatício. O CLT novo é financeiro. Manter CTT se for tabela de emprego. Se renomeou no banco, aqui muda.
+            # Se renomeou no banco CTT -> CLT, muda aqui.
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s", (cpf,)) # <--- ATUALIZADO PARA CLT CONFORME SOLICITADO
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_contrato WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
