@@ -1155,13 +1155,51 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                         'saldo_devedor', 'data_inicio', 'data_averbacao', 'data_final'
                     ]
                     
-                    # 2. Garantir que todas existam no DF (evitar Key Error se banco estiver desatualizado)
+                    # 2. Garantir que todas existam no DF (evitar Key Error)
                     cols_existentes = [c for c in colunas_ordenadas if c in df_contratos.columns]
-                    
-                    # 3. Filtrar e Ordenar
                     df_show = df_contratos[cols_existentes].copy()
+
+                    # --- FORMATAÇÃO VISUAL ---
+                    def fmt_moeda(val):
+                        try:
+                            if not val and val != 0: return ""
+                            return f"R$ {float(val):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        except: return str(val)
+
+                    def fmt_int(val):
+                        try:
+                            if not val and val != 0: return ""
+                            return str(int(float(val)))
+                        except: return str(val)
+
+                    def fmt_decimal(val):
+                        try:
+                            if not val and val != 0: return ""
+                            return f"{float(val):,.2f}".replace(".", ",")
+                        except: return str(val)
+
+                    def fmt_data(val):
+                        if not val: return ""
+                        if isinstance(val, (date, datetime)):
+                            return val.strftime('%d/%m/%Y')
+                        return str(val)
+
+                    # Aplica formatação
+                    if 'valor_parcela' in df_show.columns: df_show['valor_parcela'] = df_show['valor_parcela'].apply(fmt_moeda)
+                    if 'valor_contrato_inicial' in df_show.columns: df_show['valor_contrato_inicial'] = df_show['valor_contrato_inicial'].apply(fmt_moeda)
+                    if 'saldo_devedor' in df_show.columns: df_show['saldo_devedor'] = df_show['saldo_devedor'].apply(fmt_moeda)
+
+                    if 'prazo_aberto' in df_show.columns: df_show['prazo_aberto'] = df_show['prazo_aberto'].apply(fmt_int)
+                    if 'prazo_pago' in df_show.columns: df_show['prazo_pago'] = df_show['prazo_pago'].apply(fmt_int)
+                    if 'prazo_total' in df_show.columns: df_show['prazo_total'] = df_show['prazo_total'].apply(fmt_int)
+
+                    if 'taxa_juros' in df_show.columns: df_show['taxa_juros'] = df_show['taxa_juros'].apply(fmt_decimal)
+
+                    for col_date in ['data_inicio', 'data_averbacao', 'data_final']:
+                        if col_date in df_show.columns:
+                            df_show[col_date] = df_show[col_date].apply(fmt_data)
                     
-                    # 4. Renomear para Display (Opcional, mas recomendado para "Layout Adjustment")
+                    # 4. Renomear para Display
                     renomear = {
                         'numero_contrato': 'Nº Contrato',
                         'valor_parcela': 'Vlr. Parc.',
