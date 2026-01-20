@@ -264,7 +264,7 @@ def carregar_dados_cliente_completo(cpf):
 
             # 2. Dados CLT (Se houver)
             try:
-                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s LIMIT 1", (cpf,))
+                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s LIMIT 1", (cpf,))
                 cols_clt = [desc[0] for desc in cur.description]
                 row_clt = cur.fetchone()
                 if row_clt:
