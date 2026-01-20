@@ -353,7 +353,7 @@ def buscar_hierarquia_financeira(cpf):
             if convenios_unicos:
                 cur.execute("""
                     SELECT convenio, tabela_referencia 
-                    FROM sistema_consulta.sistema_consulta_covenio_tipo 
+                    FROM sistema_consulta.sistema_consulta_convenio_tipo 
                     WHERE convenio = ANY(%s)
                 """, (convenios_unicos,))
                 
