@@ -18,10 +18,9 @@ except ImportError:
 PASTA_ARQUIVOS = "SISTEMA_CONSULTA/ARQUIVOS_IMPORTADOS"
 os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
 
-# --- CONFIGURAÇÃO DOS CAMPOS DE MAPEAMENTO (GLOBAL) ---
-# Dicionário: Nome Visual -> Nome na Coluna do Banco de Dados (Staging e Final)
-CAMPOS_SISTEMA = {
-    # DADOS PESSOAIS
+# --- CONFIGURAÇÃO DOS CAMPOS DE MAPEAMENTO (LEGADO/ALIAS) ---
+# Mantido para compatibilidade de nomes amigáveis, mas o sistema agora aceita colunas diretas
+CAMPOS_SISTEMA_ALIAS = {
     "CPF (Obrigatório)": "cpf",
     "Nome do Cliente": "nome",
     "RG": "identidade",
@@ -33,15 +32,11 @@ CAMPOS_SISTEMA = {
     "CNH": "cnh",
     "Título Eleitor": "titulo_eleitoral",
     "Convênio": "convenio",
-    
-    # ENDEREÇO
     "CEP": "cep",
     "Rua": "rua",
     "Bairro": "bairro",
     "Cidade": "cidade",
     "UF": "uf",
-
-    # DADOS CLT / MATRÍCULA (NOVOS)
     "Matrícula": "matricula",
     "CNPJ Nome": "cnpj_nome",
     "CNPJ Número": "cnpj_numero",
@@ -54,10 +49,11 @@ CAMPOS_SISTEMA = {
     "CBO Nome": "cbo_nome",
     "Data Início Emprego": "data_inicio_emprego"
 }
+for i in range(1, 11): CAMPOS_SISTEMA_ALIAS[f"Telefone {i}"] = f"telefone_{i}"
+for i in range(1, 4): CAMPOS_SISTEMA_ALIAS[f"E-mail {i}"] = f"email_{i}"
 
-# Adiciona Telefones e Emails dinamicamente
-for i in range(1, 11): CAMPOS_SISTEMA[f"Telefone {i}"] = f"telefone_{i}"
-for i in range(1, 4): CAMPOS_SISTEMA[f"E-mail {i}"] = f"email_{i}"
+# Inverso para buscar nome amigável pelo técnico
+ALIAS_INVERSO = {v: k for k, v in CAMPOS_SISTEMA_ALIAS.items()}
 
 # --- FUNÇÕES AUXILIARES ---
 def limpar_texto(valor):
@@ -98,6 +94,49 @@ def get_db_connection():
     except Exception as e:
         st.error(f"Erro de conexão: {e}")
         return None
+
+# --- FUNÇÕES DE METADADOS DO BANCO (NOVAS) ---
+
+def listar_tabelas_sistema():
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor() as cur:
+            # Lista tabelas do schema sistema_consulta
+            cur.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'sistema_consulta' 
+                ORDER BY table_name
+            """)
+            return [f"sistema_consulta.{r[0]}" for r in cur.fetchall()]
+    except Exception as e:
+        st.error(f"Erro ao listar tabelas: {e}")
+        return []
+    finally:
+        conn.close()
+
+def listar_colunas_tabela(nome_tabela_completo):
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        # Remove o schema se vier no nome (ex: sistema_consulta.minha_tabela -> minha_tabela)
+        nome_tabela_limpo = nome_tabela_completo.split('.')[-1] if '.' in nome_tabela_completo else nome_tabela_completo
+        
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = 'sistema_consulta' 
+                AND table_name = %s
+                ORDER BY ordinal_position
+            """, (nome_tabela_limpo,))
+            return [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        st.error(f"Erro ao listar colunas: {e}")
+        return []
+    finally:
+        conn.close()
 
 # --- GERENCIAMENTO DE HISTÓRICO E CONFIGURAÇÃO ---
 
@@ -205,13 +244,15 @@ def excluir_tipo_importacao(id_tipo):
 # --- DIALOG DE DETALHES ---
 @st.dialog("📋 Dados da Amostra")
 def modal_detalhes_amostra(linha_dict, mapeamento):
-    def get_val(chave_sistema):
-        col_arq = mapeamento.get(chave_sistema)
-        if col_arq: return linha_dict.get(col_arq, '')
+    # mapeamento: { 'coluna_db': 'coluna_excel' }
+    
+    def get_val_db(col_db):
+        col_excel = mapeamento.get(col_db)
+        if col_excel: return linha_dict.get(col_excel, '')
         return ''
 
-    cpf_visual = limpar_formatar_cpf(get_val('cpf'))
-    nome_visual = get_val('nome')
+    cpf_visual = limpar_formatar_cpf(get_val_db('cpf'))
+    nome_visual = get_val_db('nome')
     st.markdown(f"## 👤 {nome_visual}")
     st.caption(f"CPF: {cpf_visual}")
     st.divider()
@@ -221,24 +262,24 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
     with tab1:
         c1, c2, c3 = st.columns(3)
         c1.text_input("Nome", value=nome_visual, disabled=True)
-        c2.text_input("RG", value=get_val('identidade'), disabled=True)
+        c2.text_input("RG", value=get_val_db('identidade'), disabled=True)
         
-        raw_nasc = get_val('data_nascimento')
+        raw_nasc = get_val_db('data_nascimento')
         val_nasc = str(raw_nasc)
         dt_obj = converter_data_iso(raw_nasc)
         if dt_obj: val_nasc = dt_obj.strftime("%d/%m/%Y")
         c3.text_input("Data Nasc.", value=val_nasc, disabled=True)
         
         c4, c5 = st.columns(2)
-        c4.text_input("CNH", value=get_val('cnh'), disabled=True)
-        c5.text_input("Título Eleitor", value=get_val('titulo_eleitoral'), disabled=True)
+        c4.text_input("CNH", value=get_val_db('cnh'), disabled=True)
+        c5.text_input("Título Eleitor", value=get_val_db('titulo_eleitoral'), disabled=True)
         
         c6, c7 = st.columns(2)
-        c6.text_input("Nome da Mãe", value=get_val('nome_mae'), disabled=True)
-        c7.text_input("Nome do Pai", value=get_val('nome_pai'), disabled=True)
+        c6.text_input("Nome da Mãe", value=get_val_db('nome_mae'), disabled=True)
+        c7.text_input("Nome do Pai", value=get_val_db('nome_pai'), disabled=True)
         
-        st.text_input("Campanhas", value=get_val('campanhas'), disabled=True)
-        val_sexo = get_val('sexo')
+        st.text_input("Campanhas", value=get_val_db('campanhas'), disabled=True)
+        val_sexo = get_val_db('sexo')
         if val_sexo.upper() in ['F', 'FEMININO']: val_sexo = 'Feminino'
         elif val_sexo.upper() in ['M', 'MASCULINO']: val_sexo = 'Masculino'
         st.text_input("Sexo", value=val_sexo, disabled=True)
@@ -248,30 +289,30 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         with c_contato:
             st.markdown("##### 📞 Telefones")
             for i in range(1, 11):
-                raw = get_val(f'telefone_{i}')
+                raw = get_val_db(f'telefone_{i}')
                 fmt = limpar_formatar_telefone(raw)
                 if fmt: st.text_input(f"Telefone {i}", value=fmt, disabled=True, key=f"amostra_tel_{i}")
             st.markdown("##### 📧 E-mails")
             for i in range(1, 4):
-                val = get_val(f'email_{i}')
+                val = get_val_db(f'email_{i}')
                 if val: st.text_input(f"E-mail {i}", value=val, disabled=True, key=f"amostra_mail_{i}")
         with c_convenio:
             st.markdown("##### 💼 Convênio")
-            val_conv = get_val('convenio')
+            val_conv = get_val_db('convenio')
             if val_conv: st.text_input("Convênio", value=val_conv, disabled=True)
             else: st.caption("Nenhum convênio mapeado.")
 
     with tab3:
         st.markdown("##### 🏠 Endereço")
-        cep_val = get_val('cep')
+        cep_val = get_val_db('cep')
         st.text_input("CEP", value=cep_val, disabled=True)
-        rua_val = get_val('rua')
+        rua_val = get_val_db('rua')
         st.text_input("Rua", value=rua_val, disabled=True)
-        bairro_val = get_val('bairro')
+        bairro_val = get_val_db('bairro')
         st.text_input("Bairro", value=bairro_val, disabled=True)
         c_cid, c_uf = st.columns([3, 1])
-        c_cid.text_input("Cidade", value=get_val('cidade'), disabled=True)
-        c_uf.text_input("UF", value=get_val('uf'), disabled=True)
+        c_cid.text_input("Cidade", value=get_val_db('cidade'), disabled=True)
+        c_uf.text_input("UF", value=get_val_db('uf'), disabled=True)
 
 # --- PROCESSAMENTO EM LOTE ---
 
@@ -282,8 +323,9 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     sessao_id = str(uuid.uuid4())
     lista_erros = []
     
-    # LISTA FIXA DE COLUNAS QUE O SISTEMA ESPERA PARA O STAGING "PADRÃO"
-    # Adicione aqui qualquer coluna nova que você criou nas tabelas de staging
+    # LISTA FIXA DE COLUNAS DE STAGING PADRÃO
+    # Se a tabela selecionada não tiver essas colunas, o COPY pode falhar se não filtrarmos.
+    # Mas como o usuário mapeou, presume-se que ele quer importar essas.
     cols_staging_order = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
                           'nome_pai', 'campanhas',
                           'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 'bairro', 'cidade', 'uf',
@@ -293,17 +335,22 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     cols_staging_order += [f"telefone_{i}" for i in range(1, 11)]
     cols_staging_order += [f"email_{i}" for i in range(1, 4)]
 
+    # Se a tabela destino for personalizada (não a staging padrão), 
+    # deveríamos teoricamente buscar as colunas dela.
+    # Por segurança e para manter a função pré-existente funcionando, 
+    # mantemos a lógica de "melhor esforço" baseada no mapeamento.
+    
     df_staging = pd.DataFrame()
     df_staging['sessao_id'] = [sessao_id] * len(df)
 
-    # Tratamento CPF
+    # Tratamento CPF (se mapeado)
     col_cpf_origem = mapeamento_usuario.get('cpf')
     if col_cpf_origem:
         df_staging['cpf'] = df[col_cpf_origem].apply(limpar_formatar_cpf)
     else:
         df_staging['cpf'] = None
 
-    # Validação simples de CPF (Apenas se CPF existir)
+    # Validação simples de CPF (Apenas se CPF existir e for relevante)
     if 'cpf' in df_staging.columns and not df_staging['cpf'].isnull().all():
         mask_cpf_valido = df_staging['cpf'].str.len() == 11
         df_erros_cpf = df[~mask_cpf_valido] 
@@ -311,14 +358,20 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             lista_erros = df_erros_cpf.to_dict('records')
         df_staging = df_staging[mask_cpf_valido].copy()
     
+    # Preenche o DataFrame de Staging com base no mapeamento
+    # Agora iteramos sobre as colunas que o sistema espera (cols_staging_order)
+    # E verificamos se o usuário mapeou alguma coluna para elas
+    
+    # Adicionalmente: Se o usuário mapeou uma coluna que NÃO está em cols_staging_order 
+    # (ex: uma coluna nova da tabela dinâmica), precisamos adicioná-la ao df_staging
+    for col_db_map, col_excel_map in mapeamento_usuario.items():
+        if col_db_map not in cols_staging_order and col_db_map != 'cpf':
+            cols_staging_order.append(col_db_map)
+
     for col_sys in cols_staging_order:
         if col_sys in ['sessao_id', 'cpf']: continue
         
-        col_excel = None
-        for k, v in mapeamento_usuario.items():
-            if k == col_sys:
-                col_excel = v
-                break
+        col_excel = mapeamento_usuario.get(col_sys) # Busca qual coluna excel mapeia para esta coluna do banco
         
         if col_excel:
             serie = df.loc[df.index, col_excel] # Usa index alinhado
@@ -329,12 +382,14 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                     s = str(x).strip().upper()
                     return 'Feminino' if s in ['F', 'FEMININO'] else ('Masculino' if s in ['M', 'MASCULINO'] else x)
                 df_staging[col_sys] = serie.apply(trata_sexo)
-            elif col_sys.startswith('telefone_'):
+            elif str(col_sys).startswith('telefone_'):
                 df_staging[col_sys] = serie.apply(limpar_formatar_telefone)
             else:
                 df_staging[col_sys] = serie.apply(limpar_texto)
         else:
-            df_staging[col_sys] = None
+            # Se não foi mapeado, preenche com None (apenas se a coluna já não existir no DF)
+            if col_sys not in df_staging.columns:
+                df_staging[col_sys] = None
 
     if df_staging.empty:
         conn.close()
@@ -343,22 +398,24 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     try:
         cur = conn.cursor()
         csv_buffer = io.StringIO()
-        # Garante que só tentamos exportar colunas que existem no DF e que a tabela SQL aceita
-        # IMPORTANTE: A tabela SQL deve ter essas colunas.
-        # Se alguma coluna nova (ex: matricula) não existir na tabela "importacao_staging" padrão, 
-        # o COPY vai falhar se a tabela destino for essa.
-        # Por isso a tabela destino configurada deve suportar as colunas.
         
-        # Filtra colunas do staging que realmente vamos usar (evita erro se df_staging tiver colunas a mais/menos)
+        # Filtra colunas do staging que realmente vamos usar (intersecção entre DF e o que a tabela aceita seria ideal,
+        # aqui filtramos pelo que está no DF e não é nulo/extra desnecessário)
         cols_final = [c for c in cols_staging_order if c in df_staging.columns]
         
         df_staging[cols_final].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
         
-        # 1. Copia para Staging
+        # 1. Copia para Staging (ou Tabela Destino Selecionada)
+        # O COPY vai tentar inserir nas colunas especificadas em cols_final. 
+        # A tabela destino DEVE ter essas colunas.
         cur.copy_expert(f"COPY {tabela_destino} ({','.join(cols_final)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
         
-        # 2. Distribuição
+        # 2. Distribuição / Processamento Pós-Carga
+        # A lógica abaixo assume que os dados foram para uma tabela que tem estrutura compatível 
+        # para alimentar as tabelas principais (sistema_consulta_cpf, etc).
+        # Se a tabela destino for apenas um "dump" temporário, as queries abaixo podem precisar de ajuste,
+        # mas mantemos a lógica original conforme solicitado.
         
         # A) CPFs
         cur.execute(f"""
@@ -370,9 +427,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         id_imp_str = str(id_importacao_db)
 
         # B) Dados Cadastrais (UPSERT)
-        # Nota: Só atualiza colunas que existem na tabela de dados cadastrais PRINCIPAL
-        # Se quiser salvar Matrícula/CNPJ, precisará de uma query separada para a tabela sistema_consulta_dados_ctt
-        # Abaixo mantém a lógica original para os dados PESSOAIS (Genéricos)
+        # Verifica colunas existentes na tabela destino para montar a query dinamicamente seria ideal, 
+        # mas aqui mantemos a query estática para os campos padrão.
         cur.execute(f"""
             WITH rows_to_insert AS (
                 SELECT * FROM {tabela_destino} WHERE sessao_id = %s
@@ -415,9 +471,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         qtd_novos = resultado[0]
         qtd_atualizados = resultado[1]
 
-        # C) Inserção na Tabela Específica de CLT (Se houver campos CLT)
-        # Verifica se alguma coluna CLT foi preenchida para tentar inserir na tabela sistema_consulta_dados_ctt
-        if 'matricula' in df_staging.columns: # Supõe que se tem matricula, tenta salvar CLT
+        # C) Inserção na Tabela Específica de CLT (Tentativa)
+        if 'matricula' in df_staging.columns:
              try:
                 cur.execute(f"""
                     INSERT INTO sistema_consulta.sistema_consulta_dados_ctt
@@ -431,7 +486,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                     WHERE sessao_id = %s AND matricula IS NOT NULL
                 """, (id_imp_str, sessao_id))
              except Exception as ex_clt:
-                 # Se a tabela staging não tiver as colunas, vai dar erro, ignoramos ou logamos
                  print(f"Aviso: Não foi possível inserir dados CLT: {ex_clt}")
 
         # D) Telefones
@@ -440,7 +494,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             SELECT DISTINCT s.cpf, t.tel
             FROM {tabela_destino} s,
             LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3), (telefone_4), (telefone_5),
-                            (telefone_6), (telefone_7), (telefone_8), (telefone_9), (telefone_10)) AS t(tel)
+                             (telefone_6), (telefone_7), (telefone_8), (telefone_9), (telefone_10)) AS t(tel)
             WHERE s.sessao_id = %s AND t.tel IS NOT NULL AND t.tel <> ''
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
@@ -455,7 +509,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING
         """, (sessao_id,))
 
-        # F) Convênios (COM VALIDAÇÃO DE DUPLICIDADE)
+        # F) Convênios
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio)
             SELECT DISTINCT s.cpf, s.convenio 
@@ -498,13 +552,12 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 def tela_importacao():
     st.markdown("## 📥 Importar Dados (Enterprise Mode)")
     
-    # --- ABAS PRINCIPAIS ---
     tab_import, tab_config = st.tabs(["Importação", "Config"])
     
     # === ABA IMPORTAÇÃO ===
     with tab_import:
         if 'etapa_importacao' not in st.session_state:
-            st.session_state['etapa_importacao'] = 'selecao_tipo' # Passo 1
+            st.session_state['etapa_importacao'] = 'selecao_tipo' 
         
         # PASSO 1: SELEÇÃO DO TIPO
         if st.session_state['etapa_importacao'] == 'selecao_tipo':
@@ -514,7 +567,7 @@ def tela_importacao():
             if not tipos:
                 st.warning("Nenhum tipo de importação configurado. Vá para a aba 'Config' e crie um.")
             else:
-                opcoes_tipos = {t[1]: t for t in tipos} # Nome -> Tupla
+                opcoes_tipos = {t[1]: t for t in tipos} 
                 escolha = st.selectbox("Tipo de Importação:", ["(Selecione)"] + list(opcoes_tipos.keys()))
                 
                 if escolha != "(Selecione)":
@@ -527,7 +580,9 @@ def tela_importacao():
                     
                     if colunas_ativas:
                         st.markdown("**Colunas Configuradas:**")
-                        st.caption(", ".join(colunas_ativas))
+                        # Mostra nome amigável se possível, senão o técnico
+                        display_cols = [ALIAS_INVERSO.get(c, c) for c in colunas_ativas]
+                        st.caption(", ".join(display_cols))
                     
                     if st.button("Próximo: Upload de Arquivo"):
                         st.session_state['import_tipo_selecionado'] = dados_tipo
@@ -568,7 +623,6 @@ def tela_importacao():
             
             st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
 
-            # Botões de Ação
             c_act1, c_act2, c_act3 = st.columns([1.5, 1.5, 4])
             if c_act1.button("🧹 Limpar Filtro", use_container_width=True):
                 for i in range(len(colunas_arquivo)):
@@ -587,38 +641,52 @@ def tela_importacao():
                 cols_map = st.columns(6)
                 mapeamento_usuario = {}
                 
+                # Lista de colunas exigidas/configuradas
                 colunas_permitidas = st.session_state.get('import_colunas_ativas', [])
-                if not colunas_permitidas:
-                    opcoes_sistema = ["(Selecione)"] + list(CAMPOS_SISTEMA.keys())
-                else:
-                    opcoes_filtradas = [k for k in CAMPOS_SISTEMA.keys() if k in colunas_permitidas]
-                    # CPF é obrigatório para a importação padrão, mas pode ser opcional para outros tipos.
-                    # Mantemos nas opções, mas a validação de obrigatoriedade ocorre abaixo
-                    if "CPF (Obrigatório)" not in opcoes_filtradas and "cpf" not in [CAMPOS_SISTEMA[k] for k in opcoes_filtradas]:
-                         opcoes_filtradas.insert(0, "CPF (Obrigatório)")
-                    opcoes_sistema = ["(Selecione)"] + opcoes_filtradas
                 
+                # Prepara lista de opções para o Selectbox
+                # Se a coluna for "técnica" (ex: "nome"), tenta mostrar "Nome do Cliente". 
+                # Se não tiver alias (tabela nova), mostra "nome".
+                opcoes_display = ["(Selecione)"]
+                mapa_display_to_tecnico = {}
+
+                if colunas_permitidas:
+                    for col_tec in colunas_permitidas:
+                        # Se existe um alias reverso (Nome Bonito), usa ele. Senão usa o técnico.
+                        nome_visual = ALIAS_INVERSO.get(col_tec, col_tec)
+                        opcoes_display.append(nome_visual)
+                        mapa_display_to_tecnico[nome_visual] = col_tec
+                else:
+                    # Fallback padrão antigo
+                    opcoes_display = ["(Selecione)"] + list(CAMPOS_SISTEMA_ALIAS.keys())
+                    mapa_display_to_tecnico = CAMPOS_SISTEMA_ALIAS
+
+                # Garante CPF nas opções se for padrão, mas flexível se for tabela nova
+                # (A lógica de validação de CPF é feita depois)
+
                 for i, col_arquivo in enumerate(colunas_arquivo):
                     index_sugestao = 0
                     if f"map_col_{i}" not in st.session_state:
-                        for idx, op in enumerate(opcoes_sistema):
+                        # Auto-suggest
+                        for idx, op in enumerate(opcoes_display):
                             if op == "(Selecione)": continue
-                            sys_key = CAMPOS_SISTEMA[op]
-                            if sys_key.split('_')[0] in col_arquivo.lower() or op.lower() in col_arquivo.lower():
+                            # Verifica match no nome visual OU no nome técnico
+                            nome_tec = mapa_display_to_tecnico[op]
+                            if nome_tec.lower() in col_arquivo.lower() or op.lower() in col_arquivo.lower():
                                 index_sugestao = idx
                                 break
                     
                     col_container = cols_map[i % 6]
                     col_container.markdown(f"**{col_arquivo}**")
-                    escolha = col_container.selectbox("Corresponde a:", opcoes_sistema, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
+                    escolha = col_container.selectbox("Corresponde a:", opcoes_display, index=index_sugestao, key=f"map_col_{i}", label_visibility="collapsed")
                     
                     if escolha != "(Selecione)":
-                        mapeamento_usuario[CAMPOS_SISTEMA[escolha]] = col_arquivo
+                        # Salva o nome TÉCNICO no mapeamento
+                        col_tecnica = mapa_display_to_tecnico[escolha]
+                        mapeamento_usuario[col_tecnica] = col_arquivo
 
-            # Verifica obrigatoriedade de CPF apenas se for uma importação padrão que usa dados_cadastrais
-            # (Simplificação: verifica se 'cpf' foi mapeado, se não, emite aviso)
             if 'cpf' not in mapeamento_usuario:
-                 st.warning("⚠️ **CPF** não foi mapeado. Se esta importação exige vínculo com pessoa física, ela pode falhar.")
+                 st.warning("⚠️ **CPF** não foi mapeado. Verifique se isso é esperado para este tipo de tabela.")
             
             st.divider()
             
@@ -630,6 +698,10 @@ def tela_importacao():
             if st.session_state.get('amostra_gerada'):
                 st.subheader("🔍 Amostra Processada")
                 amostra = df.head(5).copy()
+                # Mostra colunas principais se existirem mapeadas
+                col_cpf_map = mapeamento_usuario.get('cpf')
+                col_nome_map = mapeamento_usuario.get('nome')
+                
                 ch1, ch2, ch3 = st.columns([2, 4, 1])
                 ch1.markdown("**CPF**")
                 ch2.markdown("**Nome**")
@@ -638,10 +710,9 @@ def tela_importacao():
 
                 for idx, row in amostra.iterrows():
                     c1, c2, c3 = st.columns([2, 4, 1])
-                    raw_cpf = row[mapeamento_usuario['cpf']] if 'cpf' in mapeamento_usuario else "---"
-                    val_cpf = limpar_formatar_cpf(raw_cpf) if 'cpf' in mapeamento_usuario else "---"
+                    val_cpf = limpar_formatar_cpf(row[col_cpf_map]) if col_cpf_map else "---"
+                    val_nome = row[col_nome_map] if col_nome_map else "---"
                     
-                    val_nome = row[mapeamento_usuario['nome']] if 'nome' in mapeamento_usuario else "---"
                     c1.write(val_cpf)
                     c2.write(val_nome)
                     if c3.button("👁️ Ver", key=f"btn_ver_{idx}"):
@@ -667,10 +738,7 @@ def tela_importacao():
                     user_id = st.session_state.get('usuario_id', '0')
                     user_nome = st.session_state.get('usuario_nome', 'Sistema')
                     
-                    # ID da importação
                     id_imp = registrar_inicio_importacao(st.session_state['nome_arquivo_importacao'], path_final, user_id, user_nome)
-                    
-                    # Tabela de destino (Do Config)
                     tabela_destino = st.session_state['import_tipo_selecionado'][2]
                     if not tabela_destino:
                         tabela_destino = "sistema_consulta.importacao_staging"
@@ -698,7 +766,7 @@ def tela_importacao():
                     else:
                         st.error("Falha ao inicializar registro de importação. Tente novamente.")
 
-    # === ABA CONFIG (Submenu) ===
+    # === ABA CONFIG (ATUALIZADA) ===
     with tab_config:
         st.subheader("⚙️ Configurar Novo Tipo de Importação")
         
@@ -706,20 +774,39 @@ def tela_importacao():
             st.session_state['config_editando_id'] = None
             st.session_state['config_convenio'] = ""
             st.session_state['config_planilha'] = ""
-            st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+            st.session_state['config_colunas'] = ["cpf", "nome"] # Default técnico
+
+        # Carrega tabelas do sistema para o Selectbox
+        lista_tabelas = listar_tabelas_sistema()
 
         with st.form("form_config_importacao"):
             conf_convenio = st.text_input("Nome do Convênio (Tipo)", value=st.session_state['config_convenio'])
-            conf_planilha = st.text_input("Nome da Planilha/Tabela Destino", value=st.session_state['config_planilha'], help="Ex: sistema_consulta.staging_inss")
             
-            st.markdown("Selecione as colunas que devem aparecer para mapeamento:")
-            opcoes_campos = list(CAMPOS_SISTEMA.keys())
+            # ATUALIZAÇÃO: Selectbox para Tabelas
+            idx_tab = 0
+            if st.session_state['config_planilha'] in lista_tabelas:
+                idx_tab = lista_tabelas.index(st.session_state['config_planilha'])
             
-            # Filtra defaults válidos
-            default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_campos]
-            if not default_opts: default_opts = ["CPF (Obrigatório)", "Nome do Cliente"]
+            # Se a lista de tabelas estiver vazia (erro de conexão), fallback para text input
+            if lista_tabelas:
+                conf_planilha = st.selectbox("Tabela Destino", lista_tabelas, index=idx_tab, help="Selecione a tabela do banco de dados")
+            else:
+                conf_planilha = st.text_input("Nome da Planilha/Tabela Destino", value=st.session_state['config_planilha'])
             
-            conf_colunas = st.multiselect("Colunas para Filtro (Mapeamento)", options=opcoes_campos, default=default_opts)
+            # ATUALIZAÇÃO: Carregar colunas dinâmicas baseado na tabela selecionada
+            opcoes_colunas = []
+            if conf_planilha:
+                opcoes_colunas = listar_colunas_tabela(conf_planilha)
+            
+            # Se não conseguiu carregar colunas (ex: tabela nova ou erro), usa o fallback padrão antigo
+            if not opcoes_colunas:
+                opcoes_colunas = list(CAMPOS_SISTEMA_ALIAS.values()) # Usa nomes técnicos
+
+            # Filtra defaults válidos (técnicos)
+            default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_colunas]
+            
+            st.markdown("Selecione as colunas disponíveis para mapeamento:")
+            conf_colunas = st.multiselect("Colunas da Tabela", options=opcoes_colunas, default=default_opts)
             
             c_submit, c_cancel = st.columns([1, 1])
             label_btn = "💾 Salvar Configuração" if not st.session_state['config_editando_id'] else "🔄 Atualizar Configuração"
@@ -737,7 +824,7 @@ def tela_importacao():
                             st.session_state['config_editando_id'] = None
                             st.session_state['config_convenio'] = ""
                             st.session_state['config_planilha'] = ""
-                            st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+                            st.session_state['config_colunas'] = ["cpf", "nome"]
                             time.sleep(1)
                             st.rerun()
                     else:
@@ -745,7 +832,7 @@ def tela_importacao():
                             st.success(f"Configuração '{conf_convenio}' salva com sucesso!")
                             st.session_state['config_convenio'] = ""
                             st.session_state['config_planilha'] = ""
-                            st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+                            st.session_state['config_colunas'] = ["cpf", "nome"]
                             time.sleep(1)
                             st.rerun()
 
@@ -754,7 +841,7 @@ def tela_importacao():
                 st.session_state['config_editando_id'] = None
                 st.session_state['config_convenio'] = ""
                 st.session_state['config_planilha'] = ""
-                st.session_state['config_colunas'] = ["CPF (Obrigatório)", "Nome do Cliente"]
+                st.session_state['config_colunas'] = ["cpf", "nome"]
                 st.rerun()
         
         st.divider()
