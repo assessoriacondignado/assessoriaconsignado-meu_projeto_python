@@ -553,6 +553,16 @@ def inserir_dado_extra(tipo, cpf, dados):
     try:
         with conn.cursor() as cur:
             if tipo == "DadosDinâmicos":
+                # --- ATUALIZAÇÃO SOLICITADA: Lógica para criar novo vínculo ---
+                if dados.get('_criar_vinculo'):
+                    new_mat = dados.get('matricula')
+                    new_conv = dados.get('convenio')
+                    # Cria contrato básico para aparecer na lista
+                    cur.execute("INSERT INTO sistema_consulta.sistema_consulta_contrato (cpf, matricula, convenio) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", (cpf, new_mat, new_conv))
+                    # Cria vínculo na lista de convênios
+                    cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf, new_conv))
+                # -------------------------------------------------------------
+
                 tabela_alvo = dados.get('_tabela')
                 campos_dados = {k: v for k, v in dados.items() if not k.startswith('_')}
                 
@@ -765,45 +775,65 @@ def modal_inserir_dados(cpf, nome_cliente):
         if tipo_insercao == "Dados de Convênio":
             # 1. Busca quais convenios/matriculas o cliente tem
             lista_contratos = listar_contratos_cliente(cpf)
-            if not lista_contratos:
-                st.warning("Este cliente não possui contratos/matrículas cadastradas para vincular dados.")
-            else:
-                opcoes_matr = [f"{m} - {c}" for m, c in lista_contratos]
-                selecao = st.selectbox("Selecione a Matrícula", options=opcoes_matr)
-                
-                if selecao:
-                    matricula_sel, convenio_sel = selecao.split(" - ", 1)
-                    st.caption(f"Inserindo dados para: {convenio_sel}")
-                    
-                    # 2. Descobre a tabela alvo
-                    tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
-                    
-                    if tabela_alvo:
-                        # 3. Gera campos dinâmicos
-                        colunas = listar_colunas_tabela(tabela_alvo)
-                        
-                        if not colunas:
-                            st.error(f"Tabela '{tabela_alvo}' não encontrada ou sem colunas acessíveis. Contate o administrador.")
-                            st.form_submit_button("❌ Salvar Bloqueado", disabled=True)
-                            return 
+            
+            # --- ATUALIZAÇÃO SOLICITADA: Opção de Novo Cadastro ---
+            opcoes_matr = [f"{m} - {c}" for m, c in lista_contratos]
+            opcoes_matr.append("➕ Cadastrar Novo Convênio/Matrícula")
+            
+            selecao = st.selectbox("Selecione a Matrícula", options=opcoes_matr)
+            
+            criar_novo = False
+            matricula_sel = None
+            convenio_sel = None
 
-                        dados_submit['_tabela'] = tabela_alvo # Campo de controle interno
-                        dados_submit['cpf'] = cpf
-                        dados_submit['matricula'] = matricula_sel
-                        
-                        cols_form = st.columns(2)
-                        idx = 0
-                        for col in colunas:
-                            if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
-                                with cols_form[idx % 2]:
-                                    # SE FOR DATA -> DATE_INPUT
-                                    if 'data' in col.lower():
-                                        dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=None, format="DD/MM/YYYY")
-                                    else:
-                                        dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize())
-                                idx += 1
-                    else:
-                        st.error(f"Tabela de dados não configurada para o convênio: {convenio_sel}")
+            if selecao == "➕ Cadastrar Novo Convênio/Matrícula":
+                st.info("Informe os dados para criar um novo vínculo.")
+                c_new1, c_new2 = st.columns(2)
+                convenio_sel = c_new1.text_input("Nome do Convênio (Ex: INSS)")
+                matricula_sel = c_new2.text_input("Nova Matrícula")
+                if convenio_sel and matricula_sel:
+                    criar_novo = True
+            elif selecao:
+                matricula_sel, convenio_sel = selecao.split(" - ", 1)
+            # ------------------------------------------------------
+            
+            if matricula_sel and convenio_sel:
+                if not criar_novo:
+                    st.caption(f"Inserindo dados para: {convenio_sel}")
+                
+                # 2. Descobre a tabela alvo
+                tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
+                
+                if tabela_alvo:
+                    # 3. Gera campos dinâmicos
+                    colunas = listar_colunas_tabela(tabela_alvo)
+                    
+                    if not colunas:
+                        st.error(f"Tabela '{tabela_alvo}' não encontrada ou sem colunas acessíveis. Contate o administrador.")
+                        st.form_submit_button("❌ Salvar Bloqueado", disabled=True)
+                        return 
+
+                    dados_submit['_tabela'] = tabela_alvo # Campo de controle interno
+                    dados_submit['cpf'] = cpf
+                    dados_submit['matricula'] = matricula_sel
+                    
+                    if criar_novo:
+                        dados_submit['_criar_vinculo'] = True
+                        dados_submit['convenio'] = convenio_sel
+                    
+                    cols_form = st.columns(2)
+                    idx = 0
+                    for col in colunas:
+                        if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
+                            with cols_form[idx % 2]:
+                                # SE FOR DATA -> DATE_INPUT
+                                if 'data' in col.lower():
+                                    dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=None, format="DD/MM/YYYY")
+                                else:
+                                    dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize())
+                            idx += 1
+                else:
+                    st.error(f"Tabela de dados não configurada para o convênio: {convenio_sel}")
 
         elif tipo_insercao == "Contrato":
             c1, c2 = st.columns(2)
