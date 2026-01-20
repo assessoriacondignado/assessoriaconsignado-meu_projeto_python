@@ -806,15 +806,18 @@ def modal_inserir_dados(cpf, nome_cliente):
                 
                 # --- ATUALIZAÇÃO: Selectbox para Tipos de Convênio ---
                 lista_tipos = listar_tipos_convenio_disponiveis()
-                convenio_sel = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos)
-                # -----------------------------------------------------
                 
+                # Armazena em variável temporária para verificação
+                sel_tipo = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos)
                 matricula_sel = c_new2.text_input("Nova Matrícula")
-                if convenio_sel and convenio_sel != "(Selecione)" and matricula_sel:
+                
+                # CORREÇÃO DE LÓGICA: Só define convenio_sel se o usuário escolher um válido
+                if sel_tipo and sel_tipo != "(Selecione)" and matricula_sel:
+                    convenio_sel = sel_tipo
                     criar_novo = True
                 else:
-                    # Reseta para não tentar buscar tabela se não estiver válido
-                    if convenio_sel == "(Selecione)": convenio_sel = None
+                    convenio_sel = None # Garante que não carregue nada antes da hora
+                # -----------------------------------------------------
             
             elif selecao:
                 matricula_sel, convenio_sel = selecao.split(" - ", 1)
