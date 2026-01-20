@@ -351,10 +351,11 @@ def buscar_hierarquia_financeira(cpf):
             convenios_unicos = list(set([k[0] for k in estrutura.keys()]))
             
             if convenios_unicos:
+                # CORREÇÃO AQUI: convenio -> nome_convenio
                 cur.execute("""
-                    SELECT convenio, tabela_referencia 
+                    SELECT nome_convenio, tabela_referencia 
                     FROM sistema_consulta.sistema_consulta_convenio_tipo 
-                    WHERE convenio = ANY(%s)
+                    WHERE nome_convenio = ANY(%s)
                 """, (convenios_unicos,))
                 
                 for r in cur.fetchall():
@@ -833,7 +834,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             with col_lista2:
                 st.markdown("### 📧 E-mails")
                 if dados.get('emails'):
-                    for i, mail in enumerate(dados['emails']):
+                    for i, mail in enumerate(dados.get('emails', [])):
                         novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
                         edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
             
