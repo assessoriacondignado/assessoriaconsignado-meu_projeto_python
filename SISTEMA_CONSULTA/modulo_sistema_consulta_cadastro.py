@@ -326,8 +326,17 @@ def carregar_dados_cliente_completo(cpf):
                     if v is None: d_end[k] = ""
                 dados['enderecos'].append(d_end)
 
+            # Agrupamentos
             cur.execute("SELECT agrupamento FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
             dados['agrupamentos'] = [r[0] for r in cur.fetchall() if r[0]]
+
+            # Convênios (Simples/Cadastro) - ATUALIZAÇÃO SOLICITADA
+            try:
+                cur.execute("SELECT convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
+                dados['convenios_lista'] = [r[0] for r in cur.fetchall() if r[0]]
+            except Exception as e:
+                # Caso a tabela não exista ou erro, retorna lista vazia para não quebrar
+                dados['convenios_lista'] = []
             
     except Exception as e:
         st.error(f"Erro ao carregar cliente: {e}")
@@ -618,6 +627,13 @@ def inserir_dado_extra(tipo, cpf, dados):
                 """, (cpf, limpar_texto(dados.get('cep')), limpar_texto(dados.get('rua')), 
                       limpar_texto(dados.get('bairro')), limpar_texto(dados.get('cidade')), limpar_texto(dados.get('uf'))))
             
+            # --- ATUALIZAÇÃO SOLICITADA: Inserir Convênio ---
+            elif tipo == "Convênio (Cadastro)":
+                val = limpar_texto(dados.get('valor'))
+                cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s AND convenio = %s", (cpf, val))
+                if cur.fetchone(): return "duplicado"
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s)", (cpf, val))
+            
             conn.commit()
             return "sucesso"
     except Exception as e:
@@ -740,7 +756,8 @@ def excluir_cliente_total(cpf):
 @st.dialog("➕ Inserir Dados Extras")
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
-    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Contrato", "Dados de Convênio"])
+    # ATUALIZAÇÃO SOLICITADA: Adicionado "Convênio (Cadastro)"
+    tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Contrato", "Dados de Convênio", "Convênio (Cadastro)"])
     
     with st.form("form_insercao_modal"):
         dados_submit = {}
@@ -820,6 +837,9 @@ def modal_inserir_dados(cpf, nome_cliente):
             dados_submit['bairro'] = st.text_input("Bairro")
             dados_submit['cidade'] = st.text_input("Cidade")
             dados_submit['uf'] = st.text_input("UF", max_chars=2)
+        # ATUALIZAÇÃO SOLICITADA: Form para inserir Convênio Simples
+        elif tipo_insercao == "Convênio (Cadastro)":
+            dados_submit['valor'] = st.text_input("Nome do Convênio", help="Digite o nome do convênio para vincular ao cliente.")
         
         if st.form_submit_button("✅ Salvar Inclusão"):
             # Se for dados dinamicos, passa tipo especial
@@ -981,6 +1001,18 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
             ec7, ec8 = st.columns(2)
             e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
             e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
+            
+            # ATUALIZAÇÃO SOLICITADA: Mostrar Agrupamento e Convênio na tela de edição
+            st.markdown("---")
+            st.caption("Campos abaixo são gerenciados via '➕ Extra'")
+            ec9, ec10 = st.columns(2)
+            
+            agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
+            ec9.text_input("Agrupamento (Leitura)", value=agrupamento_val, disabled=True)
+            
+            lista_convs = dados.get('convenios_lista', [])
+            conv_str = ", ".join(lista_convs)
+            ec10.text_input("Convênios (Leitura)", value=conv_str, disabled=True)
 
             st.divider()
             
@@ -1094,6 +1126,11 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         # Agrupamento não está direto no pessoal, vamos pegar do primeiro se houver
         agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
         c12.text_input("Agrupamento", value=agrupamento_val, disabled=True)
+
+        # ATUALIZAÇÃO SOLICITADA: Linha 4 - Convênios
+        lista_convs = dados.get('convenios_lista', [])
+        conv_str = ", ".join(lista_convs)
+        st.text_input("Convênios Vinculados", value=conv_str, disabled=True)
 
     # 2. Contatos e Localização
     with st.expander("📍 Contatos e Endereço", expanded=False):
