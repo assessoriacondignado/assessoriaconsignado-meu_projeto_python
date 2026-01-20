@@ -12,7 +12,6 @@ except ImportError:
 
 # --- CONSTANTES E CONFIGURAÇÕES DE PESQUISA ---
 
-# Mapeamento de Nome Visual -> Coluna/Tabela e Tipo de Dado
 MAPA_CAMPOS_PESQUISA = {
     "Dados Pessoais": {
         "Nome do Cliente": {"col": "t.nome", "tipo": "texto"},
@@ -43,7 +42,6 @@ MAPA_CAMPOS_PESQUISA = {
     }
 }
 
-# Operadores com Símbolos e SQL correspondente
 OPERADORES_SQL = {
     "texto": {
         "Contém (..aa..)": {"sql": "ILIKE", "mask": "%{}%", "desc": "Contém o texto"},
@@ -68,23 +66,17 @@ OPERADORES_SQL = {
     }
 }
 
-# --- FUNÇÕES AUXILIARES DE LIMPEZA ---
+# --- FUNÇÕES AUXILIARES ---
 def limpar_texto(valor):
-    """Converte None ou 'None' para string vazia."""
-    if valor is None:
-        return ""
+    if valor is None: return ""
     s_valor = str(valor).strip()
-    if s_valor.lower() in ['none', 'null']:
-        return ""
+    if s_valor.lower() in ['none', 'null']: return ""
     return s_valor
 
 def converter_data_iso(data_obj):
-    """Garante formato YYYY-MM-DD para SQL"""
     if isinstance(data_obj, (date, datetime)):
         return data_obj.strftime("%Y-%m-%d")
     return str(data_obj)
-
-# --- FUNÇÕES DE BANCO DE DADOS ---
 
 def get_db_connection():
     if not conexao: return None
@@ -97,50 +89,42 @@ def get_db_connection():
         st.error(f"Erro de conexão: {e}")
         return None
 
+# --- FUNÇÕES DE BUSCA ---
+
 def buscar_relacao_auxiliar(tipo):
-    """Busca listas de Importação, Agrupamento ou Campanha"""
     conn = get_db_connection()
     if not conn: return [], []
     
     dados = []
     colunas = []
-    
     try:
         with conn.cursor() as cur:
             if tipo == 'Importação':
-                # AJUSTE: Incluído o campo ID
                 cur.execute("""
-                    SELECT id, nome_arquivo, 
-                           TO_CHAR(data_importacao, 'DD/MM/YYYY HH24:MI') as data, 
+                    SELECT id, nome_arquivo, TO_CHAR(data_importacao, 'DD/MM/YYYY HH24:MI') as data, 
                            qtd_novos, qtd_atualizados 
                     FROM sistema_consulta.sistema_consulta_importacao 
                     ORDER BY id DESC LIMIT 100
                 """)
                 dados = cur.fetchall()
                 colunas = ['ID', 'Nome do Arquivo', 'Data', 'Novos', 'Atualizados']
-                
             elif tipo == 'Agrupamento':
                 cur.execute("""
                     SELECT agrupamento, COUNT(*) 
                     FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf 
-                    GROUP BY agrupamento 
-                    ORDER BY 2 DESC
+                    GROUP BY agrupamento ORDER BY 2 DESC
                 """)
                 dados = cur.fetchall()
                 colunas = ['Nome Agrupamento', 'Qtd CPFs']
-                
             elif tipo == 'Campanha':
-                # Busca campanhas distintas da tabela principal
                 cur.execute("""
                     SELECT campanhas, COUNT(*) 
                     FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
                     WHERE campanhas IS NOT NULL AND campanhas <> '' 
-                    GROUP BY campanhas 
-                    ORDER BY 2 DESC
+                    GROUP BY campanhas ORDER BY 2 DESC
                 """)
                 dados = cur.fetchall()
                 colunas = ['Nome Campanha', 'Qtd CPFs']
-                
             return dados, colunas
     except Exception as e:
         st.error(f"Erro ao buscar auxiliar: {e}")
@@ -149,7 +133,6 @@ def buscar_relacao_auxiliar(tipo):
         conn.close()
 
 def buscar_cliente_rapida(termo):
-    """Busca por Nome, CPF, Telefone, Pai ou Campanha (limite 30)"""
     conn = get_db_connection()
     if not conn: return []
     
@@ -174,32 +157,22 @@ def buscar_cliente_rapida(termo):
     try:
         with conn.cursor() as cur:
             cur.execute(query, (
-                param_termo,    # nome
-                param_termo,    # cpf ilike
-                termo_limpo if termo_limpo else '00000000000', # cpf exato
-                param_termo,    # nome_pai
-                param_termo,    # campanhas
-                param_termo,    # id_importacao
-                param_termo     # telefone
+                param_termo, param_termo, 
+                termo_limpo if termo_limpo else '00000000000', 
+                param_termo, param_termo, param_termo, param_termo
             ))
             return cur.fetchall()
     finally:
         conn.close()
 
 def buscar_cliente_dinamica(filtros_aplicados):
-    """
-    Constrói query dinâmica com JOINs e Subqueries conforme necessário.
-    """
     conn = get_db_connection()
     if not conn: return []
 
-    # Query Base (Alias t para a tabela principal)
     base_query = """
         SELECT DISTINCT t.id, t.nome, t.cpf, t.identidade, t.id_importacao
         FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf t
     """
-    
-    # Cláusulas WHERE
     where_clauses = ["1=1"]
     params = []
 
@@ -208,52 +181,42 @@ def buscar_cliente_dinamica(filtros_aplicados):
         operador_sql = filtro['op']
         tipo_dado = filtro['tipo']
         
-        # Tratamento especial para tabelas vinculadas (EXISTS)
         if tipo_dado == 'texto_vinculado':
             tabela_satelite = filtro['table']
-            
-            # Subquery baseada no tipo
             sub_where = f"{coluna} {operador_sql} %s"
             val_final = filtro['mask'].format(filtro['val']) if '{}' in filtro['mask'] else filtro['val']
             
-            # Vazio
             if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
                  exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {coluna} {operador_sql})"
                  where_clauses.append(exists_clause)
             else:
-                # Busca normal
                 exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {sub_where})"
                 where_clauses.append(exists_clause)
                 params.append(val_final)
 
-        elif tipo_dado == 'numero_calculado': # Idade
-            # Extract Year from Age for calculation
+        elif tipo_dado == 'numero_calculado':
             if "IS NULL" in operador_sql:
                  where_clauses.append(f"t.data_nascimento IS NULL")
             else:
                 if operador_sql == 'BETWEEN':
                     where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) BETWEEN %s AND %s")
-                    params.append(filtro['val'][0]) # Min
-                    params.append(filtro['val'][1]) # Max
+                    params.append(filtro['val'][0])
+                    params.append(filtro['val'][1])
                 else:
                     where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) {operador_sql} %s")
                     params.append(filtro['val'])
 
-        else: # Campos normais da tabela principal (Texto ou Data)
+        else:
             if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
-                # Tratamento para Vazio (Null ou String Vazia)
                 if "NOT" in operador_sql:
                     where_clauses.append(f"({coluna} IS NOT NULL AND {coluna} != '')")
                 else:
                     where_clauses.append(f"({coluna} IS NULL OR {coluna} = '')")
-            
             elif operador_sql == 'BETWEEN' and tipo_dado == 'data':
                 where_clauses.append(f"{coluna} BETWEEN %s AND %s")
-                params.append(filtro['val'][0]) # Data Ini
-                params.append(filtro['val'][1]) # Data Fim
-            
+                params.append(filtro['val'][0])
+                params.append(filtro['val'][1])
             else:
-                # Texto com ; (OR)
                 if filtro['val']:
                     valores = str(filtro['val']).split(';')
                     ors = []
@@ -263,7 +226,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
                             ors.append(f"{coluna} {operador_sql} %s")
                             val_final = filtro['mask'].format(v) if '{}' in filtro['mask'] else v
                             params.append(val_final)
-                    
                     if ors:
                         where_clauses.append(f"({' OR '.join(ors)})")
 
@@ -280,14 +242,13 @@ def buscar_cliente_dinamica(filtros_aplicados):
         conn.close()
 
 def carregar_dados_cliente_completo(cpf):
-    """Carrega todos os dados vinculados a um CPF (Formato Dict para Edição)"""
     conn = get_db_connection()
     if not conn: return {}
     
     dados = {}
     try:
         with conn.cursor() as cur:
-            # 1. Dados Pessoais (SELECT * pega as novas colunas)
+            # 1. Dados Pessoais
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cols_pessoais = [desc[0] for desc in cur.description]
             row_pessoais = cur.fetchone()
@@ -295,21 +256,31 @@ def carregar_dados_cliente_completo(cpf):
             if row_pessoais:
                 d_pessoal = dict(zip(cols_pessoais, row_pessoais))
                 for k, v in d_pessoal.items():
-                    if v is None and k != 'data_nascimento':
-                        d_pessoal[k] = ""
+                    if v is None and k != 'data_nascimento': d_pessoal[k] = ""
                 dados['pessoal'] = d_pessoal
             else:
                 dados['pessoal'] = {}
 
-            # 2. Telefones
+            # 2. Dados CLT (Se houver)
+            try:
+                cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s LIMIT 1", (cpf,))
+                cols_clt = [desc[0] for desc in cur.description]
+                row_clt = cur.fetchone()
+                if row_clt:
+                    d_clt = dict(zip(cols_clt, row_clt))
+                    for k, v in d_clt.items():
+                        if v is None and 'data' not in k: d_clt[k] = ""
+                    dados['clt'] = d_clt
+            except:
+                dados['clt'] = {}
+
+            # 3. Listas
             cur.execute("SELECT id, telefone FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s ORDER BY id", (cpf,))
             dados['telefones'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
-            # 3. Emails
             cur.execute("SELECT id, email FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE cpf = %s ORDER BY id", (cpf,))
             dados['emails'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
-            # 4. Endereços
             cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s ORDER BY id", (cpf,))
             cols_end = [desc[0] for desc in cur.description]
             dados['enderecos'] = []
@@ -319,14 +290,11 @@ def carregar_dados_cliente_completo(cpf):
                     if v is None: d_end[k] = ""
                 dados['enderecos'].append(d_end)
 
-            # 5. Convênios
             cur.execute("SELECT id, convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY id", (cpf,))
             dados['convenios'] = [{'id': r[0], 'valor': r[1] or ""} for r in cur.fetchall()]
 
-            # 6. Agrupamentos
             cur.execute("SELECT agrupamento FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
-            agrups = cur.fetchall()
-            dados['agrupamentos'] = [r[0] for r in agrups if r[0]]
+            dados['agrupamentos'] = [r[0] for r in cur.fetchall() if r[0]]
             
     except Exception as e:
         st.error(f"Erro ao carregar cliente: {e}")
@@ -335,8 +303,9 @@ def carregar_dados_cliente_completo(cpf):
     
     return dados
 
+# --- FUNÇÕES DE ESCRITA (CRUD) ---
+
 def salvar_novo_cliente(dados_form):
-    """Insere o registro básico na tabela principal"""
     conn = get_db_connection()
     if not conn: return False
     
@@ -372,7 +341,6 @@ def salvar_novo_cliente(dados_form):
         conn.close()
 
 def inserir_dado_extra(tipo, cpf, dados):
-    """Insere dados novos nas tabelas satélites"""
     conn = get_db_connection()
     if not conn: return "erro"
     
@@ -408,7 +376,6 @@ def inserir_dado_extra(tipo, cpf, dados):
         conn.close()
 
 def atualizar_dados_cliente_lote(cpf, dados_editados):
-    """Atualiza dados pessoais e listas"""
     conn = get_db_connection()
     if not conn: return False
     
@@ -459,10 +426,8 @@ def atualizar_dados_cliente_lote(cpf, dados_editados):
         conn.close()
 
 def excluir_cliente_total(cpf):
-    """Exclusão em cascata"""
     conn = get_db_connection()
     if not conn: return False
-    
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s", (cpf,))
@@ -470,6 +435,7 @@ def excluir_cliente_total(cpf):
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_endereco WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf WHERE cpf = %s", (cpf,))
+            cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_ctt WHERE cpf = %s", (cpf,)) # Exclui CLT também
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf,))
             cur.execute("DELETE FROM sistema_consulta.sistema_consulta_cpf WHERE cpf = %s", (cpf,))
             conn.commit()
@@ -480,7 +446,7 @@ def excluir_cliente_total(cpf):
     finally:
         conn.close()
 
-# --- COMPONENTE MODAL DADOS EXTRAS ---
+# --- DIALOGS ---
 @st.dialog("➕ Inserir Dados Extras")
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
@@ -512,36 +478,272 @@ def modal_inserir_dados(cpf, nome_cliente):
             else:
                 st.error("Erro ao inserir.")
 
-# --- NOVO MODAL: AGRUPAMENTOS ---
 @st.dialog("📂 Visualizador de Agrupamentos")
 def modal_agrupamentos():
     st.markdown("### Selecione o tipo para visualizar")
     tipo = st.selectbox("Tipo:", ["Importação", "Agrupamento", "Campanha"])
-    
     if tipo:
         with st.spinner("Carregando dados..."):
             dados, colunas = buscar_relacao_auxiliar(tipo)
-            
         if dados:
-            df = pd.DataFrame(dados, columns=colunas)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(dados, columns=colunas), use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhum registro encontrado para esta categoria.")
+            st.info("Nenhum registro encontrado.")
 
-# --- DIALOG EXCLUSÃO ---
 @st.dialog("⚠️ Confirmar Exclusão")
 def modal_confirmar_exclusao(cpf):
-    st.warning("Tem certeza que deseja excluir TODO o cadastro deste cliente? Essa ação não pode ser desfeita.")
+    st.warning("Tem certeza? Essa ação não pode ser desfeita.")
     if st.button("🚨 SIM, EXCLUIR DEFINITIVAMENTE", type="primary"):
         if excluir_cliente_total(cpf):
-            st.success("Cliente excluído com sucesso!")
+            st.success("Cliente excluído!")
             st.session_state['cliente_ativo_cpf'] = None
             st.session_state['modo_visualizacao'] = None
             st.session_state['resultados_pesquisa'] = []
             time.sleep(1.5)
             st.rerun()
 
-# --- INTERFACE GRÁFICA ---
+# --- TELA DE FICHA DO CLIENTE (COM O LAYOUT SOLICITADO) ---
+
+def tela_ficha_cliente(cpf, modo='visualizar'):
+    if 'modo_edicao' not in st.session_state:
+        st.session_state['modo_edicao'] = False
+
+    # Botão Voltar
+    if st.button("⬅️ Voltar", use_container_width=True):
+        st.session_state['cliente_ativo_cpf'] = None
+        st.session_state['modo_visualizacao'] = None
+        st.session_state['modo_edicao'] = False
+        st.rerun()
+
+    if modo == 'novo':
+        st.markdown("## ✨ Novo Cadastro")
+        with st.form("form_novo"):
+            c1, c2, c3 = st.columns(3)
+            nome = c1.text_input("Nome*")
+            cpf_in = c2.text_input("CPF*")
+            nasc = c3.date_input("Nascimento", value=None, min_value=date(1900,1,1), max_value=date(2050,1,1), format="DD/MM/YYYY")
+            
+            c4, c5, c6 = st.columns(3)
+            rg = c4.text_input("RG")
+            sexo = c5.selectbox("Sexo", ["Masculino", "Feminino", "Outros"])
+            mae = c6.text_input("Nome da Mãe")
+            
+            c7, c8 = st.columns(2)
+            pai = c7.text_input("Nome do Pai")
+            campanhas = c8.text_input("Campanhas (Separar por vírgula)")
+
+            if st.form_submit_button("💾 Salvar"):
+                if salvar_novo_cliente({
+                    "nome": nome, "cpf": cpf_in, "data_nascimento": nasc, 
+                    "identidade": rg, "sexo": sexo, "nome_mae": mae,
+                    "nome_pai": pai, "campanhas": campanhas
+                }):
+                    st.success("Cadastrado!")
+                    st.session_state['cliente_ativo_cpf'] = cpf_in
+                    st.session_state['modo_visualizacao'] = 'visualizar'
+                    time.sleep(1)
+                    st.rerun()
+        return
+
+    # CARREGA DADOS
+    dados = carregar_dados_cliente_completo(cpf)
+    pessoal = dados.get('pessoal', {})
+    clt = dados.get('clt', {})
+
+    # Cabeçalho
+    st.divider()
+    c_head, c_act = st.columns([3, 2])
+    c_head.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
+    c_head.caption(f"CPF: {pessoal.get('cpf', '')}")
+    
+    with c_act:
+        c_ins, c_edit, c_del = st.columns(3)
+        with c_ins:
+            if st.button("➕ Extra", help="Inserir telefone, email, etc", use_container_width=True):
+                modal_inserir_dados(cpf, pessoal.get('nome'))
+        with c_edit:
+            if st.session_state['modo_edicao']:
+                 if st.button("👁️ Ver", help="Sair do modo edição", use_container_width=True):
+                      st.session_state['modo_edicao'] = False
+                      st.rerun()
+            else:
+                if st.button("✏️ Editar", type="primary", use_container_width=True):
+                    st.session_state['modo_edicao'] = True
+                    st.rerun()
+        with c_del:
+            if st.button("🗑️ Excluir", type="primary", use_container_width=True):
+                modal_confirmar_exclusao(cpf)
+
+    st.divider()
+
+    # --- MODO EDIÇÃO ---
+    if st.session_state['modo_edicao']:
+        with st.form("form_edicao_cliente"):
+            st.info("✏️ Modo Edição Ativo. Limpe um campo de lista para excluí-lo.")
+            
+            st.markdown("### 📄 Dados Pessoais")
+            ec1, ec2, ec3 = st.columns(3)
+            e_nome = ec1.text_input("Nome", value=pessoal.get('nome',''))
+            e_rg = ec2.text_input("RG", value=pessoal.get('identidade',''))
+            e_nasc = ec3.date_input("Data Nasc.", value=pessoal.get('data_nascimento'), format="DD/MM/YYYY")
+            
+            ec4, ec5, ec6 = st.columns(3)
+            e_cnh = ec4.text_input("CNH", value=pessoal.get('cnh',''))
+            e_titulo = ec5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
+            e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
+            e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
+            
+            ec7, ec8 = st.columns(2)
+            e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
+            e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
+
+            st.divider()
+            
+            col_lista1, col_lista2 = st.columns(2)
+            edicoes_telefones = []
+            edicoes_emails = []
+            edicoes_convenios = []
+
+            with col_lista1:
+                st.markdown("### 📞 Telefones")
+                if dados.get('telefones'):
+                    for i, tel in enumerate(dados['telefones']):
+                        novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
+                        edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
+                else:
+                    st.caption("Sem telefones.")
+
+                st.markdown("### 💼 Convênios")
+                if dados.get('convenios'):
+                    for i, conv in enumerate(dados['convenios']):
+                        novo_val = st.text_input(f"Convênio {i+1}", value=conv['valor'], key=f"conv_{conv['id']}")
+                        edicoes_convenios.append({'id': conv['id'], 'valor': novo_val})
+
+            with col_lista2:
+                st.markdown("### 📧 E-mails")
+                if dados.get('emails'):
+                    for i, mail in enumerate(dados['emails']):
+                        novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
+                        edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
+            
+            st.divider()
+            
+            fb1, fb2 = st.columns([1, 1])
+            if fb1.form_submit_button("💾 CONFIRMAR ALTERAÇÕES", type="primary"):
+                pacote_dados = {
+                    "pessoal": {
+                        "nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc,
+                        "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae,
+                        "nome_pai": e_pai, "campanhas": e_campanhas
+                    },
+                    "telefones": edicoes_telefones,
+                    "emails": edicoes_emails,
+                    "convenios": edicoes_convenios
+                }
+                if atualizar_dados_cliente_lote(cpf, pacote_dados):
+                    st.success("Dados atualizados com sucesso!")
+                    st.session_state['modo_edicao'] = False
+                    time.sleep(1)
+                    st.rerun()
+        return
+
+    # =========================================================================
+    # LAYOUT PERSONALIZADO: 60% DADOS PESSOAIS | 40% CONTATOS E ENDEREÇO
+    # =========================================================================
+    
+    col_esquerda, col_direita = st.columns([6, 4], gap="medium")
+
+    # --- 1ª COLUNA (ESQUERDA - 60%): DADOS CADASTRAIS ---
+    with col_esquerda:
+        st.subheader("📄 Dados Cadastrais")
+        
+        # Linha 1
+        c1, c2 = st.columns([3, 2])
+        c1.text_input("Nome Completo", value=pessoal.get('nome',''), disabled=True)
+        c2.text_input("CPF", value=pessoal.get('cpf',''), disabled=True)
+        
+        # Linha 2
+        c3, c4, c5 = st.columns(3)
+        c3.text_input("RG", value=pessoal.get('identidade',''), disabled=True)
+        
+        dt_nasc = pessoal.get('data_nascimento')
+        if dt_nasc: dt_nasc = dt_nasc.strftime('%d/%m/%Y')
+        c4.text_input("Data Nasc.", value=str(dt_nasc), disabled=True)
+        c5.text_input("Sexo", value=pessoal.get('sexo',''), disabled=True)
+        
+        # Linha 3
+        c6, c7 = st.columns(2)
+        c6.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
+        c7.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
+        
+        # Linha 4
+        c8, c9 = st.columns(2)
+        c8.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
+        c9.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
+        
+        # Extras
+        st.text_input("Campanhas", value=pessoal.get('campanhas',''), disabled=True)
+        
+        # Se tiver dados CLT, mostra aqui também
+        if clt:
+            st.markdown("---")
+            st.markdown("##### 💼 Dados CLT")
+            cl1, cl2 = st.columns(2)
+            cl1.text_input("Matrícula", value=clt.get('matricula',''), disabled=True)
+            cl2.text_input("CNPJ", value=f"{clt.get('cnpj_nome','')} ({clt.get('cnpj_numero','')})", disabled=True)
+            
+            cl3, cl4 = st.columns(2)
+            cl3.text_input("CBO", value=f"{clt.get('cbo_codigo','')} - {clt.get('cbo_nome','')}", disabled=True)
+            dt_adm = clt.get('data_admissao')
+            if dt_adm: dt_adm = dt_adm.strftime('%d/%m/%Y')
+            cl4.text_input("Admissão", value=str(dt_adm), disabled=True)
+
+    # --- 2ª COLUNA (DIREITA - 40%): CONTATOS E ENDEREÇO ---
+    with col_direita:
+        
+        # PARTE 1: TELEFONES (2 Colunas internas)
+        st.subheader("📞 Telefones")
+        if dados.get('telefones'):
+            t_col1, t_col2 = st.columns(2)
+            for i, tel in enumerate(dados.get('telefones', [])):
+                # Alterna entre coluna 1 e 2
+                col_alvo = t_col1 if i % 2 == 0 else t_col2
+                col_alvo.text_input(f"Tel {i+1}", value=tel['valor'], key=f"t_{i}", disabled=True, label_visibility="collapsed")
+        else:
+            st.info("Nenhum telefone.")
+
+        st.divider()
+
+        # PARTE 2: E-MAILS
+        st.subheader("📧 E-mails")
+        if dados.get('emails'):
+            for i, mail in enumerate(dados.get('emails', [])):
+                st.text_input(f"Email {i+1}", value=mail['valor'], key=f"e_{i}", disabled=True, label_visibility="collapsed")
+        else:
+            st.info("Nenhum e-mail.")
+
+        st.divider()
+
+        # PARTE 3: ENDEREÇOS
+        st.subheader("🏠 Endereço")
+        if dados.get('enderecos'):
+            for i, end in enumerate(dados.get('enderecos', [])):
+                with st.container(border=True):
+                    st.caption(f"Endereço {i+1}")
+                    st.text(f"{end.get('rua','')}, {end.get('bairro','')}")
+                    st.text(f"{end.get('cidade','')} - {end.get('uf','')}")
+                    st.text(f"CEP: {end.get('cep','')}")
+        else:
+            st.info("Nenhum endereço.")
+            
+        st.divider()
+        st.subheader("📋 Convênios")
+        if dados.get('convenios'):
+             st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
+        else:
+             st.caption("Sem convênios.")
+
+# --- TELA DE PESQUISA (Principal) ---
 
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
@@ -549,26 +751,19 @@ def tela_pesquisa():
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     
     with tab1:
-        c_input, c_btn_search, c_btn_new, c_space = st.columns([3, 1.5, 2, 3.5])
-        termo = c_input.text_input("Digite CPF, Nome ou Telefone", placeholder="Ex: 000.000.000-00 ou João", label_visibility="collapsed")
-        
-        if c_btn_search.button("🔍 Pesquisar", type="primary", use_container_width=True):
+        c_input, c_btn = st.columns([4, 1])
+        termo = c_input.text_input("Digite CPF, Nome ou Telefone", label_visibility="collapsed")
+        if c_btn.button("🔍 Buscar", type="primary", use_container_width=True):
             if len(termo) < 3:
-                st.warning("Digite min. 3 caracteres.")
+                st.warning("Mínimo 3 caracteres.")
             else:
-                resultados = buscar_cliente_rapida(termo)
-                st.session_state['resultados_pesquisa'] = resultados
-                if not resultados: st.warning("Nenhum cliente localizado.")
-        
-        if c_btn_new.button("➕ Novo Cadastro", type="primary", use_container_width=True):
-            st.session_state['cliente_ativo_cpf'] = None
-            st.session_state['modo_visualizacao'] = 'novo'
-            st.rerun()
+                res = buscar_cliente_rapida(termo)
+                st.session_state['resultados_pesquisa'] = res
+                if not res: st.warning("Nada encontrado.")
 
     with tab2:
         st.markdown("Configure os filtros abaixo para uma busca detalhada.")
         
-        # --- ALTERADO: Botões de Ação (Limpar e Agrupamentos) ---
         c_clear, c_group, c_vazio = st.columns([1.5, 1.5, 4])
         
         if c_clear.button("🧹 Limpar Filtros", type="secondary", use_container_width=True):
@@ -652,234 +847,36 @@ def tela_pesquisa():
                 else:
                     st.warning("Preencha pelo menos um campo para filtrar.")
 
-    st.divider()
-    with st.container():
-        if 'resultados_pesquisa' in st.session_state and st.session_state['resultados_pesquisa']:
-            st.markdown(f"### 📋 Resultados Encontrados: {len(st.session_state['resultados_pesquisa'])}")
-            
-            cols_head = st.columns([1, 4, 3, 2])
-            cols_head[0].write("**ID**")
-            cols_head[1].write("**Nome**")
-            cols_head[2].write("**CPF**")
-            cols_head[3].write("**Ação**")
-            
-            for row in st.session_state['resultados_pesquisa']:
-                c = st.columns([1, 4, 3, 2])
-                c[0].write(str(row[0]))
-                c[1].write(row[1])
-                c[2].write(row[2])
-                if c[3].button("🔎 Abrir", key=f"btn_res_{row[0]}", use_container_width=True):
-                    st.session_state['cliente_ativo_cpf'] = row[2]
-                    st.session_state['modo_visualizacao'] = 'visualizar'
-                    st.session_state['modo_edicao'] = False
-                    st.rerun()
+    # RESULTADOS
+    if st.session_state.get('resultados_pesquisa'):
+        st.divider()
+        st.markdown(f"**Resultados: {len(st.session_state['resultados_pesquisa'])}**")
+        
+        cols = st.columns([1, 4, 3, 2])
+        cols[0].write("**ID**")
+        cols[1].write("**Nome**")
+        cols[2].write("**CPF**")
+        cols[3].write("**Ação**")
+        
+        for row in st.session_state['resultados_pesquisa']:
+            c = st.columns([1, 4, 3, 2])
+            c[0].write(str(row[0]))
+            c[1].write(row[1])
+            c[2].write(row[2])
+            if c[3].button("📂 Abrir", key=f"abrir_{row[0]}"):
+                st.session_state['cliente_ativo_cpf'] = row[2]
+                st.session_state['modo_visualizacao'] = 'visualizar'
+                st.rerun()
 
-def tela_ficha_cliente(cpf, modo='visualizar'):
-    if 'modo_edicao' not in st.session_state:
-        st.session_state['modo_edicao'] = False
+# --- APP PRINCIPAL ---
 
-    # --- LAYOUT DO TOPO (BOTÕES) ---
-    c_back, c_space, c_actions = st.columns([1, 2, 4])
-    
-    with c_back:
-        if st.button("⬅️ Voltar", use_container_width=True):
-            st.session_state['cliente_ativo_cpf'] = None
-            st.session_state['modo_visualizacao'] = None
-            st.session_state['modo_edicao'] = False
-            st.rerun()
-
-    # --- MODO NOVO CADASTRO ---
-    if modo == 'novo':
-        st.markdown("## ✨ Novo Cadastro")
-        with st.form("form_novo"):
-            c1, c2, c3 = st.columns(3)
-            nome = c1.text_input("Nome*")
-            cpf_in = c2.text_input("CPF*")
-            nasc = c3.date_input("Nascimento", value=None, min_value=date(1900,1,1), max_value=date(2050,1,1), format="DD/MM/YYYY")
-            
-            c4, c5, c6 = st.columns(3)
-            rg = c4.text_input("RG")
-            sexo = c5.selectbox("Sexo", ["Masculino", "Feminino", "Outros"])
-            mae = c6.text_input("Nome da Mãe")
-            
-            c7, c8 = st.columns(2)
-            pai = c7.text_input("Nome do Pai")
-            campanhas = c8.text_input("Campanhas (Separar por vírgula)")
-
-            if st.form_submit_button("💾 Salvar"):
-                if salvar_novo_cliente({
-                    "nome": nome, "cpf": cpf_in, "data_nascimento": nasc, 
-                    "identidade": rg, "sexo": sexo, "nome_mae": mae,
-                    "nome_pai": pai, "campanhas": campanhas
-                }):
-                    st.success("Cadastrado!")
-                    st.session_state['cliente_ativo_cpf'] = cpf_in
-                    st.session_state['modo_visualizacao'] = 'visualizar'
-                    time.sleep(1)
-                    st.rerun()
-        return
-
-    # --- CARREGA DADOS ---
-    dados = carregar_dados_cliente_completo(cpf)
-    pessoal = dados.get('pessoal', {})
-    
-    # --- CABEÇALHO DO CLIENTE + AÇÕES ---
-    st.divider()
-    c_head_info, c_head_act = st.columns([3, 2])
-    
-    with c_head_info:
-        st.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
-        st.caption(f"CPF: {pessoal.get('cpf', '')}")
-
-    with c_head_act:
-        if modo != 'novo':
-            c_ins, c_edit, c_del = st.columns(3)
-            with c_ins:
-                if st.button("➕ Extra", help="Inserir telefone, email, etc", use_container_width=True):
-                    modal_inserir_dados(cpf, pessoal.get('nome'))
-            with c_edit:
-                if st.session_state['modo_edicao']:
-                     if st.button("👁️ Ver", help="Sair do modo edição", use_container_width=True):
-                          st.session_state['modo_edicao'] = False
-                          st.rerun()
-                else:
-                    if st.button("✏️ Editar", type="primary", use_container_width=True):
-                        st.session_state['modo_edicao'] = True
-                        st.rerun()
-            with c_del:
-                if st.button("🗑️ Excluir", type="primary", use_container_width=True):
-                    modal_confirmar_exclusao(cpf)
-
-    # --- CONTAINER ISOLADO ---
-    chave_container = f"container_ficha_{'edicao' if st.session_state['modo_edicao'] else 'visualizacao'}"
-    
-    with st.container(border=False):
-        with st.container(key=chave_container):
-            
-            # --- MODO EDIÇÃO ---
-            if st.session_state['modo_edicao']:
-                with st.form("form_edicao_cliente"):
-                    st.info("✏️ Modo Edição Ativo. Limpe um campo de lista para excluí-lo.")
-                    
-                    st.markdown("### 📄 Dados Pessoais")
-                    ec1, ec2, ec3 = st.columns(3)
-                    e_nome = ec1.text_input("Nome", value=pessoal.get('nome',''))
-                    e_rg = ec2.text_input("RG", value=pessoal.get('identidade',''))
-                    e_nasc = ec3.date_input("Data Nasc.", value=pessoal.get('data_nascimento'), format="DD/MM/YYYY")
-                    
-                    ec4, ec5, ec6 = st.columns(3)
-                    e_cnh = ec4.text_input("CNH", value=pessoal.get('cnh',''))
-                    e_titulo = ec5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
-                    e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
-                    e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
-                    
-                    ec7, ec8 = st.columns(2)
-                    e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
-                    e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
-
-                    st.divider()
-                    
-                    col_lista1, col_lista2 = st.columns(2)
-                    edicoes_telefones = []
-                    edicoes_emails = []
-                    edicoes_convenios = []
-
-                    with col_lista1:
-                        st.markdown("### 📞 Telefones")
-                        if dados.get('telefones'):
-                            for i, tel in enumerate(dados['telefones']):
-                                novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
-                                edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
-                        else:
-                            st.caption("Sem telefones.")
-
-                        st.markdown("### 💼 Convênios")
-                        if dados.get('convenios'):
-                            for i, conv in enumerate(dados['convenios']):
-                                novo_val = st.text_input(f"Convênio {i+1}", value=conv['valor'], key=f"conv_{conv['id']}")
-                                edicoes_convenios.append({'id': conv['id'], 'valor': novo_val})
-
-                    with col_lista2:
-                        st.markdown("### 📧 E-mails")
-                        if dados.get('emails'):
-                            for i, mail in enumerate(dados['emails']):
-                                novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
-                                edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
-                    
-                    st.divider()
-                    
-                    fb1, fb2 = st.columns([1, 1])
-                    if fb1.form_submit_button("💾 CONFIRMAR ALTERAÇÕES", type="primary"):
-                        pacote_dados = {
-                            "pessoal": {
-                                "nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc,
-                                "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae,
-                                "nome_pai": e_pai, "campanhas": e_campanhas
-                            },
-                            "telefones": edicoes_telefones,
-                            "emails": edicoes_emails,
-                            "convenios": edicoes_convenios
-                        }
-                        if atualizar_dados_cliente_lote(cpf, pacote_dados):
-                            st.success("Dados atualizados com sucesso!")
-                            st.session_state['modo_edicao'] = False
-                            time.sleep(1)
-                            st.rerun()
-
-            # --- MODO VISUALIZAÇÃO ---
-            else:
-                st.markdown("### 📄 Dados Pessoais")
-                col1, col2, col3 = st.columns(3)
-                col1.text_input("Nome", value=pessoal.get('nome',''), disabled=True)
-                col2.text_input("RG", value=pessoal.get('identidade',''), disabled=True)
-                
-                data_vis = pessoal.get('data_nascimento')
-                if data_vis: data_vis = data_vis.strftime('%d/%m/%Y')
-                col3.text_input("Data Nasc.", value=str(data_vis), disabled=True)
-                
-                col4, col5 = st.columns(2)
-                col4.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
-                col5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
-                
-                col6, col7 = st.columns(2)
-                col6.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
-                col7.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
-                
-                st.text_input("Campanhas", value=pessoal.get('campanhas',''), disabled=True)
-
-                # --- NOVOS CAMPOS VISUAIS: ID IMPORTAÇÃO E AGRUPAMENTO ---
-                ci1, ci2 = st.columns(2)
-                ci1.text_input("🆔 ID Importação", value=pessoal.get('id_importacao', '---'), disabled=True)
-                
-                agrupamentos_str = ", ".join(dados.get('agrupamentos', [])) if dados.get('agrupamentos') else "---"
-                ci2.text_input("📑 Agrupamento", value=agrupamentos_str, disabled=True)
-
-                st.divider()
-                c_contato, c_endereco = st.columns(2)
-                with c_contato:
-                    st.markdown("### 📞 Contatos")
-                    for tel in dados.get('telefones', []):
-                        st.code(f"📱 {tel['valor']}")
-                    for email in dados.get('emails', []):
-                        st.text(f"✉️ {email['valor']}")
-
-                with c_endereco:
-                    st.markdown("### 🏠 Endereços")
-                    for end in dados.get('enderecos', []):
-                        st.info(f"{end.get('rua', '')}, {end.get('bairro','')} - {end.get('cidade','')}/{end.get('uf','')} - CEP: {end.get('cep','')}")
-
-                st.divider()
-                st.markdown("### 💼 Convênios")
-                st.write(", ".join([c['valor'] for c in dados.get('convenios', [])]))
-                
 def app_cadastro():
     if 'modo_visualizacao' not in st.session_state:
         st.session_state['modo_visualizacao'] = None
     
     if st.session_state['modo_visualizacao'] == 'visualizar':
-        cpf_ativo = st.session_state.get('cliente_ativo_cpf')
-        if cpf_ativo:
-            tela_ficha_cliente(cpf_ativo, modo='visualizar')
+        if st.session_state.get('cliente_ativo_cpf'):
+            tela_ficha_cliente(st.session_state['cliente_ativo_cpf'])
         else:
             st.session_state['modo_visualizacao'] = None
             st.rerun()
