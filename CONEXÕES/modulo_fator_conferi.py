@@ -643,18 +643,17 @@ def criar_tabela_mapa_dados():
             return False
         finally:
             conn.close()
-    return False
 
 def listar_tabelas_disponiveis():
     conn = get_conn()
     if not conn: return []
     try:
         with conn.cursor() as cur:
-            # Lista tabelas de schemas relevantes para o Fator
+            # Lista tabelas de schemas relevantes para o Fator + Sistema Consulta
             cur.execute("""
                 SELECT table_schema || '.' || table_name 
                 FROM information_schema.tables 
-                WHERE table_schema IN ('banco_pf', 'conexoes') 
+                WHERE table_schema IN ('banco_pf', 'conexoes', 'sistema_consulta') 
                 ORDER BY table_schema, table_name
             """)
             return [r[0] for r in cur.fetchall()]
@@ -842,7 +841,7 @@ def app_fator_conferi():
             st.session_state['fator_mapa_tabela'] = ""
             st.session_state['fator_mapa_colunas'] = [] 
 
-        # Carrega tabelas (Schemas banco_pf e conexoes)
+        # Carrega tabelas (Schemas banco_pf, conexoes e sistema_consulta)
         lista_tabelas = listar_tabelas_disponiveis()
 
         with st.form("form_mapa_fator"):
