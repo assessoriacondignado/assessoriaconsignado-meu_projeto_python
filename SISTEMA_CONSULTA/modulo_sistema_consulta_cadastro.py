@@ -6,13 +6,13 @@ from datetime import datetime, date
 import time
 import contextlib
 
-# Tenta importar a conexão
+# Tenta importar a conexão (arquivo conexao.py com as senhas)
 try:
     import conexao
 except ImportError:
     conexao = None
 
-# IMPORTA SEU NOVO MÓDULO DE VALIDAÇÃO
+# IMPORTA SEU NOVO MÓDULO DE VALIDAÇÃO (modulo_validadores.py)
 import modulo_validadores as v
 
 # ==============================================================================
@@ -105,13 +105,11 @@ OPERADORES_SQL = {
     }
 }
 
-# Funções auxiliares antigas foram removidas pois agora usamos v.Validador...
-
 # ==============================================================================
 # 3. FUNÇÕES DE BUSCA (LEITURA)
 # ==============================================================================
 
-@st.cache_data(ttl=300) # Cache curto de 5 min
+@st.cache_data(ttl=300) # Cache de 5 min
 def buscar_relacao_auxiliar(tipo):
     with get_db_connection() as conn:
         if not conn: return [], []
@@ -207,7 +205,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
             operador_sql = filtro['op']
             tipo_dado = filtro['tipo']
             
-            # Lógica complexa original mantida
             if tipo_dado == 'texto_vinculado':
                 tabela_satelite = filtro['table']
                 sub_where = f"{coluna} {operador_sql} %s"
@@ -241,7 +238,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
                         where_clauses.append(f"({coluna} IS NULL OR {coluna} = '')")
                 elif operador_sql == 'BETWEEN' and tipo_dado == 'data':
                     where_clauses.append(f"{coluna} BETWEEN %s AND %s")
-                    # Converter datas para SQL format se necessário, mas o validador já deve ter entregue pronto
                     params.append(filtro['val'][0])
                     params.append(filtro['val'][1])
                 else:
@@ -280,14 +276,14 @@ def carregar_dados_cliente_completo(cpf):
                 
                 if row_pessoais:
                     d_pessoal = dict(zip(cols_pessoais, row_pessoais))
-                    # Limpa nulls para string vazia para evitar erro no st.text_input
+                    # Limpa nulls para string vazia
                     for k, v in d_pessoal.items():
                         if v is None and k != 'data_nascimento': d_pessoal[k] = ""
                     dados['pessoal'] = d_pessoal
                 else:
                     dados['pessoal'] = {}
 
-                # 2. Dados CLT (Mantido conforme original)
+                # 2. Dados CLT
                 try:
                     cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_clt WHERE cpf = %s LIMIT 1", (cpf,))
                     cols_clt = [desc[0] for desc in cur.description]
@@ -1260,23 +1256,37 @@ def tela_pesquisa():
                 st.session_state['modo_visualizacao'] = 'visualizar'
                 st.rerun()
 
+# ==============================================================================
+# 6. APP PRINCIPAL (Navegação e Entrada)
+# ==============================================================================
+
 def app_cadastro():
+    # Garante que a variável de estado existe
     if 'modo_visualizacao' not in st.session_state:
         st.session_state['modo_visualizacao'] = None
     
+    # Lógica de Roteamento (Router)
     if st.session_state['modo_visualizacao'] == 'visualizar':
+        # Só abre a ficha se tiver um CPF selecionado
         if st.session_state.get('cliente_ativo_cpf'):
             tela_ficha_cliente(st.session_state['cliente_ativo_cpf'])
         else:
+            # Se não tiver CPF, volta para o início
             st.session_state['modo_visualizacao'] = None
             st.rerun()
+            
     elif st.session_state['modo_visualizacao'] == 'novo':
+        # Abre tela de cadastro em branco
         tela_ficha_cliente(None, modo='novo')
+        
     else:
+        # Padrão: Tela de Pesquisa
         tela_pesquisa()
 
+# Bloco de Execução Principal
 if __name__ == "__main__":
+    # OTIMIZAÇÃO: Só inicia o App se conseguir conectar no banco (Testa o Pool)
     if get_pool():
         app_cadastro()
     else:
-        st.error("Falha ao conectar no banco de dados. Verifique conexao.py")
+        st.error("🚫 Falha Crítica: Não foi possível conectar ao Banco de Dados. Verifique o arquivo 'conexao.py'.")
