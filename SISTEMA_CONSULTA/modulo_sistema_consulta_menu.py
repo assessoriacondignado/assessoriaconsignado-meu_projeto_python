@@ -4,7 +4,6 @@ import sys
 import importlib
 
 # --- CONFIGURAÇÃO DE CAMINHOS PARA SUB-MÓDULOS ---
-# Garante que a pasta atual esteja no path para importar os sub-módulos desta pasta
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
@@ -16,30 +15,36 @@ def importar_modulo_interno(nome_modulo):
             return importlib.reload(sys.modules[nome_modulo])
         else:
             return __import__(nome_modulo)
-    except ImportError:
+            
+    except ImportError as e:
+        # CORREÇÃO: Mostra o motivo real da falha de importação
+        st.error(f"🔴 Erro ao importar '{nome_modulo}': {e}")
+        # Dica pro usuário
+        if "modulo_validadores" in str(e):
+            st.warning("DICA: Verifique se o arquivo 'modulo_validadores.py' está na mesma pasta.")
+        if "conexao" in str(e):
+            st.warning("DICA: Verifique se o arquivo 'conexao.py' está na mesma pasta.")
         return None
+        
     except Exception as e:
-        st.error(f"Erro ao carregar {nome_modulo}: {e}")
+        st.error(f"Erro crítico ao carregar {nome_modulo}: {e}")
         return None
 
 # Tenta importar os módulos funcionais
 modulo_cadastro = importar_modulo_interno("modulo_sistema_consulta_cadastro")
 modulo_planilhas = importar_modulo_interno("modulo_sistema_consulta_planilhas")
 modulo_crm = importar_modulo_interno("modulo_sistema_consulta_crm")
-modulo_importacao = importar_modulo_interno("modulo_sistema_consulta_importacao") # Novo Módulo
+modulo_importacao = importar_modulo_interno("modulo_sistema_consulta_importacao")
 
 def app_sistema_consulta():
     st.markdown("## 👥 CRM CONSULTA")
 
-    # --- MENU SUPERIOR (Conforme DOC ) ---
-    # Opções do menu baseadas no e layout 
+    # --- MENU SUPERIOR ---
     menu_opcoes = ["Cadastro / Pesquisa", "Planilhas (Tabelas)", "CRM / Gestão", "Importação"]
     
-    # Armazena a escolha no session_state para persistência durante a navegação
     if 'menu_consulta_selecionado' not in st.session_state:
         st.session_state['menu_consulta_selecionado'] = menu_opcoes[0]
 
-    # Renderiza o Menu Superior (estilo abas ou radio horizontal)
     escolha = st.radio(
         "", 
         menu_opcoes, 
@@ -54,10 +59,12 @@ def app_sistema_consulta():
     
     if escolha == "Cadastro / Pesquisa":
         if modulo_cadastro:
-            # O módulo de cadastro terá suas próprias sub-abas (Novo, Pesquisa Simples, Completa)
-            modulo_cadastro.app_cadastro()
+            try:
+                modulo_cadastro.app_cadastro()
+            except Exception as e:
+                st.error(f"Erro ao executar o módulo Cadastro: {e}")
         else:
-            st.warning("⚠️ Módulo 'Cadastro' (modulo_sistema_consulta_cadastro.py) não encontrado ou em construção.")
+            st.warning("⚠️ Módulo 'Cadastro' não carregado. Verifique os erros acima.")
 
     elif escolha == "Planilhas (Tabelas)":
         if modulo_planilhas:
@@ -77,6 +84,6 @@ def app_sistema_consulta():
         else:
             st.warning("⚠️ Módulo 'Importação' (modulo_sistema_consulta_importacao.py) não encontrado.")
 
-# Bloco para teste individual do módulo
+# Bloco para teste individual
 if __name__ == "__main__":
     app_sistema_consulta()
