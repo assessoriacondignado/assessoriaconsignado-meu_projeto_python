@@ -3,7 +3,6 @@ import os
 import sys
 import psycopg2
 import bcrypt
-# import pandas as pd 
 from datetime import datetime
 import time
 import importlib
@@ -11,8 +10,13 @@ import importlib
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", page_icon="📈")
 
-# --- 2. CONFIGURAÇÃO DE CAMINHOS ---
+# --- 2. CONFIGURAÇÃO DE CAMINHOS (CORREÇÃO DO ERRO) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# [CORREÇÃO CRÍTICA] Garante que a pasta RAIZ esteja no caminho do Python
+# Isso permite que sub-módulos encontrem 'modulo_validadores.py' e 'conexao.py'
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
 
 # Pastas dos módulos
 pastas_modulos = [
@@ -26,11 +30,11 @@ pastas_modulos = [
     "COMERCIAL/TAREFAS",
     "COMERCIAL/RENOVACAO_E_FEEDBACK",
     "CONEXÕES",
-    "SISTEMA_CONSULTA",  # <--- NOVA PASTA ADICIONADA
+    "SISTEMA_CONSULTA", 
     "" 
 ]
 
-# Adiciona ao path apenas se não existir
+# Adiciona subpastas ao path
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if os.path.exists(caminho) and caminho not in sys.path:
@@ -39,6 +43,15 @@ for pasta in pastas_modulos:
 # --- 3. IMPORTAÇÕES DE MÓDULOS ---
 try:
     import conexao
+    
+    # [TESTE DE ARQUIVO] Verifica se o validador existe na raiz
+    try:
+        import modulo_validadores
+    except ImportError:
+        st.error("❌ ERRO FATAL: O arquivo 'modulo_validadores.py' não foi encontrado na pasta raiz!")
+        st.info("Por favor, crie o arquivo 'modulo_validadores.py' na mesma pasta deste arquivo principal.")
+        st.stop()
+
     import modulo_wapi
     import modulo_whats_controlador
     
@@ -98,7 +111,6 @@ try:
 
 except Exception as e:
     st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
-    st.error(f"Erro Crítico ao carregar módulos: {e}")
     
 # --- 4. FUNÇÕES DE ESTADO ---
 def iniciar_estado():
@@ -132,7 +144,7 @@ def gerenciar_sessao():
 # --- 5. BANCO DE DADOS ---
 def get_conn():
     try:
-        # Usa as variáveis carregadas no conexao.py (que pegam do secrets.toml automaticamente)
+        # Usa as variáveis carregadas no conexao.py
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
@@ -233,7 +245,7 @@ def renderizar_menu_lateral():
         botoes = {
             "🏠 Início": "Início",
             "👥 Clientes": "Clientes",
-            "🔍 CRM Consulta": "CRM_Consulta",  # <--- NOVO BOTÃO ADICIONADO
+            "🔍 CRM Consulta": "CRM_Consulta", 
             "💼 Comercial": "Comercial",
             "🏦 Banco de Dados": "BancoDados",
             "💬 WhatsApp": "WhatsApp",
