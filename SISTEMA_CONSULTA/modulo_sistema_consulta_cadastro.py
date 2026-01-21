@@ -5,15 +5,36 @@ from psycopg2 import pool, sql
 from datetime import datetime, date
 import time
 import contextlib
+import sys
+import os
 
-# Tenta importar a conexão (arquivo conexao.py com as senhas)
+# ==============================================================================
+# 0. CONFIGURAÇÃO DE CAMINHOS (PATH FIX - CORREÇÃO DO ERRO DE IMPORTAÇÃO)
+# ==============================================================================
+# Pega o diretório onde este arquivo está (pasta SISTEMA_CONSULTA)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Pega o diretório pai (pasta raiz MEU_SISTEMA) onde estão conexao.py e validadores
+parent_dir = os.path.dirname(current_dir)
+
+# Adiciona a pasta raiz ao sistema de busca do Python
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
+# ==============================================================================
+# IMPORTAÇÕES DOS MÓDULOS DA RAIZ
+# ==============================================================================
+
 try:
     import conexao
 except ImportError:
     conexao = None
 
-# IMPORTA SEU NOVO MÓDULO DE VALIDAÇÃO (modulo_validadores.py)
-import modulo_validadores as v
+try:
+    import modulo_validadores as v
+except ImportError as e:
+    st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Verifique se ele está na pasta raiz ({parent_dir}). Detalhe: {e}")
+    st.stop()
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO DE PERFORMANCE (CONNECTION POOL)
