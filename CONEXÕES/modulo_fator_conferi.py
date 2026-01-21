@@ -846,23 +846,35 @@ def app_fator_conferi():
         tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
         
         if tabela_sel != "(Selecione)":
-            # 2. Seleção de Colunas
             colunas_db = listar_colunas_geral(tabela_sel)
-            colunas_sel = st.multiselect("2. Escolha as colunas para mapear:", colunas_db)
+            
+            # --- LÓGICA DE PRÉ-LOAD ---
+            # Busca mapeamento existente para pré-preencher o Multiselect
+            mapa_existente = listar_mapeamento_tabela(tabela_sel)
+            # Filtra apenas colunas que ainda existem na tabela
+            colunas_pre_selecionadas = [c for c in mapa_existente.keys() if c in colunas_db]
+            
+            # 2. Seleção de Colunas (com default carregado)
+            colunas_sel = st.multiselect(
+                "2. Escolha as colunas para mapear:", 
+                options=colunas_db, 
+                default=colunas_pre_selecionadas
+            )
             
             if colunas_sel:
                 st.divider()
                 st.markdown("#### 3. Editar Mapeamento")
                 st.caption("Escreva o nome exato do campo da API na coluna da direita (ex: `nome`, `cpf`, `nascto`).")
                 
-                # Busca mapeamento existente para pré-preencher
-                mapa_existente = listar_mapeamento_tabela(tabela_sel)
-                
-                # Monta DataFrame para edição
+                # Monta DataFrame para edição com coluna visual de Tabela
                 dados_grade = []
                 for col in colunas_sel:
                     val_atual = mapa_existente.get(col, "")
-                    dados_grade.append({"Coluna SQL": col, "Chave JSON API": val_atual})
+                    dados_grade.append({
+                        "Tabela Destino": tabela_sel, # Coluna visual solicitada
+                        "Coluna SQL": col, 
+                        "Chave JSON API": val_atual
+                    })
                 
                 df_grade = pd.DataFrame(dados_grade)
                 
@@ -870,7 +882,8 @@ def app_fator_conferi():
                 df_editado = st.data_editor(
                     df_grade,
                     column_config={
-                        "Coluna SQL": st.column_config.TextColumn(disabled=True),
+                        "Tabela Destino": st.column_config.TextColumn(disabled=True), # Bloqueado
+                        "Coluna SQL": st.column_config.TextColumn(disabled=True),     # Bloqueado
                         "Chave JSON API": st.column_config.TextColumn(
                             help="Nome do campo que vem do Fator Conexo (ex: nome, cpf, rg)"
                         )
