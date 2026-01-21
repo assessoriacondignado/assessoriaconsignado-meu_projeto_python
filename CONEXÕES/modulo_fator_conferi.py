@@ -702,6 +702,18 @@ def listar_mapeamento_tabela(nome_tabela):
     except: return {}
     finally: conn.close()
 
+def listar_todos_mapeamentos():
+    """Retorna um DataFrame com todos os mapeamentos cadastrados"""
+    conn = get_conn()
+    if not conn: return pd.DataFrame()
+    try:
+        return pd.read_sql("SELECT * FROM conexoes.fatorconferi_conexao_tabelas ORDER BY id DESC", conn)
+    except Exception as e:
+        st.error(f"Erro ao listar todos mapeamentos: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
 def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
     """
     Salva os dados editados na grade.
@@ -899,3 +911,9 @@ def app_fator_conferi():
                         st.success(f"Mapeamento salvo com sucesso para a tabela **{tabela_sel}**!")
                         time.sleep(1.5)
                         st.rerun()
+        
+        # --- TABELA GERAL NO FINAL DA ABA ---
+        st.divider()
+        st.markdown("### 📋 Tabela Geral de Conexões (conexoes.fatorconferi_conexao_tabelas)")
+        df_geral = listar_todos_mapeamentos()
+        st.dataframe(df_geral, use_container_width=True)
