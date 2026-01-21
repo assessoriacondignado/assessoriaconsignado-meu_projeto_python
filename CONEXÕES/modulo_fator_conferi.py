@@ -620,26 +620,27 @@ def listar_clientes_carteira():
     return pd.DataFrame()
 
 # =============================================================================
-# 6. FUNÇÕES PARA MAPA DE DADOS (NOVA IMPLEMENTAÇÃO)
+# 6. FUNÇÕES PARA MAPA DE DADOS (NOVA IMPLEMENTAÇÃO RELACIONAL)
 # =============================================================================
 
-def criar_tabela_mapa_dados():
+def criar_tabela_conexao_tabelas():
     conn = get_conn()
     if conn:
         try:
             with conn.cursor() as cur:
+                # Tabela relacional solicitada
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_mapa_dados (
+                    CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_conexao_tabelas (
                         id SERIAL PRIMARY KEY,
-                        nome_mapa VARCHAR(255),
-                        tabela_destino VARCHAR(255),
-                        colunas_mapeadas TEXT
+                        tabela_referencia TEXT,
+                        tabela_referencia_coluna TEXT,
+                        jason_api_fatorconferi_coluna TEXT
                     )
                 """)
                 conn.commit()
             return True
         except Exception as e:
-            st.error(f"Erro ao criar tabela de mapa: {e}")
+            st.error(f"Erro ao criar tabela de conexão: {e}")
             return False
         finally:
             conn.close()
@@ -649,7 +650,7 @@ def listar_tabelas_disponiveis():
     if not conn: return []
     try:
         with conn.cursor() as cur:
-            # Lista tabelas de schemas relevantes para o Fator + Sistema Consulta
+            # Lista tabelas de schemas relevantes
             cur.execute("""
                 SELECT table_schema || '.' || table_name 
                 FROM information_schema.tables 
@@ -686,51 +687,56 @@ def listar_colunas_geral(nome_tabela_completo):
     finally:
         conn.close()
 
-def get_mapas_dados():
+def listar_mapeamento_tabela(nome_tabela):
+    """Retorna um dict {coluna_sql: chave_json}"""
     conn = get_conn()
-    if not conn: return []
+    if not conn: return {}
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, nome_mapa, tabela_destino, colunas_mapeadas FROM conexoes.fatorconferi_mapa_dados ORDER BY nome_mapa")
-            return cur.fetchall()
-    except: return []
+            cur.execute("""
+                SELECT tabela_referencia_coluna, jason_api_fatorconferi_coluna 
+                FROM conexoes.fatorconferi_conexao_tabelas 
+                WHERE tabela_referencia = %s
+            """, (nome_tabela,))
+            return {row[0]: row[1] for row in cur.fetchall()}
+    except: return {}
     finally: conn.close()
 
-def salvar_mapa_dados(nome, tabela, colunas_json):
+def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
+    """
+    Salva os dados editados na grade.
+    Estratégia: Remove registros antigos das colunas selecionadas para essa tabela e insere novos.
+    """
     conn = get_conn()
     if not conn: return False
     try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO conexoes.fatorconferi_mapa_dados (nome_mapa, tabela_destino, colunas_mapeadas) VALUES (%s, %s, %s)", (nome, tabela, colunas_json))
-            conn.commit()
-            return True
+        cur = conn.cursor()
+        
+        # Percorre o DataFrame editado
+        for index, row in df_mapeamento.iterrows():
+            col_sql = row['Coluna SQL']
+            chave_json = str(row['Chave JSON API']).strip()
+            
+            # 1. Remove mapeamento anterior para esta coluna específica desta tabela
+            cur.execute("""
+                DELETE FROM conexoes.fatorconferi_conexao_tabelas 
+                WHERE tabela_referencia = %s AND tabela_referencia_coluna = %s
+            """, (nome_tabela, col_sql))
+            
+            # 2. Se houver chave JSON preenchida, insere o novo
+            if chave_json:
+                cur.execute("""
+                    INSERT INTO conexoes.fatorconferi_conexao_tabelas 
+                    (tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna)
+                    VALUES (%s, %s, %s)
+                """, (nome_tabela, col_sql, chave_json))
+        
+        conn.commit()
+        return True
     except Exception as e:
-        st.error(f"Erro ao salvar mapa: {e}")
+        if conn: conn.rollback()
+        st.error(f"Erro ao salvar mapeamento: {e}")
         return False
-    finally: conn.close()
-
-def atualizar_mapa_dados(id_mapa, nome, tabela, colunas_json):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE conexoes.fatorconferi_mapa_dados SET nome_mapa=%s, tabela_destino=%s, colunas_mapeadas=%s WHERE id=%s", (nome, tabela, colunas_json, id_mapa))
-            conn.commit()
-            return True
-    except Exception as e:
-        st.error(f"Erro ao atualizar mapa: {e}")
-        return False
-    finally: conn.close()
-
-def excluir_mapa_dados(id_mapa):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM conexoes.fatorconferi_mapa_dados WHERE id=%s", (id_mapa,))
-            conn.commit()
-            return True
-    except: return False
     finally: conn.close()
 
 # =============================================================================
@@ -738,11 +744,10 @@ def excluir_mapa_dados(id_mapa):
 # =============================================================================
 
 def app_fator_conferi():
-    # Garante que a tabela do novo módulo exista
-    criar_tabela_mapa_dados()
+    # Garante a estrutura do banco
+    criar_tabela_conexao_tabelas()
 
     st.markdown("### ⚡ Painel Fator Conferi")
-    # Adicionada a aba "Mapa de Dados" no final
     tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros", "🗺️ Mapa de Dados"])
 
     with tabs[0]: 
@@ -832,106 +837,52 @@ def app_fator_conferi():
                     if salvar_alteracoes_genericas(nome_sql, df_param, df_editado): st.success("Salvo!"); time.sleep(1); st.rerun()
 
     with tabs[5]:
-        # --- NOVA ABA: MAPA DE DADOS ---
-        st.subheader("⚙️ Mapeamento de Dados API -> SQL")
+        # --- NOVA LÓGICA: MAPA DE DADOS RELACIONAL ---
+        st.subheader("⚙️ Mapeamento de Dados (API -> SQL)")
+        st.info("Configure qual campo da API (JSON Key) deve ser salvo em qual coluna da tabela.")
         
-        if 'fator_mapa_editando_id' not in st.session_state:
-            st.session_state['fator_mapa_editando_id'] = None
-            st.session_state['fator_mapa_nome'] = ""
-            st.session_state['fator_mapa_tabela'] = ""
-            st.session_state['fator_mapa_colunas'] = [] 
-
-        # Carrega tabelas (Schemas banco_pf, conexoes e sistema_consulta)
+        # 1. Seleção da Tabela
         lista_tabelas = listar_tabelas_disponiveis()
-
-        with st.form("form_mapa_fator"):
-            conf_nome = st.text_input("Nome do Mapa (Identificador)", value=st.session_state['fator_mapa_nome'])
-            
-            idx_tab = 0
-            if st.session_state['fator_mapa_tabela'] in lista_tabelas:
-                idx_tab = lista_tabelas.index(st.session_state['fator_mapa_tabela'])
-            
-            if lista_tabelas:
-                conf_tabela = st.selectbox("Tabela Destino (SQL)", lista_tabelas, index=idx_tab, help="Tabela onde os dados serão salvos")
-            else:
-                conf_tabela = st.text_input("Tabela Destino (Manual)", value=st.session_state['fator_mapa_tabela'])
-            
-            # Carregar colunas dinâmicas
-            opcoes_colunas = []
-            if conf_tabela:
-                opcoes_colunas = listar_colunas_geral(conf_tabela)
-            
-            # Filtra defaults
-            default_opts = [c for c in st.session_state['fator_mapa_colunas'] if c in opcoes_colunas]
-            
-            st.markdown("Selecione as colunas da tabela que receberão dados:")
-            conf_colunas = st.multiselect("Colunas Mapeadas", options=opcoes_colunas, default=default_opts)
-            
-            c_submit, c_cancel = st.columns([1, 1])
-            label_btn = "💾 Salvar Mapa" if not st.session_state['fator_mapa_editando_id'] else "🔄 Atualizar Mapa"
-            submitted = c_submit.form_submit_button(label_btn)
-            
-            if submitted:
-                if not conf_nome or not conf_tabela:
-                    st.error("Nome e Tabela são obrigatórios.")
-                else:
-                    json_colunas = json.dumps(conf_colunas)
-                    
-                    if st.session_state['fator_mapa_editando_id']:
-                        if atualizar_mapa_dados(st.session_state['fator_mapa_editando_id'], conf_nome, conf_tabela, json_colunas):
-                            st.success(f"Mapa '{conf_nome}' atualizado!")
-                            st.session_state['fator_mapa_editando_id'] = None
-                            st.session_state['fator_mapa_nome'] = ""
-                            st.session_state['fator_mapa_tabela'] = ""
-                            st.session_state['fator_mapa_colunas'] = []
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        if salvar_mapa_dados(conf_nome, conf_tabela, json_colunas):
-                            st.success(f"Mapa '{conf_nome}' salvo com sucesso!")
-                            st.session_state['fator_mapa_nome'] = ""
-                            st.session_state['fator_mapa_tabela'] = ""
-                            st.session_state['fator_mapa_colunas'] = []
-                            time.sleep(1)
-                            st.rerun()
-
-        if st.session_state['fator_mapa_editando_id']:
-            if st.button("❌ Cancelar Edição"):
-                st.session_state['fator_mapa_editando_id'] = None
-                st.session_state['fator_mapa_nome'] = ""
-                st.session_state['fator_mapa_tabela'] = ""
-                st.session_state['fator_mapa_colunas'] = []
-                st.rerun()
+        tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
         
-        st.divider()
-        st.markdown("#### Mapas Configurados")
-        lista_mapas = get_mapas_dados()
-        
-        if lista_mapas:
-            for item in lista_mapas:
-                # item: id, nome_mapa, tabela_destino, colunas_mapeadas
-                with st.expander(f"🗺️ {item[1]}"):
-                    st.write(f"**Tabela Destino:** {item[2]}")
-                    colunas_list = []
-                    try:
-                        colunas_list = json.loads(item[3])
-                        st.code(", ".join(colunas_list), language="text")
-                    except:
-                        st.write("Erro ao ler colunas.")
-                    
-                    c_edit, c_del = st.columns([1, 1])
-                    
-                    if c_edit.button("✏️ Editar", key=f"btn_edit_map_{item[0]}"):
-                        st.session_state['fator_mapa_editando_id'] = item[0]
-                        st.session_state['fator_mapa_nome'] = item[1]
-                        st.session_state['fator_mapa_tabela'] = item[2]
-                        st.session_state['fator_mapa_colunas'] = colunas_list
+        if tabela_sel != "(Selecione)":
+            # 2. Seleção de Colunas
+            colunas_db = listar_colunas_geral(tabela_sel)
+            colunas_sel = st.multiselect("2. Escolha as colunas para mapear:", colunas_db)
+            
+            if colunas_sel:
+                st.divider()
+                st.markdown("#### 3. Editar Mapeamento")
+                st.caption("Escreva o nome exato do campo da API na coluna da direita (ex: `nome`, `cpf`, `nascto`).")
+                
+                # Busca mapeamento existente para pré-preencher
+                mapa_existente = listar_mapeamento_tabela(tabela_sel)
+                
+                # Monta DataFrame para edição
+                dados_grade = []
+                for col in colunas_sel:
+                    val_atual = mapa_existente.get(col, "")
+                    dados_grade.append({"Coluna SQL": col, "Chave JSON API": val_atual})
+                
+                df_grade = pd.DataFrame(dados_grade)
+                
+                # Editor de Dados
+                df_editado = st.data_editor(
+                    df_grade,
+                    column_config={
+                        "Coluna SQL": st.column_config.TextColumn(disabled=True),
+                        "Chave JSON API": st.column_config.TextColumn(
+                            help="Nome do campo que vem do Fator Conexo (ex: nome, cpf, rg)"
+                        )
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    num_rows="fixed"
+                )
+                
+                # 4. Salvar
+                if st.button("💾 Salvar Mapeamento", type="primary"):
+                    if salvar_mapeamento_grade(tabela_sel, df_editado):
+                        st.success(f"Mapeamento salvo com sucesso para a tabela **{tabela_sel}**!")
+                        time.sleep(1.5)
                         st.rerun()
-                        
-                    if c_del.button("🗑️ Excluir", key=f"btn_del_map_{item[0]}", type="primary"):
-                        if excluir_mapa_dados(item[0]):
-                            st.success("Mapa excluído.")
-                            time.sleep(1)
-                            st.rerun()
-        else:
-            st.info("Nenhum mapa de dados cadastrado.")
