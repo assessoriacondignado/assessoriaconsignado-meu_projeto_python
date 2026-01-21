@@ -16,13 +16,13 @@ DDD_VALIDOS = {
 }
 
 class ValidadorData:
-    """Regras para Datas (1900-2050)"""
+    """Regras para Datas (Limite 1900-2050)"""
 
     @staticmethod
     def para_sql(data_str_ou_obj):
         """
         Entrada: '31/12/2025' ou objeto date
-        Saída: '2025-12-31' (String ISO para SQL) ou None se inválido
+        Saída: Objeto date (2025-12-31) pronto para o banco ou None se inválido
         """
         if not data_str_ou_obj: return None
         
@@ -35,10 +35,12 @@ class ValidadorData:
                 return None
         
         # Validação do Intervalo (1900 - 2050)
-        if obj.year < 1900 or obj.year > 2050:
-            return None
+        if isinstance(obj, (date, datetime)):
+            if obj.year < 1900 or obj.year > 2050:
+                return None
+            return obj
             
-        return obj # Retorna objeto date (drivers SQL modernos preferem objeto)
+        return None
 
     @staticmethod
     def para_tela(data_obj):
@@ -54,13 +56,19 @@ class ValidadorData:
     def calcular_tempo(data_nasc, tipo='anos'):
         """
         Calcula tempo decorrido até hoje.
-        Tipos: 'anos', 'meses', 'dias', 'completo' (Anos, Meses e Dias)
+        Tipos: 'anos', 'meses', 'dias', 'completo' (Xa Ym Zd)
         """
         if not data_nasc: return ""
         hoje = date.today()
         
-        # Lógica básica
-        anos = hoje.year - data_nasc.year - ((hoje.month, hoje.day) < (data_nasc.month, data_nasc.day))
+        # Converte datetime para date se necessário
+        if isinstance(data_nasc, datetime):
+            data_nasc = data_nasc.date()
+            
+        try:
+            anos = hoje.year - data_nasc.year - ((hoje.month, hoje.day) < (data_nasc.month, data_nasc.day))
+        except:
+            return "" # Erro se data for inválida
         
         if tipo == 'anos':
             return anos
@@ -72,7 +80,6 @@ class ValidadorData:
             return (hoje - data_nasc).days
             
         elif tipo == 'completo':
-            # Cálculo aproximado elegante para visualização
             meses = hoje.month - data_nasc.month
             dias = hoje.day - data_nasc.day
             
@@ -88,84 +95,123 @@ class ValidadorData:
         return 0
 
 class ValidadorDocumentos:
-    """CPF, CNPJ e Genéricos com validação matemática"""
+    """
+    CPF, CNPJ e Genéricos com validação matemática (Módulo 11).
+    AJUSTE: Aceita input com ou sem zero à esquerda, padronizando para 11/14 dígitos.
+    """
 
     @staticmethod
     def limpar_numero(valor):
         """Remove tudo que não é dígito"""
-        if not valor: return ""
+        if valor is None: return ""
         return re.sub(r'\D', '', str(valor))
 
     @staticmethod
-    def cpf_para_sql(cpf):
-        """Limpa, valida Módulo 11 e preenche zeros à esquerda (11 dígitos)"""
-        limpo = ValidadorDocumentos.limpar_numero(cpf)
+    def cpf_para_sql(cpf_input):
+        """
+        1. Limpa caracteres especiais.
+        2. Garante 11 dígitos (adiciona zero à esquerda se o usuário digitou apenas 10).
+        3. Valida matematicamente.
+        """
+        limpo = ValidadorDocumentos.limpar_numero(cpf_input)
         if not limpo: return None
         
-        limpo = limpo.zfill(11) # Garante zeros à esquerda na pesquisa
+        # Tratamento do Zero à Esquerda (zfill)
+        # Se digitou '123...' (10 digitos), vira '0123...' (11 digitos)
+        cpf_padronizado = limpo.zfill(11) 
         
-        if len(limpo) != 11: return None
-        if not ValidadorDocumentos._validar_mod11_cpf(limpo): return None
+        # Se após o preenchimento não tiver 11 dígitos, é inválido
+        if len(cpf_padronizado) != 11: 
+            return None
+            
+        # Validação Matemática
+        if not ValidadorDocumentos._validar_mod11_cpf(cpf_padronizado): 
+            return None
         
-        return limpo
+        return cpf_padronizado
 
     @staticmethod
-    def cnpj_para_sql(cnpj):
-        """Limpa, valida Módulo 11 e preenche zeros à esquerda (14 dígitos)"""
-        limpo = ValidadorDocumentos.limpar_numero(cnpj)
+    def cnpj_para_sql(cnpj_input):
+        """Padroniza para 14 dígitos e valida"""
+        limpo = ValidadorDocumentos.limpar_numero(cnpj_input)
         if not limpo: return None
         
-        limpo = limpo.zfill(14)
+        # Garante 14 dígitos
+        cnpj_padronizado = limpo.zfill(14)
         
-        if len(limpo) != 14: return None
-        if not ValidadorDocumentos._validar_mod11_cnpj(limpo): return None
+        if len(cnpj_padronizado) != 14: return None
+        if not ValidadorDocumentos._validar_mod11_cnpj(cnpj_padronizado): return None
         
-        return limpo
+        return cnpj_padronizado
 
     @staticmethod
     def cpf_para_tela(cpf_limpo):
-        """Entrada: '12345678901' -> Saída: '123.456.789-01'"""
-        if not cpf_limpo or len(cpf_limpo) != 11: return cpf_limpo
-        return f"{cpf_limpo[:3]}.{cpf_limpo[3:6]}.{cpf_limpo[6:9]}-{cpf_limpo[9:]}"
+        """Visualização: 000.000.000-00"""
+        if not cpf_limpo: return ""
+        # Garante que tenha zeros para a máscara funcionar
+        s = str(cpf_limpo).zfill(11)
+        if len(s) != 11: return s
+        return f"{s[:3]}.{s[3:6]}.{s[6:9]}-{s[9:]}"
 
     @staticmethod
     def cnpj_para_tela(cnpj_limpo):
-        """Entrada: '12345678000199' -> Saída: '12.345.678/0001-99'"""
-        if not cnpj_limpo or len(cnpj_limpo) != 14: return cnpj_limpo
-        return f"{cnpj_limpo[:2]}.{cnpj_limpo[2:5]}.{cnpj_limpo[5:8]}/{cnpj_limpo[8:12]}-{cnpj_limpo[12:]}"
+        """Visualização: 00.000.000/0000-00"""
+        if not cnpj_limpo: return ""
+        s = str(cnpj_limpo).zfill(14)
+        if len(s) != 14: return s
+        return f"{s[:2]}.{s[2:5]}.{s[5:8]}/{s[8:12]}-{s[12:]}"
 
     @staticmethod
     def preparar_ilike(valor):
-        """Prepara valor para busca SQL segura (ex: '%123%')"""
+        """
+        Prepara valor para busca SQL (ILIKE).
+        Se for CPF/CNPJ incompleto, padroniza com zeros para garantir match no banco.
+        """
         limpo = ValidadorDocumentos.limpar_numero(valor)
         if not limpo: return None
+        
+        # Se parece um CPF (tem entre 3 e 11 dígitos), tenta ajustar
+        # Mas para ILIKE genérico, retornamos o limpo entre %
+        # A lógica do zfill é aplicada se tiver proximo de 11 digitos
+        if len(limpo) in [10, 11]:
+            limpo = limpo.zfill(11)
+        elif len(limpo) in [13, 14]:
+            limpo = limpo.zfill(14)
+            
         return f"%{limpo}%"
 
-    # --- Lógica Interna (Privada) ---
+    # --- Lógica Matemática (Privada) ---
     @staticmethod
     def _validar_mod11_cpf(cpf):
         if cpf == cpf[0] * 11: return False
-        soma = sum(int(cpf[i]) * (10 - i) for i in range(9))
-        r = (soma * 10) % 11
-        d1 = 0 if r in [10, 11] else r
-        if d1 != int(cpf[9]): return False
-        soma = sum(int(cpf[i]) * (11 - i) for i in range(10))
-        r = (soma * 10) % 11
-        d2 = 0 if r in [10, 11] else r
-        return d2 == int(cpf[10])
+        try:
+            soma = sum(int(cpf[i]) * (10 - i) for i in range(9))
+            r = (soma * 10) % 11
+            d1 = 0 if r in [10, 11] else r
+            if d1 != int(cpf[9]): return False
+            
+            soma = sum(int(cpf[i]) * (11 - i) for i in range(10))
+            r = (soma * 10) % 11
+            d2 = 0 if r in [10, 11] else r
+            return d2 == int(cpf[10])
+        except:
+            return False
 
     @staticmethod
     def _validar_mod11_cnpj(cnpj):
         if cnpj == cnpj[0] * 14: return False
-        def calc(parcial, pesos):
-            s = sum(int(d) * p for d, p in zip(parcial, pesos))
-            r = s % 11
-            return 0 if r < 2 else 11 - r
-        
-        d1 = calc(cnpj[:12], [5,4,3,2,9,8,7,6,5,4,3,2])
-        if d1 != int(cnpj[12]): return False
-        d2 = calc(cnpj[:13], [6,5,4,3,2,9,8,7,6,5,4,3,2])
-        return d2 == int(cnpj[13])
+        try:
+            def calc(parcial, pesos):
+                s = sum(int(d) * p for d, p in zip(parcial, pesos))
+                r = s % 11
+                return 0 if r < 2 else 11 - r
+            
+            d1 = calc(cnpj[:12], [5,4,3,2,9,8,7,6,5,4,3,2])
+            if d1 != int(cnpj[12]): return False
+            d2 = calc(cnpj[:13], [6,5,4,3,2,9,8,7,6,5,4,3,2])
+            return d2 == int(cnpj[13])
+        except:
+            return False
 
 class ValidadorContato:
     """Telefones, E-mails e Endereços"""
@@ -201,7 +247,6 @@ class ValidadorContato:
     def email_valido(email):
         """Verifica formato básico de e-mail"""
         if not email: return False
-        # Regex padrão do mercado
         regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         return re.match(regex, email) is not None
 
@@ -214,21 +259,19 @@ class ValidadorFinanceiro:
         Entrada: "1.200,50", "1200.50", float(1200.5)
         Saída: float(1200.50) pronto para o banco
         """
-        if valor_str is None: return 0.0
+        if valor_str is None or valor_str == "": return 0.0
         if isinstance(valor_str, (int, float)): return float(valor_str)
         
         s = str(valor_str).strip()
-        # Remove R$ e espaços
         s = s.replace('R$', '').strip()
         
         # Lógica para detectar formato BR (1.000,00) vs US (1,000.00)
         if ',' in s and '.' in s:
-            # Assume formato BR se a vírgula estiver depois do último ponto
-            if s.rfind(',') > s.rfind('.'):
+            if s.rfind(',') > s.rfind('.'): # Formato BR: 1.000,00
                 s = s.replace('.', '').replace(',', '.')
-            else:
-                s = s.replace(',', '') # Formato US
-        elif ',' in s:
+            else: # Formato US: 1,000.00
+                s = s.replace(',', '')
+        elif ',' in s: # Apenas vírgula (BR): 1500,00
             s = s.replace(',', '.')
             
         try:
@@ -250,4 +293,7 @@ class ValidadorFinanceiro:
     def para_exportacao(valor_float):
         """Saída: 1200,50 (Decimal com vírgula para Excel)"""
         if valor_float is None: return "0,00"
-        return f"{valor_float:.2f}".replace('.', ',')
+        try:
+            return f"{float(valor_float):.2f}".replace('.', ',')
+        except:
+            return "0,00"
