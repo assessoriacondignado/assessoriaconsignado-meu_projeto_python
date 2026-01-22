@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
 import conexao
-import modulo_validadores as mv  # <--- NOME CORRIGIDO AQUI
+import modulo_validadores as mv
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +32,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES
+# 1. FUNÇÕES AUXILIARES E SANITIZAÇÃO
 # =============================================================================
 
 def registrar_erro_importacao(cpf, erro_msg):
@@ -47,8 +47,34 @@ def registrar_erro_importacao(cpf, erro_msg):
             f.write(f"DETALHE DO ERRO:\n{str(erro_msg)}")
     except: pass
 
+def sanitizar_valor_api(valor):
+    """
+    Remove espaços, converte '[]', '[ ]' e 'NULO' para None.
+    Usado para limpar dados brutos da API antes de qualquer processamento.
+    """
+    if valor is None:
+        return None
+    
+    # Se for lista ou dict, converte para string para verificar se está "vazio" visualmente
+    # Mas se for uma lista vazia real [], retorna None
+    if isinstance(valor, list) and len(valor) == 0:
+        return None
+    
+    if isinstance(valor, str):
+        v = valor.strip()
+        # Regras de Nulo/Vazio da API
+        if v in ["[]", "[ ]"]:
+            return None
+        if v.upper() == "NULO":
+            return None
+        if v == "":
+            return None
+        return v
+        
+    return valor
+
 # =============================================================================
-# 2. PARSING DE XML/JSON (COM LIMPEZA DE ESPAÇOS - STRIP)
+# 2. PARSING DE XML/JSON
 # =============================================================================
 
 def find_tag_insensitive(element, tag_name):
@@ -65,10 +91,10 @@ def find_tag_insensitive(element, tag_name):
     return None
 
 def get_tag_text_insensitive(element, tag_name):
-    """Pega o texto de uma tag, ignorando case e removendo espaços extras"""
+    """Pega o texto de uma tag, ignorando case e aplicando sanitização"""
     node = find_tag_insensitive(element, tag_name)
     if node is not None and node.text:
-        return node.text.strip()
+        return sanitizar_valor_api(node.text)
     return None
 
 def parse_xml_to_dict(xml_string):
@@ -100,10 +126,16 @@ def parse_xml_to_dict(xml_string):
             if node is not None:
                 for child in node:
                     if 'telefone' in child.tag.lower():
-                        telefones.append({
-                            'numero': get_tag_text_insensitive(child, 'numero'), 
-                            'prioridade': get_tag_text_insensitive(child, 'prioridade')
-                        })
+                        # Tenta pegar 'numero' OU 'número' (com acento)
+                        num = get_tag_text_insensitive(child, 'numero')
+                        if not num:
+                            num = get_tag_text_insensitive(child, 'número')
+                        
+                        if num: # Só adiciona se tiver número válido
+                            telefones.append({
+                                'numero': num, 
+                                'prioridade': get_tag_text_insensitive(child, 'prioridade')
+                            })
         dados['telefones'] = telefones
 
         emails = []
@@ -111,7 +143,8 @@ def parse_xml_to_dict(xml_string):
         if em_root is not None:
             for em in em_root:
                 if 'email' in em.tag.lower() and em.text: 
-                    emails.append(em.text.strip())
+                    val = sanitizar_valor_api(em.text)
+                    if val: emails.append(val)
         dados['emails'] = emails
 
         enderecos = []
@@ -158,18 +191,24 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         
+        # --- Formatação de Campos via Módulo ---
+        # A função sanitizar_valor_api já limpou NULO/[], mas garantimos .strip() no fallback
+        def safe_get(key):
+            v = dados_api.get(key)
+            return v if v else None
+
         campos = {
-            'nome': (dados_api.get('nome') or "CLIENTE IMPORTADO").strip(),
-            'rg': dados_api.get('rg'),
-            'data_nascimento': mv.ValidadorData.para_sql(dados_api.get('nascimento')), 
-            'nome_mae': dados_api.get('mae'),
-            'nome_pai': dados_api.get('pai'),
-            'uf_rg': dados_api.get('uf_rg'),
-            'pis': dados_api.get('pis'),
-            'cnh': dados_api.get('cnh'),
-            'serie_ctps': dados_api.get('serie_ctps'),
-            'nome_procurador': dados_api.get('nome_procurador'),
-            'cpf_procurador': mv.ValidadorDocumentos.cpf_para_sql(dados_api.get('cpf_procurador'))
+            'nome': safe_get('nome') or "CLIENTE IMPORTADO",
+            'rg': safe_get('rg'),
+            'data_nascimento': mv.ValidadorData.para_sql(safe_get('nascimento')), 
+            'nome_mae': safe_get('mae'),
+            'nome_pai': safe_get('pai'),
+            'uf_rg': safe_get('uf_rg'),
+            'pis': safe_get('pis'),
+            'cnh': safe_get('cnh'),
+            'serie_ctps': safe_get('serie_ctps'),
+            'nome_procurador': safe_get('nome_procurador'),
+            'cpf_procurador': mv.ValidadorDocumentos.cpf_para_sql(safe_get('cpf_procurador'))
         }
 
         sql_pf = """
@@ -213,7 +252,8 @@ def salvar_dados_fator_no_banco(dados_api):
         col_email = verificar_coluna_cpf(cur, 'pf_emails')
 
         for e in raw_emails:
-            val_bruto = str(e.get('email', '')) if isinstance(e, dict) else str(e)
+            # e já deve vir sanitizado do parser, mas garantimos
+            val_bruto = str(e)
             val_limpo = val_bruto.strip().lower()
             
             if mv.ValidadorContato.email_valido(val_limpo):
@@ -253,7 +293,7 @@ def salvar_dados_fator_no_banco(dados_api):
 
 def executar_distribuicao_dinamica(dados_api):
     """
-    Função com CORREÇÃO DE ESPAÇOS (STRIP) e PADRONIZAÇÃO DE CPF
+    Função com SANITIZAÇÃO GERAL e PADRONIZAÇÃO DE CPF
     """
     conn = get_conn()
     if not conn:
@@ -287,19 +327,18 @@ def executar_distribuicao_dinamica(dados_api):
                     chave_json = str(row['jason_api_fatorconferi_coluna']).strip()
                     chaves_testadas.append(chave_json)
                     
-                    valor = dados_api.get(chave_json)
+                    # 1. Pega valor cru
+                    valor_raw = dados_api.get(chave_json)
                     
-                    # 1. Correção de Espaços
-                    if isinstance(valor, str):
-                        valor = valor.strip()
+                    # 2. Aplica Sanitização (Remove "[]", "NULO", espaços)
+                    valor = sanitizar_valor_api(valor_raw)
                     
-                    # 2. Conversão de Listas/Dicts
-                    if isinstance(valor, list) or isinstance(valor, dict):
+                    # 3. Conversão de Listas/Dicts para String se não for None
+                    if isinstance(valor, (list, dict)):
                         valor = str(valor)
 
-                    # 3. --- Padronização Automática de CPF ---
-                    # Se o nome da coluna ou da chave sugerir CPF, tentamos padronizar (11 dígitos)
-                    if 'cpf' in col_sql.lower() or 'cpf' in chave_json.lower():
+                    # 4. --- Padronização Automática de CPF ---
+                    if valor and ('cpf' in col_sql.lower() or 'cpf' in chave_json.lower()):
                         cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
                         if cpf_ajustado: 
                             valor = cpf_ajustado
@@ -312,7 +351,7 @@ def executar_distribuicao_dinamica(dados_api):
                         tem_dado = True
 
                 if not tem_dado:
-                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}. Verifique o Mapeamento e o JSON recebido.")
+                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}. (Dados vazios ou NULO).")
                     continue
 
                 colunas_str = ", ".join(colunas_sql)
