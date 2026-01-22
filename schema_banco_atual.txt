@@ -567,6 +567,18 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - custo_consulta (numeric) NULL
    - status (character varying(20)) NULL
 
+[TABELA: conexoes.fatorconferi_conexao_tabelas]
+   - id (integer) NOT NULL
+   - tabela_referencia (text) NULL
+   - tabela_referencia_coluna (text) NULL
+   - jason_api_fatorconferi_coluna (text) NULL
+
+[TABELA: conexoes.fatorconferi_mapa_dados]
+   - id (integer) NOT NULL
+   - nome_mapa (character varying(255)) NULL
+   - tabela_destino (character varying(255)) NULL
+   - colunas_mapeadas (text) NULL
+
 [TABELA: conexoes.fatorconferi_origem_consulta_fator]
    - id (integer) NOT NULL
    - origem (character varying(50)) NOT NULL
