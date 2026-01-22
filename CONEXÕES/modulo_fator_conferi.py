@@ -50,19 +50,15 @@ def registrar_erro_importacao(cpf, erro_msg):
 def sanitizar_valor_api(valor):
     """
     Remove espaços, converte '[]', '[ ]' e 'NULO' para None.
-    Usado para limpar dados brutos da API antes de qualquer processamento.
     """
     if valor is None:
         return None
     
-    # Se for lista ou dict, converte para string para verificar se está "vazio" visualmente
-    # Mas se for uma lista vazia real [], retorna None
     if isinstance(valor, list) and len(valor) == 0:
         return None
     
     if isinstance(valor, str):
         v = valor.strip()
-        # Regras de Nulo/Vazio da API
         if v in ["[]", "[ ]"]:
             return None
         if v.upper() == "NULO":
@@ -74,7 +70,7 @@ def sanitizar_valor_api(valor):
     return valor
 
 # =============================================================================
-# 2. PARSING DE XML/JSON
+# 2. PARSING (JSON E XML) - COM LOGICA MULTI-ITEM
 # =============================================================================
 
 def find_tag_insensitive(element, tag_name):
@@ -91,20 +87,105 @@ def find_tag_insensitive(element, tag_name):
     return None
 
 def get_tag_text_insensitive(element, tag_name):
-    """Pega o texto de uma tag, ignorando case e aplicando sanitização"""
     node = find_tag_insensitive(element, tag_name)
     if node is not None and node.text:
         return sanitizar_valor_api(node.text)
     return None
 
-def parse_xml_to_dict(xml_string):
+def parse_xml_to_dict(texto_resposta):
+    """
+    Lê JSON/XML e 'achata' listas criando chaves indexadas (telefone_1, telefone_2...)
+    """
+    dados = {}
+    
+    # --- TENTATIVA 1: JSON ---
     try:
-        xml_string = xml_string.replace('ISO-8859-1', 'UTF-8') 
+        json_bruto = json.loads(texto_resposta)
+        
+        # Copia campos raiz
+        for k, v in json_bruto.items():
+            dados[k] = sanitizar_valor_api(v)
+            dados[k.lower()] = sanitizar_valor_api(v)
+
+        # --- PROCESSAMENTO DE TELEFONES (Dispositivos) ---
+        dispositivos = None
+        for k in json_bruto.keys():
+            if "dispositivos" in k.lower().strip():
+                dispositivos = json_bruto[k]
+                break
+        
+        telefones_lista = []
+        if isinstance(dispositivos, list):
+            for d in dispositivos:
+                num = None
+                for sub_k, sub_v in d.items():
+                    if "numero" in sub_k.lower().replace("ú", "u"):
+                        num = sanitizar_valor_api(sub_v)
+                        break
+                if num:
+                    telefones_lista.append({'numero': num})
+        
+        dados['telefones'] = telefones_lista
+
+        # Lógica de Achatamento (Flattening) para Telefones
+        # Cria chaves: telefone_1, numero_1, telefone_2, numero_2...
+        for i, item in enumerate(telefones_lista):
+            idx = i + 1
+            num = item['numero']
+            dados[f'telefone_{idx}'] = num
+            dados[f'numero_{idx}'] = num
+            
+            # Mantém compatibilidade com o [0] na raiz sem sufixo
+            if i == 0:
+                dados['telefone'] = num
+                dados['numero'] = num
+                dados['celular'] = num
+
+        # --- PROCESSAMENTO DE ENDEREÇOS ---
+        enderecos_lista = []
+        lista_end_raw = None
+        for k in json_bruto.keys():
+            if "enderecos" in k.lower().strip():
+                lista_end_raw = json_bruto[k]
+                break
+        
+        if isinstance(lista_end_raw, list):
+            for end in lista_end_raw:
+                end_limpo = {k.strip().lower(): sanitizar_valor_api(v) for k, v in end.items()}
+                enderecos_lista.append(end_limpo)
+        
+        dados['enderecos'] = enderecos_lista
+
+        # Lógica de Achatamento (Flattening) para Endereços
+        # Cria chaves: rua_1, cep_1, rua_2, cep_2...
+        for i, item in enumerate(enderecos_lista):
+            idx = i + 1
+            # Mapeia campos comuns com sufixo
+            for chave_end, valor_end in item.items():
+                dados[f"{chave_end}_{idx}"] = valor_end # ex: rua_1, cep_1
+            
+            # Mantém compatibilidade com o [0] na raiz sem sufixo
+            if i == 0:
+                dados['rua'] = item.get('rua')
+                dados['logradouro'] = item.get('rua')
+                dados['bairro'] = item.get('bairro')
+                dados['cidade'] = item.get('cidade')
+                dados['uf'] = item.get('uf')
+                dados['cep'] = item.get('cep')
+        
+        return dados
+
+    except json.JSONDecodeError:
+        pass
+    except Exception:
+        pass
+
+    # --- TENTATIVA 2: XML (Legado) ---
+    try:
+        xml_string = texto_resposta.replace('ISO-8859-1', 'UTF-8') 
         root = ET.fromstring(xml_string)
-        dados = {}
         
         cad = find_tag_insensitive(root, 'cadastrais')
-        
         if cad is not None:
             dados['nome'] = get_tag_text_insensitive(cad, 'nome')
             dados['cpf'] = get_tag_text_insensitive(cad, 'cpf')
@@ -114,10 +195,8 @@ def parse_xml_to_dict(xml_string):
             dados['pai'] = get_tag_text_insensitive(cad, 'nome_pai')
             
             uf_res = get_tag_text_insensitive(cad, 'uf_emissao')
-            if not uf_res:
-                uf_res = get_tag_text_insensitive(cad, 'uf_rg')
+            if not uf_res: uf_res = get_tag_text_insensitive(cad, 'uf_rg')
             dados['uf_rg'] = uf_res
-            
             dados['sexo'] = get_tag_text_insensitive(cad, 'sexo')
         
         telefones = []
@@ -126,17 +205,19 @@ def parse_xml_to_dict(xml_string):
             if node is not None:
                 for child in node:
                     if 'telefone' in child.tag.lower():
-                        # Tenta pegar 'numero' OU 'número' (com acento)
-                        num = get_tag_text_insensitive(child, 'numero')
-                        if not num:
-                            num = get_tag_text_insensitive(child, 'número')
-                        
-                        if num: # Só adiciona se tiver número válido
-                            telefones.append({
-                                'numero': num, 
-                                'prioridade': get_tag_text_insensitive(child, 'prioridade')
-                            })
+                        num = get_tag_text_insensitive(child, 'numero') or get_tag_text_insensitive(child, 'número')
+                        if num:
+                            telefones.append({'numero': num})
+        
         dados['telefones'] = telefones
+        
+        # Achata telefones XML
+        for i, item in enumerate(telefones):
+            idx = i + 1
+            dados[f'telefone_{idx}'] = item['numero']
+            if i == 0:
+                dados['telefone'] = item['numero']
+                dados['numero'] = item['numero']
 
         emails = []
         em_root = find_tag_insensitive(root, 'emails')
@@ -146,6 +227,11 @@ def parse_xml_to_dict(xml_string):
                     val = sanitizar_valor_api(em.text)
                     if val: emails.append(val)
         dados['emails'] = emails
+        
+        # Achata Emails XML
+        for i, val in enumerate(emails):
+            dados[f'email_{i+1}'] = val
+            if i == 0: dados['email'] = val
 
         enderecos = []
         end_root = find_tag_insensitive(root, 'enderecos')
@@ -153,20 +239,29 @@ def parse_xml_to_dict(xml_string):
             for end in end_root:
                 if 'endereco' in end.tag.lower():
                     enderecos.append({
-                        'rua': f"{get_tag_text_insensitive(end, 'logradouro') or ''}, {get_tag_text_insensitive(end, 'numero') or ''}".strip(', '),
+                        'rua': get_tag_text_insensitive(end, 'logradouro') or get_tag_text_insensitive(end, 'rua'),
                         'bairro': get_tag_text_insensitive(end, 'bairro'),
                         'cidade': get_tag_text_insensitive(end, 'cidade'),
-                        'uf': get_tag_text_insensitive(end, 'estado'),
+                        'uf': get_tag_text_insensitive(end, 'estado') or get_tag_text_insensitive(end, 'uf'),
                         'cep': get_tag_text_insensitive(end, 'cep')
                     })
         dados['enderecos'] = enderecos
         
+        # Achata Endereços XML
+        for i, item in enumerate(enderecos):
+            idx = i + 1
+            for k, v in item.items():
+                dados[f"{k}_{idx}"] = v
+            if i == 0:
+                for k, v in item.items():
+                    dados[k] = v
+        
         return dados
     except Exception as e:
-        return {"erro": f"Falha XML: {e}", "raw": xml_string}
+        return {"erro": f"Falha no Parser (XML/JSON): {e}", "raw": texto_resposta}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VALIDADORES)
+# 3. PROCESSO DE INSERÇÃO PRÓPRIO
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -181,7 +276,6 @@ def salvar_dados_fator_no_banco(dados_api):
     conn = get_conn()
     if not conn: return False, "Erro de conexão com o banco."
     
-    # --- Validação de CPF via Módulo ---
     raw_cpf = str(dados_api.get('cpf', '')).strip()
     cpf_limpo = mv.ValidadorDocumentos.cpf_para_sql(raw_cpf)
     
@@ -191,14 +285,12 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         
-        # --- Formatação de Campos via Módulo ---
-        # A função sanitizar_valor_api já limpou NULO/[], mas garantimos .strip() no fallback
         def safe_get(key):
             v = dados_api.get(key)
             return v if v else None
 
         campos = {
-            'nome': safe_get('nome') or "CLIENTE IMPORTADO",
+            'nome': (safe_get('nome') or "CLIENTE IMPORTADO"),
             'rg': safe_get('rg'),
             'data_nascimento': mv.ValidadorData.para_sql(safe_get('nascimento')), 
             'nome_mae': safe_get('mae'),
@@ -231,7 +323,7 @@ def salvar_dados_fator_no_banco(dados_api):
             campos['nome_procurador'], campos['cpf_procurador']
         ))
 
-        # --- Telefones ---
+        # Salva TODOS os telefones na tabela filha
         raw_telefones = dados_api.get('telefones', []) or []
         count_tel = 0
         col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
@@ -246,13 +338,11 @@ def salvar_dados_fator_no_banco(dados_api):
                     cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, tel_validado))
                     count_tel += 1
 
-        # --- Emails ---
         raw_emails = dados_api.get('emails', []) or []
         count_email = 0
         col_email = verificar_coluna_cpf(cur, 'pf_emails')
 
         for e in raw_emails:
-            # e já deve vir sanitizado do parser, mas garantimos
             val_bruto = str(e)
             val_limpo = val_bruto.strip().lower()
             
@@ -262,7 +352,6 @@ def salvar_dados_fator_no_banco(dados_api):
                     cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_email}, email) VALUES (%s, %s)", (cpf_limpo, val_limpo))
                     count_email += 1
 
-        # --- Endereços ---
         raw_ends = dados_api.get('enderecos', []) or []
         count_end = 0
         col_end = verificar_coluna_cpf(cur, 'pf_enderecos')
@@ -270,10 +359,8 @@ def salvar_dados_fator_no_banco(dados_api):
         for d in raw_ends:
             if isinstance(d, dict):
                 cep_val = mv.ValidadorDocumentos.limpar_numero(d.get('cep'))
-                if cep_val and len(cep_val) == 8:
-                    pass 
-                else:
-                    cep_val = None
+                if cep_val and len(cep_val) == 8: pass 
+                else: cep_val = None
 
                 rua_val = d.get('rua')
                 if cep_val or rua_val:
@@ -292,9 +379,6 @@ def salvar_dados_fator_no_banco(dados_api):
         return False, f"Erro na importação: {str(e)} (Log salvo na pasta JSON)"
 
 def executar_distribuicao_dinamica(dados_api):
-    """
-    Função com SANITIZAÇÃO GERAL e PADRONIZAÇÃO DE CPF
-    """
     conn = get_conn()
     if not conn:
         return [], ["Erro de conexão com o banco de dados."]
@@ -327,22 +411,21 @@ def executar_distribuicao_dinamica(dados_api):
                     chave_json = str(row['jason_api_fatorconferi_coluna']).strip()
                     chaves_testadas.append(chave_json)
                     
-                    # 1. Pega valor cru
+                    # 1. Pega valor (agora suporta telefone_1, telefone_2, etc.)
                     valor_raw = dados_api.get(chave_json)
-                    
-                    # 2. Aplica Sanitização (Remove "[]", "NULO", espaços)
+                    if valor_raw is None:
+                        valor_raw = dados_api.get(chave_json.lower())
+
                     valor = sanitizar_valor_api(valor_raw)
                     
-                    # 3. Conversão de Listas/Dicts para String se não for None
                     if isinstance(valor, (list, dict)):
                         valor = str(valor)
 
-                    # 4. --- Padronização Automática de CPF ---
+                    # 2. Padronização CPF
                     if valor and ('cpf' in col_sql.lower() or 'cpf' in chave_json.lower()):
                         cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
                         if cpf_ajustado: 
                             valor = cpf_ajustado
-                    # -----------------------------------------------
                     
                     colunas_sql.append(col_sql)
                     valores_insert.append(valor)
@@ -351,7 +434,7 @@ def executar_distribuicao_dinamica(dados_api):
                         tem_dado = True
 
                 if not tem_dado:
-                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}. (Dados vazios ou NULO).")
+                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}.")
                     continue
 
                 colunas_str = ", ".join(colunas_sql)
@@ -457,19 +540,12 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
             if conn: conn.close()
     return cliente
 
-# --- NOVA FUNÇÃO DE COBRANÇA (REFATORADA) ---
 def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     try:
         cur = conn.cursor()
         id_cli = str(dados_cliente['id'])
         
-        # 1. Busca Custo e Produto Vinculado
-        sql_custo = """
-            SELECT valor_custo, id_produto, nome_produto 
-            FROM cliente.valor_custo_carteira_cliente 
-            WHERE id_cliente = %s AND origem_custo = %s
-            LIMIT 1
-        """
+        sql_custo = "SELECT valor_custo, id_produto, nome_produto FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
         cur.execute(sql_custo, (id_cli, origem_custo_chave))
         res_custo = cur.fetchone()
         
@@ -483,21 +559,13 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         if valor_debitar <= 0:
             return True, "Custo zero/gratuito."
 
-        # 2. Busca Saldo Anterior
-        sql_saldo = """
-            SELECT saldo_novo 
-            FROM cliente.extrato_carteira_por_produto 
-            WHERE id_cliente = %s 
-            ORDER BY id DESC LIMIT 1
-        """
+        sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
         cur.execute(sql_saldo, (id_cli,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
-        # 3. Calcula Novo Saldo
         saldo_novo = saldo_anterior - valor_debitar
         
-        # 4. Lança o Débito
         sql_insert = """
             INSERT INTO cliente.extrato_carteira_por_produto (
                 produto_vinculado, id_cliente, nome_cliente,
@@ -526,9 +594,8 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     except Exception as e:
         return False, f"Erro Cobrança: {str(e)}"
 
-# --- FUNÇÃO PRINCIPAL DE CONSULTA (COM BLOQUEIO DE SALDO) ---
+# --- FUNÇÃO PRINCIPAL DE CONSULTA ---
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
-    # Usa validador para limpar entrada
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
     if not cpf_padrao:
         return {"sucesso": False, "msg": f"CPF Inválido: {cpf}"}
@@ -536,11 +603,9 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
-    # Dados do Usuário Logado
     id_usuario = st.session_state.get('usuario_id', 0)
     nome_usuario = st.session_state.get('usuario_nome', 'Sistema')
     
-    # Definição do Cliente Pagador
     dados_pagador = {"id": None, "nome": None, "id_usuario": id_usuario, "nome_usuario": nome_usuario}
     
     if id_cliente_pagador_manual:
@@ -562,7 +627,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
     try:
         cur = conn.cursor()
         
-        # 1. Verifica Cache
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -571,7 +635,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # 2. BLOQUEIO DE SALDO
         custo_previsto = 0.0
         if dados_pagador['id']:
              sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
@@ -594,12 +657,12 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                      "msg": f"🚫 Bloqueio Financeiro: Saldo insuficiente. (Custo: R$ {custo_previsto:.2f} | Saldo: R$ {saldo_atual:.2f})"
                  }
 
-        # 3. API
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token API ausente."}
         
         resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
-        resp.encoding = 'ISO-8859-1'
+        
+        # --- PARSER ATUALIZADO (JSON/XML + LISTAS) ---
         dados = parse_xml_to_dict(resp.text)
         
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
@@ -620,11 +683,9 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         
         if not dados.get('cpf'): dados['cpf'] = cpf_padrao
 
-        # 4. Registra LOG
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
                     (cpf_padrao, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
         
-        # 5. EXECUTA A COBRANÇA
         msg_fin = ""
         if dados_pagador['id']:
             ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
@@ -690,7 +751,7 @@ def listar_clientes_carteira():
     return pd.DataFrame()
 
 # =============================================================================
-# 6. FUNÇÕES PARA MAPA DE DADOS (NOVA IMPLEMENTAÇÃO RELACIONAL)
+# 6. FUNÇÕES PARA MAPA DE DADOS
 # =============================================================================
 
 def criar_tabela_conexao_tabelas():
@@ -814,7 +875,6 @@ def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
 # =============================================================================
 
 def app_fator_conferi():
-    # Garante a estrutura do banco
     criar_tabela_conexao_tabelas()
 
     st.markdown("### ⚡ Painel Fator Conferi")
@@ -849,12 +909,10 @@ def app_fator_conferi():
                     st.session_state['resultado_fator'] = res
 
                     if res['sucesso']:
-                        # 1. Salva no banco_pf (código legado/padrão)
                         ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
                         if ok_s: st.toast(f"{msg_s}", icon="💾")
                         else: st.error(f"Erro ao salvar na base PF: {msg_s}")
                         
-                        # 2. Distribuição Dinâmica
                         lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
                         
                         if lista_sucessos:
