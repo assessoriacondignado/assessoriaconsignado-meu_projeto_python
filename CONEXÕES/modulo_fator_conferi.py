@@ -170,7 +170,7 @@ def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
     return None
 
 # =============================================================================
-# 4. DISTRIBUIÇÃO DINÂMICA (COM UPSERT - ATUALIZAR SE EXISTIR)
+# 4. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS - COM 1:N E UPSERT)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -201,6 +201,7 @@ def executar_distribuicao_dinamica(dados_api):
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
+                # --- LÓGICA DE DECISÃO: MODO SIMPLES vs MODO LOOP ---
                 lista_atual_para_loop = [None] # Padrão: 1 loop (raiz)
                 modo_loop = False
                 
@@ -284,21 +285,14 @@ def executar_distribuicao_dinamica(dados_api):
                         
                         cols_lower = [c.lower() for c in colunas_sql]
                         
-                        # Verifica se é conflito de CPF (Tabela Principal)
+                        # Verifica se é conflito de CPF ou ID para aplicar o UPSERT
                         if 'cpf' in cols_lower:
-                            # Monta string de atualização: col1 = EXCLUDED.col1, col2 = EXCLUDED.col2 ...
-                            # EXCLUDED refere-se ao valor novo que tentamos inserir
                             update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in colunas_sql if c.lower() != 'cpf'])
-                            
                             if update_set:
                                 sql += f" ON CONFLICT (cpf) DO UPDATE SET {update_set}"
                             else:
                                 sql += " ON CONFLICT (cpf) DO NOTHING"
-                                
-                        # Verifica se é conflito de ID (Tabelas com chave primária ID)
                         elif 'id' in cols_lower:
-                            # Geralmente ID não se atualiza assim, mas mantemos DO NOTHING para segurança
-                            # a menos que você tenha uma lógica específica para atualizar por ID
                             sql += " ON CONFLICT (id) DO NOTHING"
                         
                         cur.execute(sql, tuple(valores_insert))
@@ -805,7 +799,6 @@ def app_fator_conferi():
                     st.session_state['resultado_fator'] = res
 
                     if res['sucesso']:
-                        # --- REMOVIDO BANCO_PF ---
                         lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
                         
                         if lista_sucessos:
