@@ -93,13 +93,11 @@ def parse_xml_to_dict(texto_xml):
             texto_xml = texto_xml.decode('utf-8', errors='ignore')
         texto_xml = texto_xml.replace('ISO-8859-1', 'UTF-8')
         
-        # Tenta JSON primeiro (caso a API mude ou venha híbrido)
         try:
             return json.loads(texto_xml)
         except:
             pass
 
-        # Fallback para XML
         root = ET.fromstring(texto_xml)
         dados = _xml_para_dict_recursivo(root)
         return dados if isinstance(dados, dict) else {}
@@ -108,45 +106,34 @@ def parse_xml_to_dict(texto_xml):
         return {"erro": f"Erro no Parser: {e}", "raw": texto_xml}
 
 # =============================================================================
-# 3. BUSCA INTELIGENTE POR CAMINHO (COM LOGICA _ E ;)
+# 3. BUSCA INTELIGENTE POR CAMINHO
 # =============================================================================
 
 def _navegar_recursivamente(dados_atuais, lista_chaves):
-    """
-    Navega no JSON seguindo a lista de chaves (ex: ['CADASTRAIS', 'CPF']).
-    - Suporta chaves com underline (ex: TELEFONES_FIXO).
-    - Suporta Listas (coleta valores de todos os itens).
-    """
     if not lista_chaves:
         return dados_atuais
 
     chave_atual = lista_chaves[0].upper().strip()
     resto_chaves = lista_chaves[1:]
 
-    # Caso 1: Dados atuais são um Dicionário
     if isinstance(dados_atuais, dict):
-        # Tenta encontrar a chave exata
         for k, v in dados_atuais.items():
             if k.upper() == chave_atual:
                 return _navegar_recursivamente(v, resto_chaves)
         
-        # TENTATIVA DE COMBINAÇÃO DE CHAVES (Correção para TELEFONES_FIXO vs TELEFONES -> FIXO)
-        # Se a próxima chave também existe, tenta combinar (ex: chave_atual='TELEFONES', prox='FIXO' -> tenta 'TELEFONES_FIXO')
         if resto_chaves:
             chave_combinada = f"{chave_atual}_{resto_chaves[0].upper().strip()}"
             for k, v in dados_atuais.items():
                 if k.upper() == chave_combinada:
-                    # Pula duas chaves na lista pois usamos ambas
                     return _navegar_recursivamente(v, resto_chaves[1:])
 
-    # Caso 2: Dados atuais são uma Lista (1:N)
     elif isinstance(dados_atuais, list):
         resultados_coletados = []
         for item in dados_atuais:
-            res = _navegar_recursivamente(item, lista_chaves) # Reaplica a mesma chave no item
+            res = _navegar_recursivamente(item, lista_chaves)
             if res is not None:
                 if isinstance(res, list):
-                    resultados_coletados.extend(res) # Achata listas aninhadas
+                    resultados_coletados.extend(res)
                 else:
                     resultados_coletados.append(res)
         return resultados_coletados if resultados_coletados else None
@@ -154,40 +141,26 @@ def _navegar_recursivamente(dados_atuais, lista_chaves):
     return None
 
 def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
-    """
-    Interpreta strings como: "TELEFONES_FIXO;_TELEFONES_MOVÍVEIS_;_TELEFONE_;NÚMERO"
-    Lógica:
-    1. ';' separa caminhos ALTERNATIVOS (OU).
-    2. '_' ou ' ' separa NÍVEIS da hierarquia.
-    """
     if not string_mapeamento: return None
     
-    # 1. Separa Alternativas (Pelo ;)
     caminhos_alternativos = str(string_mapeamento).split(';')
     
     for caminho_bruto in caminhos_alternativos:
-        # 2. Limpa e Normaliza o Caminho
-        # Substitui espaços por _, remove _ duplicados e das pontas
         caminho_limpo = caminho_bruto.strip().replace(' ', '_')
-        partes = [p for p in caminho_limpo.split('_') if p] # Remove strings vazias
+        partes = [p for p in caminho_limpo.split('_') if p]
         
-        # 3. Navega
         valor_encontrado = _navegar_recursivamente(dados_api, partes)
-        
-        # 4. Validação do Resultado
-        # Se achou algo que não seja None ou Lista Vazia, retorna (Prioridade)
         valor_sanitizado = sanitizar_valor_api(valor_encontrado)
         
         if valor_sanitizado is not None:
-            # Se for lista com itens validos, retorna lista. Se for valor, retorna valor.
             if isinstance(valor_sanitizado, list) and len(valor_sanitizado) == 0:
-                continue # Lista vazia, tenta proximo caminho
+                continue
             return valor_sanitizado
 
     return None
 
 # =============================================================================
-# 4. SALVAMENTO PADRÃO (LEGADO - MANTIDO PARA SEGURANÇA)
+# 4. SALVAMENTO PADRÃO (LEGADO)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -199,7 +172,6 @@ def verificar_coluna_cpf(cur, tabela):
     return 'cpf_ref' 
 
 def salvar_dados_fator_no_banco(dados_api):
-    # Usa a nova função de extração para buscar CPF e NOME na raiz ou profundidade
     raw_cpf = extrair_valor_por_caminho_complexo(dados_api, "CPF;_CADASTRAIS_CPF")
     
     conn = get_conn()
@@ -212,7 +184,6 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         
-        # Mapeamento fixo para a tabela legado (banco_pf.pf_dados)
         campos = {
             'nome': extrair_valor_por_caminho_complexo(dados_api, "NOME;_CADASTRAIS_NOME"),
             'rg': extrair_valor_por_caminho_complexo(dados_api, "RG;_CADASTRAIS_RG"),
@@ -231,7 +202,6 @@ def salvar_dados_fator_no_banco(dados_api):
         """
         cur.execute(sql_pf, (cpf_limpo, campos['nome'], campos['rg'], campos['data_nascimento'], campos['nome_mae'], campos['nome_pai'], campos['uf_rg']))
         
-        # Telefones (Busca genérica em listas conhecidas)
         tels = extrair_valor_por_caminho_complexo(dados_api, "TELEFONES_MOVEL_TELEFONE_NUMERO;TELEFONES_FIXO_TELEFONE_NUMERO;TELEFONES_NUMERO")
         if tels:
             if not isinstance(tels, list): tels = [tels]
@@ -247,7 +217,7 @@ def salvar_dados_fator_no_banco(dados_api):
         return False, str(e)
 
 # =============================================================================
-# 5. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS - COM 1:N)
+# 5. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -266,19 +236,15 @@ def executar_distribuicao_dinamica(dados_api):
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
-                # 1. Coleta os dados de todas as colunas mapeadas
-                # Resultado esperado: Um dicionário onde a chave é a coluna SQL e o valor é o dado (ou lista de dados)
                 dados_preparados = {}
-                max_linhas = 1 # Para controlar o loop 1:N
+                max_linhas = 1
                 
                 for _, row in regras.iterrows():
                     col_sql = str(row['tabela_referencia_coluna']).strip()
                     caminho_map = str(row['jason_api_fatorconferi_coluna']).strip()
                     
-                    # Usa a extração complexa (_ e ;)
                     valor = extrair_valor_por_caminho_complexo(dados_api, caminho_map)
                     
-                    # Padronização CPF para Chaves Estrangeiras
                     if valor and ('cpf' in col_sql.lower() or 'cpf' in caminho_map.lower()):
                         if isinstance(valor, list):
                             valor = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor]
@@ -287,14 +253,9 @@ def executar_distribuicao_dinamica(dados_api):
 
                     dados_preparados[col_sql] = valor
                     
-                    # Se for lista, atualiza o número máximo de linhas para inserir
                     if isinstance(valor, list):
                         max_linhas = max(max_linhas, len(valor))
 
-                # 2. Monta as linhas para inserção
-                # Se max_linhas > 1, significa que temos listas (ex: 3 telefones). 
-                # Valores únicos (ex: CPF do cliente) são repetidos para todas as linhas.
-                
                 if not any(v is not None for v in dados_preparados.values()):
                     erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado.")
                     continue
@@ -309,19 +270,12 @@ def executar_distribuicao_dinamica(dados_api):
                     
                     for col in colunas_ordenadas:
                         val = dados_preparados[col]
-                        
-                        if isinstance(val, list):
-                            # Pega o item 'i' da lista, ou None se a lista acabou
-                            item = val[i] if i < len(val) else None
-                        else:
-                            # Valor fixo (ex: CPF raiz), repete para todos
-                            item = val
+                        item = val[i] if isinstance(val, list) and i < len(val) else (val if not isinstance(val, list) else None)
                         
                         if isinstance(item, (dict, list)): item = str(item)
                         if item: linha_valida = True
                         linha_valores.append(item)
                     
-                    # Só insere se a linha tiver algum dado útil (não for só Nones)
                     if linha_valida:
                         cur.execute(sql, tuple(linha_valores))
 
@@ -550,7 +504,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         except Exception as e:
             st.error(f"Erro ao salvar arquivo JSON de log: {e}")
 
-        # Validação simples se veio algo (buscando NOME em qualquer lugar)
+        # Validação simples
         if not extrair_valor_por_caminho_complexo(dados, "NOME;CADASTRAIS_NOME"): 
             conn.close()
             return {
@@ -559,7 +513,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 "dados": dados
             }
         
-        # Garante CPF no retorno se não veio
+        # Garante CPF no retorno
         if not extrair_valor_por_caminho_complexo(dados, "CPF;CADASTRAIS_CPF"): 
             dados['CPF_CONSULTADO_INSERIDO'] = cpf_padrao
 
@@ -621,6 +575,57 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
         conn.commit(); conn.close(); return True
     except: 
         if conn: conn.close()
+        return False
+
+def salvar_alteracoes_mapa_completo(df_original, df_editado):
+    """
+    Função dedicada para salvar a tabela de mapeamento, suportando DELETE.
+    """
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        
+        # 1. Identificar IDs Excluídos (Estavam no Original mas não no Editado)
+        ids_orig = set(df_original['id'].dropna().astype(int).tolist())
+        ids_novos = set(df_editado['id'].dropna().astype(int).tolist())
+        
+        ids_para_deletar = ids_orig - ids_novos
+        
+        if ids_para_deletar:
+            # Converte para tupla para SQL IN
+            if len(ids_para_deletar) == 1:
+                cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id = {list(ids_para_deletar)[0]}")
+            else:
+                cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id IN {tuple(ids_para_deletar)}")
+
+        # 2. Upsert (Insert ou Update)
+        for index, row in df_editado.iterrows():
+            rid = row.get('id')
+            tab_ref = row.get('tabela_referencia')
+            col_ref = row.get('tabela_referencia_coluna')
+            json_key = row.get('jason_api_fatorconferi_coluna')
+            
+            if pd.isna(rid) or rid == '':
+                # Insert
+                cur.execute("""
+                    INSERT INTO conexoes.fatorconferi_conexao_tabelas 
+                    (tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna)
+                    VALUES (%s, %s, %s)
+                """, (tab_ref, col_ref, json_key))
+            elif int(rid) in ids_orig:
+                # Update
+                cur.execute("""
+                    UPDATE conexoes.fatorconferi_conexao_tabelas 
+                    SET tabela_referencia=%s, tabela_referencia_coluna=%s, jason_api_fatorconferi_coluna=%s
+                    WHERE id=%s
+                """, (tab_ref, col_ref, json_key, int(rid)))
+        
+        conn.commit(); conn.close()
+        return True
+    except Exception as e:
+        if conn: conn.close()
+        st.error(f"Erro ao salvar mapa: {e}")
         return False
 
 def listar_clientes_carteira():
@@ -903,6 +908,20 @@ def app_fator_conferi():
                         st.rerun()
         
         st.divider()
-        st.markdown("### 📋 Tabela Geral de Conexões (conexoes.fatorconferi_conexao_tabelas)")
+        st.markdown("### 📋 Tabela Geral de Conexões (Editável)")
         df_geral = listar_todos_mapeamentos()
-        st.dataframe(df_geral, use_container_width=True)
+        
+        # --- TABELA EDITÁVEL GERAL ---
+        df_editado_geral = st.data_editor(
+            df_geral, 
+            key="editor_geral_mapeamentos", 
+            num_rows="dynamic", # Permite ADICIONAR e REMOVER
+            use_container_width=True
+        )
+        
+        if st.button("💾 Salvar Alterações Gerais", type="primary"):
+            # Usa função específica que suporta DELETE
+            if salvar_alteracoes_mapa_completo(df_geral, df_editado_geral):
+                st.success("Tabela geral atualizada com sucesso!")
+                time.sleep(1.5)
+                st.rerun()
