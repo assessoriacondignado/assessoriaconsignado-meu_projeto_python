@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
 import conexao
-import modulo_vliadores as mv
+import modulo_vilidadores as mv
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
