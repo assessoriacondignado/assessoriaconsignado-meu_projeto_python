@@ -49,14 +49,12 @@ def registrar_erro_importacao(cpf, erro_msg):
 
 def sanitizar_valor_api(valor):
     """
-    Remove espaços, quebras de linha e converte indicadores de vazio para None.
-    Mantém o dado fiel, mas limpo para SQL.
+    Remove espaços, converte '[]', '[ ]' e 'NULO' para None.
     """
     if valor is None: return None
     
     if isinstance(valor, str):
         v = valor.strip()
-        # Regras de limpeza
         if v.upper() in ["NULO", "NULL", "NONE"]: return None
         if v in ["[]", "[ ]", "{}"]: return None
         if v == "": return None
@@ -71,27 +69,19 @@ def sanitizar_valor_api(valor):
 def _xml_para_dict_recursivo(elemento):
     """
     Converte elemento XML para Dicionário recursivamente.
-    - Preserva nome das tags exato (Ex: CADASTRAIS, NOME_MAE).
-    - Converte tags repetidas em Listas.
-    - Aplica sanitização nos valores (texto).
     """
-    # 1. Extrai valor texto limpo
     texto = sanitizar_valor_api(elemento.text)
     
-    # 2. Se não tem filhos, é um campo folha (Ex: <CPF>123</CPF>)
     if len(elemento) == 0:
         return texto
 
-    # 3. Se tem filhos, processa estrutura (Ex: <CADASTRAIS>...</CADASTRAIS>)
     resultado = {}
     for filho in elemento:
         tag = filho.tag
-        # Remove namespace se existir ({...}tag)
         if '}' in tag: tag = tag.split('}', 1)[1]
         
         valor_filho = _xml_para_dict_recursivo(filho)
         
-        # Lógica para Listas: Se a tag já existe, vira uma lista
         if tag in resultado:
             if isinstance(resultado[tag], list):
                 resultado[tag].append(valor_filho)
@@ -107,17 +97,13 @@ def parse_xml_to_dict(texto_xml):
     Recebe XML bruto da API e retorna JSON estruturado fiel.
     """
     try:
-        # Garante encoding UTF-8
         if isinstance(texto_xml, bytes):
             texto_xml = texto_xml.decode('utf-8', errors='ignore')
         texto_xml = texto_xml.replace('ISO-8859-1', 'UTF-8')
         
         root = ET.fromstring(texto_xml)
-        
-        # O elemento raiz geralmente é <RETORNO>, pegamos o conteúdo dele
         dados_estruturados = _xml_para_dict_recursivo(root)
         
-        # Se o root retornou apenas string (vazio), retorna dict vazio
         if not isinstance(dados_estruturados, dict):
             return {}
             
@@ -133,29 +119,20 @@ def parse_xml_to_dict(texto_xml):
 def buscar_dado_no_json(dados_json, chaves_possiveis):
     """
     Busca um valor no JSON complexo procurando recursivamente por chaves.
-    Isso permite que o 'Mapa de Dados' encontre 'CPF' mesmo se estiver dentro de 'CADASTRAIS'.
-    
-    Args:
-        dados_json (dict): O JSON completo estruturado.
-        chaves_possiveis (list/str): Nome do campo procurado (ex: 'CPF', 'cpf', 'NOME').
     """
     if isinstance(chaves_possiveis, str):
         chaves_possiveis = [chaves_possiveis]
     
-    # Normaliza chaves para busca (uppercase para comparar com XML que geralmente é upper)
     chaves_alvo = [k.upper().strip() for k in chaves_possiveis]
 
     def _busca_recursiva(obj):
         if isinstance(obj, dict):
             for k, v in obj.items():
                 if k.upper() in chaves_alvo:
-                    # Achou! Retorna o valor (se for simples)
                     if not isinstance(v, (dict, list)):
                         return v
-                    # Se for lista/dict, retorna convertido pra string pra gravar no banco
                     return str(v)
                 
-                # Se não achou na chave atual, mergulha se for dict ou lista
                 res = _busca_recursiva(v)
                 if res is not None: return res
         
@@ -169,7 +146,7 @@ def buscar_dado_no_json(dados_json, chaves_possiveis):
     return _busca_recursiva(dados_json)
 
 # =============================================================================
-# 4. SALVAMENTO PADRÃO (LEGADO - USANDO BUSCA INTELIGENTE)
+# 4. SALVAMENTO PADRÃO (LEGADO)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -184,7 +161,6 @@ def salvar_dados_fator_no_banco(dados_api):
     conn = get_conn()
     if not conn: return False, "Erro de conexão com o banco."
     
-    # Busca CPF em qualquer lugar da estrutura (CADASTRAIS > CPF ou raiz)
     raw_cpf = buscar_dado_no_json(dados_api, ['CPF'])
     if not raw_cpf: 
         return False, "CPF não encontrado na estrutura do XML."
@@ -196,8 +172,6 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         
-        # Mapeamento usando busca recursiva para achar os campos onde quer que estejam
-        # (Ex: NASCTO dentro de CADASTRAIS)
         campos = {
             'nome': buscar_dado_no_json(dados_api, ['NOME']) or "CLIENTE IMPORTADO",
             'rg': buscar_dado_no_json(dados_api, ['RG']),
@@ -205,7 +179,7 @@ def salvar_dados_fator_no_banco(dados_api):
             'nome_mae': buscar_dado_no_json(dados_api, ['NOME_MAE', 'MAE']),
             'nome_pai': buscar_dado_no_json(dados_api, ['NOME_PAI', 'PAI']),
             'uf_rg': buscar_dado_no_json(dados_api, ['UF_EMISSAO', 'UF_RG']),
-            'pis': buscar_dado_no_json(dados_api, ['NIT', 'PIS', 'PASEP']), # XML usa NIT
+            'pis': buscar_dado_no_json(dados_api, ['NIT', 'PIS', 'PASEP']),
             'cnh': buscar_dado_no_json(dados_api, ['CNH']),
             'serie_ctps': buscar_dado_no_json(dados_api, ['SERIE_CTPS']),
             'nome_procurador': buscar_dado_no_json(dados_api, ['NOME_PROCURADOR']),
@@ -233,11 +207,8 @@ def salvar_dados_fator_no_banco(dados_api):
         ))
 
         # --- TELEFONES ---
-        # No XML: <TELEFONES_MOVEL><TELEFONE><NUMERO>...</NUMERO></TELEFONE>...
-        # Vamos varrer tudo que parecer número de telefone
         def extrair_telefones(obj, lista_coleta):
             if isinstance(obj, dict):
-                # Se achou chave NUMERO, tenta validar
                 if 'NUMERO' in obj:
                     lista_coleta.append(obj['NUMERO'])
                 for v in obj.values():
@@ -247,7 +218,6 @@ def salvar_dados_fator_no_banco(dados_api):
                     extrair_telefones(item, lista_coleta)
 
         lista_tels_raw = []
-        # Busca nas seções específicas para evitar pegar número de casa
         secoes_tel = [dados_api.get('TELEFONES_MOVEL'), dados_api.get('TELEFONES_FIXO')]
         for secao in secoes_tel:
             if secao: extrair_telefones(secao, lista_tels_raw)
@@ -284,7 +254,6 @@ def executar_distribuicao_dinamica(dados_api):
     erros = []
 
     try:
-        # Carrega mapa
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
         
         if df_map.empty:
@@ -304,13 +273,11 @@ def executar_distribuicao_dinamica(dados_api):
 
                 for _, row in regras.iterrows():
                     col_sql = str(row['tabela_referencia_coluna']).strip()
-                    chave_xml = str(row['jason_api_fatorconferi_coluna']).strip() # Ex: 'NOME' ou 'CPF'
+                    chave_xml = str(row['jason_api_fatorconferi_coluna']).strip()
                     chaves_testadas.append(chave_xml)
                     
-                    # Usa a busca inteligente para achar a chave em qualquer lugar do JSON
                     valor = buscar_dado_no_json(dados_api, [chave_xml])
                     
-                    # Padronização Automática de CPF para chaves estrangeiras
                     if valor and ('cpf' in col_sql.lower() or 'cpf' in chave_xml.lower()):
                         cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
                         if cpf_ajustado: valor = cpf_ajustado
@@ -321,10 +288,8 @@ def executar_distribuicao_dinamica(dados_api):
                     if valor: tem_dado = True
 
                 if not tem_dado:
-                    # Silencioso se não achar nada (opcional: ativar log de aviso)
                     continue
 
-                # Query
                 placeholders = ", ".join(["%s"] * len(valores_insert))
                 cols = ", ".join(colunas_sql)
                 sql = f"INSERT INTO {tabela} ({cols}) VALUES ({placeholders})"
@@ -856,7 +821,7 @@ def app_fator_conferi():
 
     with tabs[5]:
         st.subheader("⚙️ Mapeamento de Dados (API -> SQL)")
-        st.info("Configure qual campo do JSON (Ex: CPF, NOME, ou CADASTRAIS) deve ser salvo em qual coluna da tabela.")
+        st.info("Configure qual campo da API (JSON Key) deve ser salvo em qual coluna da tabela.")
         
         lista_tabelas = listar_tabelas_disponiveis()
         tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
@@ -875,7 +840,7 @@ def app_fator_conferi():
             if colunas_sel:
                 st.divider()
                 st.markdown("#### 3. Editar Mapeamento")
-                st.caption("Escreva o nome do campo XML/JSON (Ex: 'NOME', 'NUMERO', 'CPF'). O sistema buscará em qualquer nível da estrutura.")
+                st.caption("Escreva o nome exato do campo da API na coluna da direita (ex: `nome`, `cpf`, `nascto`).")
                 
                 dados_grade = []
                 for col in colunas_sel:
@@ -899,7 +864,8 @@ def app_fator_conferi():
                     },
                     hide_index=True,
                     use_container_width=True,
-                    num_rows="fixed"
+                    num_rows="fixed",
+                    key=f"editor_mapa_{tabela_sel}" # <--- CHAVE ÚNICA ADICIONADA AQUI
                 )
                 
                 if st.button("💾 Salvar Mapeamento", type="primary"):
