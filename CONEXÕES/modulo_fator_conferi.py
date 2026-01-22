@@ -322,10 +322,12 @@ def executar_distribuicao_dinamica(dados_api):
                 valores_insert = []
                 
                 tem_dado = False
-                
+                chaves_testadas = []
+
                 for _, row in regras.iterrows():
                     col_sql = row['tabela_referencia_coluna']
-                    chave_json = row['jason_api_fatorconferi_coluna']
+                    chave_json = str(row['jason_api_fatorconferi_coluna']).strip()
+                    chaves_testadas.append(chave_json)
                     
                     # Busca o valor no dict da API (apenas valores escalares/strings simples)
                     valor = dados_api.get(chave_json)
@@ -341,7 +343,8 @@ def executar_distribuicao_dinamica(dados_api):
                         tem_dado = True
 
                 if not tem_dado:
-                    # Se todos os campos mapeados estão vazios na API, pula esta tabela mas não considera erro
+                    # NOVA LÓGICA: Se não achou dado, avisa o usuário em vez de silenciar
+                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}. Verifique o Mapeamento e o JSON recebido.")
                     continue
 
                 # Monta a Query Dinâmica
@@ -359,7 +362,7 @@ def executar_distribuicao_dinamica(dados_api):
             except Exception as e:
                 # Captura erro específico desta tabela e continua para a próxima
                 conn.rollback() # Rollback parcial se necessário, mas aqui estamos no bloco maior
-                erros.append(f"Erro ao inserir em '{tabela}': {str(e)}")
+                erros.append(f"❌ Erro ao inserir em '{tabela}': {str(e)}")
 
         conn.commit()
         cur.close()
@@ -889,8 +892,9 @@ def app_fator_conferi():
                             st.success(f"✅ Dados distribuídos com sucesso para: {msg_ok}")
                             
                         if lista_erros:
+                            # Mostra todos os erros em uma caixa única, separados por linha
                             msg_erro = "\n".join(lista_erros)
-                            st.error(f"⚠️ Erros na distribuição:\n{msg_erro}")
+                            st.error(f"⚠️ Relatório de Importação:\n{msg_erro}")
                             
         
         if 'resultado_fator' in st.session_state:
