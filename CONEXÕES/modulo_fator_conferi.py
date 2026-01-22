@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
 import conexao
-import modulo_vliadores as mv  # <--- IMPORTAÇÃO DAS REGRAS PADRÃO
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,9 +31,42 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. FUNÇÕES AUXILIARES (LOG E PARSING)
+# 1. FUNÇÕES AUXILIARES E VALIDAÇÕES
 # =============================================================================
-# Nota: As funções de validação (CPF, Data, Tel) foram substituídas pelo modulo_vliadores
+
+def limpar_apenas_numeros(valor):
+    if not valor: return ""
+    return re.sub(r'\D', '', str(valor))
+
+def limpar_normalizar_cpf(cpf_raw):
+    if not cpf_raw: return ""
+    s = str(cpf_raw).strip()
+    apenas_nums = re.sub(r'\D', '', s)
+    return apenas_nums.zfill(11)
+
+def validar_email(email):
+    if not email: return False
+    regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(regex, email))
+
+def validar_formatar_telefone(tel_raw):
+    s = str(tel_raw).strip()
+    if re.search(r'[a-zA-Z]', s): return None 
+    numeros = re.sub(r'\D', '', s)
+    if len(numeros) < 10 or len(numeros) > 11: return None
+    return numeros
+
+def validar_formatar_cep(cep_raw):
+    numeros = limpar_apenas_numeros(cep_raw)
+    if len(numeros) != 8: return None
+    return numeros 
+
+def formatar_data_iso(data_str):
+    if not data_str: return None
+    try:
+        return datetime.strptime(data_str, '%d/%m/%Y').strftime('%Y-%m-%d')
+    except:
+        return None
 
 def registrar_erro_importacao(cpf, erro_msg):
     try:
@@ -146,7 +178,7 @@ def parse_xml_to_dict(xml_string):
         return {"erro": f"Falha XML: {e}", "raw": xml_string}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VLIADORES)
+# 3. PROCESSO DE INSERÇÃO PRÓPRIO
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -161,22 +193,19 @@ def salvar_dados_fator_no_banco(dados_api):
     conn = get_conn()
     if not conn: return False, "Erro de conexão com o banco."
     
-    # --- Validação de CPF via Módulo ---
     raw_cpf = str(dados_api.get('cpf', '')).strip()
-    cpf_limpo = mv.ValidadorDocumentos.cpf_para_sql(raw_cpf)
+    cpf_limpo = limpar_normalizar_cpf(raw_cpf)
     
-    if not cpf_limpo:
-        # Se retornou None, é inválido matematicamente ou tamanho errado
-        return False, f"CPF inválido/irregular para importação: '{raw_cpf}'"
+    if not cpf_limpo or len(cpf_limpo) != 11:
+        return False, f"CPF inválido para importação: '{raw_cpf}'"
 
     try:
         cur = conn.cursor()
         
-        # --- Formatação de Campos via Módulo ---
         campos = {
             'nome': dados_api.get('nome') or "CLIENTE IMPORTADO",
             'rg': dados_api.get('rg'),
-            'data_nascimento': mv.ValidadorData.para_sql(dados_api.get('nascimento')), # Retorna date object ou None
+            'data_nascimento': formatar_data_iso(dados_api.get('nascimento')),
             'nome_mae': dados_api.get('mae'),
             'nome_pai': dados_api.get('pai'),
             'uf_rg': dados_api.get('uf_rg'),
@@ -184,7 +213,7 @@ def salvar_dados_fator_no_banco(dados_api):
             'cnh': dados_api.get('cnh'),
             'serie_ctps': dados_api.get('serie_ctps'),
             'nome_procurador': dados_api.get('nome_procurador'),
-            'cpf_procurador': mv.ValidadorDocumentos.cpf_para_sql(dados_api.get('cpf_procurador'))
+            'cpf_procurador': limpar_normalizar_cpf(dados_api.get('cpf_procurador'))
         }
 
         sql_pf = """
@@ -207,15 +236,14 @@ def salvar_dados_fator_no_banco(dados_api):
             campos['nome_procurador'], campos['cpf_procurador']
         ))
 
-        # --- Telefones ---
         raw_telefones = dados_api.get('telefones', []) or []
         count_tel = 0
         col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
         
         for t in raw_telefones:
             val_bruto = str(t.get('numero', '')) if isinstance(t, dict) else str(t)
-            # Usa o validador que checa DDD e tamanho (11 dígitos)
-            tel_validado = mv.ValidadorContato.telefone_para_sql(val_bruto)
+            val_limpo = limpar_apenas_numeros(val_bruto)
+            tel_validado = validar_formatar_telefone(val_limpo)
             
             if tel_validado:
                 cur.execute(f"SELECT 1 FROM banco_pf.pf_telefones WHERE {col_tel}=%s AND numero=%s", (cpf_limpo, tel_validado))
@@ -223,7 +251,6 @@ def salvar_dados_fator_no_banco(dados_api):
                     cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, tel_validado))
                     count_tel += 1
 
-        # --- Emails ---
         raw_emails = dados_api.get('emails', []) or []
         count_email = 0
         col_email = verificar_coluna_cpf(cur, 'pf_emails')
@@ -232,27 +259,19 @@ def salvar_dados_fator_no_banco(dados_api):
             val_bruto = str(e.get('email', '')) if isinstance(e, dict) else str(e)
             val_limpo = val_bruto.strip().lower()
             
-            # Validação via regex do módulo
-            if mv.ValidadorContato.email_valido(val_limpo):
+            if validar_email(val_limpo):
                 cur.execute(f"SELECT 1 FROM banco_pf.pf_emails WHERE {col_email}=%s AND email=%s", (cpf_limpo, val_limpo))
                 if not cur.fetchone():
                     cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_email}, email) VALUES (%s, %s)", (cpf_limpo, val_limpo))
                     count_email += 1
 
-        # --- Endereços ---
         raw_ends = dados_api.get('enderecos', []) or []
         count_end = 0
         col_end = verificar_coluna_cpf(cur, 'pf_enderecos')
 
         for d in raw_ends:
             if isinstance(d, dict):
-                # Limpa CEP mantendo zeros
-                cep_val = mv.ValidadorDocumentos.limpar_numero(d.get('cep'))
-                if cep_val and len(cep_val) == 8:
-                    pass # CEP ok
-                else:
-                    cep_val = None
-
+                cep_val = validar_formatar_cep(d.get('cep'))
                 rua_val = d.get('rua')
                 if cep_val or rua_val:
                     cur.execute(f"SELECT 1 FROM banco_pf.pf_enderecos WHERE {col_end}=%s AND cep=%s AND rua=%s", (cpf_limpo, cep_val, rua_val))
@@ -303,36 +322,30 @@ def executar_distribuicao_dinamica(dados_api):
                 valores_insert = []
                 
                 tem_dado = False
-                chaves_testadas = []
-
+                
                 for _, row in regras.iterrows():
                     col_sql = row['tabela_referencia_coluna']
-                    chave_json = str(row['jason_api_fatorconferi_coluna']).strip()
-                    chaves_testadas.append(chave_json)
+                    chave_json = row['jason_api_fatorconferi_coluna']
                     
-                    # Busca o valor no dict da API
+                    # Busca o valor no dict da API (apenas valores escalares/strings simples)
                     valor = dados_api.get(chave_json)
                     
-                    # Tratamento simples para listas convertendo para string
+                    # Tratamento simples para listas convertendo para string, caso o usuário mapeie um campo array
                     if isinstance(valor, list) or isinstance(valor, dict):
                         valor = str(valor)
-                    
-                    # AQUI PODERÍAMOS APLICAR VALIDAÇÃO DINÂMICA SE SOUBÉSSEMOS O TIPO
-                    # Por enquanto, mantemos "cru" para flexibilidade no mapeamento dinâmico,
-                    # Mas se quiser forçar CPF, poderia verificar se 'cpf' in chave_json.lower()
                     
                     colunas_sql.append(col_sql)
                     valores_insert.append(valor)
                     
-                    if valor: 
+                    if valor: # Marca se pelo menos um campo tem valor
                         tem_dado = True
 
                 if not tem_dado:
-                    # Aviso de que pulou por falta de dados
-                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}. Verifique o Mapeamento e o JSON recebido.")
+                    # Se todos os campos mapeados estão vazios na API, pula esta tabela mas não considera erro
                     continue
 
                 # Monta a Query Dinâmica
+                # Ex: INSERT INTO schema.tabela (col1, col2) VALUES (%s, %s)
                 colunas_str = ", ".join(colunas_sql)
                 placeholders = ", ".join(["%s"] * len(valores_insert))
                 
@@ -344,8 +357,9 @@ def executar_distribuicao_dinamica(dados_api):
                 sucessos.append(tabela)
             
             except Exception as e:
-                conn.rollback() 
-                erros.append(f"❌ Erro ao inserir em '{tabela}': {str(e)}")
+                # Captura erro específico desta tabela e continua para a próxima
+                conn.rollback() # Rollback parcial se necessário, mas aqui estamos no bloco maior
+                erros.append(f"Erro ao inserir em '{tabela}': {str(e)}")
 
         conn.commit()
         cur.close()
@@ -440,6 +454,12 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
 
 # --- NOVA FUNÇÃO DE COBRANÇA (REFATORADA) ---
 def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
+    """
+    Executa a cobrança seguindo a nova regra de negócio:
+    1. Busca custo em cliente.valor_custo_carteira_cliente (ID Cliente + Origem)
+    2. Calcula Saldo em cliente.extrato_carteira_por_produto
+    3. Registra Débito em cliente.extrato_carteira_por_produto
+    """
     try:
         cur = conn.cursor()
         id_cli = str(dados_cliente['id'])
@@ -464,7 +484,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         if valor_debitar <= 0:
             return True, "Custo zero/gratuito."
 
-        # 2. Busca Saldo Anterior
+        # 2. Busca Saldo Anterior (na tabela unificada)
         sql_saldo = """
             SELECT saldo_novo 
             FROM cliente.extrato_carteira_por_produto 
@@ -509,11 +529,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
 
 # --- FUNÇÃO PRINCIPAL DE CONSULTA (COM BLOQUEIO DE SALDO) ---
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
-    # Usa validador para limpar entrada
-    cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
-    if not cpf_padrao:
-        return {"sucesso": False, "msg": f"CPF Inválido: {cpf}"}
-
+    cpf_padrao = ''.join(filter(str.isdigit, str(cpf))).zfill(11)
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
@@ -525,6 +541,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
     dados_pagador = {"id": None, "nome": None, "id_usuario": id_usuario, "nome_usuario": nome_usuario}
     
     if id_cliente_pagador_manual:
+        # Modo Teste Manual
         try:
             cur = conn.cursor()
             cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
@@ -534,10 +551,12 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 dados_pagador["nome"] = res[1]
         except: pass
     else:
+        # Modo Automático (Vínculo)
         d = buscar_cliente_vinculado_ao_usuario(id_usuario)
         dados_pagador["id"] = d['id']
         dados_pagador["nome"] = d['nome']
 
+    # Busca a ORIGEM correta baseada no ambiente
     origem_real = buscar_origem_por_ambiente(ambiente)
 
     try:
@@ -552,30 +571,41 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # 2. BLOQUEIO DE SALDO
+        # ---------------------------------------------------------------------
+        # 2. BLOQUEIO DE SALDO (VALIDAÇÃO DE LIMITE)
+        # ---------------------------------------------------------------------
         custo_previsto = 0.0
+        
         if dados_pagador['id']:
+             # A. Busca o Custo Específico do Cliente
              sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
              cur.execute(sql_custo, (str(dados_pagador['id']), origem_real))
              res_custo = cur.fetchone()
+             
              if res_custo:
                  custo_previsto = float(res_custo[0])
              else:
+                 # Se não tem custo negociado, pega o padrão para log (e talvez bloqueie ou não, dependendo da sua regra)
+                 # Aqui assumimos que ele tenta usar o padrão se não achar o específico
                  custo_previsto = buscar_valor_consulta_atual()
 
+             # B. Busca o Saldo Atual na tabela de extrato
              sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
              cur.execute(sql_saldo, (str(dados_pagador['id']),))
              res_s = cur.fetchone()
              saldo_atual = float(res_s[0]) if res_s else 0.0
 
+             # C. Validação: Bloqueia se Saldo < Custo
+             # (Isso impede que o saldo fique negativo)
              if saldo_atual < custo_previsto:
                  conn.close()
                  return {
                      "sucesso": False, 
                      "msg": f"🚫 Bloqueio Financeiro: Saldo insuficiente. (Custo: R$ {custo_previsto:.2f} | Saldo: R$ {saldo_atual:.2f})"
                  }
+        # ---------------------------------------------------------------------
 
-        # 3. API
+        # 3. API (Só executa se passou pelo bloqueio)
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token API ausente."}
         
@@ -583,6 +613,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         resp.encoding = 'ISO-8859-1'
         dados = parse_xml_to_dict(resp.text)
         
+        # --- ALTERAÇÃO: Salva o JSON ANTES da validação para debug ---
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         
@@ -590,6 +621,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
         except Exception as e:
             st.error(f"Erro ao salvar arquivo JSON de log: {e}")
+        # -------------------------------------------------------------
 
         if not dados.get('nome'): 
             conn.close()
@@ -601,11 +633,11 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         
         if not dados.get('cpf'): dados['cpf'] = cpf_padrao
 
-        # 4. Registra LOG
+        # 4. Registra LOG da Consulta
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
                     (cpf_padrao, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
         
-        # 5. EXECUTA A COBRANÇA
+        # 5. EXECUTA A COBRANÇA (Debita o valor real)
         msg_fin = ""
         if dados_pagador['id']:
             ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
@@ -614,7 +646,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             else:
                 msg_fin = f" | ⚠️ Erro Cobrança: {txt_fin}"
         
-        conn.commit()
+        conn.commit() # Comita Log + Cobrança juntos
         conn.close()
         return {"sucesso": True, "dados": dados, "msg": "Consulta realizada." + msg_fin}
     except Exception as e:
@@ -679,6 +711,7 @@ def criar_tabela_conexao_tabelas():
     if conn:
         try:
             with conn.cursor() as cur:
+                # Tabela relacional solicitada
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_conexao_tabelas (
                         id SERIAL PRIMARY KEY,
@@ -700,6 +733,7 @@ def listar_tabelas_disponiveis():
     if not conn: return []
     try:
         with conn.cursor() as cur:
+            # Lista tabelas de schemas relevantes
             cur.execute("""
                 SELECT table_schema || '.' || table_name 
                 FROM information_schema.tables 
@@ -737,6 +771,7 @@ def listar_colunas_geral(nome_tabela_completo):
         conn.close()
 
 def listar_mapeamento_tabela(nome_tabela):
+    """Retorna um dict {coluna_sql: chave_json}"""
     conn = get_conn()
     if not conn: return {}
     try:
@@ -751,6 +786,7 @@ def listar_mapeamento_tabela(nome_tabela):
     finally: conn.close()
 
 def listar_todos_mapeamentos():
+    """Retorna um DataFrame com todos os mapeamentos cadastrados"""
     conn = get_conn()
     if not conn: return pd.DataFrame()
     try:
@@ -762,19 +798,27 @@ def listar_todos_mapeamentos():
         conn.close()
 
 def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
+    """
+    Salva os dados editados na grade.
+    Estratégia: Remove registros antigos das colunas selecionadas para essa tabela e insere novos.
+    """
     conn = get_conn()
     if not conn: return False
     try:
         cur = conn.cursor()
+        
+        # Percorre o DataFrame editado
         for index, row in df_mapeamento.iterrows():
             col_sql = row['Coluna SQL']
             chave_json = str(row['Chave JSON API']).strip()
             
+            # 1. Remove mapeamento anterior para esta coluna específica desta tabela
             cur.execute("""
                 DELETE FROM conexoes.fatorconferi_conexao_tabelas 
                 WHERE tabela_referencia = %s AND tabela_referencia_coluna = %s
             """, (nome_tabela, col_sql))
             
+            # 2. Se houver chave JSON preenchida, insere o novo
             if chave_json:
                 cur.execute("""
                     INSERT INTO conexoes.fatorconferi_conexao_tabelas 
@@ -814,6 +858,7 @@ def app_fator_conferi():
         conn = get_conn()
         if conn:
             try:
+                # LISTA TODOS OS CLIENTES (Independente de carteira, para permitir teste)
                 df_clis = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
                 opcoes_cli = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
                 id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste Manual)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Usar Vínculo Automático")
@@ -826,6 +871,7 @@ def app_fator_conferi():
         if st.button("🔍 Consultar", type="primary"):
             if cpf_in:
                 with st.spinner("Buscando..."):
+                    # CHAVE/AMBIENTE USADA PARA IDENTIFICAR A ORIGEM
                     res = realizar_consulta_cpf(cpf_in, "teste_de_consulta_fatorconferi.cpf", forcar, id_cliente_teste)
                     st.session_state['resultado_fator'] = res
 
@@ -835,7 +881,7 @@ def app_fator_conferi():
                         if ok_s: st.toast(f"{msg_s}", icon="💾")
                         else: st.error(f"Erro ao salvar na base PF: {msg_s}")
                         
-                        # 2. Distribuição Dinâmica
+                        # 2. Distribuição Dinâmica (NOVA IMPLEMENTAÇÃO)
                         lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
                         
                         if lista_sucessos:
@@ -844,7 +890,7 @@ def app_fator_conferi():
                             
                         if lista_erros:
                             msg_erro = "\n".join(lista_erros)
-                            st.error(f"⚠️ Relatório de Importação:\n{msg_erro}")
+                            st.error(f"⚠️ Erros na distribuição:\n{msg_erro}")
                             
         
         if 'resultado_fator' in st.session_state:
@@ -899,17 +945,24 @@ def app_fator_conferi():
                     if salvar_alteracoes_genericas(nome_sql, df_param, df_editado): st.success("Salvo!"); time.sleep(1); st.rerun()
 
     with tabs[5]:
+        # --- NOVA LÓGICA: MAPA DE DADOS RELACIONAL ---
         st.subheader("⚙️ Mapeamento de Dados (API -> SQL)")
         st.info("Configure qual campo da API (JSON Key) deve ser salvo em qual coluna da tabela.")
         
+        # 1. Seleção da Tabela
         lista_tabelas = listar_tabelas_disponiveis()
         tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
         
         if tabela_sel != "(Selecione)":
             colunas_db = listar_colunas_geral(tabela_sel)
+            
+            # --- LÓGICA DE PRÉ-LOAD ---
+            # Busca mapeamento existente para pré-preencher o Multiselect
             mapa_existente = listar_mapeamento_tabela(tabela_sel)
+            # Filtra apenas colunas que ainda existem na tabela
             colunas_pre_selecionadas = [c for c in mapa_existente.keys() if c in colunas_db]
             
+            # 2. Seleção de Colunas (com default carregado)
             colunas_sel = st.multiselect(
                 "2. Escolha as colunas para mapear:", 
                 options=colunas_db, 
@@ -921,22 +974,24 @@ def app_fator_conferi():
                 st.markdown("#### 3. Editar Mapeamento")
                 st.caption("Escreva o nome exato do campo da API na coluna da direita (ex: `nome`, `cpf`, `nascto`).")
                 
+                # Monta DataFrame para edição com coluna visual de Tabela
                 dados_grade = []
                 for col in colunas_sel:
                     val_atual = mapa_existente.get(col, "")
                     dados_grade.append({
-                        "Tabela Destino": tabela_sel,
+                        "Tabela Destino": tabela_sel, # Coluna visual solicitada
                         "Coluna SQL": col, 
                         "Chave JSON API": val_atual
                     })
                 
                 df_grade = pd.DataFrame(dados_grade)
                 
+                # Editor de Dados
                 df_editado = st.data_editor(
                     df_grade,
                     column_config={
-                        "Tabela Destino": st.column_config.TextColumn(disabled=True),
-                        "Coluna SQL": st.column_config.TextColumn(disabled=True),
+                        "Tabela Destino": st.column_config.TextColumn(disabled=True), # Bloqueado
+                        "Coluna SQL": st.column_config.TextColumn(disabled=True),     # Bloqueado
                         "Chave JSON API": st.column_config.TextColumn(
                             help="Nome do campo que vem do Fator Conexo (ex: nome, cpf, rg)"
                         )
@@ -946,12 +1001,14 @@ def app_fator_conferi():
                     num_rows="fixed"
                 )
                 
+                # 4. Salvar
                 if st.button("💾 Salvar Mapeamento", type="primary"):
                     if salvar_mapeamento_grade(tabela_sel, df_editado):
                         st.success(f"Mapeamento salvo com sucesso para a tabela **{tabela_sel}**!")
                         time.sleep(1.5)
                         st.rerun()
         
+        # --- TABELA GERAL NO FINAL DA ABA ---
         st.divider()
         st.markdown("### 📋 Tabela Geral de Conexões (conexoes.fatorconferi_conexao_tabelas)")
         df_geral = listar_todos_mapeamentos()

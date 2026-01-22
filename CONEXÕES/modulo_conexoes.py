@@ -5,11 +5,12 @@ import time
 from datetime import datetime
 import conexao
 
-# Tenta importar o módulo específico do Fator Conferi
+# --- CORREÇÃO: Importação com o nome correto do arquivo ---
+# O arquivo criado anteriormente foi 'modulo_fatorconferi.py'
 try:
-    import modulo_fator_conferi
+    import modulo_fatorconferi
 except ImportError:
-    modulo_fator_conferi = None
+    modulo_fatorconferi = None
 
 # --- CONEXÃO COM O BANCO ---
 def get_conn():
@@ -158,10 +159,11 @@ def app_conexoes():
             st.session_state['navegacao_conexoes'] = None
             st.rerun()
         
-        if modulo_fator_conferi:
-            modulo_fator_conferi.app_fator_conferi()
+        # --- CORREÇÃO: Uso da variável correta ---
+        if modulo_fatorconferi:
+            modulo_fatorconferi.app_fator_conferi()
         else:
-            st.error("Módulo 'modulo_fator_conferi.py' não encontrado.")
+            st.error("Módulo 'modulo_fatorconferi.py' não encontrado ou com erro de importação.")
         return 
 
     # --- TELA: LISTA DE CONEXÕES ---
