@@ -49,219 +49,127 @@ def registrar_erro_importacao(cpf, erro_msg):
 
 def sanitizar_valor_api(valor):
     """
-    Remove espaços, converte '[]', '[ ]' e 'NULO' para None.
+    Remove espaços, quebras de linha e converte indicadores de vazio para None.
+    Mantém o dado fiel, mas limpo para SQL.
     """
-    if valor is None:
-        return None
-    
-    if isinstance(valor, list) and len(valor) == 0:
-        return None
+    if valor is None: return None
     
     if isinstance(valor, str):
         v = valor.strip()
-        if v in ["[]", "[ ]"]:
-            return None
-        if v.upper() == "NULO":
-            return None
-        if v == "":
-            return None
+        # Regras de limpeza
+        if v.upper() in ["NULO", "NULL", "NONE"]: return None
+        if v in ["[]", "[ ]", "{}"]: return None
+        if v == "": return None
         return v
         
     return valor
 
 # =============================================================================
-# 2. PARSING (JSON E XML) - COM LOGICA MULTI-ITEM
+# 2. PARSING XML ESTRITO (PRESERVA ESTRUTURA E NOMES)
 # =============================================================================
 
-def find_tag_insensitive(element, tag_name):
-    if element is None: return None
-    res = element.find(tag_name)
-    if res is not None: return res
-    res = element.find(tag_name.upper())
-    if res is not None: return res
-    res = element.find(tag_name.lower())
-    if res is not None: return res
-    for child in element:
-        if child.tag.lower() == tag_name.lower():
-            return child
-    return None
-
-def get_tag_text_insensitive(element, tag_name):
-    node = find_tag_insensitive(element, tag_name)
-    if node is not None and node.text:
-        return sanitizar_valor_api(node.text)
-    return None
-
-def parse_xml_to_dict(texto_resposta):
+def _xml_para_dict_recursivo(elemento):
     """
-    Lê JSON/XML e 'achata' listas criando chaves indexadas (telefone_1, telefone_2...)
+    Converte elemento XML para Dicionário recursivamente.
+    - Preserva nome das tags exato (Ex: CADASTRAIS, NOME_MAE).
+    - Converte tags repetidas em Listas.
+    - Aplica sanitização nos valores (texto).
     """
-    dados = {}
+    # 1. Extrai valor texto limpo
+    texto = sanitizar_valor_api(elemento.text)
     
-    # --- TENTATIVA 1: JSON ---
+    # 2. Se não tem filhos, é um campo folha (Ex: <CPF>123</CPF>)
+    if len(elemento) == 0:
+        return texto
+
+    # 3. Se tem filhos, processa estrutura (Ex: <CADASTRAIS>...</CADASTRAIS>)
+    resultado = {}
+    for filho in elemento:
+        tag = filho.tag
+        # Remove namespace se existir ({...}tag)
+        if '}' in tag: tag = tag.split('}', 1)[1]
+        
+        valor_filho = _xml_para_dict_recursivo(filho)
+        
+        # Lógica para Listas: Se a tag já existe, vira uma lista
+        if tag in resultado:
+            if isinstance(resultado[tag], list):
+                resultado[tag].append(valor_filho)
+            else:
+                resultado[tag] = [resultado[tag], valor_filho]
+        else:
+            resultado[tag] = valor_filho
+            
+    return resultado
+
+def parse_xml_to_dict(texto_xml):
+    """
+    Recebe XML bruto da API e retorna JSON estruturado fiel.
+    """
     try:
-        json_bruto = json.loads(texto_resposta)
+        # Garante encoding UTF-8
+        if isinstance(texto_xml, bytes):
+            texto_xml = texto_xml.decode('utf-8', errors='ignore')
+        texto_xml = texto_xml.replace('ISO-8859-1', 'UTF-8')
         
-        # Copia campos raiz
-        for k, v in json_bruto.items():
-            dados[k] = sanitizar_valor_api(v)
-            dados[k.lower()] = sanitizar_valor_api(v)
-
-        # --- PROCESSAMENTO DE TELEFONES (Dispositivos) ---
-        dispositivos = None
-        for k in json_bruto.keys():
-            if "dispositivos" in k.lower().strip():
-                dispositivos = json_bruto[k]
-                break
+        root = ET.fromstring(texto_xml)
         
-        telefones_lista = []
-        if isinstance(dispositivos, list):
-            for d in dispositivos:
-                num = None
-                for sub_k, sub_v in d.items():
-                    if "numero" in sub_k.lower().replace("ú", "u"):
-                        num = sanitizar_valor_api(sub_v)
-                        break
-                if num:
-                    telefones_lista.append({'numero': num})
+        # O elemento raiz geralmente é <RETORNO>, pegamos o conteúdo dele
+        dados_estruturados = _xml_para_dict_recursivo(root)
         
-        dados['telefones'] = telefones_lista
-
-        # Lógica de Achatamento (Flattening) para Telefones
-        # Cria chaves: telefone_1, numero_1, telefone_2, numero_2...
-        for i, item in enumerate(telefones_lista):
-            idx = i + 1
-            num = item['numero']
-            dados[f'telefone_{idx}'] = num
-            dados[f'numero_{idx}'] = num
+        # Se o root retornou apenas string (vazio), retorna dict vazio
+        if not isinstance(dados_estruturados, dict):
+            return {}
             
-            # Mantém compatibilidade com o [0] na raiz sem sufixo
-            if i == 0:
-                dados['telefone'] = num
-                dados['numero'] = num
-                dados['celular'] = num
+        return dados_estruturados
 
-        # --- PROCESSAMENTO DE ENDEREÇOS ---
-        enderecos_lista = []
-        lista_end_raw = None
-        for k in json_bruto.keys():
-            if "enderecos" in k.lower().strip():
-                lista_end_raw = json_bruto[k]
-                break
-        
-        if isinstance(lista_end_raw, list):
-            for end in lista_end_raw:
-                end_limpo = {k.strip().lower(): sanitizar_valor_api(v) for k, v in end.items()}
-                enderecos_lista.append(end_limpo)
-        
-        dados['enderecos'] = enderecos_lista
-
-        # Lógica de Achatamento (Flattening) para Endereços
-        # Cria chaves: rua_1, cep_1, rua_2, cep_2...
-        for i, item in enumerate(enderecos_lista):
-            idx = i + 1
-            # Mapeia campos comuns com sufixo
-            for chave_end, valor_end in item.items():
-                dados[f"{chave_end}_{idx}"] = valor_end # ex: rua_1, cep_1
-            
-            # Mantém compatibilidade com o [0] na raiz sem sufixo
-            if i == 0:
-                dados['rua'] = item.get('rua')
-                dados['logradouro'] = item.get('rua')
-                dados['bairro'] = item.get('bairro')
-                dados['cidade'] = item.get('cidade')
-                dados['uf'] = item.get('uf')
-                dados['cep'] = item.get('cep')
-        
-        return dados
-
-    except json.JSONDecodeError:
-        pass
-    except Exception:
-        pass
-
-    # --- TENTATIVA 2: XML (Legado) ---
-    try:
-        xml_string = texto_resposta.replace('ISO-8859-1', 'UTF-8') 
-        root = ET.fromstring(xml_string)
-        
-        cad = find_tag_insensitive(root, 'cadastrais')
-        if cad is not None:
-            dados['nome'] = get_tag_text_insensitive(cad, 'nome')
-            dados['cpf'] = get_tag_text_insensitive(cad, 'cpf')
-            dados['nascimento'] = get_tag_text_insensitive(cad, 'nascto') 
-            dados['mae'] = get_tag_text_insensitive(cad, 'nome_mae')
-            dados['rg'] = get_tag_text_insensitive(cad, 'rg')
-            dados['pai'] = get_tag_text_insensitive(cad, 'nome_pai')
-            
-            uf_res = get_tag_text_insensitive(cad, 'uf_emissao')
-            if not uf_res: uf_res = get_tag_text_insensitive(cad, 'uf_rg')
-            dados['uf_rg'] = uf_res
-            dados['sexo'] = get_tag_text_insensitive(cad, 'sexo')
-        
-        telefones = []
-        for tag_grupo in ['telefones_movel', 'telefones_fixo']:
-            node = find_tag_insensitive(root, tag_grupo)
-            if node is not None:
-                for child in node:
-                    if 'telefone' in child.tag.lower():
-                        num = get_tag_text_insensitive(child, 'numero') or get_tag_text_insensitive(child, 'número')
-                        if num:
-                            telefones.append({'numero': num})
-        
-        dados['telefones'] = telefones
-        
-        # Achata telefones XML
-        for i, item in enumerate(telefones):
-            idx = i + 1
-            dados[f'telefone_{idx}'] = item['numero']
-            if i == 0:
-                dados['telefone'] = item['numero']
-                dados['numero'] = item['numero']
-
-        emails = []
-        em_root = find_tag_insensitive(root, 'emails')
-        if em_root is not None:
-            for em in em_root:
-                if 'email' in em.tag.lower() and em.text: 
-                    val = sanitizar_valor_api(em.text)
-                    if val: emails.append(val)
-        dados['emails'] = emails
-        
-        # Achata Emails XML
-        for i, val in enumerate(emails):
-            dados[f'email_{i+1}'] = val
-            if i == 0: dados['email'] = val
-
-        enderecos = []
-        end_root = find_tag_insensitive(root, 'enderecos')
-        if end_root is not None:
-            for end in end_root:
-                if 'endereco' in end.tag.lower():
-                    enderecos.append({
-                        'rua': get_tag_text_insensitive(end, 'logradouro') or get_tag_text_insensitive(end, 'rua'),
-                        'bairro': get_tag_text_insensitive(end, 'bairro'),
-                        'cidade': get_tag_text_insensitive(end, 'cidade'),
-                        'uf': get_tag_text_insensitive(end, 'estado') or get_tag_text_insensitive(end, 'uf'),
-                        'cep': get_tag_text_insensitive(end, 'cep')
-                    })
-        dados['enderecos'] = enderecos
-        
-        # Achata Endereços XML
-        for i, item in enumerate(enderecos):
-            idx = i + 1
-            for k, v in item.items():
-                dados[f"{k}_{idx}"] = v
-            if i == 0:
-                for k, v in item.items():
-                    dados[k] = v
-        
-        return dados
     except Exception as e:
-        return {"erro": f"Falha no Parser (XML/JSON): {e}", "raw": texto_resposta}
+        return {"erro": f"Erro no Parser XML: {e}", "raw": texto_xml}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO
+# 3. BUSCA DE DADOS (FLATTENING VIRTUAL)
+# =============================================================================
+
+def buscar_dado_no_json(dados_json, chaves_possiveis):
+    """
+    Busca um valor no JSON complexo procurando recursivamente por chaves.
+    Isso permite que o 'Mapa de Dados' encontre 'CPF' mesmo se estiver dentro de 'CADASTRAIS'.
+    
+    Args:
+        dados_json (dict): O JSON completo estruturado.
+        chaves_possiveis (list/str): Nome do campo procurado (ex: 'CPF', 'cpf', 'NOME').
+    """
+    if isinstance(chaves_possiveis, str):
+        chaves_possiveis = [chaves_possiveis]
+    
+    # Normaliza chaves para busca (uppercase para comparar com XML que geralmente é upper)
+    chaves_alvo = [k.upper().strip() for k in chaves_possiveis]
+
+    def _busca_recursiva(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.upper() in chaves_alvo:
+                    # Achou! Retorna o valor (se for simples)
+                    if not isinstance(v, (dict, list)):
+                        return v
+                    # Se for lista/dict, retorna convertido pra string pra gravar no banco
+                    return str(v)
+                
+                # Se não achou na chave atual, mergulha se for dict ou lista
+                res = _busca_recursiva(v)
+                if res is not None: return res
+        
+        elif isinstance(obj, list):
+            for item in obj:
+                res = _busca_recursiva(item)
+                if res is not None: return res
+        
+        return None
+
+    return _busca_recursiva(dados_json)
+
+# =============================================================================
+# 4. SALVAMENTO PADRÃO (LEGADO - USANDO BUSCA INTELIGENTE)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -276,31 +184,32 @@ def salvar_dados_fator_no_banco(dados_api):
     conn = get_conn()
     if not conn: return False, "Erro de conexão com o banco."
     
-    raw_cpf = str(dados_api.get('cpf', '')).strip()
+    # Busca CPF em qualquer lugar da estrutura (CADASTRAIS > CPF ou raiz)
+    raw_cpf = buscar_dado_no_json(dados_api, ['CPF'])
+    if not raw_cpf: 
+        return False, "CPF não encontrado na estrutura do XML."
+
     cpf_limpo = mv.ValidadorDocumentos.cpf_para_sql(raw_cpf)
-    
     if not cpf_limpo:
-        return False, f"CPF inválido/irregular para importação: '{raw_cpf}'"
+        return False, f"CPF inválido para importação: '{raw_cpf}'"
 
     try:
         cur = conn.cursor()
         
-        def safe_get(key):
-            v = dados_api.get(key)
-            return v if v else None
-
+        # Mapeamento usando busca recursiva para achar os campos onde quer que estejam
+        # (Ex: NASCTO dentro de CADASTRAIS)
         campos = {
-            'nome': (safe_get('nome') or "CLIENTE IMPORTADO"),
-            'rg': safe_get('rg'),
-            'data_nascimento': mv.ValidadorData.para_sql(safe_get('nascimento')), 
-            'nome_mae': safe_get('mae'),
-            'nome_pai': safe_get('pai'),
-            'uf_rg': safe_get('uf_rg'),
-            'pis': safe_get('pis'),
-            'cnh': safe_get('cnh'),
-            'serie_ctps': safe_get('serie_ctps'),
-            'nome_procurador': safe_get('nome_procurador'),
-            'cpf_procurador': mv.ValidadorDocumentos.cpf_para_sql(safe_get('cpf_procurador'))
+            'nome': buscar_dado_no_json(dados_api, ['NOME']) or "CLIENTE IMPORTADO",
+            'rg': buscar_dado_no_json(dados_api, ['RG']),
+            'data_nascimento': mv.ValidadorData.para_sql(buscar_dado_no_json(dados_api, ['NASCTO', 'NASCIMENTO', 'DATA_NASCIMENTO'])), 
+            'nome_mae': buscar_dado_no_json(dados_api, ['NOME_MAE', 'MAE']),
+            'nome_pai': buscar_dado_no_json(dados_api, ['NOME_PAI', 'PAI']),
+            'uf_rg': buscar_dado_no_json(dados_api, ['UF_EMISSAO', 'UF_RG']),
+            'pis': buscar_dado_no_json(dados_api, ['NIT', 'PIS', 'PASEP']), # XML usa NIT
+            'cnh': buscar_dado_no_json(dados_api, ['CNH']),
+            'serie_ctps': buscar_dado_no_json(dados_api, ['SERIE_CTPS']),
+            'nome_procurador': buscar_dado_no_json(dados_api, ['NOME_PROCURADOR']),
+            'cpf_procurador': mv.ValidadorDocumentos.cpf_para_sql(buscar_dado_no_json(dados_api, ['CPF_PROCURADOR']))
         }
 
         sql_pf = """
@@ -323,60 +232,48 @@ def salvar_dados_fator_no_banco(dados_api):
             campos['nome_procurador'], campos['cpf_procurador']
         ))
 
-        # Salva TODOS os telefones na tabela filha
-        raw_telefones = dados_api.get('telefones', []) or []
-        count_tel = 0
+        # --- TELEFONES ---
+        # No XML: <TELEFONES_MOVEL><TELEFONE><NUMERO>...</NUMERO></TELEFONE>...
+        # Vamos varrer tudo que parecer número de telefone
+        def extrair_telefones(obj, lista_coleta):
+            if isinstance(obj, dict):
+                # Se achou chave NUMERO, tenta validar
+                if 'NUMERO' in obj:
+                    lista_coleta.append(obj['NUMERO'])
+                for v in obj.values():
+                    extrair_telefones(v, lista_coleta)
+            elif isinstance(obj, list):
+                for item in obj:
+                    extrair_telefones(item, lista_coleta)
+
+        lista_tels_raw = []
+        # Busca nas seções específicas para evitar pegar número de casa
+        secoes_tel = [dados_api.get('TELEFONES_MOVEL'), dados_api.get('TELEFONES_FIXO')]
+        for secao in secoes_tel:
+            if secao: extrair_telefones(secao, lista_tels_raw)
+
         col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
-        
-        for t in raw_telefones:
-            val_bruto = str(t.get('numero', '')) if isinstance(t, dict) else str(t)
-            tel_validado = mv.ValidadorContato.telefone_para_sql(val_bruto)
-            
+        count_tel = 0
+        for num in lista_tels_raw:
+            tel_validado = mv.ValidadorContato.telefone_para_sql(num)
             if tel_validado:
                 cur.execute(f"SELECT 1 FROM banco_pf.pf_telefones WHERE {col_tel}=%s AND numero=%s", (cpf_limpo, tel_validado))
                 if not cur.fetchone():
                     cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, tel_validado))
                     count_tel += 1
 
-        raw_emails = dados_api.get('emails', []) or []
-        count_email = 0
-        col_email = verificar_coluna_cpf(cur, 'pf_emails')
-
-        for e in raw_emails:
-            val_bruto = str(e)
-            val_limpo = val_bruto.strip().lower()
-            
-            if mv.ValidadorContato.email_valido(val_limpo):
-                cur.execute(f"SELECT 1 FROM banco_pf.pf_emails WHERE {col_email}=%s AND email=%s", (cpf_limpo, val_limpo))
-                if not cur.fetchone():
-                    cur.execute(f"INSERT INTO banco_pf.pf_emails ({col_email}, email) VALUES (%s, %s)", (cpf_limpo, val_limpo))
-                    count_email += 1
-
-        raw_ends = dados_api.get('enderecos', []) or []
-        count_end = 0
-        col_end = verificar_coluna_cpf(cur, 'pf_enderecos')
-
-        for d in raw_ends:
-            if isinstance(d, dict):
-                cep_val = mv.ValidadorDocumentos.limpar_numero(d.get('cep'))
-                if cep_val and len(cep_val) == 8: pass 
-                else: cep_val = None
-
-                rua_val = d.get('rua')
-                if cep_val or rua_val:
-                    cur.execute(f"SELECT 1 FROM banco_pf.pf_enderecos WHERE {col_end}=%s AND cep=%s AND rua=%s", (cpf_limpo, cep_val, rua_val))
-                    if not cur.fetchone():
-                        cur.execute(f"INSERT INTO banco_pf.pf_enderecos ({col_end}, cep, rua, bairro, cidade, uf) VALUES (%s, %s, %s, %s, %s, %s)", (cpf_limpo, cep_val, rua_val, d.get('bairro'), d.get('cidade'), d.get('uf')))
-                        count_end += 1
-
         conn.commit()
         conn.close()
-        return True, f"✅ Dados inseridos com sucesso! (+{count_tel} Tels, +{count_email} Emails)"
+        return True, f"✅ Dados inseridos com sucesso! (+{count_tel} Tels)"
 
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         registrar_erro_importacao(cpf_limpo, e)
         return False, f"Erro na importação: {str(e)} (Log salvo na pasta JSON)"
+
+# =============================================================================
+# 5. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS)
+# =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
     conn = get_conn()
@@ -387,11 +284,12 @@ def executar_distribuicao_dinamica(dados_api):
     erros = []
 
     try:
+        # Carrega mapa
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
         
         if df_map.empty:
             conn.close()
-            return [], ["Nenhum mapeamento de tabelas encontrado em 'conexoes.fatorconferi_conexao_tabelas'."]
+            return [], ["Nenhum mapeamento configurado."]
 
         tabelas_destino = df_map['tabela_referencia'].unique()
         cur = conn.cursor()
@@ -399,69 +297,56 @@ def executar_distribuicao_dinamica(dados_api):
         for tabela in tabelas_destino:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
-                
                 colunas_sql = []
                 valores_insert = []
-                
                 tem_dado = False
                 chaves_testadas = []
 
                 for _, row in regras.iterrows():
                     col_sql = str(row['tabela_referencia_coluna']).strip()
-                    chave_json = str(row['jason_api_fatorconferi_coluna']).strip()
-                    chaves_testadas.append(chave_json)
+                    chave_xml = str(row['jason_api_fatorconferi_coluna']).strip() # Ex: 'NOME' ou 'CPF'
+                    chaves_testadas.append(chave_xml)
                     
-                    # 1. Pega valor (agora suporta telefone_1, telefone_2, etc.)
-                    valor_raw = dados_api.get(chave_json)
-                    if valor_raw is None:
-                        valor_raw = dados_api.get(chave_json.lower())
-
-                    valor = sanitizar_valor_api(valor_raw)
+                    # Usa a busca inteligente para achar a chave em qualquer lugar do JSON
+                    valor = buscar_dado_no_json(dados_api, [chave_xml])
                     
-                    if isinstance(valor, (list, dict)):
-                        valor = str(valor)
-
-                    # 2. Padronização CPF
-                    if valor and ('cpf' in col_sql.lower() or 'cpf' in chave_json.lower()):
+                    # Padronização Automática de CPF para chaves estrangeiras
+                    if valor and ('cpf' in col_sql.lower() or 'cpf' in chave_xml.lower()):
                         cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
-                        if cpf_ajustado: 
-                            valor = cpf_ajustado
+                        if cpf_ajustado: valor = cpf_ajustado
                     
                     colunas_sql.append(col_sql)
                     valores_insert.append(valor)
                     
-                    if valor: 
-                        tem_dado = True
+                    if valor: tem_dado = True
 
                 if not tem_dado:
-                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}.")
+                    # Silencioso se não achar nada (opcional: ativar log de aviso)
                     continue
 
-                colunas_str = ", ".join(colunas_sql)
+                # Query
                 placeholders = ", ".join(["%s"] * len(valores_insert))
-                
-                sql = f"INSERT INTO {tabela} ({colunas_str}) VALUES ({placeholders})"
+                cols = ", ".join(colunas_sql)
+                sql = f"INSERT INTO {tabela} ({cols}) VALUES ({placeholders})"
                 
                 cur.execute(sql, tuple(valores_insert))
-                
                 sucessos.append(tabela)
             
             except Exception as e:
                 conn.rollback() 
-                erros.append(f"❌ Erro ao inserir em '{tabela}': {str(e)}")
+                erros.append(f"❌ Erro em '{tabela}': {str(e)}")
 
         conn.commit()
         cur.close()
         conn.close()
-        
         return sucessos, erros
 
     except Exception as e:
         if conn: conn.close()
-        return [], [f"Erro crítico no processo de distribuição: {str(e)}"]
+        return [], [f"Erro crítico: {str(e)}"]
 
 # =============================================================================
-# 4. FUNÇÕES DE CONSULTA API E GESTÃO DE SALDO
+# 6. FUNÇÕES API / CONSULTA
 # =============================================================================
 
 def buscar_credenciais():
@@ -594,7 +479,6 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     except Exception as e:
         return False, f"Erro Cobrança: {str(e)}"
 
-# --- FUNÇÃO PRINCIPAL DE CONSULTA ---
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
     if not cpf_padrao:
@@ -662,18 +546,19 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         
         resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
         
-        # --- PARSER ATUALIZADO (JSON/XML + LISTAS) ---
+        # --- PARSER ATUALIZADO XML PURO ---
         dados = parse_xml_to_dict(resp.text)
         
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         
         try:
-            with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4)
+            with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
         except Exception as e:
             st.error(f"Erro ao salvar arquivo JSON de log: {e}")
 
-        if not dados.get('nome'): 
+        # Validação simples se veio algo (buscando NOME em qualquer lugar)
+        if not buscar_dado_no_json(dados, ['NOME']): 
             conn.close()
             return {
                 "sucesso": False, 
@@ -681,7 +566,9 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 "dados": dados
             }
         
-        if not dados.get('cpf'): dados['cpf'] = cpf_padrao
+        # Garante CPF no retorno se não veio
+        if not buscar_dado_no_json(dados, ['CPF']): 
+            dados['CPF_CONSULTADO_INSERIDO'] = cpf_padrao
 
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
                     (cpf_padrao, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
@@ -702,7 +589,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         return {"sucesso": False, "msg": str(e)}
 
 # =============================================================================
-# 5. GESTÃO DE PARÂMETROS E INTERFACE
+# APP PRINCIPAL E INTERFACE
 # =============================================================================
 
 def carregar_dados_genericos(nome_tabela):
@@ -749,10 +636,6 @@ def listar_clientes_carteira():
         try: df = pd.read_sql("SELECT * FROM conexoes.fator_cliente_carteira ORDER BY id", conn); conn.close(); return df
         except: conn.close()
     return pd.DataFrame()
-
-# =============================================================================
-# 6. FUNÇÕES PARA MAPA DE DADOS
-# =============================================================================
 
 def criar_tabela_conexao_tabelas():
     conn = get_conn()
@@ -870,10 +753,6 @@ def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
         return False
     finally: conn.close()
 
-# =============================================================================
-# APP PRINCIPAL
-# =============================================================================
-
 def app_fator_conferi():
     criar_tabela_conexao_tabelas()
 
@@ -928,7 +807,7 @@ def app_fator_conferi():
             res = st.session_state['resultado_fator']
             if res['sucesso']:
                 if "msg" in res: st.success(res['msg'])
-                with st.expander("Ver Dados Retornados", expanded=True): st.json(res['dados'])
+                with st.expander("Ver Dados Retornados (Estrutura Fiel)", expanded=True): st.json(res['dados'])
             else: st.error(res.get('msg', 'Erro'))
 
     with tabs[2]: 
@@ -977,7 +856,7 @@ def app_fator_conferi():
 
     with tabs[5]:
         st.subheader("⚙️ Mapeamento de Dados (API -> SQL)")
-        st.info("Configure qual campo da API (JSON Key) deve ser salvo em qual coluna da tabela.")
+        st.info("Configure qual campo do JSON (Ex: CPF, NOME, ou CADASTRAIS) deve ser salvo em qual coluna da tabela.")
         
         lista_tabelas = listar_tabelas_disponiveis()
         tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
@@ -996,7 +875,7 @@ def app_fator_conferi():
             if colunas_sel:
                 st.divider()
                 st.markdown("#### 3. Editar Mapeamento")
-                st.caption("Escreva o nome exato do campo da API na coluna da direita (ex: `nome`, `cpf`, `nascto`).")
+                st.caption("Escreva o nome do campo XML/JSON (Ex: 'NOME', 'NUMERO', 'CPF'). O sistema buscará em qualquer nível da estrutura.")
                 
                 dados_grade = []
                 for col in colunas_sel:
