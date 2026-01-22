@@ -49,7 +49,7 @@ def registrar_erro_importacao(cpf, erro_msg):
 
 def sanitizar_valor_api(valor):
     """
-    Remove espaços, converte '[]', '[ ]' e 'NULO' para None.
+    Remove espaços, quebras de linha e converte indicadores de vazio para None.
     """
     if valor is None: return None
     
@@ -63,15 +63,11 @@ def sanitizar_valor_api(valor):
     return valor
 
 # =============================================================================
-# 2. PARSING XML ESTRITO (PRESERVA ESTRUTURA E NOMES)
+# 2. PARSING XML ESTRITO
 # =============================================================================
 
 def _xml_para_dict_recursivo(elemento):
-    """
-    Converte elemento XML para Dicionário recursivamente.
-    """
     texto = sanitizar_valor_api(elemento.text)
-    
     if len(elemento) == 0:
         return texto
 
@@ -79,7 +75,6 @@ def _xml_para_dict_recursivo(elemento):
     for filho in elemento:
         tag = filho.tag
         if '}' in tag: tag = tag.split('}', 1)[1]
-        
         valor_filho = _xml_para_dict_recursivo(filho)
         
         if tag in resultado:
@@ -93,60 +88,106 @@ def _xml_para_dict_recursivo(elemento):
     return resultado
 
 def parse_xml_to_dict(texto_xml):
-    """
-    Recebe XML bruto da API e retorna JSON estruturado fiel.
-    """
     try:
         if isinstance(texto_xml, bytes):
             texto_xml = texto_xml.decode('utf-8', errors='ignore')
         texto_xml = texto_xml.replace('ISO-8859-1', 'UTF-8')
         
+        # Tenta JSON primeiro (caso a API mude ou venha híbrido)
+        try:
+            return json.loads(texto_xml)
+        except:
+            pass
+
+        # Fallback para XML
         root = ET.fromstring(texto_xml)
-        dados_estruturados = _xml_para_dict_recursivo(root)
-        
-        if not isinstance(dados_estruturados, dict):
-            return {}
-            
-        return dados_estruturados
+        dados = _xml_para_dict_recursivo(root)
+        return dados if isinstance(dados, dict) else {}
 
     except Exception as e:
-        return {"erro": f"Erro no Parser XML: {e}", "raw": texto_xml}
+        return {"erro": f"Erro no Parser: {e}", "raw": texto_xml}
 
 # =============================================================================
-# 3. BUSCA DE DADOS (FLATTENING VIRTUAL)
+# 3. BUSCA INTELIGENTE POR CAMINHO (COM LOGICA _ E ;)
 # =============================================================================
 
-def buscar_dado_no_json(dados_json, chaves_possiveis):
+def _navegar_recursivamente(dados_atuais, lista_chaves):
     """
-    Busca um valor no JSON complexo procurando recursivamente por chaves.
+    Navega no JSON seguindo a lista de chaves (ex: ['CADASTRAIS', 'CPF']).
+    - Suporta chaves com underline (ex: TELEFONES_FIXO).
+    - Suporta Listas (coleta valores de todos os itens).
     """
-    if isinstance(chaves_possiveis, str):
-        chaves_possiveis = [chaves_possiveis]
+    if not lista_chaves:
+        return dados_atuais
+
+    chave_atual = lista_chaves[0].upper().strip()
+    resto_chaves = lista_chaves[1:]
+
+    # Caso 1: Dados atuais são um Dicionário
+    if isinstance(dados_atuais, dict):
+        # Tenta encontrar a chave exata
+        for k, v in dados_atuais.items():
+            if k.upper() == chave_atual:
+                return _navegar_recursivamente(v, resto_chaves)
+        
+        # TENTATIVA DE COMBINAÇÃO DE CHAVES (Correção para TELEFONES_FIXO vs TELEFONES -> FIXO)
+        # Se a próxima chave também existe, tenta combinar (ex: chave_atual='TELEFONES', prox='FIXO' -> tenta 'TELEFONES_FIXO')
+        if resto_chaves:
+            chave_combinada = f"{chave_atual}_{resto_chaves[0].upper().strip()}"
+            for k, v in dados_atuais.items():
+                if k.upper() == chave_combinada:
+                    # Pula duas chaves na lista pois usamos ambas
+                    return _navegar_recursivamente(v, resto_chaves[1:])
+
+    # Caso 2: Dados atuais são uma Lista (1:N)
+    elif isinstance(dados_atuais, list):
+        resultados_coletados = []
+        for item in dados_atuais:
+            res = _navegar_recursivamente(item, lista_chaves) # Reaplica a mesma chave no item
+            if res is not None:
+                if isinstance(res, list):
+                    resultados_coletados.extend(res) # Achata listas aninhadas
+                else:
+                    resultados_coletados.append(res)
+        return resultados_coletados if resultados_coletados else None
+
+    return None
+
+def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
+    """
+    Interpreta strings como: "TELEFONES_FIXO;_TELEFONES_MOVÍVEIS_;_TELEFONE_;NÚMERO"
+    Lógica:
+    1. ';' separa caminhos ALTERNATIVOS (OU).
+    2. '_' ou ' ' separa NÍVEIS da hierarquia.
+    """
+    if not string_mapeamento: return None
     
-    chaves_alvo = [k.upper().strip() for k in chaves_possiveis]
-
-    def _busca_recursiva(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k.upper() in chaves_alvo:
-                    if not isinstance(v, (dict, list)):
-                        return v
-                    return str(v)
-                
-                res = _busca_recursiva(v)
-                if res is not None: return res
+    # 1. Separa Alternativas (Pelo ;)
+    caminhos_alternativos = str(string_mapeamento).split(';')
+    
+    for caminho_bruto in caminhos_alternativos:
+        # 2. Limpa e Normaliza o Caminho
+        # Substitui espaços por _, remove _ duplicados e das pontas
+        caminho_limpo = caminho_bruto.strip().replace(' ', '_')
+        partes = [p for p in caminho_limpo.split('_') if p] # Remove strings vazias
         
-        elif isinstance(obj, list):
-            for item in obj:
-                res = _busca_recursiva(item)
-                if res is not None: return res
+        # 3. Navega
+        valor_encontrado = _navegar_recursivamente(dados_api, partes)
         
-        return None
+        # 4. Validação do Resultado
+        # Se achou algo que não seja None ou Lista Vazia, retorna (Prioridade)
+        valor_sanitizado = sanitizar_valor_api(valor_encontrado)
+        
+        if valor_sanitizado is not None:
+            # Se for lista com itens validos, retorna lista. Se for valor, retorna valor.
+            if isinstance(valor_sanitizado, list) and len(valor_sanitizado) == 0:
+                continue # Lista vazia, tenta proximo caminho
+            return valor_sanitizado
 
-    return _busca_recursiva(dados_json)
+    return None
 
 # =============================================================================
-# 4. SALVAMENTO PADRÃO (LEGADO)
+# 4. SALVAMENTO PADRÃO (LEGADO - MANTIDO PARA SEGURANÇA)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -158,157 +199,144 @@ def verificar_coluna_cpf(cur, tabela):
     return 'cpf_ref' 
 
 def salvar_dados_fator_no_banco(dados_api):
-    conn = get_conn()
-    if not conn: return False, "Erro de conexão com o banco."
+    # Usa a nova função de extração para buscar CPF e NOME na raiz ou profundidade
+    raw_cpf = extrair_valor_por_caminho_complexo(dados_api, "CPF;_CADASTRAIS_CPF")
     
-    raw_cpf = buscar_dado_no_json(dados_api, ['CPF'])
-    if not raw_cpf: 
-        return False, "CPF não encontrado na estrutura do XML."
-
+    conn = get_conn()
+    if not conn: return False, "Erro BD"
+    
+    if not raw_cpf: return False, "CPF não localizado."
     cpf_limpo = mv.ValidadorDocumentos.cpf_para_sql(raw_cpf)
-    if not cpf_limpo:
-        return False, f"CPF inválido para importação: '{raw_cpf}'"
+    if not cpf_limpo: return False, f"CPF Inválido: {raw_cpf}"
 
     try:
         cur = conn.cursor()
         
+        # Mapeamento fixo para a tabela legado (banco_pf.pf_dados)
         campos = {
-            'nome': buscar_dado_no_json(dados_api, ['NOME']) or "CLIENTE IMPORTADO",
-            'rg': buscar_dado_no_json(dados_api, ['RG']),
-            'data_nascimento': mv.ValidadorData.para_sql(buscar_dado_no_json(dados_api, ['NASCTO', 'NASCIMENTO', 'DATA_NASCIMENTO'])), 
-            'nome_mae': buscar_dado_no_json(dados_api, ['NOME_MAE', 'MAE']),
-            'nome_pai': buscar_dado_no_json(dados_api, ['NOME_PAI', 'PAI']),
-            'uf_rg': buscar_dado_no_json(dados_api, ['UF_EMISSAO', 'UF_RG']),
-            'pis': buscar_dado_no_json(dados_api, ['NIT', 'PIS', 'PASEP']),
-            'cnh': buscar_dado_no_json(dados_api, ['CNH']),
-            'serie_ctps': buscar_dado_no_json(dados_api, ['SERIE_CTPS']),
-            'nome_procurador': buscar_dado_no_json(dados_api, ['NOME_PROCURADOR']),
-            'cpf_procurador': mv.ValidadorDocumentos.cpf_para_sql(buscar_dado_no_json(dados_api, ['CPF_PROCURADOR']))
+            'nome': extrair_valor_por_caminho_complexo(dados_api, "NOME;_CADASTRAIS_NOME"),
+            'rg': extrair_valor_por_caminho_complexo(dados_api, "RG;_CADASTRAIS_RG"),
+            'data_nascimento': mv.ValidadorData.para_sql(extrair_valor_por_caminho_complexo(dados_api, "NASCTO;NASCIMENTO;_CADASTRAIS_NASCTO")),
+            'nome_mae': extrair_valor_por_caminho_complexo(dados_api, "NOME_MAE;MAE;_CADASTRAIS_NOME_MAE"),
+            'nome_pai': extrair_valor_por_caminho_complexo(dados_api, "NOME_PAI;PAI;_CADASTRAIS_NOME_PAI"),
+            'uf_rg': extrair_valor_por_caminho_complexo(dados_api, "UF_RG;UF_EMISSAO"),
+            'sexo': extrair_valor_por_caminho_complexo(dados_api, "SEXO;_CADASTRAIS_SEXO")
         }
 
         sql_pf = """
-            INSERT INTO banco_pf.pf_dados (
-                cpf, nome, rg, data_nascimento, nome_mae, nome_pai, uf_rg, 
-                pis, cnh, serie_ctps, nome_procurador, cpf_procurador, data_criacao
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (cpf) DO UPDATE SET
-                nome = COALESCE(EXCLUDED.nome, banco_pf.pf_dados.nome),
-                rg = COALESCE(EXCLUDED.rg, banco_pf.pf_dados.rg),
-                data_nascimento = COALESCE(EXCLUDED.data_nascimento, banco_pf.pf_dados.data_nascimento),
-                nome_mae = COALESCE(EXCLUDED.nome_mae, banco_pf.pf_dados.nome_mae),
-                nome_pai = COALESCE(EXCLUDED.nome_pai, banco_pf.pf_dados.nome_pai),
-                uf_rg = COALESCE(EXCLUDED.uf_rg, banco_pf.pf_dados.uf_rg)
+            INSERT INTO banco_pf.pf_dados (cpf, nome, rg, data_nascimento, nome_mae, nome_pai, uf_rg, data_criacao) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (cpf) DO UPDATE SET 
+            nome=EXCLUDED.nome, data_nascimento=EXCLUDED.data_nascimento, nome_mae=EXCLUDED.nome_mae
         """
-        cur.execute(sql_pf, (
-            cpf_limpo, campos['nome'], campos['rg'], campos['data_nascimento'], 
-            campos['nome_mae'], campos['nome_pai'], campos['uf_rg'],
-            campos['pis'], campos['cnh'], campos['serie_ctps'], 
-            campos['nome_procurador'], campos['cpf_procurador']
-        ))
+        cur.execute(sql_pf, (cpf_limpo, campos['nome'], campos['rg'], campos['data_nascimento'], campos['nome_mae'], campos['nome_pai'], campos['uf_rg']))
+        
+        # Telefones (Busca genérica em listas conhecidas)
+        tels = extrair_valor_por_caminho_complexo(dados_api, "TELEFONES_MOVEL_TELEFONE_NUMERO;TELEFONES_FIXO_TELEFONE_NUMERO;TELEFONES_NUMERO")
+        if tels:
+            if not isinstance(tels, list): tels = [tels]
+            col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
+            for t in tels:
+                tv = mv.ValidadorContato.telefone_para_sql(t)
+                if tv:
+                    cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, tv))
 
-        # --- TELEFONES ---
-        def extrair_telefones(obj, lista_coleta):
-            if isinstance(obj, dict):
-                if 'NUMERO' in obj:
-                    lista_coleta.append(obj['NUMERO'])
-                for v in obj.values():
-                    extrair_telefones(v, lista_coleta)
-            elif isinstance(obj, list):
-                for item in obj:
-                    extrair_telefones(item, lista_coleta)
-
-        lista_tels_raw = []
-        secoes_tel = [dados_api.get('TELEFONES_MOVEL'), dados_api.get('TELEFONES_FIXO')]
-        for secao in secoes_tel:
-            if secao: extrair_telefones(secao, lista_tels_raw)
-
-        col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
-        count_tel = 0
-        for num in lista_tels_raw:
-            tel_validado = mv.ValidadorContato.telefone_para_sql(num)
-            if tel_validado:
-                cur.execute(f"SELECT 1 FROM banco_pf.pf_telefones WHERE {col_tel}=%s AND numero=%s", (cpf_limpo, tel_validado))
-                if not cur.fetchone():
-                    cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero, data_atualizacao) VALUES (%s, %s, CURRENT_DATE)", (cpf_limpo, tel_validado))
-                    count_tel += 1
-
-        conn.commit()
-        conn.close()
-        return True, f"✅ Dados inseridos com sucesso! (+{count_tel} Tels)"
-
+        conn.commit(); conn.close()
+        return True, "Dados básicos salvos."
     except Exception as e:
-        if conn: conn.rollback(); conn.close()
-        registrar_erro_importacao(cpf_limpo, e)
-        return False, f"Erro na importação: {str(e)} (Log salvo na pasta JSON)"
+        return False, str(e)
 
 # =============================================================================
-# 5. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS)
+# 5. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS - COM 1:N)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
     conn = get_conn()
-    if not conn:
-        return [], ["Erro de conexão com o banco de dados."]
+    if not conn: return [], ["Erro de conexão DB"]
 
     sucessos = []
     erros = []
 
     try:
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
-        
-        if df_map.empty:
-            conn.close()
-            return [], ["Nenhum mapeamento configurado."]
-
-        tabelas_destino = df_map['tabela_referencia'].unique()
+        tabelas = df_map['tabela_referencia'].unique()
         cur = conn.cursor()
 
-        for tabela in tabelas_destino:
+        for tabela in tabelas:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
-                colunas_sql = []
-                valores_insert = []
-                tem_dado = False
-                chaves_testadas = []
-
+                
+                # 1. Coleta os dados de todas as colunas mapeadas
+                # Resultado esperado: Um dicionário onde a chave é a coluna SQL e o valor é o dado (ou lista de dados)
+                dados_preparados = {}
+                max_linhas = 1 # Para controlar o loop 1:N
+                
                 for _, row in regras.iterrows():
                     col_sql = str(row['tabela_referencia_coluna']).strip()
-                    chave_xml = str(row['jason_api_fatorconferi_coluna']).strip()
-                    chaves_testadas.append(chave_xml)
+                    caminho_map = str(row['jason_api_fatorconferi_coluna']).strip()
                     
-                    valor = buscar_dado_no_json(dados_api, [chave_xml])
+                    # Usa a extração complexa (_ e ;)
+                    valor = extrair_valor_por_caminho_complexo(dados_api, caminho_map)
                     
-                    if valor and ('cpf' in col_sql.lower() or 'cpf' in chave_xml.lower()):
-                        cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
-                        if cpf_ajustado: valor = cpf_ajustado
-                    
-                    colunas_sql.append(col_sql)
-                    valores_insert.append(valor)
-                    
-                    if valor: tem_dado = True
+                    # Padronização CPF para Chaves Estrangeiras
+                    if valor and ('cpf' in col_sql.lower() or 'cpf' in caminho_map.lower()):
+                        if isinstance(valor, list):
+                            valor = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor]
+                        else:
+                            valor = mv.ValidadorDocumentos.cpf_para_sql(valor)
 
-                if not tem_dado:
+                    dados_preparados[col_sql] = valor
+                    
+                    # Se for lista, atualiza o número máximo de linhas para inserir
+                    if isinstance(valor, list):
+                        max_linhas = max(max_linhas, len(valor))
+
+                # 2. Monta as linhas para inserção
+                # Se max_linhas > 1, significa que temos listas (ex: 3 telefones). 
+                # Valores únicos (ex: CPF do cliente) são repetidos para todas as linhas.
+                
+                if not any(v is not None for v in dados_preparados.values()):
+                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado.")
                     continue
 
-                placeholders = ", ".join(["%s"] * len(valores_insert))
-                cols = ", ".join(colunas_sql)
-                sql = f"INSERT INTO {tabela} ({cols}) VALUES ({placeholders})"
-                
-                cur.execute(sql, tuple(valores_insert))
-                sucessos.append(tabela)
-            
-            except Exception as e:
-                conn.rollback() 
-                erros.append(f"❌ Erro em '{tabela}': {str(e)}")
+                colunas_ordenadas = list(dados_preparados.keys())
+                placeholders = ", ".join(["%s"] * len(colunas_ordenadas))
+                sql = f"INSERT INTO {tabela} ({', '.join(colunas_ordenadas)}) VALUES ({placeholders})"
 
-        conn.commit()
-        cur.close()
-        conn.close()
+                for i in range(max_linhas):
+                    linha_valores = []
+                    linha_valida = False
+                    
+                    for col in colunas_ordenadas:
+                        val = dados_preparados[col]
+                        
+                        if isinstance(val, list):
+                            # Pega o item 'i' da lista, ou None se a lista acabou
+                            item = val[i] if i < len(val) else None
+                        else:
+                            # Valor fixo (ex: CPF raiz), repete para todos
+                            item = val
+                        
+                        if isinstance(item, (dict, list)): item = str(item)
+                        if item: linha_valida = True
+                        linha_valores.append(item)
+                    
+                    # Só insere se a linha tiver algum dado útil (não for só Nones)
+                    if linha_valida:
+                        cur.execute(sql, tuple(linha_valores))
+
+                sucessos.append(tabela)
+
+            except Exception as e:
+                conn.rollback()
+                erros.append(f"❌ Erro '{tabela}': {e}")
+
+        conn.commit(); cur.close(); conn.close()
         return sucessos, erros
 
     except Exception as e:
         if conn: conn.close()
-        return [], [f"Erro crítico: {str(e)}"]
+        return [], [str(e)]
 
 # =============================================================================
 # 6. FUNÇÕES API / CONSULTA
@@ -523,7 +551,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             st.error(f"Erro ao salvar arquivo JSON de log: {e}")
 
         # Validação simples se veio algo (buscando NOME em qualquer lugar)
-        if not buscar_dado_no_json(dados, ['NOME']): 
+        if not extrair_valor_por_caminho_complexo(dados, "NOME;CADASTRAIS_NOME"): 
             conn.close()
             return {
                 "sucesso": False, 
@@ -532,7 +560,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             }
         
         # Garante CPF no retorno se não veio
-        if not buscar_dado_no_json(dados, ['CPF']): 
+        if not extrair_valor_por_caminho_complexo(dados, "CPF;CADASTRAIS_CPF"): 
             dados['CPF_CONSULTADO_INSERIDO'] = cpf_padrao
 
         cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
@@ -865,7 +893,7 @@ def app_fator_conferi():
                     hide_index=True,
                     use_container_width=True,
                     num_rows="fixed",
-                    key=f"editor_mapa_{tabela_sel}" # <--- CHAVE ÚNICA ADICIONADA AQUI
+                    key=f"editor_mapa_{tabela_sel}"
                 )
                 
                 if st.button("💾 Salvar Mapeamento", type="primary"):
