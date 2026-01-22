@@ -288,6 +288,89 @@ def salvar_dados_fator_no_banco(dados_api):
         registrar_erro_importacao(cpf_limpo, e)
         return False, f"Erro na importação: {str(e)} (Log salvo na pasta JSON)"
 
+def executar_distribuicao_dinamica(dados_api):
+    """
+    Função que consulta a tabela de mapeamento e distribui os dados recebidos da API
+    para as tabelas configuradas em conexoes.fatorconferi_conexao_tabelas.
+    Retorna dois lists: sucessos e erros.
+    """
+    conn = get_conn()
+    if not conn:
+        return [], ["Erro de conexão com o banco de dados."]
+
+    sucessos = []
+    erros = []
+
+    try:
+        # 1. Recuperar mapeamentos
+        df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
+        
+        if df_map.empty:
+            conn.close()
+            return [], ["Nenhum mapeamento de tabelas encontrado em 'conexoes.fatorconferi_conexao_tabelas'."]
+
+        # 2. Agrupar por tabela de destino
+        tabelas_destino = df_map['tabela_referencia'].unique()
+        cur = conn.cursor()
+
+        for tabela in tabelas_destino:
+            try:
+                # Filtra colunas para esta tabela
+                regras = df_map[df_map['tabela_referencia'] == tabela]
+                
+                colunas_sql = []
+                valores_insert = []
+                
+                tem_dado = False
+                
+                for _, row in regras.iterrows():
+                    col_sql = row['tabela_referencia_coluna']
+                    chave_json = row['jason_api_fatorconferi_coluna']
+                    
+                    # Busca o valor no dict da API (apenas valores escalares/strings simples)
+                    valor = dados_api.get(chave_json)
+                    
+                    # Tratamento simples para listas convertendo para string, caso o usuário mapeie um campo array
+                    if isinstance(valor, list) or isinstance(valor, dict):
+                        valor = str(valor)
+                    
+                    colunas_sql.append(col_sql)
+                    valores_insert.append(valor)
+                    
+                    if valor: # Marca se pelo menos um campo tem valor
+                        tem_dado = True
+
+                if not tem_dado:
+                    # Se todos os campos mapeados estão vazios na API, pula esta tabela mas não considera erro
+                    continue
+
+                # Monta a Query Dinâmica
+                # Ex: INSERT INTO schema.tabela (col1, col2) VALUES (%s, %s)
+                colunas_str = ", ".join(colunas_sql)
+                placeholders = ", ".join(["%s"] * len(valores_insert))
+                
+                sql = f"INSERT INTO {tabela} ({colunas_str}) VALUES ({placeholders})"
+                
+                # Executa
+                cur.execute(sql, tuple(valores_insert))
+                
+                sucessos.append(tabela)
+            
+            except Exception as e:
+                # Captura erro específico desta tabela e continua para a próxima
+                conn.rollback() # Rollback parcial se necessário, mas aqui estamos no bloco maior
+                erros.append(f"Erro ao inserir em '{tabela}': {str(e)}")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return sucessos, erros
+
+    except Exception as e:
+        if conn: conn.close()
+        return [], [f"Erro crítico no processo de distribuição: {str(e)}"]
+
 # =============================================================================
 # 4. FUNÇÕES DE CONSULTA API E GESTÃO DE SALDO
 # =============================================================================
@@ -793,9 +876,22 @@ def app_fator_conferi():
                     st.session_state['resultado_fator'] = res
 
                     if res['sucesso']:
+                        # 1. Salva no banco_pf (código legado/padrão)
                         ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
                         if ok_s: st.toast(f"{msg_s}", icon="💾")
                         else: st.error(f"Erro ao salvar na base PF: {msg_s}")
+                        
+                        # 2. Distribuição Dinâmica (NOVA IMPLEMENTAÇÃO)
+                        lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
+                        
+                        if lista_sucessos:
+                            msg_ok = ", ".join(lista_sucessos)
+                            st.success(f"✅ Dados distribuídos com sucesso para: {msg_ok}")
+                            
+                        if lista_erros:
+                            msg_erro = "\n".join(lista_erros)
+                            st.error(f"⚠️ Erros na distribuição:\n{msg_erro}")
+                            
         
         if 'resultado_fator' in st.session_state:
             res = st.session_state['resultado_fator']
