@@ -791,12 +791,12 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_endereco]
    - id (integer) NOT NULL
    - cpf (character varying(20)) NULL
-   - complemento (character varying(100)) NULL
-   - rua (text) NULL
-   - bairro (character varying(100)) NULL
+   - complemento (character varying(255)) NULL
+   - rua (character varying(255)) NULL
+   - bairro (character varying(255)) NULL
    - cidade (character varying(100)) NULL
    - uf (character varying(10)) NULL
-   - cep (character varying(20)) NULL
+   - cep (character varying(255)) NULL
    - data_criacao (timestamp without time zone) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_historico_consulta_usuario]

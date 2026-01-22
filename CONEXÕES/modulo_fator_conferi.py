@@ -106,13 +106,13 @@ def parse_xml_to_dict(texto_xml):
         return {"erro": f"Erro no Parser: {e}", "raw": texto_xml}
 
 # =============================================================================
-# 3. BUSCA INTELIGENTE POR CAMINHO (IGNORA ESPAÇOS NAS CHAVES)
+# 3. BUSCA INTELIGENTE POR CAMINHO
 # =============================================================================
 
 def _navegar_recursivamente(dados_atuais, lista_chaves):
     """
     Navega no JSON seguindo a lista de chaves.
-    AGORA COM .strip() NAS CHAVES DA API para ignorar espaços extras.
+    Ignora espaços nas chaves da API.
     """
     if not lista_chaves:
         return dados_atuais
@@ -122,13 +122,11 @@ def _navegar_recursivamente(dados_atuais, lista_chaves):
 
     # Caso 1: Dados atuais são um Dicionário
     if isinstance(dados_atuais, dict):
-        # Tenta encontrar a chave exata (ignorando espaços da API)
         for k, v in dados_atuais.items():
-            # AQUI ESTÁ A CORREÇÃO: k.upper().strip()
             if k.upper().strip() == chave_atual:
                 return _navegar_recursivamente(v, resto_chaves)
         
-        # Tentativa de combinação (ex: TELEFONES_FIXO)
+        # Tentativa de combinação (ex: TELEFONES_FIXO onde API tem TELEFONES -> FIXO)
         if resto_chaves:
             chave_combinada = f"{chave_atual}_{resto_chaves[0].upper().strip()}"
             for k, v in dados_atuais.items():
@@ -158,7 +156,6 @@ def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
     caminhos_alternativos = str(string_mapeamento).split(';')
     
     for caminho_bruto in caminhos_alternativos:
-        # Limpa o caminho do MAPA
         caminho_limpo = caminho_bruto.strip().replace(' ', '_')
         partes = [p for p in caminho_limpo.split('_') if p]
         
@@ -173,64 +170,7 @@ def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
     return None
 
 # =============================================================================
-# 4. SALVAMENTO PADRÃO (LEGADO)
-# =============================================================================
-
-def verificar_coluna_cpf(cur, tabela):
-    try:
-        cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_schema = 'banco_pf' AND table_name = '{tabela}' AND column_name IN ('cpf', 'cpf_ref')")
-        res = cur.fetchone()
-        if res: return res[0]
-    except: pass
-    return 'cpf_ref' 
-
-def salvar_dados_fator_no_banco(dados_api):
-    raw_cpf = extrair_valor_por_caminho_complexo(dados_api, "CPF;_CADASTRAIS_CPF")
-    
-    conn = get_conn()
-    if not conn: return False, "Erro BD"
-    
-    if not raw_cpf: return False, "CPF não localizado."
-    cpf_limpo = mv.ValidadorDocumentos.cpf_para_sql(raw_cpf)
-    if not cpf_limpo: return False, f"CPF Inválido: {raw_cpf}"
-
-    try:
-        cur = conn.cursor()
-        
-        campos = {
-            'nome': extrair_valor_por_caminho_complexo(dados_api, "NOME;_CADASTRAIS_NOME"),
-            'rg': extrair_valor_por_caminho_complexo(dados_api, "RG;_CADASTRAIS_RG"),
-            'data_nascimento': mv.ValidadorData.para_sql(extrair_valor_por_caminho_complexo(dados_api, "NASCTO;NASCIMENTO;_CADASTRAIS_NASCTO")),
-            'nome_mae': extrair_valor_por_caminho_complexo(dados_api, "NOME_MAE;MAE;_CADASTRAIS_NOME_MAE"),
-            'nome_pai': extrair_valor_por_caminho_complexo(dados_api, "NOME_PAI;PAI;_CADASTRAIS_NOME_PAI"),
-            'uf_rg': extrair_valor_por_caminho_complexo(dados_api, "UF_RG;UF_EMISSAO"),
-            'sexo': extrair_valor_por_caminho_complexo(dados_api, "SEXO;_CADASTRAIS_SEXO")
-        }
-
-        sql_pf = """
-            INSERT INTO banco_pf.pf_dados (cpf, nome, rg, data_nascimento, nome_mae, nome_pai, uf_rg, data_criacao) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (cpf) DO UPDATE SET 
-            nome=EXCLUDED.nome, data_nascimento=EXCLUDED.data_nascimento, nome_mae=EXCLUDED.nome_mae
-        """
-        cur.execute(sql_pf, (cpf_limpo, campos['nome'], campos['rg'], campos['data_nascimento'], campos['nome_mae'], campos['nome_pai'], campos['uf_rg']))
-        
-        tels = extrair_valor_por_caminho_complexo(dados_api, "TELEFONES_MOVEL_TELEFONE_NUMERO;TELEFONES_FIXO_TELEFONE_NUMERO;TELEFONES_NUMERO")
-        if tels:
-            if not isinstance(tels, list): tels = [tels]
-            col_tel = verificar_coluna_cpf(cur, 'pf_telefones')
-            for t in tels:
-                tv = mv.ValidadorContato.telefone_para_sql(t)
-                if tv:
-                    cur.execute(f"INSERT INTO banco_pf.pf_telefones ({col_tel}, numero) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_limpo, tv))
-
-        conn.commit(); conn.close()
-        return True, "Dados básicos salvos."
-    except Exception as e:
-        return False, str(e)
-
-# =============================================================================
-# 5. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS)
+# 4. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS - COM 1:N INTELIGENTE)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -241,109 +181,141 @@ def executar_distribuicao_dinamica(dados_api):
     erros = []
 
     try:
+        # Carrega mapa
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
-        tabelas = df_map['tabela_referencia'].unique()
+        
+        if df_map.empty:
+            conn.close()
+            return [], ["Nenhum mapeamento configurado."]
+
+        tabelas_destino = df_map['tabela_referencia'].unique()
         cur = conn.cursor()
 
-        # 1. Identifica listas conhecidas no JSON (Normalizado com .strip)
-        chaves_listas_detectadas = {} 
-        for k, v in dados_api.items():
-            k_limpo = k.upper().strip()
-            if isinstance(v, list) and len(v) > 0:
-                chaves_listas_detectadas[k_limpo] = v
-            if isinstance(v, dict):
-                for sub_k, sub_v in v.items():
-                    sub_k_limpo = sub_k.upper().strip()
-                    if isinstance(sub_v, list) and len(sub_v) > 0:
-                        chaves_listas_detectadas[sub_k_limpo] = sub_v
+        # Identifica listas candidatas para iteração
+        listas_iteraveis = {}
+        
+        # Procura por listas de telefones, endereços e emails
+        # Usamos extrair_valor_por_caminho_complexo para achar a lista inteira (objeto)
+        listas_iteraveis['TELEFONES'] = extrair_valor_por_caminho_complexo(dados_api, "TELEFONES_MOVÍVEIS_TELEFONE;TELEFONES_FIXO_TELEFONE;TELEFONES_TELEFONE;TELEFONES")
+        listas_iteraveis['ENDERECOS'] = extrair_valor_por_caminho_complexo(dados_api, "ENDERECOS_ENDERECO;ENDERECOS")
+        listas_iteraveis['EMAILS'] = extrair_valor_por_caminho_complexo(dados_api, "EMAILS_EMAIL;E-MAILS_E-MAIL;E-MAILS") 
 
-        GRUPOS_LISTA = {
-            'TELEFONES': ['NUMERO', 'DDD', 'TIPO_TEL', 'OPERADORA', 'TELEFONE'],
-            'ENDERECOS': ['RUA', 'LOGRADOURO', 'BAIRRO', 'CIDADE', 'CEP', 'UF', 'ESTADO', 'ENDERECO'],
-            'EMAILS': ['EMAIL']
-        }
-
-        for tabela in tabelas:
+        for tabela in tabelas_destino:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
-                lista_para_iterar = None
-                chaves_mapeadas = [str(r['jason_api_fatorconferi_coluna']).strip().upper() for _, r in regras.iterrows()]
+                # --- LÓGICA DE DECISÃO: MODO SIMPLES vs MODO LOOP ---
+                lista_atual_para_loop = [None] # Padrão: 1 loop (raiz)
+                modo_loop = False
                 
-                for nome_grupo, campos_tipicos in GRUPOS_LISTA.items():
-                    if any(c in chaves_mapeadas for c in campos_tipicos):
-                        for chave_api_lista, conteudo_lista in chaves_listas_detectadas.items():
-                            if nome_grupo in chave_api_lista or chave_api_lista in [nome_grupo]:
-                                lista_para_iterar = conteudo_lista
-                                break
-                    if lista_para_iterar: break
+                # Verifica se as colunas mapeadas sugerem que é uma tabela de lista (ex: tem 'numero' de telefone ou 'rua')
+                colunas_map = [str(r['tabela_referencia_coluna']).lower() for _, r in regras.iterrows()]
                 
-                if not lista_para_iterar:
-                    lista_para_iterar = [None]
+                if any(c in ['telefone', 'numero', 'celular'] for c in colunas_map) and listas_iteraveis.get('TELEFONES'):
+                    lista_atual_para_loop = listas_iteraveis['TELEFONES']
+                    modo_loop = True
+                elif any(c in ['rua', 'logradouro', 'cep', 'bairro'] for c in colunas_map) and listas_iteraveis.get('ENDERECOS'):
+                    lista_atual_para_loop = listas_iteraveis['ENDERECOS']
+                    modo_loop = True
+                elif any(c in ['email'] for c in colunas_map) and listas_iteraveis.get('EMAILS'):
+                    lista_atual_para_loop = listas_iteraveis['EMAILS']
+                    modo_loop = True
+                
+                # Garante que é uma lista
+                if modo_loop and not isinstance(lista_atual_para_loop, list):
+                    lista_atual_para_loop = [lista_atual_para_loop]
 
-                for item_lista in lista_para_iterar:
+                # --- LOOP DE INSERÇÃO ---
+                count_inseridos = 0
+                for item_obj in lista_atual_para_loop:
+                    
                     colunas_sql = []
                     valores_insert = []
-                    tem_dado = False
+                    tem_dado_valido = False
                     
                     for _, row in regras.iterrows():
                         col_sql = str(row['tabela_referencia_coluna']).strip()
-                        chave_xml = str(row['jason_api_fatorconferi_coluna']).strip()
+                        caminho_map = str(row['jason_api_fatorconferi_coluna']).strip()
                         
-                        valor = None
+                        valor_final = None
                         
-                        # 1. Tenta no Item da Lista (Ignorando espaços na chave do item)
-                        if item_lista and isinstance(item_lista, dict):
-                            for k_item, v_item in item_lista.items():
-                                # Checa se a chave do mapa está contida na chave do item (ex: NÚMERO em " NÚMERO ")
-                                # Ou busca exata com strip
-                                k_limpo = k_item.upper().strip()
-                                # Limpa a chave do mapa para comparação (remove _TELEFONE_ etc)
-                                chave_xml_limpa = chave_xml.upper().replace('_', '').strip()
+                        # 1. Se estiver em modo loop, tenta extrair do item atual
+                        if modo_loop and item_obj:
+                            # Se o item for dict, busca dentro dele
+                            if isinstance(item_obj, dict):
+                                # Tenta encontrar a chave final do caminho dentro do item
+                                partes_caminho = caminho_map.split('_')
+                                # Tenta várias combinações finais para achar a chave no item
+                                # Ex: Mapa TELEFONES_MOVEL_NUMERO -> item tem NUMERO
+                                found_in_item = False
+                                for k, v in item_obj.items():
+                                    k_limpo = k.upper().strip()
+                                    # Verifica se a chave do item está contida no final do caminho mapeado
+                                    # ou se o caminho mapeado contém a chave do item
+                                    if k_limpo in caminho_map.upper() or caminho_map.upper().endswith(k_limpo):
+                                        valor_final = v
+                                        found_in_item = True
+                                        break
                                 
-                                if k_limpo == chave_xml_limpa or k_limpo in chave_xml.upper():
-                                    valor = v_item
-                                    break
-                                    
-                        elif item_lista and isinstance(item_lista, str):
-                            if 'EMAIL' in chave_xml.upper():
-                                valor = item_lista
+                            # Se o item for string (ex: lista de emails ['a@a.com']), o valor é o próprio item
+                            elif isinstance(item_obj, str):
+                                if 'EMAIL' in caminho_map.upper() or 'E-MAIL' in caminho_map.upper():
+                                    valor_final = item_obj
 
-                        # 2. Tenta na Raiz
-                        if valor is None:
-                            valor = extrair_valor_por_caminho_complexo(dados_api, chave_xml)
-
-                        if valor:
-                            if isinstance(valor, (list, dict)): valor = str(valor)
-                            if ('cpf' in col_sql.lower() or 'cpf' in chave_xml.lower()):
-                                cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
-                                if cpf_ajustado: valor = cpf_ajustado
-                            tem_dado = True
+                        # 2. Se não achou no item (ou se o campo é global, ex: CPF), busca na raiz
+                        if valor_final is None:
+                            valor_final = extrair_valor_por_caminho_complexo(dados_api, caminho_map)
+                            # Se retornou lista e estamos num loop, isso pode ser ambíguo.
+                            # Mas para campos globais (CPF) retorna string única geralmente.
+                            if isinstance(valor_final, list) and modo_loop:
+                                # Para CPF, se vier lista, pegamos o primeiro (assumindo que todos são iguais ou é o do titular)
+                                if 'CPF' in caminho_map.upper():
+                                    if len(valor_final) > 0: valor_final = valor_final[0]
+                        
+                        # 3. Tratamentos Finais
+                        if valor_final:
+                            if isinstance(valor_final, (dict, list)): valor_final = str(valor_final)
+                            
+                            # Validação CPF
+                            if ('cpf' in col_sql.lower() or 'cpf' in caminho_map.lower()):
+                                cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
+                                if cpf_ajustado: valor_final = cpf_ajustado
+                            
+                            # Se o valor não for nulo/vazio
+                            if valor_final and valor_final.strip():
+                                tem_dado_valido = True
                         
                         colunas_sql.append(col_sql)
-                        valores_insert.append(valor)
+                        valores_insert.append(valor_final)
 
-                    if tem_dado:
+                    # Só insere se tiver colunas e pelo menos um dado válido
+                    if colunas_sql and tem_dado_valido:
                         placeholders = ", ".join(["%s"] * len(valores_insert))
                         cols = ", ".join(colunas_sql)
                         sql = f"INSERT INTO {tabela} ({cols}) VALUES ({placeholders})"
                         cur.execute(sql, tuple(valores_insert))
+                        count_inseridos += 1
 
-                sucessos.append(tabela)
-            
+                if count_inseridos > 0:
+                    sucessos.append(f"{tabela} ({count_inseridos})")
+                else:
+                    pass 
+
             except Exception as e:
                 conn.rollback()
-                erros.append(f"❌ Erro '{tabela}': {e}")
+                erros.append(f"❌ Erro '{tabela}': {str(e)}")
 
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return sucessos, erros
 
     except Exception as e:
         if conn: conn.close()
-        return [], [str(e)]
+        return [], [f"Erro crítico: {str(e)}"]
 
 # =============================================================================
-# 6. FUNÇÕES API / CONSULTA
+# 5. FUNÇÕES API / CONSULTA
 # =============================================================================
 
 def buscar_credenciais():
@@ -827,9 +799,8 @@ def app_fator_conferi():
                     st.session_state['resultado_fator'] = res
 
                     if res['sucesso']:
-                        ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
-                        if ok_s: st.toast(f"{msg_s}", icon="💾")
-                        else: st.error(f"Erro ao salvar na base PF: {msg_s}")
+                        # --- MODIFICAÇÃO AQUI: Removemos o salvamento legado no banco_pf ---
+                        # ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
                         
                         lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
                         
