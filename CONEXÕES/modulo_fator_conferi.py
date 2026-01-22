@@ -106,27 +106,36 @@ def parse_xml_to_dict(texto_xml):
         return {"erro": f"Erro no Parser: {e}", "raw": texto_xml}
 
 # =============================================================================
-# 3. BUSCA INTELIGENTE POR CAMINHO
+# 3. BUSCA INTELIGENTE POR CAMINHO (IGNORA ESPAÇOS NAS CHAVES)
 # =============================================================================
 
 def _navegar_recursivamente(dados_atuais, lista_chaves):
+    """
+    Navega no JSON seguindo a lista de chaves.
+    AGORA COM .strip() NAS CHAVES DA API para ignorar espaços extras.
+    """
     if not lista_chaves:
         return dados_atuais
 
     chave_atual = lista_chaves[0].upper().strip()
     resto_chaves = lista_chaves[1:]
 
+    # Caso 1: Dados atuais são um Dicionário
     if isinstance(dados_atuais, dict):
+        # Tenta encontrar a chave exata (ignorando espaços da API)
         for k, v in dados_atuais.items():
-            if k.upper() == chave_atual:
+            # AQUI ESTÁ A CORREÇÃO: k.upper().strip()
+            if k.upper().strip() == chave_atual:
                 return _navegar_recursivamente(v, resto_chaves)
         
+        # Tentativa de combinação (ex: TELEFONES_FIXO)
         if resto_chaves:
             chave_combinada = f"{chave_atual}_{resto_chaves[0].upper().strip()}"
             for k, v in dados_atuais.items():
-                if k.upper() == chave_combinada:
+                if k.upper().strip() == chave_combinada:
                     return _navegar_recursivamente(v, resto_chaves[1:])
 
+    # Caso 2: Dados atuais são uma Lista (1:N)
     elif isinstance(dados_atuais, list):
         resultados_coletados = []
         for item in dados_atuais:
@@ -141,11 +150,15 @@ def _navegar_recursivamente(dados_atuais, lista_chaves):
     return None
 
 def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
+    """
+    Interpreta strings como: "TELEFONES_FIXO;_TELEFONES_MOVÍVEIS_;_TELEFONE_;NÚMERO"
+    """
     if not string_mapeamento: return None
     
     caminhos_alternativos = str(string_mapeamento).split(';')
     
     for caminho_bruto in caminhos_alternativos:
+        # Limpa o caminho do MAPA
         caminho_limpo = caminho_bruto.strip().replace(' ', '_')
         partes = [p for p in caminho_limpo.split('_') if p]
         
@@ -154,7 +167,7 @@ def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
         
         if valor_sanitizado is not None:
             if isinstance(valor_sanitizado, list) and len(valor_sanitizado) == 0:
-                continue
+                continue 
             return valor_sanitizado
 
     return None
@@ -232,55 +245,92 @@ def executar_distribuicao_dinamica(dados_api):
         tabelas = df_map['tabela_referencia'].unique()
         cur = conn.cursor()
 
+        # 1. Identifica listas conhecidas no JSON (Normalizado com .strip)
+        chaves_listas_detectadas = {} 
+        for k, v in dados_api.items():
+            k_limpo = k.upper().strip()
+            if isinstance(v, list) and len(v) > 0:
+                chaves_listas_detectadas[k_limpo] = v
+            if isinstance(v, dict):
+                for sub_k, sub_v in v.items():
+                    sub_k_limpo = sub_k.upper().strip()
+                    if isinstance(sub_v, list) and len(sub_v) > 0:
+                        chaves_listas_detectadas[sub_k_limpo] = sub_v
+
+        GRUPOS_LISTA = {
+            'TELEFONES': ['NUMERO', 'DDD', 'TIPO_TEL', 'OPERADORA', 'TELEFONE'],
+            'ENDERECOS': ['RUA', 'LOGRADOURO', 'BAIRRO', 'CIDADE', 'CEP', 'UF', 'ESTADO', 'ENDERECO'],
+            'EMAILS': ['EMAIL']
+        }
+
         for tabela in tabelas:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
-                dados_preparados = {}
-                max_linhas = 1
+                lista_para_iterar = None
+                chaves_mapeadas = [str(r['jason_api_fatorconferi_coluna']).strip().upper() for _, r in regras.iterrows()]
                 
-                for _, row in regras.iterrows():
-                    col_sql = str(row['tabela_referencia_coluna']).strip()
-                    caminho_map = str(row['jason_api_fatorconferi_coluna']).strip()
-                    
-                    valor = extrair_valor_por_caminho_complexo(dados_api, caminho_map)
-                    
-                    if valor and ('cpf' in col_sql.lower() or 'cpf' in caminho_map.lower()):
-                        if isinstance(valor, list):
-                            valor = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor]
-                        else:
-                            valor = mv.ValidadorDocumentos.cpf_para_sql(valor)
+                for nome_grupo, campos_tipicos in GRUPOS_LISTA.items():
+                    if any(c in chaves_mapeadas for c in campos_tipicos):
+                        for chave_api_lista, conteudo_lista in chaves_listas_detectadas.items():
+                            if nome_grupo in chave_api_lista or chave_api_lista in [nome_grupo]:
+                                lista_para_iterar = conteudo_lista
+                                break
+                    if lista_para_iterar: break
+                
+                if not lista_para_iterar:
+                    lista_para_iterar = [None]
 
-                    dados_preparados[col_sql] = valor
+                for item_lista in lista_para_iterar:
+                    colunas_sql = []
+                    valores_insert = []
+                    tem_dado = False
                     
-                    if isinstance(valor, list):
-                        max_linhas = max(max_linhas, len(valor))
-
-                if not any(v is not None for v in dados_preparados.values()):
-                    erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado.")
-                    continue
-
-                colunas_ordenadas = list(dados_preparados.keys())
-                placeholders = ", ".join(["%s"] * len(colunas_ordenadas))
-                sql = f"INSERT INTO {tabela} ({', '.join(colunas_ordenadas)}) VALUES ({placeholders})"
-
-                for i in range(max_linhas):
-                    linha_valores = []
-                    linha_valida = False
-                    
-                    for col in colunas_ordenadas:
-                        val = dados_preparados[col]
-                        item = val[i] if isinstance(val, list) and i < len(val) else (val if not isinstance(val, list) else None)
+                    for _, row in regras.iterrows():
+                        col_sql = str(row['tabela_referencia_coluna']).strip()
+                        chave_xml = str(row['jason_api_fatorconferi_coluna']).strip()
                         
-                        if isinstance(item, (dict, list)): item = str(item)
-                        if item: linha_valida = True
-                        linha_valores.append(item)
-                    
-                    if linha_valida:
-                        cur.execute(sql, tuple(linha_valores))
+                        valor = None
+                        
+                        # 1. Tenta no Item da Lista (Ignorando espaços na chave do item)
+                        if item_lista and isinstance(item_lista, dict):
+                            for k_item, v_item in item_lista.items():
+                                # Checa se a chave do mapa está contida na chave do item (ex: NÚMERO em " NÚMERO ")
+                                # Ou busca exata com strip
+                                k_limpo = k_item.upper().strip()
+                                # Limpa a chave do mapa para comparação (remove _TELEFONE_ etc)
+                                chave_xml_limpa = chave_xml.upper().replace('_', '').strip()
+                                
+                                if k_limpo == chave_xml_limpa or k_limpo in chave_xml.upper():
+                                    valor = v_item
+                                    break
+                                    
+                        elif item_lista and isinstance(item_lista, str):
+                            if 'EMAIL' in chave_xml.upper():
+                                valor = item_lista
+
+                        # 2. Tenta na Raiz
+                        if valor is None:
+                            valor = extrair_valor_por_caminho_complexo(dados_api, chave_xml)
+
+                        if valor:
+                            if isinstance(valor, (list, dict)): valor = str(valor)
+                            if ('cpf' in col_sql.lower() or 'cpf' in chave_xml.lower()):
+                                cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
+                                if cpf_ajustado: valor = cpf_ajustado
+                            tem_dado = True
+                        
+                        colunas_sql.append(col_sql)
+                        valores_insert.append(valor)
+
+                    if tem_dado:
+                        placeholders = ", ".join(["%s"] * len(valores_insert))
+                        cols = ", ".join(colunas_sql)
+                        sql = f"INSERT INTO {tabela} ({cols}) VALUES ({placeholders})"
+                        cur.execute(sql, tuple(valores_insert))
 
                 sucessos.append(tabela)
-
+            
             except Exception as e:
                 conn.rollback()
                 erros.append(f"❌ Erro '{tabela}': {e}")
@@ -504,7 +554,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         except Exception as e:
             st.error(f"Erro ao salvar arquivo JSON de log: {e}")
 
-        # Validação simples
+        # Validação simples se veio algo (buscando NOME em qualquer lugar)
         if not extrair_valor_por_caminho_complexo(dados, "NOME;CADASTRAIS_NOME"): 
             conn.close()
             return {
@@ -513,7 +563,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 "dados": dados
             }
         
-        # Garante CPF no retorno
+        # Garante CPF no retorno se não veio
         if not extrair_valor_por_caminho_complexo(dados, "CPF;CADASTRAIS_CPF"): 
             dados['CPF_CONSULTADO_INSERIDO'] = cpf_padrao
 
@@ -578,28 +628,21 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
         return False
 
 def salvar_alteracoes_mapa_completo(df_original, df_editado):
-    """
-    Função dedicada para salvar a tabela de mapeamento, suportando DELETE.
-    """
     conn = get_conn()
     if not conn: return False
     try:
         cur = conn.cursor()
-        
-        # 1. Identificar IDs Excluídos (Estavam no Original mas não no Editado)
         ids_orig = set(df_original['id'].dropna().astype(int).tolist())
         ids_novos = set(df_editado['id'].dropna().astype(int).tolist())
         
         ids_para_deletar = ids_orig - ids_novos
         
         if ids_para_deletar:
-            # Converte para tupla para SQL IN
             if len(ids_para_deletar) == 1:
                 cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id = {list(ids_para_deletar)[0]}")
             else:
                 cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id IN {tuple(ids_para_deletar)}")
 
-        # 2. Upsert (Insert ou Update)
         for index, row in df_editado.iterrows():
             rid = row.get('id')
             tab_ref = row.get('tabela_referencia')
@@ -607,14 +650,12 @@ def salvar_alteracoes_mapa_completo(df_original, df_editado):
             json_key = row.get('jason_api_fatorconferi_coluna')
             
             if pd.isna(rid) or rid == '':
-                # Insert
                 cur.execute("""
                     INSERT INTO conexoes.fatorconferi_conexao_tabelas 
                     (tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna)
                     VALUES (%s, %s, %s)
                 """, (tab_ref, col_ref, json_key))
             elif int(rid) in ids_orig:
-                # Update
                 cur.execute("""
                     UPDATE conexoes.fatorconferi_conexao_tabelas 
                     SET tabela_referencia=%s, tabela_referencia_coluna=%s, jason_api_fatorconferi_coluna=%s
@@ -911,16 +952,14 @@ def app_fator_conferi():
         st.markdown("### 📋 Tabela Geral de Conexões (Editável)")
         df_geral = listar_todos_mapeamentos()
         
-        # --- TABELA EDITÁVEL GERAL ---
         df_editado_geral = st.data_editor(
             df_geral, 
             key="editor_geral_mapeamentos", 
-            num_rows="dynamic", # Permite ADICIONAR e REMOVER
+            num_rows="dynamic", 
             use_container_width=True
         )
         
         if st.button("💾 Salvar Alterações Gerais", type="primary"):
-            # Usa função específica que suporta DELETE
             if salvar_alteracoes_mapa_completo(df_geral, df_editado_geral):
                 st.success("Tabela geral atualizada com sucesso!")
                 time.sleep(1.5)
