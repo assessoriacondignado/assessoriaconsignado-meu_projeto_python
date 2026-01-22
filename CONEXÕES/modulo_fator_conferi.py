@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
 import conexao
-import modulo_vliadores as mv
+import modulo_validadores as mv
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -133,7 +133,7 @@ def parse_xml_to_dict(xml_string):
         return {"erro": f"Falha XML: {e}", "raw": xml_string}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VLIADORES)
+# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VALIDADORES)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
