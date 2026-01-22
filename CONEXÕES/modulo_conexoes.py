@@ -5,8 +5,7 @@ import time
 from datetime import datetime
 import conexao
 
-# --- CORREÇÃO: Importação com o nome correto do arquivo ---
-# O arquivo criado anteriormente foi 'modulo_fator_conferi.py'
+# --- CORREÇÃO: Importação com o nome EXATO informado ---
 try:
     import modulo_fator_conferi
 except ImportError:
@@ -159,11 +158,11 @@ def app_conexoes():
             st.session_state['navegacao_conexoes'] = None
             st.rerun()
         
-        # --- CORREÇÃO: Uso da variável correta ---
+        # --- CORREÇÃO: Uso do nome correto do módulo ---
         if modulo_fator_conferi:
             modulo_fator_conferi.app_fator_conferi()
         else:
-            st.error("Módulo 'modulo_fator_conferi.py' não encontrado ou com erro de importação.")
+            st.error("Módulo 'modulo_fator_conferi.py' não encontrado. Verifique se o arquivo existe na pasta.")
         return 
 
     # --- TELA: LISTA DE CONEXÕES ---
@@ -201,7 +200,6 @@ def app_conexoes():
         for _, row in df.iterrows():
             with st.container(border=True):
                 # Layout em Colunas: Nome (Largo) | Status | Painel | Editar | Excluir
-                # Ajuste de proporção para alinhar com o cabeçalho
                 c_nome, c_status, c_painel, c_edit, c_del = st.columns([4, 1, 1, 0.8, 0.8])
                 
                 # 1. Nome e Descrição
@@ -217,7 +215,7 @@ def app_conexoes():
                     else:
                         st.markdown("<div style='text-align:center; color:red; font-weight:bold; font-size:0.8em;'>🔴 INATIVO</div>", unsafe_allow_html=True)
 
-                # 3. Botão Painel (Aparece apenas se for FATOR ou API específica)
+                # 3. Botão Painel
                 with c_painel:
                     if "FATOR" in row['nome_conexao'].upper():
                         if st.button("🚀", key=f"btn_p_{row['id']}", help="Acessar Painel"):
@@ -226,12 +224,12 @@ def app_conexoes():
                     else:
                         st.markdown("<div style='text-align:center; color:#ccc;'>-</div>", unsafe_allow_html=True)
 
-                # 4. Botão Editar (Abre Modal)
+                # 4. Botão Editar
                 with c_edit:
                     if st.button("✏️", key=f"btn_e_{row['id']}", help="Editar Dados e Credenciais"):
                         dialog_editar_conexao(row)
 
-                # 5. Botão Excluir (Abre Confirmação)
+                # 5. Botão Excluir
                 with c_del:
                     if st.button("🗑️", key=f"btn_d_{row['id']}", help="Excluir Conexão"):
                         dialog_excluir_conexao(row['id'], row['nome_conexao'])
