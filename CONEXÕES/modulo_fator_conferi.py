@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
 import conexao
-import modulo_validadores as mv
+import modulo_vliadores as mv
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,7 +68,7 @@ def get_tag_text_insensitive(element, tag_name):
     """Pega o texto de uma tag, ignorando case e removendo espaços extras"""
     node = find_tag_insensitive(element, tag_name)
     if node is not None and node.text:
-        return node.text.strip() # <--- LIMPEZA AQUI
+        return node.text.strip()
     return None
 
 def parse_xml_to_dict(xml_string):
@@ -111,7 +111,7 @@ def parse_xml_to_dict(xml_string):
         if em_root is not None:
             for em in em_root:
                 if 'email' in em.tag.lower() and em.text: 
-                    emails.append(em.text.strip()) # <--- LIMPEZA AQUI
+                    emails.append(em.text.strip())
         dados['emails'] = emails
 
         enderecos = []
@@ -133,7 +133,7 @@ def parse_xml_to_dict(xml_string):
         return {"erro": f"Falha XML: {e}", "raw": xml_string}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VALIDADORES)
+# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VLIADORES)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -158,8 +158,6 @@ def salvar_dados_fator_no_banco(dados_api):
     try:
         cur = conn.cursor()
         
-        # --- Formatação de Campos via Módulo ---
-        # Note que o .strip() já foi aplicado no parser, mas garantimos aqui também
         campos = {
             'nome': (dados_api.get('nome') or "CLIENTE IMPORTADO").strip(),
             'rg': dados_api.get('rg'),
@@ -255,7 +253,7 @@ def salvar_dados_fator_no_banco(dados_api):
 
 def executar_distribuicao_dinamica(dados_api):
     """
-    Função com CORREÇÃO DE ESPAÇOS (STRIP)
+    Função com CORREÇÃO DE ESPAÇOS (STRIP) e PADRONIZAÇÃO DE CPF
     """
     conn = get_conn()
     if not conn:
@@ -265,20 +263,17 @@ def executar_distribuicao_dinamica(dados_api):
     erros = []
 
     try:
-        # 1. Recuperar mapeamentos
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
         
         if df_map.empty:
             conn.close()
             return [], ["Nenhum mapeamento de tabelas encontrado em 'conexoes.fatorconferi_conexao_tabelas'."]
 
-        # 2. Agrupar por tabela de destino
         tabelas_destino = df_map['tabela_referencia'].unique()
         cur = conn.cursor()
 
         for tabela in tabelas_destino:
             try:
-                # Filtra colunas para esta tabela
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
                 colunas_sql = []
@@ -288,21 +283,27 @@ def executar_distribuicao_dinamica(dados_api):
                 chaves_testadas = []
 
                 for _, row in regras.iterrows():
-                    col_sql = row['tabela_referencia_coluna']
+                    col_sql = str(row['tabela_referencia_coluna']).strip()
                     chave_json = str(row['jason_api_fatorconferi_coluna']).strip()
                     chaves_testadas.append(chave_json)
                     
-                    # Busca o valor no dict da API
                     valor = dados_api.get(chave_json)
                     
-                    # --- CORREÇÃO DE SUJEIRA (STRIP) ---
+                    # 1. Correção de Espaços
                     if isinstance(valor, str):
                         valor = valor.strip()
-                    # -----------------------------------
                     
-                    # Tratamento simples para listas convertendo para string
+                    # 2. Conversão de Listas/Dicts
                     if isinstance(valor, list) or isinstance(valor, dict):
                         valor = str(valor)
+
+                    # 3. --- NOVO: Padronização Automática de CPF ---
+                    # Se o nome da coluna ou da chave sugerir CPF, tentamos padronizar (11 dígitos)
+                    if 'cpf' in col_sql.lower() or 'cpf' in chave_json.lower():
+                        cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
+                        if cpf_ajustado: 
+                            valor = cpf_ajustado
+                    # -----------------------------------------------
                     
                     colunas_sql.append(col_sql)
                     valores_insert.append(valor)
@@ -311,17 +312,14 @@ def executar_distribuicao_dinamica(dados_api):
                         tem_dado = True
 
                 if not tem_dado:
-                    # Aviso de que pulou por falta de dados
                     erros.append(f"⚠️ Tabela '{tabela}' pulada: Nenhum dado encontrado na API para as chaves {chaves_testadas}. Verifique o Mapeamento e o JSON recebido.")
                     continue
 
-                # Monta a Query Dinâmica
                 colunas_str = ", ".join(colunas_sql)
                 placeholders = ", ".join(["%s"] * len(valores_insert))
                 
                 sql = f"INSERT INTO {tabela} ({colunas_str}) VALUES ({placeholders})"
                 
-                # Executa
                 cur.execute(sql, tuple(valores_insert))
                 
                 sucessos.append(tabela)
