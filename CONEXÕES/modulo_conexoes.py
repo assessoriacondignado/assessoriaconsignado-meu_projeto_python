@@ -161,7 +161,7 @@ def app_conexoes():
         
         # --- CORREÇÃO: Uso da variável correta ---
         if modulo_fator_conferi:
-            modulo_fator_conferi.app_fatorconferi()
+            modulo_fator_conferi.app_fator_conferi()
         else:
             st.error("Módulo 'modulo_fator_conferi.py' não encontrado ou com erro de importação.")
         return 
