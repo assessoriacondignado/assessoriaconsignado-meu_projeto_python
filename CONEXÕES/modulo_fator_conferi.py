@@ -170,7 +170,7 @@ def extrair_valor_por_caminho_complexo(dados_api, string_mapeamento):
     return None
 
 # =============================================================================
-# 4. DISTRIBUIÇÃO DINÂMICA (MAPA DE DADOS - COM 1:N INTELIGENTE)
+# 4. DISTRIBUIÇÃO DINÂMICA (COM UPSERT - ATUALIZAR SE EXISTIR)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -193,9 +193,6 @@ def executar_distribuicao_dinamica(dados_api):
 
         # Identifica listas candidatas para iteração
         listas_iteraveis = {}
-        
-        # Procura por listas de telefones, endereços e emails
-        # Usamos extrair_valor_por_caminho_complexo para achar a lista inteira (objeto)
         listas_iteraveis['TELEFONES'] = extrair_valor_por_caminho_complexo(dados_api, "TELEFONES_MOVÍVEIS_TELEFONE;TELEFONES_FIXO_TELEFONE;TELEFONES_TELEFONE;TELEFONES")
         listas_iteraveis['ENDERECOS'] = extrair_valor_por_caminho_complexo(dados_api, "ENDERECOS_ENDERECO;ENDERECOS")
         listas_iteraveis['EMAILS'] = extrair_valor_por_caminho_complexo(dados_api, "EMAILS_EMAIL;E-MAILS_E-MAIL;E-MAILS") 
@@ -204,11 +201,9 @@ def executar_distribuicao_dinamica(dados_api):
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
-                # --- LÓGICA DE DECISÃO: MODO SIMPLES vs MODO LOOP ---
                 lista_atual_para_loop = [None] # Padrão: 1 loop (raiz)
                 modo_loop = False
                 
-                # Verifica se as colunas mapeadas sugerem que é uma tabela de lista (ex: tem 'numero' de telefone ou 'rua')
                 colunas_map = [str(r['tabela_referencia_coluna']).lower() for _, r in regras.iterrows()]
                 
                 if any(c in ['telefone', 'numero', 'celular'] for c in colunas_map) and listas_iteraveis.get('TELEFONES'):
@@ -221,7 +216,6 @@ def executar_distribuicao_dinamica(dados_api):
                     lista_atual_para_loop = listas_iteraveis['EMAILS']
                     modo_loop = True
                 
-                # Garante que é uma lista
                 if modo_loop and not isinstance(lista_atual_para_loop, list):
                     lista_atual_para_loop = [lista_atual_para_loop]
 
@@ -239,36 +233,23 @@ def executar_distribuicao_dinamica(dados_api):
                         
                         valor_final = None
                         
-                        # 1. Se estiver em modo loop, tenta extrair do item atual
+                        # 1. Tenta extrair do item atual (Modo Loop)
                         if modo_loop and item_obj:
-                            # Se o item for dict, busca dentro dele
                             if isinstance(item_obj, dict):
-                                # Tenta encontrar a chave final do caminho dentro do item
                                 partes_caminho = caminho_map.split('_')
-                                # Tenta várias combinações finais para achar a chave no item
-                                # Ex: Mapa TELEFONES_MOVEL_NUMERO -> item tem NUMERO
-                                found_in_item = False
+                                chave_final = partes_caminho[-1] 
                                 for k, v in item_obj.items():
-                                    k_limpo = k.upper().strip()
-                                    # Verifica se a chave do item está contida no final do caminho mapeado
-                                    # ou se o caminho mapeado contém a chave do item
-                                    if k_limpo in caminho_map.upper() or caminho_map.upper().endswith(k_limpo):
+                                    if k.upper().strip() == chave_final.upper().strip() or chave_final.upper().strip() in k.upper().strip():
                                         valor_final = v
-                                        found_in_item = True
                                         break
-                                
-                            # Se o item for string (ex: lista de emails ['a@a.com']), o valor é o próprio item
                             elif isinstance(item_obj, str):
                                 if 'EMAIL' in caminho_map.upper() or 'E-MAIL' in caminho_map.upper():
                                     valor_final = item_obj
 
-                        # 2. Se não achou no item (ou se o campo é global, ex: CPF), busca na raiz
+                        # 2. Fallback: Busca na raiz
                         if valor_final is None:
                             valor_final = extrair_valor_por_caminho_complexo(dados_api, caminho_map)
-                            # Se retornou lista e estamos num loop, isso pode ser ambíguo.
-                            # Mas para campos globais (CPF) retorna string única geralmente.
                             if isinstance(valor_final, list) and modo_loop:
-                                # Para CPF, se vier lista, pegamos o primeiro (assumindo que todos são iguais ou é o do titular)
                                 if 'CPF' in caminho_map.upper():
                                     if len(valor_final) > 0: valor_final = valor_final[0]
                         
@@ -281,25 +262,50 @@ def executar_distribuicao_dinamica(dados_api):
                                 cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
                                 if cpf_ajustado: valor_final = cpf_ajustado
                             
-                            # Se o valor não for nulo/vazio
+                            # Conversão de Data (DD/MM/AAAA -> AAAA-MM-DD)
+                            if isinstance(valor_final, str) and re.match(r'^\d{2}/\d{2}/\d{4}$', valor_final.strip()):
+                                try:
+                                    dt_obj = datetime.strptime(valor_final.strip(), '%d/%m/%Y')
+                                    valor_final = dt_obj.strftime('%Y-%m-%d')
+                                except: pass
+
                             if valor_final and valor_final.strip():
                                 tem_dado_valido = True
                         
                         colunas_sql.append(col_sql)
                         valores_insert.append(valor_final)
 
-                    # Só insere se tiver colunas e pelo menos um dado válido
                     if colunas_sql and tem_dado_valido:
                         placeholders = ", ".join(["%s"] * len(valores_insert))
                         cols = ", ".join(colunas_sql)
+                        
+                        # --- SQL UPSERT (ATUALIZAR SE EXISTIR) ---
                         sql = f"INSERT INTO {tabela} ({cols}) VALUES ({placeholders})"
+                        
+                        cols_lower = [c.lower() for c in colunas_sql]
+                        
+                        # Verifica se é conflito de CPF (Tabela Principal)
+                        if 'cpf' in cols_lower:
+                            # Monta string de atualização: col1 = EXCLUDED.col1, col2 = EXCLUDED.col2 ...
+                            # EXCLUDED refere-se ao valor novo que tentamos inserir
+                            update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in colunas_sql if c.lower() != 'cpf'])
+                            
+                            if update_set:
+                                sql += f" ON CONFLICT (cpf) DO UPDATE SET {update_set}"
+                            else:
+                                sql += " ON CONFLICT (cpf) DO NOTHING"
+                                
+                        # Verifica se é conflito de ID (Tabelas com chave primária ID)
+                        elif 'id' in cols_lower:
+                            # Geralmente ID não se atualiza assim, mas mantemos DO NOTHING para segurança
+                            # a menos que você tenha uma lógica específica para atualizar por ID
+                            sql += " ON CONFLICT (id) DO NOTHING"
+                        
                         cur.execute(sql, tuple(valores_insert))
                         count_inseridos += 1
 
                 if count_inseridos > 0:
                     sucessos.append(f"{tabela} ({count_inseridos})")
-                else:
-                    pass 
 
             except Exception as e:
                 conn.rollback()
@@ -799,9 +805,7 @@ def app_fator_conferi():
                     st.session_state['resultado_fator'] = res
 
                     if res['sucesso']:
-                        # --- MODIFICAÇÃO AQUI: Removemos o salvamento legado no banco_pf ---
-                        # ok_s, msg_s = salvar_dados_fator_no_banco(res['dados'])
-                        
+                        # --- REMOVIDO BANCO_PF ---
                         lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
                         
                         if lista_sucessos:
