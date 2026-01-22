@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
 import conexao
-import modulo_vilidadores as mv
+import modulo_validadores as mv  # <--- NOME CORRIGIDO AQUI
 
 # --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -133,7 +133,7 @@ def parse_xml_to_dict(xml_string):
         return {"erro": f"Falha XML: {e}", "raw": xml_string}
 
 # =============================================================================
-# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VLIADORES)
+# 3. PROCESSO DE INSERÇÃO PRÓPRIO (AGORA USANDO MODULO_VALIDADORES)
 # =============================================================================
 
 def verificar_coluna_cpf(cur, tabela):
@@ -297,7 +297,7 @@ def executar_distribuicao_dinamica(dados_api):
                     if isinstance(valor, list) or isinstance(valor, dict):
                         valor = str(valor)
 
-                    # 3. --- NOVO: Padronização Automática de CPF ---
+                    # 3. --- Padronização Automática de CPF ---
                     # Se o nome da coluna ou da chave sugerir CPF, tentamos padronizar (11 dígitos)
                     if 'cpf' in col_sql.lower() or 'cpf' in chave_json.lower():
                         cpf_ajustado = mv.ValidadorDocumentos.cpf_para_sql(valor)
