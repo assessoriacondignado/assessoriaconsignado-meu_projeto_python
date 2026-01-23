@@ -13,12 +13,9 @@ st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", pa
 # --- 2. CONFIGURAÇÃO DE CAMINHOS (CORREÇÃO DO ERRO) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# [CORREÇÃO CRÍTICA] Garante que a pasta RAIZ esteja no caminho do Python
-# Isso permite que sub-módulos encontrem 'modulo_validadores.py' e 'conexao.py'
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-# Pastas dos módulos
 pastas_modulos = [
     "OPERACIONAL/CLIENTES",
     "OPERACIONAL/BANCO DE PLANILHAS",
@@ -34,7 +31,6 @@ pastas_modulos = [
     "" 
 ]
 
-# Adiciona subpastas ao path
 for pasta in pastas_modulos:
     caminho = os.path.join(BASE_DIR, pasta)
     if os.path.exists(caminho) and caminho not in sys.path:
@@ -44,18 +40,15 @@ for pasta in pastas_modulos:
 try:
     import conexao
     
-    # [TESTE DE ARQUIVO] Verifica se o validador existe na raiz
     try:
         import modulo_validadores
     except ImportError:
         st.error("❌ ERRO FATAL: O arquivo 'modulo_validadores.py' não foi encontrado na pasta raiz!")
-        st.info("Por favor, crie o arquivo 'modulo_validadores.py' na mesma pasta deste arquivo principal.")
         st.stop()
 
     import modulo_wapi
     import modulo_whats_controlador
     
-    # Função auxiliar para carregar módulos e FORÇAR ATUALIZAÇÃO (Reload)
     def importar_seguro(nome_modulo):
         try:
             if nome_modulo in sys.modules:
@@ -71,7 +64,6 @@ try:
     modulo_tela_cliente = importar_seguro("modulo_tela_cliente")
     modulo_permissoes = importar_seguro("modulo_permissoes")
 
-    # Verificação de existência antes de importar (COM RELOAD)
     def carregar_modulo_por_caminho(caminho_relativo, nome_modulo):
         caminho_completo = os.path.join(BASE_DIR, caminho_relativo)
         if os.path.exists(caminho_completo):
@@ -85,29 +77,19 @@ try:
                 return None
         return None
 
-    # Carregamento dos módulos
     modulo_chat = carregar_modulo_por_caminho("OPERACIONAL/MODULO_CHAT/modulo_chat.py", "modulo_chat")
-    
     modulo_pf_cadastro = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_cadastro.py", "modulo_pf_cadastro")
     modulo_pf_pesquisa = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_pesquisa.py", "modulo_pf_pesquisa")
     modulo_pf_importacao = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_importacao.py", "modulo_pf_importacao")
-
     modulo_pf = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pessoa_fisica.py", "modulo_pessoa_fisica")
     modulo_pf_campanhas = carregar_modulo_por_caminho("OPERACIONAL/BANCO DE PLANILHAS/modulo_pf_campanhas.py", "modulo_pf_campanhas")
-    
-    # Módulos Comerciais
     modulo_produtos = carregar_modulo_por_caminho("COMERCIAL/PRODUTOS_E_SERVICOS/modulo_produtos.py", "modulo_produtos")
     modulo_pedidos = carregar_modulo_por_caminho("COMERCIAL/PEDIDOS/modulo_pedidos.py", "modulo_pedidos")
     modulo_tarefas = carregar_modulo_por_caminho("COMERCIAL/TAREFAS/modulo_tarefas.py", "modulo_tarefas")
     modulo_rf = carregar_modulo_por_caminho("COMERCIAL/RENOVACAO_E_FEEDBACK/modulo_renovacao_feedback.py", "modulo_renovacao_feedback")
-    
     modulo_comercial_geral = carregar_modulo_por_caminho("COMERCIAL/modulo_comercial_geral.py", "modulo_comercial_geral")
-
     modulo_conexoes = carregar_modulo_por_caminho("CONEXÕES/modulo_conexoes.py", "modulo_conexoes")
-
-    # --- NOVO MÓDULO CRM CONSULTA ---
     modulo_sistema_consulta_menu = carregar_modulo_por_caminho("SISTEMA_CONSULTA/modulo_sistema_consulta_menu.py", "modulo_sistema_consulta_menu")
-
 
 except Exception as e:
     st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
@@ -144,7 +126,6 @@ def gerenciar_sessao():
 # --- 5. BANCO DE DADOS ---
 def get_conn():
     try:
-        # Usa as variáveis carregadas no conexao.py
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
@@ -154,9 +135,31 @@ def get_conn():
         return None
 
 def verificar_senha(senha_input, senha_hash):
+    """
+    Verifica senha de forma híbrida: 
+    1. Tenta validar via BCRYPT (Seguro).
+    2. Se falhar ou não for hash, compara TEXTO PURO (Legado/Manual).
+    """
+    if not senha_hash: return False
+    
     try:
-        return bcrypt.checkpw(senha_input.encode('utf-8'), senha_hash.encode('utf-8'))
-    except: return False
+        # Limpeza de strings para evitar erros bobos
+        s_input = str(senha_input).strip()
+        s_hash = str(senha_hash).strip()
+        
+        # Se parecer um hash BCRYPT (começa com $2b$, $2a$ ou $2y$)
+        if s_hash.startswith(('$2b$', '$2a$', '$2y$')):
+            return bcrypt.checkpw(s_input.encode('utf-8'), s_hash.encode('utf-8'))
+        
+        # FALLBACK: Se não for hash, compara direto (útil se alterou no banco manualmente)
+        return s_input == s_hash
+        
+    except Exception as e:
+        # Se der erro no encode ou checkpw, tenta a comparação simples por segurança
+        try:
+            return str(senha_input).strip() == str(senha_hash).strip()
+        except:
+            return False
 
 def validar_login_db(usuario, senha):
     conn = get_conn()
