@@ -1,26 +1,78 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+from psycopg2 import pool
 import bcrypt
 import time
+import contextlib
+import sys
+import os
+import re
 
-# Tenta importar conexao
+# ==============================================================================
+# 0. CONFIGURAÇÃO DE CAMINHOS
+# ==============================================================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
 try:
     import conexao
 except ImportError:
     st.error("Erro: conexao.py não encontrado na raiz.")
+    conexao = None
 
-# --- FUNÇÕES DE CONEXÃO E AUXILIARES ---
+try:
+    import modulo_validadores as v
+except ImportError:
+    st.error("Erro: modulo_validadores.py não encontrado.")
+    v = None
 
-def get_conn():
+# ==============================================================================
+# 1. CONEXÃO BLINDADA (Connection Pool)
+# ==============================================================================
+
+@st.cache_resource
+def get_pool():
+    if not conexao: return None
     try:
-        return psycopg2.connect(
-            host=conexao.host, port=conexao.port, database=conexao.database, 
-            user=conexao.user, password=conexao.password
+        return psycopg2.pool.SimpleConnectionPool(
+            minconn=1, maxconn=10, 
+            host=conexao.host, port=conexao.port,
+            database=conexao.database, user=conexao.user, password=conexao.password,
+            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
         )
     except Exception as e:
-        print(f"Erro conexão: {e}")
+        st.error(f"Erro fatal no Pool de Conexão: {e}")
         return None
+
+@contextlib.contextmanager
+def get_conn():
+    pool_obj = get_pool()
+    if not pool_obj:
+        yield None
+        return
+    
+    conn = pool_obj.getconn()
+    try:
+        conn.rollback() # Health check
+        yield conn
+        pool_obj.putconn(conn)
+    except (psycopg2.InterfaceError, psycopg2.OperationalError):
+        try: pool_obj.putconn(conn, close=True)
+        except: pass
+        try:
+            conn = pool_obj.getconn()
+            yield conn
+            pool_obj.putconn(conn)
+        except Exception:
+            yield None
+    except Exception as e:
+        pool_obj.putconn(conn)
+        raise e
+
+# --- FUNÇÕES AUXILIARES ---
 
 def hash_senha(senha):
     if senha.startswith('$2b$'): return senha
@@ -33,64 +85,77 @@ def limpar_formatacao_texto(texto):
 # --- FUNÇÕES DE BANCO DE DADOS ---
 
 def listar_permissoes_nivel():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, nivel FROM permissão.permissão_grupo_nivel ORDER BY id", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, nivel FROM permissão.permissão_grupo_nivel ORDER BY id", conn)
+        except: return pd.DataFrame()
 
 def buscar_usuario_por_id(id_user):
-    conn = get_conn()
-    if not conn: return None
-    try:
-        df = pd.read_sql(f"SELECT * FROM clientes_usuarios WHERE id = {id_user}", conn)
-        conn.close()
-        if not df.empty: return df.iloc[0]
-        return None
-    except:
-        if conn: conn.close()
-        return None
+    with get_conn() as conn:
+        if not conn: return None
+        try:
+            df = pd.read_sql(f"SELECT * FROM clientes_usuarios WHERE id = {id_user}", conn)
+            if not df.empty: return df.iloc[0]
+            return None
+        except: return None
 
 def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
-    conn = get_conn()
-    if not conn: return None
-    try:
-        cur = conn.cursor(); senha_f = hash_senha(senha)
-        if not nivel: nivel = 'Cliente sem permissão'
-        
-        cur.execute("""
-            INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s) 
-            RETURNING id
-        """, (nome, email, cpf, tel, senha_f, nivel, ativo))
-        
-        nid = cur.fetchone()[0]
-        conn.commit(); conn.close(); return nid
-    except Exception as e:
-        print(e)
-        if conn: conn.close()
-        return None
+    # Trata CPF para BigInt
+    cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
+    if not cpf_val: cpf_val = 0 # Fallback
 
-def atualizar_usuario_existente(id_user, nome, email, nivel, senha, ativo):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        if senha:
-            senha_f = hash_senha(senha)
-            cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, senha=%s, ativo=%s WHERE id=%s", 
-                        (nome, email, nivel, senha_f, ativo, id_user))
-        else:
-            cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, ativo=%s WHERE id=%s", 
-                        (nome, email, nivel, ativo, id_user))
-        conn.commit(); conn.close(); return True
-    except Exception as e:
-        print(e)
-        if conn: conn.close()
-        return False
+    with get_conn() as conn:
+        if not conn: return None
+        try:
+            with conn.cursor() as cur:
+                senha_f = hash_senha(senha)
+                if not nivel: nivel = 'Cliente sem permissão'
+                
+                cur.execute("""
+                    INSERT INTO clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) 
+                    RETURNING id
+                """, (nome, email, cpf_val, tel, senha_f, nivel, ativo))
+                
+                nid = cur.fetchone()[0]
+            conn.commit()
+            return nid
+        except Exception as e:
+            print(e)
+            return None
+
+def atualizar_usuario_existente(id_user, nome, email, nivel, senha, ativo, cpf=None, tel=None):
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                # Se CPF foi passado, atualiza também
+                if cpf is not None:
+                    cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
+                    if not cpf_val: cpf_val = 0
+                    
+                    if senha:
+                        senha_f = hash_senha(senha)
+                        cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, senha=%s, ativo=%s, cpf=%s, telefone=%s WHERE id=%s", 
+                                    (nome, email, nivel, senha_f, ativo, cpf_val, tel, id_user))
+                    else:
+                        cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, ativo=%s, cpf=%s, telefone=%s WHERE id=%s", 
+                                    (nome, email, nivel, ativo, cpf_val, tel, id_user))
+                else:
+                    # Modo compatibilidade legado (sem atualizar CPF)
+                    if senha:
+                        senha_f = hash_senha(senha)
+                        cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, senha=%s, ativo=%s WHERE id=%s", 
+                                    (nome, email, nivel, senha_f, ativo, id_user))
+                    else:
+                        cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, ativo=%s WHERE id=%s", 
+                                    (nome, email, nivel, ativo, id_user))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(e)
+            return False
 
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
 
@@ -102,31 +167,32 @@ def app_usuario():
     # --- Header e Botão Novo ---
     if st.session_state['view_usuario'] == 'lista':
         c1, c2 = st.columns([6, 1])
-        # KEY ADICIONADA: garante unicidade do input de busca
         busca_user = c1.text_input("🔍 Buscar Usuário", placeholder="Nome ou Email", key="input_busca_usuario_main")
         
-        # KEY ADICIONADA: garante unicidade do botão novo
         if c2.button("➕ Novo", type="primary", key="btn_novo_usuario_main"):
             st.session_state['view_usuario'] = 'novo'
             st.rerun()
 
-        conn = get_conn()
-        if not conn:
-            st.error("Erro de conexão.")
-            return
+        with get_conn() as conn:
+            if not conn:
+                st.error("Erro de conexão.")
+                return
 
-        sql_u = "SELECT id, nome, email, nivel, ativo FROM clientes_usuarios WHERE 1=1"
-        if busca_user: 
-            sql_u += f" AND (nome ILIKE '%%{busca_user}%%' OR email ILIKE '%%{busca_user}%%')"
-        sql_u += " ORDER BY id DESC"
-        
-        try:
-            df_users = pd.read_sql(sql_u, conn)
-        except Exception as e:
-            st.error(f"Erro na consulta: {e}")
-            df_users = pd.DataFrame()
-        finally:
-            conn.close()
+            sql_u = "SELECT id, nome, email, nivel, ativo FROM clientes_usuarios WHERE 1=1"
+            params = []
+            if busca_user: 
+                sql_u += " AND (nome ILIKE %s OR email ILIKE %s)"
+                params = [f"%{busca_user}%", f"%{busca_user}%"]
+            sql_u += " ORDER BY id DESC"
+            
+            try:
+                if params:
+                    df_users = pd.read_sql(sql_u, conn, params=tuple(params))
+                else:
+                    df_users = pd.read_sql(sql_u, conn)
+            except Exception as e:
+                st.error(f"Erro na consulta: {e}")
+                df_users = pd.DataFrame()
 
         # --- Tabela Visual ---
         if not df_users.empty:
@@ -140,7 +206,6 @@ def app_usuario():
             </div>
             """, unsafe_allow_html=True)
 
-            # Iterrows com enumerate para garantir índice único
             for idx, row in df_users.iterrows():
                 with st.container():
                     c1, c2, c3, c4, c5 = st.columns([3, 3, 2, 1, 1])
@@ -153,7 +218,6 @@ def app_usuario():
                     c4.markdown(f":{cor_st}[{status_txt}]")
                     
                     with c5:
-                        # KEY COMPOSTA ADICIONADA: id + índice do loop para evitar duplicação absoluta
                         if st.button("✏️", key=f"btn_edit_user_{row['id']}_{idx}", help="Editar Usuário"):
                             st.session_state['view_usuario'] = 'editar'
                             st.session_state['user_id'] = row['id']
@@ -184,7 +248,11 @@ def app_usuario():
             email = c2.text_input("Login (Email) *", value=dados.get('email', ''))
 
             c3, c4 = st.columns(2)
-            cpf = c3.text_input("CPF", value=dados.get('cpf', '')) 
+            
+            # Campo CPF - Formatação para tela
+            val_cpf_ini = v.ValidadorDocumentos.cpf_para_tela(dados.get('cpf')) if v else str(dados.get('cpf', ''))
+            cpf = c3.text_input("CPF", value=val_cpf_ini)
+            
             tel = c4.text_input("Telefone", value=dados.get('telefone', ''))
 
             c5, c6, c7 = st.columns([2, 2, 1])
@@ -202,7 +270,6 @@ def app_usuario():
             st.markdown("<br>", unsafe_allow_html=True)
             b_col1, b_col2, _ = st.columns([1, 1, 4])
             
-            # KEYS ADICIONADAS para os botões do formulário
             submitted = b_col1.form_submit_button("💾 Salvar")
             cancelled = b_col2.form_submit_button("Cancelar")
 
@@ -223,7 +290,8 @@ def app_usuario():
                             else:
                                 st.error("Erro ao criar (verifique se email já existe).")
                     else:
-                        res = atualizar_usuario_existente(st.session_state['user_id'], nome, email, nivel, senha, ativo)
+                        # Atualiza com CPF e Telefone
+                        res = atualizar_usuario_existente(st.session_state['user_id'], nome, email, nivel, senha, ativo, cpf, tel)
                         if res:
                             st.success("Usuário atualizado!")
                             time.sleep(1)
@@ -235,3 +303,9 @@ def app_usuario():
             if cancelled:
                 st.session_state['view_usuario'] = 'lista'
                 st.rerun()
+
+if __name__ == "__main__":
+    if get_pool():
+        app_usuario()
+    else:
+        st.error("Erro crítico de conexão.")
