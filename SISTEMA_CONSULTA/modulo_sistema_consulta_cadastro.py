@@ -237,7 +237,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
             tipo_dado = filtro['tipo']
             
             # --- Correção de Formatação (CPF e Telefone) ---
-            # Remove pontos/traços se a coluna for CPF ou Telefone antes de passar para o SQL
             def preparar_valor_filtro(valor, col):
                 if col in ['t.cpf', 'telefone', 'cpf']:
                     return v.ValidadorDocumentos.limpar_numero(valor)
@@ -247,7 +246,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
                 tabela_satelite = filtro['table']
                 sub_where = f"{coluna} {operador_sql} %s"
                 
-                # Aplica limpeza se necessário
                 val_raw = preparar_valor_filtro(filtro['val'], coluna)
                 val_final = filtro['mask'].format(val_raw) if '{}' in filtro['mask'] else val_raw
                 
@@ -272,7 +270,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
                         params.append(filtro['val'])
 
             else:
-                # Blocos de Texto Comuns (CPF, Nome, etc)
                 if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
                     if "NOT" in operador_sql:
                         where_clauses.append(f"({coluna} IS NOT NULL AND {coluna} != '')")
@@ -287,9 +284,7 @@ def buscar_cliente_dinamica(filtros_aplicados):
                         valores = str(filtro['val']).split(';')
                         ors = []
                         for v_str in valores:
-                            # Aplica limpeza aqui também (para cada valor separado por ;)
                             v_str_limpo = preparar_valor_filtro(v_str, coluna)
-                            
                             if v_str_limpo:
                                 ors.append(f"{coluna} {operador_sql} %s")
                                 val_final = filtro['mask'].format(v_str_limpo) if '{}' in filtro['mask'] else v_str_limpo
@@ -1224,10 +1219,15 @@ def tela_pesquisa():
                         campos = MAPA_CAMPOS_PESQUISA.get(grupo)
                         if not campos: continue
                         if len(lista_grupos) > 1: st.markdown(f"###### {grupo}")
-                        col_esq, col_dir = st.columns(2, gap="large")
+                        
+                        # -----------------------------------------------------------
+                        # AJUSTE LAYOUT 3 COLUNAS + COMPACTAÇÃO VERTICAL
+                        # -----------------------------------------------------------
+                        cols_visual = st.columns(3, gap="small")
+                        
                         for i, (nome_campo, config) in enumerate(campos.items()):
-                            col_atual = col_esq if i % 2 == 0 else col_dir
-                            with col_atual:
+                            # Distribuição em 3 colunas (0, 1, 2)
+                            with cols_visual[i % 3]:
                                 safe_key = f"{config['col']}_{config.get('table','')}".replace(".", "_").replace(" ", "_")
                                 c_tit, c_op = st.columns([2, 1.5])
                                 c_tit.markdown(f"**{nome_campo}**")
@@ -1270,7 +1270,7 @@ def tela_pesquisa():
                                         'val': valor_final, 'tipo': config['tipo'],
                                         'table': config.get('table')
                                     })
-                                st.write("")
+                                # REMOVIDO st.write("") PARA ECONOMIZAR ESPAÇO VERTICAL
 
             st.write("")
             if st.form_submit_button("🚀 APLICAR FILTROS", type="primary", use_container_width=True):
@@ -1283,22 +1283,47 @@ def tela_pesquisa():
 
     if st.session_state.get('resultados_pesquisa'):
         st.divider()
-        st.markdown(f"**Resultados: {len(st.session_state['resultados_pesquisa'])}**")
-        cols = st.columns([1, 4, 3, 2])
-        cols[0].write("**ID**")
-        cols[1].write("**Nome**")
-        cols[2].write("**CPF**")
-        cols[3].write("**Ação**")
-        for row in st.session_state['resultados_pesquisa']:
-            c = st.columns([1, 4, 3, 2])
-            c[0].write(str(row[0]))
-            c[1].write(row[1])
-            # Formata CPF na lista
-            c[2].write(v.ValidadorDocumentos.cpf_para_tela(row[2]))
-            if c[3].button("📂 Abrir", key=f"abrir_{row[0]}"):
-                st.session_state['cliente_ativo_cpf'] = row[2]
-                st.session_state['modo_visualizacao'] = 'visualizar'
-                st.rerun()
+        
+        # -----------------------------------------------------------
+        # NOVO LAYOUT DE VISUALIZAÇÃO: 90% RESULTADOS | 10% CONEXÃO
+        # -----------------------------------------------------------
+        c_resultados, c_conexao = st.columns([9, 1])
+
+        # --- COLUNA ESQUERDA (90%) ---
+        with c_resultados:
+            st.markdown(f"**Resultados: {len(st.session_state['resultados_pesquisa'])}**")
+            
+            # Cabeçalho da Tabela
+            cols = st.columns([1, 4, 3, 2])
+            cols[0].write("**ID**")
+            cols[1].write("**Nome**")
+            cols[2].write("**CPF**")
+            cols[3].write("**Ação**")
+            
+            # Linhas da Tabela
+            for row in st.session_state['resultados_pesquisa']:
+                c = st.columns([1, 4, 3, 2])
+                c[0].write(str(row[0]))
+                c[1].write(row[1])
+                c[2].write(v.ValidadorDocumentos.cpf_para_tela(row[2]))
+                if c[3].button("📂 Abrir", key=f"abrir_{row[0]}"):
+                    st.session_state['cliente_ativo_cpf'] = row[2]
+                    st.session_state['modo_visualizacao'] = 'visualizar'
+                    st.rerun()
+
+        # --- COLUNA DIREITA (10%) - Painel Lateral Fixo ---
+        with c_conexao:
+            st.markdown("#### CONEXÃO")
+            
+            # Divisão 1
+            with st.container(border=True):
+                st.caption("Status Banco")
+                st.success("Online")
+            
+            # Divisão 2
+            with st.container(border=True):
+                st.caption("Sessão")
+                st.info("Ativa")
 
 # ==============================================================================
 # 6. APP PRINCIPAL (Navegação e Entrada)
