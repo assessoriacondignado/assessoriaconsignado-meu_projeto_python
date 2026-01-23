@@ -1,27 +1,72 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+from psycopg2 import pool
 import re
 import time
 from datetime import datetime, date, timedelta
+import contextlib
+import sys
+import os
 
-# Tenta importar conexao
+# ==============================================================================
+# 0. CONFIGURAÇÃO DE CAMINHOS
+# ==============================================================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
 try:
     import conexao
 except ImportError:
     st.error("Erro: conexao.py não encontrado na raiz.")
+    conexao = None
 
-# --- FUNÇÕES DE CONEXÃO E UTILITÁRIOS ---
+# ==============================================================================
+# 1. CONEXÃO BLINDADA (Connection Pool)
+# ==============================================================================
 
-def get_conn():
+@st.cache_resource
+def get_pool():
+    if not conexao: return None
     try:
-        return psycopg2.connect(
-            host=conexao.host, port=conexao.port, database=conexao.database, 
-            user=conexao.user, password=conexao.password
+        return psycopg2.pool.SimpleConnectionPool(
+            minconn=1, maxconn=10, 
+            host=conexao.host, port=conexao.port,
+            database=conexao.database, user=conexao.user, password=conexao.password,
+            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
         )
     except Exception as e:
-        print(f"Erro conexão: {e}")
+        st.error(f"Erro fatal no Pool de Conexão: {e}")
         return None
+
+@contextlib.contextmanager
+def get_conn():
+    pool_obj = get_pool()
+    if not pool_obj:
+        yield None
+        return
+    
+    conn = pool_obj.getconn()
+    try:
+        conn.rollback() # Health check
+        yield conn
+        pool_obj.putconn(conn)
+    except (psycopg2.InterfaceError, psycopg2.OperationalError):
+        try: pool_obj.putconn(conn, close=True)
+        except: pass
+        try:
+            conn = pool_obj.getconn()
+            yield conn
+            pool_obj.putconn(conn)
+        except Exception:
+            yield None
+    except Exception as e:
+        pool_obj.putconn(conn)
+        raise e
+
+# --- UTILITÁRIOS ---
 
 def sanitizar_nome_tabela(nome):
     s = str(nome).lower().strip()
@@ -32,378 +77,320 @@ def sanitizar_nome_tabela(nome):
 # --- FUNÇÕES DE ESTRUTURA (DDL) ---
 
 def garantir_tabela_extrato_geral():
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS cliente.extrato_carteira_por_produto (
-                    id SERIAL PRIMARY KEY,
-                    id_cliente INTEGER,
-                    data_lancamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    tipo_lancamento VARCHAR(50),
-                    produto_vinculado VARCHAR(255),
-                    origem_lancamento VARCHAR(100),
-                    valor_lancado NUMERIC(10, 2),
-                    saldo_anterior NUMERIC(10, 2),
-                    saldo_novo NUMERIC(10, 2),
-                    nome_usuario VARCHAR(255)
-                );
-            """)
-            conn.commit(); conn.close()
-        except: 
-            if conn: conn.close()
+    with get_conn() as conn:
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS cliente.extrato_carteira_por_produto (
+                            id SERIAL PRIMARY KEY,
+                            id_cliente INTEGER,
+                            data_lancamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            tipo_lancamento VARCHAR(50),
+                            produto_vinculado VARCHAR(255),
+                            origem_lancamento VARCHAR(100),
+                            valor_lancado NUMERIC(15, 2),
+                            saldo_anterior NUMERIC(15, 2),
+                            saldo_novo NUMERIC(15, 2),
+                            nome_usuario VARCHAR(255)
+                        );
+                    """)
+                conn.commit()
+            except: pass
 
 def garantir_tabela_custo_carteira():
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS cliente.valor_custo_carteira_cliente (
-                    id SERIAL PRIMARY KEY,
-                    cpf_cliente VARCHAR(20),
-                    nome_cliente VARCHAR(255),
-                    nome_carteira VARCHAR(255),
-                    custo_carteira NUMERIC(10, 2),
-                    cpf_usuario VARCHAR(20),
-                    nome_usuario VARCHAR(255),
-                    origem_custo VARCHAR(100),
-                    data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            conn.commit(); conn.close()
-        except: 
-            if conn: conn.close()
+    with get_conn() as conn:
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS cliente.valor_custo_carteira_cliente (
+                            id SERIAL PRIMARY KEY,
+                            cpf_cliente BIGINT, -- Alterado para BIGINT
+                            nome_cliente VARCHAR(255),
+                            nome_carteira VARCHAR(255),
+                            custo_carteira NUMERIC(15, 2),
+                            cpf_usuario BIGINT, -- Alterado para BIGINT
+                            nome_usuario VARCHAR(255),
+                            origem_custo VARCHAR(100),
+                            data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                conn.commit()
+            except: pass
 
 def garantir_tabela_config_carteiras():
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
-                    id SERIAL PRIMARY KEY,
-                    id_produto INTEGER,
-                    nome_produto VARCHAR(255),
-                    nome_carteira VARCHAR(255),
-                    nome_tabela_transacoes VARCHAR(255),
-                    status VARCHAR(50) DEFAULT 'ATIVO',
-                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    origem_custo VARCHAR(100)
-                );
-            """)
-            conn.commit(); conn.close()
-        except: 
-            if conn: conn.close()
+    with get_conn() as conn:
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS cliente.carteiras_config (
+                            id SERIAL PRIMARY KEY,
+                            id_produto INTEGER,
+                            nome_produto VARCHAR(255),
+                            nome_carteira VARCHAR(255),
+                            nome_tabela_transacoes VARCHAR(255),
+                            status VARCHAR(50) DEFAULT 'ATIVO',
+                            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            origem_custo VARCHAR(100)
+                        );
+                    """)
+                conn.commit()
+            except: pass
 
 # --- FUNÇÕES DE NEGÓCIO (FINANCEIRO) ---
 
 def listar_origens_para_selecao():
-    conn = get_conn()
-    if not conn: return []
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator ORDER BY origem ASC")
-        res = [row[0] for row in cur.fetchall()]
-        conn.close(); return res
-    except:
-        if conn: conn.close()
-        return []
+    with get_conn() as conn:
+        if not conn: return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT origem FROM conexoes.fatorconferi_origem_consulta_fator ORDER BY origem ASC")
+                return [row[0] for row in cur.fetchall()]
+        except: return []
 
 def listar_produtos_para_selecao():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, nome FROM produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, nome FROM admin.produtos_servicos WHERE ativo = TRUE ORDER BY nome", conn)
+        except: return pd.DataFrame()
 
 def listar_usuarios_para_selecao():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, nome, cpf FROM clientes_usuarios WHERE ativo = TRUE ORDER BY nome", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, nome, cpf FROM admin.clientes_usuarios WHERE ativo = TRUE ORDER BY nome", conn)
+        except: return pd.DataFrame()
 
 def listar_clientes_para_selecao():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, nome, cpf FROM admin.clientes ORDER BY nome", conn)
+        except: return pd.DataFrame()
 
 # -- Carteiras Config --
 
 def salvar_nova_carteira_sistema(id_prod, nome_prod, nome_carteira, status, origem_custo):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        sufixo = sanitizar_nome_tabela(nome_carteira)
-        nome_tab = f"cliente.transacoes_{sufixo}"
-        cur.execute(f"CREATE TABLE IF NOT EXISTS {nome_tab} (id SERIAL PRIMARY KEY, cpf_cliente VARCHAR(20), nome_cliente VARCHAR(255), motivo VARCHAR(255), origem_lancamento VARCHAR(100), data_transacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tipo_lancamento VARCHAR(50), valor NUMERIC(10, 2), saldo_anterior NUMERIC(10, 2), saldo_novo NUMERIC(10, 2))")
-        cur.execute("INSERT INTO cliente.carteiras_config (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status, origem_custo) VALUES (%s, %s, %s, %s, %s, %s)", (id_prod, nome_prod, nome_carteira, nome_tab, status, origem_custo))
-        conn.commit(); conn.close(); return True
-    except Exception as e:
-        print(e)
-        if conn: conn.close()
-        return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                sufixo = sanitizar_nome_tabela(nome_carteira)
+                nome_tab = f"cliente.transacoes_{sufixo}"
+                # Cria tabela dinâmica com suporte a BIGINT para CPF
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {nome_tab} (
+                        id SERIAL PRIMARY KEY, 
+                        cpf_cliente BIGINT, 
+                        nome_cliente VARCHAR(255), 
+                        motivo VARCHAR(255), 
+                        origem_lancamento VARCHAR(100), 
+                        data_transacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+                        tipo_lancamento VARCHAR(50), 
+                        valor NUMERIC(15, 2), 
+                        saldo_anterior NUMERIC(15, 2), 
+                        saldo_novo NUMERIC(15, 2)
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO cliente.carteiras_config (id_produto, nome_produto, nome_carteira, nome_tabela_transacoes, status, origem_custo) 
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (id_prod, nome_prod, nome_carteira, nome_tab, status, origem_custo))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(e)
+            return False
 
 def listar_todas_carteiras_ativas():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, nome_carteira, nome_tabela_transacoes FROM cliente.carteiras_config WHERE status = 'ATIVO' ORDER BY nome_carteira", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, nome_carteira, nome_tabela_transacoes FROM cliente.carteiras_config WHERE status = 'ATIVO' ORDER BY nome_carteira", conn)
+        except: return pd.DataFrame()
 
 def listar_carteiras_config():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT * FROM cliente.carteiras_config ORDER BY id DESC", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT * FROM cliente.carteiras_config ORDER BY id DESC", conn)
+        except: return pd.DataFrame()
 
 def atualizar_carteira_config(id_conf, status, nome_carteira=None, origem_custo=None):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE cliente.carteiras_config 
-            SET status = %s, nome_carteira = %s, origem_custo = %s 
-            WHERE id = %s
-        """, (status, nome_carteira, origem_custo, id_conf))
-        conn.commit(); conn.close()
-        return True
-    except Exception as e: 
-        print(e)
-        conn.close(); return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE cliente.carteiras_config 
+                    SET status = %s, nome_carteira = %s, origem_custo = %s 
+                    WHERE id = %s
+                """, (status, nome_carteira, origem_custo, id_conf))
+            conn.commit()
+            return True
+        except Exception as e: 
+            print(e)
+            return False
 
 def excluir_carteira_config(id_conf, nome_tabela):
-    conn = get_conn()
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM cliente.carteiras_config WHERE id = %s", (id_conf,))
-            conn.commit(); conn.close()
-            return True
-        except: conn.close(); return False
+    with get_conn() as conn:
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM cliente.carteiras_config WHERE id = %s", (id_conf,))
+                conn.commit()
+                return True
+            except: return False
     return False
 
 # -- Custo Carteira Cliente --
 
 def listar_cliente_carteira_lista():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        query = """
-            SELECT 
-                l.id, l.cpf_cliente, l.nome_cliente, l.nome_carteira, 
-                l.custo_carteira, l.cpf_usuario, l.nome_usuario, l.origem_custo,
-                c.nome_tabela_transacoes
-            FROM cliente.valor_custo_carteira_cliente l
-            LEFT JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
-            ORDER BY l.nome_cliente
-        """
-        df = pd.read_sql(query, conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            query = """
+                SELECT 
+                    l.id, l.cpf_cliente, l.nome_cliente, l.nome_carteira, 
+                    l.custo_carteira, l.cpf_usuario, l.nome_usuario, l.origem_custo,
+                    c.nome_tabela_transacoes
+                FROM cliente.valor_custo_carteira_cliente l
+                LEFT JOIN cliente.carteiras_config c ON l.nome_carteira = c.nome_carteira
+                ORDER BY l.nome_cliente
+            """
+            return pd.read_sql(query, conn)
+        except: return pd.DataFrame()
 
 def salvar_cliente_carteira_lista(cpf, nome, carteira, custo, origem_custo):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cpf_limpo = re.sub(r'\D', '', str(cpf))
-        query_vinculo = """
-            SELECT u.cpf, u.nome FROM admin.clientes c
-            JOIN clientes_usuarios u ON c.id_usuario_vinculo = u.id
-            WHERE regexp_replace(c.cpf, '[^0-9]', '', 'g') = %s LIMIT 1
-        """
-        cur.execute(query_vinculo, (cpf_limpo,))
-        res_v = cur.fetchone()
-        cpf_u, nome_u = (res_v[0], res_v[1]) if res_v else (None, None)
-        
-        cur.execute("""
-            INSERT INTO cliente.valor_custo_carteira_cliente (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo))
-        conn.commit(); conn.close(); return True
-    except:
-        if conn: conn.close()
-        return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                # Trata CPF para BigInt
+                cpf_limpo = int(re.sub(r'\D', '', str(cpf))) if cpf else 0
+                
+                # Busca vinculo do usuario
+                query_vinculo = """
+                    SELECT u.cpf, u.nome FROM admin.clientes c
+                    JOIN admin.clientes_usuarios u ON c.id_usuario_vinculo = u.id
+                    WHERE c.cpf = %s LIMIT 1 -- Busca por BigInt
+                """
+                cur.execute(query_vinculo, (cpf_limpo,))
+                res_v = cur.fetchone()
+                cpf_u, nome_u = (res_v[0], res_v[1]) if res_v else (None, None)
+                
+                cur.execute("""
+                    INSERT INTO cliente.valor_custo_carteira_cliente (cpf_cliente, nome_cliente, nome_carteira, custo_carteira, cpf_usuario, nome_usuario, origem_custo) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (cpf_limpo, nome, carteira, custo, cpf_u, nome_u, origem_custo))
+            conn.commit()
+            return True
+        except: return False
 
 def atualizar_cliente_carteira_lista(id_reg, cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE cliente.valor_custo_carteira_cliente 
-            SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
-            WHERE id=%s
-        """, (cpf, nome, carteira, custo, cpf_u, nome_u, origem_custo, id_reg))
-        conn.commit(); conn.close(); return True
-    except:
-        if conn: conn.close()
-        return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                # Trata CPFs para BigInt
+                cpf_limpo = int(re.sub(r'\D', '', str(cpf))) if cpf else 0
+                cpf_u_limpo = int(re.sub(r'\D', '', str(cpf_u))) if cpf_u else 0
+
+                cur.execute("""
+                    UPDATE cliente.valor_custo_carteira_cliente 
+                    SET cpf_cliente=%s, nome_cliente=%s, nome_carteira=%s, custo_carteira=%s, cpf_usuario=%s, nome_usuario=%s, origem_custo=%s 
+                    WHERE id=%s
+                """, (cpf_limpo, nome, carteira, custo, cpf_u_limpo, nome_u, origem_custo, id_reg))
+            conn.commit()
+            return True
+        except: return False
 
 def excluir_cliente_carteira_lista(id_reg):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM cliente.valor_custo_carteira_cliente WHERE id=%s", (id_reg,))
-        conn.commit(); conn.close(); return True
-    except:
-        if conn: conn.close()
-        return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM cliente.valor_custo_carteira_cliente WHERE id=%s", (id_reg,))
+            conn.commit()
+            return True
+        except: return False
 
 # -- Transações e Tabelas Dinâmicas --
 
 def listar_tabelas_transacao_reais():
-    conn = get_conn()
-    if not conn: return []
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'cliente' AND table_name LIKE 'transacoes_%%' ORDER BY table_name")
-        res = [row[0] for row in cur.fetchall()]
-        conn.close(); return res
-    except:
-        if conn: conn.close()
-        return []
+    with get_conn() as conn:
+        if not conn: return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'cliente' AND table_name LIKE 'transacoes_%%' ORDER BY table_name")
+                return [row[0] for row in cur.fetchall()]
+        except: return []
 
 def carregar_dados_tabela_dinamica(nome_tabela):
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql(f"SELECT * FROM cliente.{nome_tabela} ORDER BY id DESC", conn)
-        conn.close(); return df
-    except:
-        if conn: conn.close()
-        return pd.DataFrame()
-
-def salvar_alteracoes_tabela_dinamica(nome_tabela, df_original, df_editado):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        ids_originais = set(df_original['id'].dropna().astype(int).tolist())
-        
-        ids_editados_atuais = set()
-        for _, row in df_editado.iterrows():
-            if pd.notna(row.get('id')) and row.get('id') != '':
-                try: ids_editados_atuais.add(int(row['id']))
-                except: pass
-
-        ids_del = ids_originais - ids_editados_atuais
-        if ids_del:
-            ids_str = ",".join(map(str, ids_del))
-            cur.execute(f"DELETE FROM cliente.{nome_tabela} WHERE id IN ({ids_str})")
-
-        for index, row in df_editado.iterrows():
-            colunas_db = [c for c in row.index if c not in ['id', 'data_transacao']]
-            valores = [row[c] for c in colunas_db]
-            row_id = row.get('id')
-            eh_novo = pd.isna(row_id) or row_id == '' or row_id is None
-            
-            if eh_novo:
-                cols_str = ", ".join(colunas_db)
-                placeholders = ", ".join(["%s"] * len(colunas_db))
-                cur.execute(f"INSERT INTO cliente.{nome_tabela} ({cols_str}) VALUES ({placeholders})", valores)
-            elif int(row_id) in ids_originais:
-                set_clause = ", ".join([f"{c} = %s" for c in colunas_db])
-                valores_update = valores + [int(row_id)]
-                cur.execute(f"UPDATE cliente.{nome_tabela} SET {set_clause} WHERE id = %s", valores_update)
-        
-        conn.commit(); conn.close(); return True
-    except Exception as e:
-        st.error(f"Erro ao salvar tabela: {e}"); 
-        if conn: conn.close()
-        return False
-
-def buscar_transacoes_carteira_filtrada(nome_tabela_sql, cpf_cliente, data_ini, data_fim):
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        dt_ini_str = data_ini.strftime('%Y-%m-%d 00:00:00')
-        dt_fim_str = data_fim.strftime('%Y-%m-%d 23:59:59')
-        query = f"SELECT id, data_transacao, motivo, tipo_lancamento, valor, saldo_novo, origem_lancamento FROM {nome_tabela_sql} WHERE cpf_cliente = %s AND data_transacao BETWEEN %s AND %s ORDER BY data_transacao DESC"
-        df = pd.read_sql(query, conn, params=(str(cpf_cliente), dt_ini_str, dt_fim_str))
-        conn.close(); return df
-    except:
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_conn() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            # Lista os últimos 100 para não pesar
+            return pd.read_sql(f"SELECT * FROM cliente.{nome_tabela} ORDER BY id DESC LIMIT 100", conn)
+        except: return pd.DataFrame()
 
 def realizar_lancamento_manual(tabela_sql, cpf_cliente, nome_cliente, tipo_lanc, valor, motivo):
-    conn = get_conn()
-    if not conn: return False, "Erro conexão"
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_cliente,))
-        res = cur.fetchone()
-        saldo_anterior = float(res[0]) if res else 0.0
-        valor = float(valor)
-        saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
-        
-        # Inserção na tabela individual
-        query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, 'MANUAL', tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
-        cur.execute(query, (cpf_cliente, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
-        
-        # Inserção na tabela unificada
-        cur.execute("SELECT id FROM admin.clientes WHERE cpf = %s LIMIT 1", (cpf_cliente,))
-        res_cli = cur.fetchone()
-        if res_cli:
-            id_cliente = res_cli[0]
-            cur.execute("""
-                INSERT INTO cliente.extrato_carteira_por_produto 
-                (id_cliente, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo)
-                VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s)
-            """, (str(id_cliente), tipo_lanc, motivo, valor, saldo_anterior, saldo_novo))
+    with get_conn() as conn:
+        if not conn: return False, "Erro conexão"
+        try:
+            with conn.cursor() as cur:
+                # Garante CPF BigInt
+                cpf_limpo = int(re.sub(r'\D', '', str(cpf_cliente))) if cpf_cliente else 0
 
-        conn.commit(); conn.close(); return True, "Sucesso"
-    except Exception as e:
-        if conn: conn.close()
-        return False, str(e)
+                cur.execute(f"SELECT saldo_novo FROM {tabela_sql} WHERE cpf_cliente = %s ORDER BY id DESC LIMIT 1", (cpf_limpo,))
+                res = cur.fetchone()
+                saldo_anterior = float(res[0]) if res else 0.0
+                valor = float(valor)
+                saldo_novo = saldo_anterior - valor if tipo_lanc == "DEBITO" else saldo_anterior + valor
+                
+                # Inserção na tabela individual
+                query = f"INSERT INTO {tabela_sql} (cpf_cliente, nome_cliente, motivo, origem_lancamento, tipo_lancamento, valor, saldo_anterior, saldo_novo, data_transacao) VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s, %s, NOW())"
+                cur.execute(query, (cpf_limpo, nome_cliente, motivo, tipo_lanc, valor, saldo_anterior, saldo_novo))
+                
+                # Inserção na tabela unificada
+                cur.execute("SELECT id FROM admin.clientes WHERE cpf = %s LIMIT 1", (cpf_limpo,))
+                res_cli = cur.fetchone()
+                if res_cli:
+                    id_cliente = res_cli[0]
+                    cur.execute("""
+                        INSERT INTO cliente.extrato_carteira_por_produto 
+                        (id_cliente, tipo_lancamento, produto_vinculado, origem_lancamento, valor_lancado, saldo_anterior, saldo_novo)
+                        VALUES (%s, %s, %s, 'MANUAL', %s, %s, %s)
+                    """, (str(id_cliente), tipo_lanc, motivo, valor, saldo_anterior, saldo_novo))
+
+            conn.commit()
+            return True, "Sucesso"
+        except Exception as e: return False, str(e)
 
 def atualizar_transacao_dinamica(nome_tabela, id_transacao, novo_motivo, novo_valor, novo_tipo):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        query = f"UPDATE {nome_tabela} SET motivo = %s, valor = %s, tipo_lancamento = %s WHERE id = %s"
-        cur.execute(query, (novo_motivo, float(novo_valor), novo_tipo, id_transacao))
-        conn.commit(); conn.close()
-        return True
-    except: conn.close(); return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                query = f"UPDATE {nome_tabela} SET motivo = %s, valor = %s, tipo_lancamento = %s WHERE id = %s"
+                cur.execute(query, (novo_motivo, float(novo_valor), novo_tipo, id_transacao))
+            conn.commit()
+            return True
+        except: return False
 
 def excluir_transacao_dinamica(nome_tabela, id_transacao):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        query = f"DELETE FROM {nome_tabela} WHERE id = %s"
-        cur.execute(query, (id_transacao,))
-        conn.commit(); conn.close()
-        return True
-    except: conn.close(); return False
+    with get_conn() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                query = f"DELETE FROM {nome_tabela} WHERE id = %s"
+                cur.execute(query, (id_transacao,))
+            conn.commit()
+            return True
+        except: return False
 
 # --- DIALOGS ---
 
@@ -517,20 +504,16 @@ def app_financeiro():
     garantir_tabela_extrato_geral()
     garantir_tabela_custo_carteira()
 
-    # Título removido conforme solicitado
-
-    # --- RELATÓRIOS (AGORA TELA ÚNICA) ---
     st.markdown("### 📊 Extrato Unificado")
-    conn = get_conn()
-    try:
-        df_clientes_opt = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
-        df_prods = pd.read_sql("SELECT DISTINCT produto_vinculado FROM cliente.extrato_carteira_por_produto", conn)
-        lista_produtos = df_prods['produto_vinculado'].dropna().tolist()
-    except: 
-        df_clientes_opt = pd.DataFrame()
-        lista_produtos = []
-    finally: 
-        if conn: conn.close()
+    
+    with get_conn() as conn:
+        try:
+            df_clientes_opt = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
+            df_prods = pd.read_sql("SELECT DISTINCT produto_vinculado FROM cliente.extrato_carteira_por_produto", conn)
+            lista_produtos = df_prods['produto_vinculado'].dropna().tolist()
+        except: 
+            df_clientes_opt = pd.DataFrame()
+            lista_produtos = []
 
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
@@ -540,45 +523,44 @@ def app_financeiro():
         btn_gerar = st.button("Gerar Relatório", type="primary", use_container_width=True)
 
     if btn_gerar and cli_sel:
-        conn = get_conn()
-        try:
-            dt_ini, dt_fim = dates if len(dates) == 2 else (dates[0], dates[0])
-            q = """
-                SELECT data_lancamento, produto_vinculado, origem_lancamento, tipo_lancamento, valor_lancado, saldo_novo, nome_usuario 
-                FROM cliente.extrato_carteira_por_produto 
-                WHERE id_cliente = %s AND data_lancamento BETWEEN %s AND %s
-            """
-            params = [str(cli_sel), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
-            
-            if prods:
-                q += f" AND produto_vinculado IN ({','.join(['%s']*len(prods))})"
-                params.extend(prods)
-            
-            q += " ORDER BY data_lancamento DESC"
-            
-            df_r = pd.read_sql(q, conn, params=params)
-            
-            # Busca Saldo Real Atual
-            cur = conn.cursor()
-            cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(cli_sel),))
-            res_s = cur.fetchone()
-            saldo_real = float(res_s[0]) if res_s else 0.0
-            
-            if not df_r.empty:
-                df_r['data_lancamento'] = pd.to_datetime(df_r['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
-                st.dataframe(df_r, use_container_width=True, hide_index=True)
+        with get_conn() as conn:
+            try:
+                dt_ini, dt_fim = dates if len(dates) == 2 else (dates[0], dates[0])
+                q = """
+                    SELECT data_lancamento, produto_vinculado, origem_lancamento, tipo_lancamento, valor_lancado, saldo_novo, nome_usuario 
+                    FROM cliente.extrato_carteira_por_produto 
+                    WHERE id_cliente = %s AND data_lancamento BETWEEN %s AND %s
+                """
+                params = [str(cli_sel), f"{dt_ini} 00:00:00", f"{dt_fim} 23:59:59"]
                 
-                st.divider()
-                k1, k2, k3 = st.columns(3)
-                tot_c = df_r[df_r['tipo_lancamento']=='CREDITO']['valor_lancado'].sum()
-                tot_d = df_r[df_r['tipo_lancamento']=='DEBITO']['valor_lancado'].sum()
+                if prods:
+                    q += f" AND produto_vinculado IN ({','.join(['%s']*len(prods))})"
+                    params.extend(prods)
                 
-                k1.metric("Total Crédito (Período)", f"R$ {tot_c:,.2f}")
-                k2.metric("Total Débito (Período)", f"R$ {tot_d:,.2f}")
-                k3.metric("Saldo Atual do Cliente", f"R$ {saldo_real:,.2f}")
-            else: st.warning("Sem dados no período.")
-        except Exception as e: st.error(f"Erro: {e}")
-        finally: conn.close()
+                q += " ORDER BY data_lancamento DESC"
+                
+                df_r = pd.read_sql(q, conn, params=params)
+                
+                # Busca Saldo Real Atual
+                with conn.cursor() as cur:
+                    cur.execute("SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1", (str(cli_sel),))
+                    res_s = cur.fetchone()
+                    saldo_real = float(res_s[0]) if res_s else 0.0
+                
+                if not df_r.empty:
+                    df_r['data_lancamento'] = pd.to_datetime(df_r['data_lancamento']).dt.strftime('%d/%m/%Y %H:%M')
+                    st.dataframe(df_r, use_container_width=True, hide_index=True)
+                    
+                    st.divider()
+                    k1, k2, k3 = st.columns(3)
+                    tot_c = df_r[df_r['tipo_lancamento']=='CREDITO']['valor_lancado'].sum()
+                    tot_d = df_r[df_r['tipo_lancamento']=='DEBITO']['valor_lancado'].sum()
+                    
+                    k1.metric("Total Crédito (Período)", f"R$ {tot_c:,.2f}")
+                    k2.metric("Total Débito (Período)", f"R$ {tot_d:,.2f}")
+                    k3.metric("Saldo Atual do Cliente", f"R$ {saldo_real:,.2f}")
+                else: st.warning("Sem dados no período.")
+            except Exception as e: st.error(f"Erro: {e}")
 
 if __name__ == "__main__":
     app_financeiro()
