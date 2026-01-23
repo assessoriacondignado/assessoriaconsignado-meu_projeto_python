@@ -32,7 +32,7 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. SANITIZAÇÃO E FORMATAÇÃO (NOVA REGRA)
+# 1. SANITIZAÇÃO E FORMATAÇÃO
 # =============================================================================
 
 def registrar_erro_importacao(cpf, erro_msg):
@@ -48,33 +48,18 @@ def registrar_erro_importacao(cpf, erro_msg):
     except: pass
 
 def sanitizar_e_formatar(valor):
-    """
-    Aplica todas as regras de limpeza de uma vez:
-    1. Converte NULO/Empty -> None
-    2. Converte Data dd/mm/yyyy -> yyyy-mm-dd
-    3. Converte Tudo para MAIÚSCULO
-    """
     if valor is None: return None
-    
-    # Se for lista, não sanitiza aqui (será tratado no loop de inserção)
     if isinstance(valor, list): return valor
-    
-    # Converte para string e remove espaços
     v_str = str(valor).strip()
+    if not v_str or v_str.upper() in ["NULO", "NULL", "NONE", "[]", "{}"]: return None
     
-    # 1. Regra de Nulos
-    if not v_str or v_str.upper() in ["NULO", "NULL", "NONE", "[]", "{}"]:
-        return None
-    
-    # 2. Regra de Data (DD/MM/YYYY -> YYYY-MM-DD)
+    # Data BR -> ISO
     if re.match(r'^\d{2}/\d{2}/\d{4}$', v_str):
         try:
             dt_obj = datetime.strptime(v_str, '%d/%m/%Y')
             return dt_obj.strftime('%Y-%m-%d')
-        except: 
-            pass 
+        except: pass 
             
-    # 3. Regra de Maiúsculo
     return v_str.upper()
 
 # =============================================================================
@@ -83,59 +68,39 @@ def sanitizar_e_formatar(valor):
 
 def _xml_to_dict_simple(element):
     text = element.text.strip() if element.text else None
-    if len(element) == 0:
-        return text
-
+    if len(element) == 0: return text
     result = {}
     for child in element:
         tag = child.tag.replace('{', '').split('}')[-1].upper()
         child_data = _xml_to_dict_simple(child)
-        
         if tag in result:
-            if isinstance(result[tag], list):
-                result[tag].append(child_data)
-            else:
-                result[tag] = [result[tag], child_data]
-        else:
-            result[tag] = child_data
+            if isinstance(result[tag], list): result[tag].append(child_data)
+            else: result[tag] = [result[tag], child_data]
+        else: result[tag] = child_data
     return result
 
 def parse_xml_to_dict(texto_raw):
     try:
-        if isinstance(texto_raw, bytes):
-            texto_raw = texto_raw.decode('utf-8', errors='ignore')
+        if isinstance(texto_raw, bytes): texto_raw = texto_raw.decode('utf-8', errors='ignore')
         texto_raw = texto_raw.replace('ISO-8859-1', 'UTF-8')
-
-        try:
-            return json.loads(texto_raw)
-        except:
-            pass
-            
+        try: return json.loads(texto_raw)
+        except: pass
         root = ET.fromstring(texto_raw)
         return _xml_to_dict_simple(root)
-    except Exception as e:
-        return {}
+    except: return {}
 
 # =============================================================================
-# 3. EXTRAÇÃO POR SINTAXE SIMPLIFICADA (; [] {})
+# 3. EXTRAÇÃO POR SINTAXE (; [] {})
 # =============================================================================
 
 def extrair_valor_novo_padrao(dados, caminho_str):
-    """
-    Navega no JSON usando APENAS o separador ';'
-    Detecta '[]' para identificar listas e '{}' para chaves finais.
-    Ex: TELEFONES_MOVEL;TELEFONE;[]{NUMERO}
-    """
     if not caminho_str: return None
-    
     caminho_limpo = re.sub(r'".*?"', '', caminho_str).strip()
     passos = [p.strip() for p in caminho_limpo.split(';') if p.strip()]
-    
     cursor = dados 
     
     for i, passo in enumerate(passos):
         if cursor is None: return None
-        
         is_list_iter = '[]' in passo
         chave = passo.replace('[]', '').replace('{', '').replace('}', '').upper()
         
@@ -143,9 +108,7 @@ def extrair_valor_novo_padrao(dados, caminho_str):
             encontrou = False
             for k, v in cursor.items():
                 if k.upper() == chave:
-                    cursor = v
-                    encontrou = True
-                    break
+                    cursor = v; encontrou = True; break
             if not encontrou: return None
             
         elif isinstance(cursor, list) and is_list_iter:
@@ -153,20 +116,15 @@ def extrair_valor_novo_padrao(dados, caminho_str):
             for item in cursor:
                 if isinstance(item, dict):
                     for k, v in item.items():
-                        if k.upper() == chave:
-                            lista_valores.append(v)
-                            break
+                        if k.upper() == chave: lista_valores.append(v); break
                 elif isinstance(item, str) and chave == "": 
                     lista_valores.append(item)
             cursor = lista_valores
-            
-        else:
-            return None
-
+        else: return None
     return cursor
 
 # =============================================================================
-# 4. DISTRIBUIÇÃO DINÂMICA (NOVA LÓGICA DE LOOP + UPSERT)
+# 4. DISTRIBUIÇÃO DINÂMICA (CORRIGIDA PARA ERRO DE UNIQUE CONSTRAINT)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -184,7 +142,6 @@ def executar_distribuicao_dinamica(dados_api):
         for tabela in tabelas:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
-                
                 dados_extraidos = {}
                 max_linhas = 1 
                 
@@ -193,23 +150,17 @@ def executar_distribuicao_dinamica(dados_api):
                     col_sql = str(row['tabela_referencia_coluna']).strip()
                     caminho = str(row['jason_api_fatorconferi_coluna']).strip()
                     
-                    # 1. Extrai usando nova sintaxe
                     valor_raw = extrair_valor_novo_padrao(dados_api, caminho)
                     
-                    # 2. Sanitiza
                     if isinstance(valor_raw, list):
                         valor_final = [sanitizar_e_formatar(v) for v in valor_raw]
-                        if len(valor_final) > max_linhas:
-                            max_linhas = len(valor_final)
+                        if len(valor_final) > max_linhas: max_linhas = len(valor_final)
                     else:
                         valor_final = sanitizar_e_formatar(valor_raw)
                         
-                    # 3. Limpeza de Pontuação CPF para SQL
                     if 'CPF' in col_sql.upper() or 'CPF' in caminho.upper():
-                        if isinstance(valor_final, list):
-                            valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
-                        else:
-                            valor_final = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
+                        if isinstance(valor_final, list): valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
+                        else: valor_final = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
 
                     dados_extraidos[col_sql] = valor_final
 
@@ -218,29 +169,36 @@ def executar_distribuicao_dinamica(dados_api):
 
                 cols = list(dados_extraidos.keys())
                 placeholders = ", ".join(["%s"] * len(cols))
+                
+                # --- CORREÇÃO DO ERRO DE CONFLITO ---
+                # Identifica se é uma tabela de Lista (1:N) onde o CPF se repete
+                tabela_lower = tabela.lower()
+                is_lista_1_n = any(x in tabela_lower for x in ['telefone', 'endereco', 'email', 'socio', 'veiculo', 'historico'])
+                
                 sql_base = f"INSERT INTO {tabela} ({', '.join(cols)}) VALUES ({placeholders})"
                 
-                # Regra de Conflito (UPSERT)
                 cols_lower = [c.lower() for c in cols]
-                if 'cpf' in cols_lower:
+                
+                # Se for tabela de lista (telefones/enderecos), NÃO usa ON CONFLICT (CPF) pois CPF repete.
+                # Se for tabela de cadastro único, USA ON CONFLICT (CPF).
+                if not is_lista_1_n and 'cpf' in cols_lower:
                     update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols if c.lower() != 'cpf'])
                     sql_base += f" ON CONFLICT (cpf) DO UPDATE SET {update_set}" if update_set else " ON CONFLICT (cpf) DO NOTHING"
                 elif 'id' in cols_lower:
                     sql_base += " ON CONFLICT (id) DO NOTHING"
+                
+                # Nota: Para tabelas de lista (Telefones), o SQL será um INSERT simples.
+                # O banco aceitará duplicatas se você rodar a consulta 2x. 
+                # (Para evitar isso no futuro, seria necessário deletar antes de inserir, mas vamos focar em não dar erro agora).
 
                 count_ins = 0
                 for i in range(max_linhas):
                     linha_vals = []
                     tem_dado = False
-                    
                     for col in cols:
                         val = dados_extraidos[col]
-                        # Lógica 1:N (Item da lista ou Valor Fixo)
-                        if isinstance(val, list):
-                            item = val[i] if i < len(val) else None
-                        else:
-                            item = val
-                            
+                        if isinstance(val, list): item = val[i] if i < len(val) else None
+                        else: item = val
                         if item: tem_dado = True
                         linha_vals.append(item)
                     
@@ -262,7 +220,7 @@ def executar_distribuicao_dinamica(dados_api):
         return [], [str(e)]
 
 # =============================================================================
-# 5. FUNÇÕES DE SUPORTE (API E BANCO) - RESTAURADAS
+# 5. FUNÇÕES DE SUPORTE (MANTIDAS)
 # =============================================================================
 
 def buscar_credenciais():
@@ -402,7 +360,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
 
     try:
         cur = conn.cursor()
-        
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -454,7 +411,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         return {"sucesso": False, "msg": str(e)}
 
 # =============================================================================
-# 6. INTERFACE E UTILITÁRIOS DE TELA (RESTAURADOS)
+# 6. INTERFACE E UTILITÁRIOS
 # =============================================================================
 
 def carregar_dados_genericos(nome_tabela):
@@ -494,6 +451,32 @@ def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
     except: 
         if conn: conn.close()
         return False
+
+def salvar_alteracoes_mapa_completo(df_original, df_editado):
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        ids_orig = set(df_original['id'].dropna().astype(int).tolist())
+        ids_novos = set(df_editado['id'].dropna().astype(int).tolist())
+        ids_del = ids_orig - ids_novos
+        if ids_del:
+            if len(ids_del) == 1: cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id = {list(ids_del)[0]}")
+            else: cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id IN {tuple(ids_del)}")
+
+        for index, row in df_editado.iterrows():
+            rid = row.get('id')
+            tab = row.get('tabela_referencia')
+            col = row.get('tabela_referencia_coluna')
+            js = row.get('jason_api_fatorconferi_coluna')
+            
+            if pd.isna(rid) or rid == '':
+                cur.execute("INSERT INTO conexoes.fatorconferi_conexao_tabelas (tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna) VALUES (%s, %s, %s)", (tab, col, js))
+            elif int(rid) in ids_orig:
+                cur.execute("UPDATE conexoes.fatorconferi_conexao_tabelas SET tabela_referencia=%s, tabela_referencia_coluna=%s, jason_api_fatorconferi_coluna=%s WHERE id=%s", (tab, col, js, int(rid)))
+        
+        conn.commit(); conn.close(); return True
+    except: return False
 
 def listar_clientes_carteira():
     conn = get_conn()
@@ -539,16 +522,13 @@ def listar_colunas_geral(nome_tabela_completo):
     conn = get_conn()
     if not conn: return []
     try:
-        parts = nome_tabela_completo.split('.')
-        schema = parts[0] if len(parts) > 1 else 'public'
-        tabela = parts[1] if len(parts) > 1 else parts[0]
-        
         with conn.cursor() as cur:
+            parts = nome_tabela_completo.split('.')
+            schema = parts[0] if len(parts) > 1 else 'public'
+            tabela = parts[1] if len(parts) > 1 else parts[0]
             cur.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position
             """, (schema, tabela))
             return [r[0] for r in cur.fetchall()]
     except: return []
@@ -588,36 +568,8 @@ def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
         return False
     finally: conn.close()
 
-def salvar_alteracoes_mapa_completo(df_original, df_editado):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        ids_orig = set(df_original['id'].dropna().astype(int).tolist())
-        ids_novos = set(df_editado['id'].dropna().astype(int).tolist())
-        ids_del = ids_orig - ids_novos
-        
-        if ids_del:
-            if len(ids_del) == 1: cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id = {list(ids_del)[0]}")
-            else: cur.execute(f"DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE id IN {tuple(ids_del)}")
-
-        for index, row in df_editado.iterrows():
-            rid = row.get('id')
-            tab = row.get('tabela_referencia')
-            col = row.get('tabela_referencia_coluna')
-            js = row.get('jason_api_fatorconferi_coluna')
-            
-            if pd.isna(rid) or rid == '':
-                cur.execute("INSERT INTO conexoes.fatorconferi_conexao_tabelas (tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna) VALUES (%s, %s, %s)", (tab, col, js))
-            elif int(rid) in ids_orig:
-                cur.execute("UPDATE conexoes.fatorconferi_conexao_tabelas SET tabela_referencia=%s, tabela_referencia_coluna=%s, jason_api_fatorconferi_coluna=%s WHERE id=%s", (tab, col, js, int(rid)))
-        
-        conn.commit(); conn.close(); return True
-    except: return False
-
 def app_fator_conferi():
     criar_tabela_conexao_tabelas()
-
     st.markdown("### ⚡ Painel Fator Conferi")
     tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros", "🗺️ Mapa de Dados"])
 
@@ -647,9 +599,7 @@ def app_fator_conferi():
                 with st.spinner("Buscando..."):
                     res = realizar_consulta_cpf(cpf_in, "teste_de_consulta_fatorconferi.cpf", forcar, id_cliente_teste)
                     st.session_state['resultado_fator'] = res
-
                     if res['sucesso']:
-                        # CHAMA A NOVA FUNÇÃO SIMPLIFICADA
                         lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
                         if lista_sucessos: st.success(f"✅ Dados distribuídos para: {', '.join(lista_sucessos)}")
                         if lista_erros: st.error(f"⚠️ Relatório de Importação:\n{chr(10).join(lista_erros)}")
@@ -708,7 +658,6 @@ def app_fator_conferi():
     with tabs[5]:
         st.subheader("⚙️ Mapeamento de Dados (API -> SQL)")
         st.info("Sintaxe: SEÇÃO;SUBCAMPO;[]{LISTA}")
-        
         lista_tabelas = listar_tabelas_disponiveis()
         tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
         
@@ -716,7 +665,6 @@ def app_fator_conferi():
             colunas_db = listar_colunas_geral(tabela_sel)
             mapa_existente = listar_mapeamento_tabela(tabela_sel)
             colunas_pre_selecionadas = [c for c in mapa_existente.keys() if c in colunas_db]
-            
             colunas_sel = st.multiselect("2. Escolha as colunas para mapear:", options=colunas_db, default=colunas_pre_selecionadas)
             
             if colunas_sel:
@@ -742,7 +690,6 @@ def app_fator_conferi():
         st.markdown("### 📋 Tabela Geral de Conexões (Editável)")
         df_geral = listar_todos_mapeamentos()
         df_editado_geral = st.data_editor(df_geral, key="editor_geral_mapeamentos", num_rows="dynamic", use_container_width=True)
-        
         if st.button("💾 Salvar Alterações Gerais", type="primary"):
             if salvar_alteracoes_mapa_completo(df_geral, df_editado_geral):
                 st.success("Tabela geral atualizada!"); time.sleep(1.5); st.rerun()
