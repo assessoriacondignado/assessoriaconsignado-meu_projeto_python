@@ -942,232 +942,249 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         </style>
     """, unsafe_allow_html=True)
 
-    st.divider()
-    c_head, c_act = st.columns([3, 2])
-    
-    # Formatação Visual via Validador
-    cpf_show = v.ValidadorDocumentos.cpf_para_tela(pessoal.get('cpf', ''))
-    
-    c_head.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
-    c_head.caption(f"CPF: {cpf_show}")
-    
-    with c_act:
-        c_ins, c_edit, c_del = st.columns(3)
-        with c_ins:
-            if st.button("➕ Extra", help="Inserir telefone, email, contrato", use_container_width=True):
-                modal_inserir_dados(cpf, pessoal.get('nome'))
-        with c_edit:
-            if st.session_state['modo_edicao']:
-                 if st.button("👁️ Ver", help="Sair do modo edição", use_container_width=True):
-                      st.session_state['modo_edicao'] = False
-                      st.rerun()
-            else:
-                if st.button("✏️ Editar", type="primary", use_container_width=True):
-                    st.session_state['modo_edicao'] = True
-                    st.rerun()
-        with c_del:
-            if st.button("🗑️ Excluir", type="primary", use_container_width=True):
-                modal_confirmar_exclusao(cpf)
+    # -----------------------------------------------------------
+    # NOVO LAYOUT FICHA CLIENTE: 90% DADOS | 10% SIDEBAR FIXA
+    # -----------------------------------------------------------
+    c_dados, c_lateral = st.columns([9, 1])
 
-    st.divider()
-
-    # --- MODO EDIÇÃO ---
-    if st.session_state['modo_edicao']:
-        with st.form("form_edicao_cliente"):
-            st.info("✏️ Modo Edição Ativo. Edite os campos abaixo e clique em Salvar.")
-            st.markdown("### 📄 Dados Pessoais")
-            ec1, ec2, ec3 = st.columns(3)
-            e_nome = ec1.text_input("Nome", value=pessoal.get('nome',''))
-            e_rg = ec2.text_input("RG", value=pessoal.get('identidade',''))
-            e_nasc = ec3.date_input("Data Nasc.", value=v.ValidadorData.para_sql(pessoal.get('data_nascimento')), format="DD/MM/YYYY")
-            
-            ec4, ec5, ec6 = st.columns(3)
-            e_cnh = ec4.text_input("CNH", value=pessoal.get('cnh',''))
-            e_titulo = ec5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
-            e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
-            e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
-            
-            ec7, ec8 = st.columns(2)
-            e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
-            e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
-            
-            st.markdown("---")
-            st.caption("Campos abaixo são gerenciados via '➕ Extra'")
-            ec9, ec10 = st.columns(2)
-            agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
-            ec9.text_input("Agrupamento (Leitura)", value=agrupamento_val, disabled=True)
-            lista_convs = dados.get('convenios_lista', [])
-            conv_str = ", ".join(lista_convs)
-            ec10.text_input("Convênios (Leitura)", value=conv_str, disabled=True)
-
-            st.divider()
-            col_lista1, col_lista2 = st.columns(2)
-            edicoes_telefones = []
-            edicoes_emails = []
-
-            with col_lista1:
-                st.markdown("### 📞 Telefones")
-                if dados.get('telefones'):
-                    for i, tel in enumerate(dados['telefones']):
-                        novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
-                        edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
-                else:
-                    st.caption("Sem telefones.")
-
-            with col_lista2:
-                st.markdown("### 📧 E-mails")
-                if dados.get('emails'):
-                    for i, mail in enumerate(dados['emails']):
-                        novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
-                        edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
-
-            st.divider()
-            alteracoes_dinamicas = [] 
-            if financeiro:
-                st.markdown("### 📋 Editar Dados de Convênios")
-                for (nome_convenio, matricula), grupo in financeiro.items():
-                    with st.expander(f"Editar: {nome_convenio} - Matrícula {matricula}", expanded=True):
-                        dados_esp = grupo.get('dados_convenio')
-                        tabela_ref = grupo.get('tabela_ref')
-                        if dados_esp and tabela_ref and 'id' in dados_esp:
-                            edicao_grupo = {}
-                            cols_dyn = st.columns(3)
-                            idx_col = 0
-                            for k, val in dados_esp.items():
-                                if k not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
-                                    val_novo = cols_dyn[idx_col % 3].text_input(k.replace('_', ' ').capitalize(), value=str(val), key=f"edyn_{tabela_ref}_{dados_esp['id']}_{k}")
-                                    if val_novo != str(val):
-                                        edicao_grupo[k] = val_novo
-                                    idx_col += 1
-                            if edicao_grupo:
-                                alteracoes_dinamicas.append({'tabela': tabela_ref, 'id': dados_esp['id'], 'dados': edicao_grupo})
-            
-            st.divider()
-            if st.form_submit_button("💾 CONFIRMAR ALTERAÇÕES", type="primary"):
-                pacote_dados = {
-                    "pessoal": {
-                        "nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc,
-                        "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae,
-                        "nome_pai": e_pai, "campanhas": e_campanhas
-                    },
-                    "telefones": edicoes_telefones,
-                    "emails": edicoes_emails
-                }
-                if atualizar_dados_cliente_lote(cpf, pacote_dados, dados_dinamicos=alteracoes_dinamicas):
-                    st.success("Dados atualizados com sucesso!")
-                    st.session_state['modo_edicao'] = False
-                    time.sleep(1)
-                    st.rerun()
-        return
-
-    # --- VISUALIZAÇÃO ---
-    with st.expander("📄 Dados Cadastrais", expanded=False):
-        c1, c2, c3, c4, c5, c6 = st.columns([3, 1.5, 1.5, 1, 1.5, 1.5])
-        c1.text_input("Nome Completo", value=pessoal.get('nome',''), disabled=True)
-        c2.text_input("CPF", value=cpf_show, disabled=True)
-        c3.text_input("RG", value=pessoal.get('identidade',''), disabled=True)
-        c4.text_input("Sexo", value=pessoal.get('sexo',''), disabled=True)
-        
-        nasc_fmt = v.ValidadorData.para_tela(pessoal.get('data_nascimento'))
-        idade_str = v.ValidadorData.calcular_tempo(pessoal.get('data_nascimento'), 'completo')
-        
-        c5.text_input("Data Nasc.", value=nasc_fmt, disabled=True)
-        c6.text_input("Idade", value=idade_str, disabled=True)
-        
-        c7, c8 = st.columns(2)
-        c7.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
-        c8.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
-        
-        c9, c10, c11, c12 = st.columns(4)
-        c9.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
-        c10.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
-        c11.text_input("Campanha", value=pessoal.get('campanhas',''), disabled=True)
-        agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
-        c12.text_input("Agrupamento", value=agrupamento_val, disabled=True)
-        
-        lista_convs = dados.get('convenios_lista', [])
-        conv_str = ", ".join(lista_convs)
-        st.text_input("Convênios Vinculados", value=conv_str, disabled=True)
-
-    with st.expander("📍 Contatos e Endereço", expanded=False):
-        if dados.get('telefones') or dados.get('emails'):
-            cols_contato = st.columns(4)
-            idx_c = 0
-            for tel in dados.get('telefones', []):
-                # Formata visualmente
-                val_fmt = v.ValidadorContato.telefone_para_tela(tel['valor'])
-                cols_contato[idx_c % 4].text_input(f"Telefone {idx_c+1}", value=val_fmt, disabled=True)
-                idx_c += 1
-            for mail in dados.get('emails', []):
-                cols_contato[idx_c % 4].text_input(f"E-mail {idx_c+1}", value=mail['valor'], disabled=True)
-                idx_c += 1
-        else:
-            st.caption("Sem contatos cadastrados.")
-        
+    # --- COLUNA ESQUERDA (90%) - DADOS DO CLIENTE ---
+    with c_dados:
         st.divider()
-        st.markdown("**🏠 Endereço**")
-        if dados.get('enderecos'):
-            for i, end in enumerate(dados.get('enderecos', [])):
-                ce1, ce2, ce3, ce4, ce5 = st.columns([3, 2, 2, 1, 1.5])
-                ce1.text_input("Rua", value=end.get('rua',''), key=f"r_{i}", disabled=True)
-                ce2.text_input("Bairro", value=end.get('bairro',''), key=f"b_{i}", disabled=True)
-                ce3.text_input("Cidade", value=end.get('cidade',''), key=f"c_{i}", disabled=True)
-                ce4.text_input("UF", value=end.get('uf',''), key=f"u_{i}", disabled=True)
-                # Formata CEP
-                cep_fmt = v.ValidadorContato.cep_para_tela(end.get('cep'))
-                ce5.text_input("CEP", value=cep_fmt, key=f"cp_{i}", disabled=True)
-        else:
-            st.caption("Sem endereço cadastrado.")
-
-    if financeiro:
-        for (nome_convenio, matricula), grupo in financeiro.items():
-            with st.expander(f"📋 {nome_convenio} - Matrícula: {matricula}", expanded=False):
-                st.markdown(f"###### 🏥 Dados do Convênio")
-                dados_esp = grupo.get('dados_convenio')
-                if dados_esp:
-                    chaves = [k for k in dados_esp.keys() if k not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']]
-                    cols_fin = st.columns(4)
-                    for i, k in enumerate(chaves):
-                        cols_fin[i % 4].text_input(k.replace('_', ' ').capitalize(), value=str(dados_esp[k]), disabled=True, key=f"v_dconv_{matricula}_{k}")
+        c_head, c_act = st.columns([3, 2])
+        
+        # Formatação Visual via Validador
+        cpf_show = v.ValidadorDocumentos.cpf_para_tela(pessoal.get('cpf', ''))
+        
+        c_head.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
+        c_head.caption(f"CPF: {cpf_show}")
+        
+        with c_act:
+            c_ins, c_edit, c_del = st.columns(3)
+            with c_ins:
+                if st.button("➕ Extra", help="Inserir telefone, email, contrato", use_container_width=True):
+                    modal_inserir_dados(cpf, pessoal.get('nome'))
+            with c_edit:
+                if st.session_state['modo_edicao']:
+                     if st.button("👁️ Ver", help="Sair do modo edição", use_container_width=True):
+                          st.session_state['modo_edicao'] = False
+                          st.rerun()
                 else:
-                    st.info("Sem dados adicionais.")
+                    if st.button("✏️ Editar", type="primary", use_container_width=True):
+                        st.session_state['modo_edicao'] = True
+                        st.rerun()
+            with c_del:
+                if st.button("🗑️ Excluir", type="primary", use_container_width=True):
+                    modal_confirmar_exclusao(cpf)
+
+        st.divider()
+
+        # --- MODO EDIÇÃO ---
+        if st.session_state['modo_edicao']:
+            with st.form("form_edicao_cliente"):
+                st.info("✏️ Modo Edição Ativo. Edite os campos abaixo e clique em Salvar.")
+                st.markdown("### 📄 Dados Pessoais")
+                ec1, ec2, ec3 = st.columns(3)
+                e_nome = ec1.text_input("Nome", value=pessoal.get('nome',''))
+                e_rg = ec2.text_input("RG", value=pessoal.get('identidade',''))
+                e_nasc = ec3.date_input("Data Nasc.", value=v.ValidadorData.para_sql(pessoal.get('data_nascimento')), format="DD/MM/YYYY")
+                
+                ec4, ec5, ec6 = st.columns(3)
+                e_cnh = ec4.text_input("CNH", value=pessoal.get('cnh',''))
+                e_titulo = ec5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
+                e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
+                e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
+                
+                ec7, ec8 = st.columns(2)
+                e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
+                e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
+                
+                st.markdown("---")
+                st.caption("Campos abaixo são gerenciados via '➕ Extra'")
+                ec9, ec10 = st.columns(2)
+                agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
+                ec9.text_input("Agrupamento (Leitura)", value=agrupamento_val, disabled=True)
+                lista_convs = dados.get('convenios_lista', [])
+                conv_str = ", ".join(lista_convs)
+                ec10.text_input("Convênios (Leitura)", value=conv_str, disabled=True)
 
                 st.divider()
-                st.markdown(f"###### 📄 Contratos")
-                lista_contratos = grupo.get('contratos', [])
-                if lista_contratos:
-                    df_contratos = pd.DataFrame(lista_contratos)
-                    colunas_ordenadas = [
-                        'numero_contrato', 'valor_parcela', 'prazo_aberto', 'prazo_pago',
-                        'prazo_total', 'taxa_juros', 'tipo_taxa', 'valor_contrato_inicial', 
-                        'saldo_devedor', 'data_inicio', 'data_averbacao', 'data_final'
-                    ]
-                    cols_existentes = [c for c in colunas_ordenadas if c in df_contratos.columns]
-                    df_show = df_contratos[cols_existentes].copy()
-                    
-                    # Formatação Visual via Validadores
-                    if 'valor_parcela' in df_show.columns: df_show['valor_parcela'] = df_show['valor_parcela'].apply(v.ValidadorFinanceiro.para_tela)
-                    if 'valor_contrato_inicial' in df_show.columns: df_show['valor_contrato_inicial'] = df_show['valor_contrato_inicial'].apply(v.ValidadorFinanceiro.para_tela)
-                    if 'saldo_devedor' in df_show.columns: df_show['saldo_devedor'] = df_show['saldo_devedor'].apply(v.ValidadorFinanceiro.para_tela)
-                    
-                    for col_date in ['data_inicio', 'data_averbacao', 'data_final']:
-                        if col_date in df_show.columns:
-                            df_show[col_date] = df_show[col_date].apply(v.ValidadorData.para_tela)
+                col_lista1, col_lista2 = st.columns(2)
+                edicoes_telefones = []
+                edicoes_emails = []
 
-                    renomear = {
-                        'numero_contrato': 'Nº Contrato', 'valor_parcela': 'Vlr. Parc.',
-                        'prazo_aberto': 'Pz Aberto', 'prazo_pago': 'Pz Pago', 'prazo_total': 'Pz Total', 
-                        'taxa_juros': 'Taxa %', 'valor_contrato_inicial': 'Vlr. Inicial',
-                        'saldo_devedor': 'Saldo Dev.', 'data_inicio': 'Dt Início', 
-                        'data_averbacao': 'Dt Averb.', 'data_final': 'Dt Final'
+                with col_lista1:
+                    st.markdown("### 📞 Telefones")
+                    if dados.get('telefones'):
+                        for i, tel in enumerate(dados['telefones']):
+                            novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
+                            edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
+                    else:
+                        st.caption("Sem telefones.")
+
+                with col_lista2:
+                    st.markdown("### 📧 E-mails")
+                    if dados.get('emails'):
+                        for i, mail in enumerate(dados['emails']):
+                            novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
+                            edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
+
+                st.divider()
+                alteracoes_dinamicas = [] 
+                if financeiro:
+                    st.markdown("### 📋 Editar Dados de Convênios")
+                    for (nome_convenio, matricula), grupo in financeiro.items():
+                        with st.expander(f"Editar: {nome_convenio} - Matrícula {matricula}", expanded=True):
+                            dados_esp = grupo.get('dados_convenio')
+                            tabela_ref = grupo.get('tabela_ref')
+                            if dados_esp and tabela_ref and 'id' in dados_esp:
+                                edicao_grupo = {}
+                                cols_dyn = st.columns(3)
+                                idx_col = 0
+                                for k, val in dados_esp.items():
+                                    if k not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
+                                        val_novo = cols_dyn[idx_col % 3].text_input(k.replace('_', ' ').capitalize(), value=str(val), key=f"edyn_{tabela_ref}_{dados_esp['id']}_{k}")
+                                        if val_novo != str(val):
+                                            edicao_grupo[k] = val_novo
+                                        idx_col += 1
+                                if edicao_grupo:
+                                    alteracoes_dinamicas.append({'tabela': tabela_ref, 'id': dados_esp['id'], 'dados': edicao_grupo})
+                
+                st.divider()
+                if st.form_submit_button("💾 CONFIRMAR ALTERAÇÕES", type="primary"):
+                    pacote_dados = {
+                        "pessoal": {
+                            "nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc,
+                            "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae,
+                            "nome_pai": e_pai, "campanhas": e_campanhas
+                        },
+                        "telefones": edicoes_telefones,
+                        "emails": edicoes_emails
                     }
-                    df_show.rename(columns=renomear, inplace=True)
-                    st.table(df_show)
-                else:
-                    st.caption("Nenhum contrato ativo.")
-    else:
-        with st.expander("📋 Convênios e Contratos", expanded=False):
-            st.info("Nenhum convênio ou contrato localizado.")
+                    if atualizar_dados_cliente_lote(cpf, pacote_dados, dados_dinamicos=alteracoes_dinamicas):
+                        st.success("Dados atualizados com sucesso!")
+                        st.session_state['modo_edicao'] = False
+                        time.sleep(1)
+                        st.rerun()
+            return
+
+        # --- VISUALIZAÇÃO ---
+        with st.expander("📄 Dados Cadastrais", expanded=False):
+            c1, c2, c3, c4, c5, c6 = st.columns([3, 1.5, 1.5, 1, 1.5, 1.5])
+            c1.text_input("Nome Completo", value=pessoal.get('nome',''), disabled=True)
+            c2.text_input("CPF", value=cpf_show, disabled=True)
+            c3.text_input("RG", value=pessoal.get('identidade',''), disabled=True)
+            c4.text_input("Sexo", value=pessoal.get('sexo',''), disabled=True)
+            
+            nasc_fmt = v.ValidadorData.para_tela(pessoal.get('data_nascimento'))
+            idade_str = v.ValidadorData.calcular_tempo(pessoal.get('data_nascimento'), 'completo')
+            
+            c5.text_input("Data Nasc.", value=nasc_fmt, disabled=True)
+            c6.text_input("Idade", value=idade_str, disabled=True)
+            
+            c7, c8 = st.columns(2)
+            c7.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''), disabled=True)
+            c8.text_input("Nome do Pai", value=pessoal.get('nome_pai',''), disabled=True)
+            
+            c9, c10, c11, c12 = st.columns(4)
+            c9.text_input("CNH", value=pessoal.get('cnh',''), disabled=True)
+            c10.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''), disabled=True)
+            c11.text_input("Campanha", value=pessoal.get('campanhas',''), disabled=True)
+            agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
+            c12.text_input("Agrupamento", value=agrupamento_val, disabled=True)
+            
+            lista_convs = dados.get('convenios_lista', [])
+            conv_str = ", ".join(lista_convs)
+            st.text_input("Convênios Vinculados", value=conv_str, disabled=True)
+
+        with st.expander("📍 Contatos e Endereço", expanded=False):
+            if dados.get('telefones') or dados.get('emails'):
+                cols_contato = st.columns(4)
+                idx_c = 0
+                for tel in dados.get('telefones', []):
+                    # Formata visualmente
+                    val_fmt = v.ValidadorContato.telefone_para_tela(tel['valor'])
+                    cols_contato[idx_c % 4].text_input(f"Telefone {idx_c+1}", value=val_fmt, disabled=True)
+                    idx_c += 1
+                for mail in dados.get('emails', []):
+                    cols_contato[idx_c % 4].text_input(f"E-mail {idx_c+1}", value=mail['valor'], disabled=True)
+                    idx_c += 1
+            else:
+                st.caption("Sem contatos cadastrados.")
+            
+            st.divider()
+            st.markdown("**🏠 Endereço**")
+            if dados.get('enderecos'):
+                for i, end in enumerate(dados.get('enderecos', [])):
+                    ce1, ce2, ce3, ce4, ce5 = st.columns([3, 2, 2, 1, 1.5])
+                    ce1.text_input("Rua", value=end.get('rua',''), key=f"r_{i}", disabled=True)
+                    ce2.text_input("Bairro", value=end.get('bairro',''), key=f"b_{i}", disabled=True)
+                    ce3.text_input("Cidade", value=end.get('cidade',''), key=f"c_{i}", disabled=True)
+                    ce4.text_input("UF", value=end.get('uf',''), key=f"u_{i}", disabled=True)
+                    # Formata CEP
+                    cep_fmt = v.ValidadorContato.cep_para_tela(end.get('cep'))
+                    ce5.text_input("CEP", value=cep_fmt, key=f"cp_{i}", disabled=True)
+            else:
+                st.caption("Sem endereço cadastrado.")
+
+        if financeiro:
+            for (nome_convenio, matricula), grupo in financeiro.items():
+                with st.expander(f"📋 {nome_convenio} - Matrícula: {matricula}", expanded=False):
+                    st.markdown(f"###### 🏥 Dados do Convênio")
+                    dados_esp = grupo.get('dados_convenio')
+                    if dados_esp:
+                        chaves = [k for k in dados_esp.keys() if k not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']]
+                        cols_fin = st.columns(4)
+                        for i, k in enumerate(chaves):
+                            cols_fin[i % 4].text_input(k.replace('_', ' ').capitalize(), value=str(dados_esp[k]), disabled=True, key=f"v_dconv_{matricula}_{k}")
+                    else:
+                        st.info("Sem dados adicionais.")
+
+                    st.divider()
+                    st.markdown(f"###### 📄 Contratos")
+                    lista_contratos = grupo.get('contratos', [])
+                    if lista_contratos:
+                        df_contratos = pd.DataFrame(lista_contratos)
+                        colunas_ordenadas = [
+                            'numero_contrato', 'valor_parcela', 'prazo_aberto', 'prazo_pago',
+                            'prazo_total', 'taxa_juros', 'tipo_taxa', 'valor_contrato_inicial', 
+                            'saldo_devedor', 'data_inicio', 'data_averbacao', 'data_final'
+                        ]
+                        cols_existentes = [c for c in colunas_ordenadas if c in df_contratos.columns]
+                        df_show = df_contratos[cols_existentes].copy()
+                        
+                        # Formatação Visual via Validadores
+                        if 'valor_parcela' in df_show.columns: df_show['valor_parcela'] = df_show['valor_parcela'].apply(v.ValidadorFinanceiro.para_tela)
+                        if 'valor_contrato_inicial' in df_show.columns: df_show['valor_contrato_inicial'] = df_show['valor_contrato_inicial'].apply(v.ValidadorFinanceiro.para_tela)
+                        if 'saldo_devedor' in df_show.columns: df_show['saldo_devedor'] = df_show['saldo_devedor'].apply(v.ValidadorFinanceiro.para_tela)
+                        
+                        for col_date in ['data_inicio', 'data_averbacao', 'data_final']:
+                            if col_date in df_show.columns:
+                                df_show[col_date] = df_show[col_date].apply(v.ValidadorData.para_tela)
+
+                        renomear = {
+                            'numero_contrato': 'Nº Contrato', 'valor_parcela': 'Vlr. Parc.',
+                            'prazo_aberto': 'Pz Aberto', 'prazo_pago': 'Pz Pago', 'prazo_total': 'Pz Total', 
+                            'taxa_juros': 'Taxa %', 'valor_contrato_inicial': 'Vlr. Inicial',
+                            'saldo_devedor': 'Saldo Dev.', 'data_inicio': 'Dt Início', 
+                            'data_averbacao': 'Dt Averb.', 'data_final': 'Dt Final'
+                        }
+                        df_show.rename(columns=renomear, inplace=True)
+                        st.table(df_show)
+                    else:
+                        st.caption("Nenhum contrato ativo.")
+        else:
+            with st.expander("📋 Convênios e Contratos", expanded=False):
+                st.info("Nenhum convênio ou contrato localizado.")
+
+    # --- COLUNA DIREITA (10%) - Painel Lateral Fixo ---
+    with c_lateral:
+        # Divisão 1: CONEXÃO
+        with st.container(border=True):
+            st.markdown("###### CONEXÃO")
+        
+        # Divisão 2: ATUALIZAÇÃO CADASTRO
+        with st.container(border=True):
+            st.caption("ATUALIZAÇÃO CADASTRO")
 
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
@@ -1319,7 +1336,7 @@ def tela_pesquisa():
             
             # Divisão 2: ATUALIZAÇÃO CADASTRO
             with st.container(border=True):
-                st.caption("ATUALIZAÇÃO CADASTRO") # Usando caption para visual de subtítulo
+                st.caption("ATUALIZAÇÃO CADASTRO")
 
 # ==============================================================================
 # 6. APP PRINCIPAL (Navegação e Entrada)
