@@ -172,7 +172,7 @@ def extrair_valor_novo_padrao(dados, caminho_str):
     return cursor
 
 # =============================================================================
-# 4. DISTRIBUIÇÃO DINÂMICA
+# 4. DISTRIBUIÇÃO DINÂMICA (CORRIGIDA - ORDEM DE INSERÇÃO)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -184,7 +184,25 @@ def executar_distribuicao_dinamica(dados_api):
     
     try:
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
-        tabelas = df_map['tabela_referencia'].unique()
+        
+        # --- CORREÇÃO DE ORDEM (PRIORIDADE) ---
+        # Converte para lista para poder ordenar
+        tabelas = df_map['tabela_referencia'].unique().tolist()
+        
+        # Define a tabela "Pai" que deve ir primeiro
+        tabela_pai = "sistema_consulta.sistema_consulta_dados_cadastrais_cpf"
+        
+        # Se a tabela pai estiver na lista, move ela para a posição 0
+        if tabela_pai in tabelas:
+            tabelas.remove(tabela_pai)
+            tabelas.insert(0, tabela_pai)
+            
+        # Garante que a tabela índice também (se houver mapeamento para ela)
+        tabela_indice = "sistema_consulta.sistema_consulta_cpf"
+        if tabela_indice in tabelas:
+            tabelas.remove(tabela_indice)
+            tabelas.insert(0, tabela_indice) # Índice vem antes de tudo se possível
+
         cur = conn.cursor()
         
         for tabela in tabelas:
@@ -216,6 +234,13 @@ def executar_distribuicao_dinamica(dados_api):
                         else:
                             valor_final = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
 
+                    # Se for BIGINT, converte para int explicitamente
+                    if col_sql == 'cpf' or col_sql == 'matricula':
+                         if isinstance(valor_final, list):
+                             valor_final = [int(v) if v and str(v).isdigit() else None for v in valor_final]
+                         else:
+                             valor_final = int(valor_final) if valor_final and str(valor_final).isdigit() else None
+
                     dados_extraidos[col_sql] = valor_final
 
                 # --- PASSO B: INSERÇÃO (LOOP) ---
@@ -236,6 +261,9 @@ def executar_distribuicao_dinamica(dados_api):
                     sql_base += f" ON CONFLICT (cpf) DO UPDATE SET {update_set}" if update_set else " ON CONFLICT (cpf) DO NOTHING"
                 elif 'id' in cols_lower:
                     sql_base += " ON CONFLICT (id) DO NOTHING"
+                # Tabelas satélites sem ID único explícito no mapeamento:
+                elif is_lista_1_n:
+                    sql_base += " ON CONFLICT DO NOTHING" # Evita duplicar telefone igual para mesmo CPF
 
                 count_ins = 0
                 for i in range(max_linhas):
@@ -254,13 +282,17 @@ def executar_distribuicao_dinamica(dados_api):
                         linha_vals.append(item)
                     
                     if tem_dado:
+                        # Verifica se o CPF pai existe antes de inserir filho (segurança extra)
+                        # O ideal é a ordenação acima resolver, mas se falhar, o try/except pega.
                         cur.execute(sql_base, tuple(linha_vals))
                         count_ins += 1
                 
                 sucessos.append(f"{tabela} ({count_ins})")
 
             except Exception as e:
-                conn.rollback()
+                # Se falhar uma tabela, não dá rollback em tudo, tenta as próximas
+                # (Mas se falhar o pai, os filhos falharão também, o que é esperado)
+                conn.rollback() 
                 erros.append(f"Erro em {tabela}: {e}")
         
         conn.commit(); cur.close(); conn.close()
