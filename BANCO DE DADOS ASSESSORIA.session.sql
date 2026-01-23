@@ -1,18 +1,19 @@
 -- =================================================================
--- AJUSTE DE PERFORMANCE: TABELA DE LOGS (SCHEMA CONEXOES)
+-- PADRONIZAÇÃO FINANCEIRA SCHEMA ADMIN -> NUMERIC(15, 2)
 -- =================================================================
 
--- 1. Criar coluna numérica para o CPF (Log mais leve e rápido)
-ALTER TABLE conexoes.fatorconferi_registo_consulta
-ADD COLUMN cpf_consultado_num BIGINT;
+-- 1. Tabela PEDIDOS
+ALTER TABLE admin.pedidos
+    ALTER COLUMN valor_unitario TYPE NUMERIC(15, 2) 
+    USING (REPLACE(CAST(valor_unitario AS TEXT), ',', '.')::NUMERIC(15, 2)),
 
--- 2. Migrar os dados antigos (Limpa pontos e traços e converte)
--- (Isso pode demorar alguns segundos dependendo do tamanho do log atual)
-UPDATE conexoes.fatorconferi_registo_consulta
-SET cpf_consultado_num = CAST(NULLIF(regexp_replace(cpf_consultado, '[^0-9]', '', 'g'), '') AS BIGINT);
+    ALTER COLUMN valor_total TYPE NUMERIC(15, 2) 
+    USING (REPLACE(CAST(valor_total AS TEXT), ',', '.')::NUMERIC(15, 2)),
 
--- 3. Criar Índice (Essencial para relatórios: "Quem consultou esse CPF?")
-CREATE INDEX idx_log_cpf_num ON conexoes.fatorconferi_registo_consulta(cpf_consultado_num);
+    ALTER COLUMN custo_carteira TYPE NUMERIC(15, 2) 
+    USING (REPLACE(CAST(custo_carteira AS TEXT), ',', '.')::NUMERIC(15, 2));
 
--- 4. Criar Índice de Data (Essencial para relatórios: "Consultas de ontem")
-CREATE INDEX idx_log_data ON conexoes.fatorconferi_registo_consulta(data_hora);
+-- 2. Tabela PRODUTOS E SERVIÇOS
+ALTER TABLE admin.produtos_servicos
+    ALTER COLUMN preco TYPE NUMERIC(15, 2) 
+    USING (REPLACE(CAST(preco AS TEXT), ',', '.')::NUMERIC(15, 2));
