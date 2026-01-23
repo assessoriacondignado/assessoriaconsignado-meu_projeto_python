@@ -1285,7 +1285,7 @@ def tela_pesquisa():
         st.divider()
         
         # -----------------------------------------------------------
-        # NOVO LAYOUT DE VISUALIZAÇÃO: 90% RESULTADOS | 10% CONEXÃO
+        # NOVO LAYOUT DE VISUALIZAÇÃO: 90% RESULTADOS | 10% SIDEBAR
         # -----------------------------------------------------------
         c_resultados, c_conexao = st.columns([9, 1])
 
@@ -1313,17 +1313,13 @@ def tela_pesquisa():
 
         # --- COLUNA DIREITA (10%) - Painel Lateral Fixo ---
         with c_conexao:
-            st.markdown("#### CONEXÃO")
-            
-            # Divisão 1
+            # Divisão 1: CONEXÃO
             with st.container(border=True):
-                st.caption("Status Banco")
-                st.success("Online")
+                st.markdown("###### CONEXÃO")
             
-            # Divisão 2
+            # Divisão 2: ATUALIZAÇÃO CADASTRO
             with st.container(border=True):
-                st.caption("Sessão")
-                st.info("Ativa")
+                st.caption("ATUALIZAÇÃO CADASTRO") # Usando caption para visual de subtítulo
 
 # ==============================================================================
 # 6. APP PRINCIPAL (Navegação e Entrada)
