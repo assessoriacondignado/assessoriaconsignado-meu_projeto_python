@@ -9,15 +9,10 @@ import sys
 import os
 
 # ==============================================================================
-# 0. CONFIGURAÇÃO DE CAMINHOS (PATH FIX - CORREÇÃO DO ERRO DE IMPORTAÇÃO)
+# 0. CONFIGURAÇÃO DE CAMINHOS (PATH FIX)
 # ==============================================================================
-# Pega o diretório onde este arquivo está (pasta SISTEMA_CONSULTA)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Pega o diretório pai (pasta raiz MEU_SISTEMA) onde estão conexao.py e validadores
 parent_dir = os.path.dirname(current_dir)
-
-# Adiciona a pasta raiz ao sistema de busca do Python
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
@@ -33,7 +28,7 @@ except ImportError:
 try:
     import modulo_validadores as v
 except ImportError as e:
-    st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Verifique se ele está na pasta raiz ({parent_dir}). Detalhe: {e}")
+    st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Detalhe: {e}")
     st.stop()
 
 # ==============================================================================
@@ -44,7 +39,6 @@ except ImportError as e:
 def get_pool():
     if not conexao: return None
     try:
-        # Cria um pool de 1 a 20 conexões simultâneas
         return psycopg2.pool.SimpleConnectionPool(
             minconn=1, maxconn=20,
             host=conexao.host, port=conexao.port,
@@ -56,7 +50,6 @@ def get_pool():
 
 @contextlib.contextmanager
 def get_db_connection():
-    """Gerenciador de contexto para pegar e devolver conexões ao pool automaticamente"""
     pool_obj = get_pool()
     if not pool_obj:
         yield None
@@ -130,39 +123,24 @@ OPERADORES_SQL = {
 # 3. FUNÇÕES DE BUSCA (LEITURA)
 # ==============================================================================
 
-@st.cache_data(ttl=300) # Cache de 5 min
+@st.cache_data(ttl=300)
 def buscar_relacao_auxiliar(tipo):
     with get_db_connection() as conn:
         if not conn: return [], []
-        
         dados = []
         colunas = []
         try:
             with conn.cursor() as cur:
                 if tipo == 'Importação':
-                    cur.execute("""
-                        SELECT id, nome_arquivo, TO_CHAR(data_importacao, 'DD/MM/YYYY HH24:MI') as data, 
-                               qtd_novos, qtd_atualizados 
-                        FROM sistema_consulta.sistema_consulta_importacao 
-                        ORDER BY id DESC LIMIT 100
-                    """)
+                    cur.execute("SELECT id, nome_arquivo, TO_CHAR(data_importacao, 'DD/MM/YYYY HH24:MI') as data, qtd_novos, qtd_atualizados FROM sistema_consulta.sistema_consulta_importacao ORDER BY id DESC LIMIT 100")
                     dados = cur.fetchall()
                     colunas = ['ID', 'Nome do Arquivo', 'Data', 'Novos', 'Atualizados']
                 elif tipo == 'Agrupamento':
-                    cur.execute("""
-                        SELECT agrupamento, COUNT(*) 
-                        FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf 
-                        GROUP BY agrupamento ORDER BY 2 DESC
-                    """)
+                    cur.execute("SELECT agrupamento, COUNT(*) FROM sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf GROUP BY agrupamento ORDER BY 2 DESC")
                     dados = cur.fetchall()
                     colunas = ['Nome Agrupamento', 'Qtd CPFs']
                 elif tipo == 'Campanha':
-                    cur.execute("""
-                        SELECT campanhas, COUNT(*) 
-                        FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
-                        WHERE campanhas IS NOT NULL AND campanhas <> '' 
-                        GROUP BY campanhas ORDER BY 2 DESC
-                    """)
+                    cur.execute("SELECT campanhas, COUNT(*) FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE campanhas IS NOT NULL AND campanhas <> '' GROUP BY campanhas ORDER BY 2 DESC")
                     dados = cur.fetchall()
                     colunas = ['Nome Campanha', 'Qtd CPFs']
             return dados, colunas
@@ -171,21 +149,14 @@ def buscar_relacao_auxiliar(tipo):
             return [], []
 
 def buscar_cliente_rapida(termo):
-    """
-    Busca otimizada:
-    - Aplica limpeza no termo para buscar CPF/Telefone sem formatação.
-    - Aplica termo original para buscar Nome/Texto.
-    """
+    """Busca otimizada para BIGINT (CPF/Telefone) e Texto (Nome)."""
     with get_db_connection() as conn:
         if not conn: return []
         
-        # 1. Prepara termo para TEXTO (Nome, RG, etc) - Mantém acentos/pontuação se houver
         termo_texto = termo.strip()
         param_like_texto = f"%{termo_texto}%"
         
-        # 2. Prepara termo para NÚMEROS (CPF, Telefone) - Remove tudo que não é dígito
         termo_limpo = v.ValidadorDocumentos.limpar_numero(termo)
-        # Se não tiver números, usa uma máscara que não acha nada (para não quebrar a query) ou repete o texto
         param_like_num = f"%{termo_limpo}%" if termo_limpo else param_like_texto
         
         query = """
@@ -198,29 +169,22 @@ def buscar_cliente_rapida(termo):
                 t.campanhas ILIKE %s OR
                 t.id_importacao ILIKE %s OR
                 CAST(t.cpf AS TEXT) ILIKE %s OR
-                EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = t.cpf AND CAST(telefone AS TEXT) ILIKE %s)
+                EXISTS (SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone 
+                        WHERE cpf = t.cpf AND CAST(telefone AS TEXT) ILIKE %s)
             LIMIT 30
         """
-        
         try:
             with conn.cursor() as cur:
                 cur.execute(query, (
-                    param_like_texto, # nome
-                    param_like_texto, # identidade
-                    param_like_texto, # pai
-                    param_like_texto, # campanhas
-                    param_like_texto, # id_importacao
-                    param_like_num,   # cpf (versão limpa)
-                    param_like_num    # telefone (versão limpa)
+                    param_like_texto, param_like_texto, param_like_texto, 
+                    param_like_texto, param_like_texto, 
+                    param_like_num, param_like_num
                 ))
                 return cur.fetchall()
         except Exception as e:
             return []
 
 def buscar_cliente_dinamica(filtros_aplicados):
-    """
-    Busca Dinâmica com correção de formatação para CPF e Telefone.
-    """
     with get_db_connection() as conn:
         if not conn: return []
 
@@ -236,7 +200,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
             operador_sql = filtro['op']
             tipo_dado = filtro['tipo']
             
-            # --- Correção de Formatação (CPF e Telefone) ---
             def preparar_valor_filtro(valor, col):
                 if col in ['t.cpf', 'telefone', 'cpf', 'matricula']:
                     return v.ValidadorDocumentos.limpar_numero(valor)
@@ -244,23 +207,22 @@ def buscar_cliente_dinamica(filtros_aplicados):
 
             if tipo_dado == 'texto_vinculado':
                 tabela_satelite = filtro['table']
-                sub_where = f"{coluna} {operador_sql} %s"
-                
                 val_raw = preparar_valor_filtro(filtro['val'], coluna)
+                
+                if coluna in ['telefone', 'matricula', 'cpf']:
+                     if 'LIKE' in operador_sql:
+                         sub_where = f"CAST({coluna} AS TEXT) {operador_sql} %s"
+                     else:
+                         sub_where = f"{coluna} {operador_sql} %s"
+                else:
+                     sub_where = f"{coluna} {operador_sql} %s"
+
                 val_final = filtro['mask'].format(val_raw) if '{}' in filtro['mask'] else val_raw
                 
                 if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
                      exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {coluna} {operador_sql})"
                      where_clauses.append(exists_clause)
                 else:
-                    if coluna in ['telefone', 'matricula', 'cpf']:
-                         if 'LIKE' in operador_sql:
-                             sub_where = f"CAST({coluna} AS TEXT) {operador_sql} %s"
-                         else:
-                             sub_where = f"{coluna} {operador_sql} %s"
-                    else:
-                         sub_where = f"{coluna} {operador_sql} %s"
-
                     exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {sub_where})"
                     where_clauses.append(exists_clause)
                     params.append(val_final)
@@ -318,24 +280,24 @@ def buscar_cliente_dinamica(filtros_aplicados):
             return []
 
 def carregar_dados_cliente_completo(cpf):
+    # CORREÇÃO: Uso de v (módulo) aqui
+    cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
+    
     with get_db_connection() as conn:
         if not conn: return {}
         dados = {}
         try:
             with conn.cursor() as cur:
                 # 1. Dados Pessoais
-                # Converte CPF para INT antes de consultar (o parametro cpf pode vir string)
-                cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
-                
                 cur.execute("SELECT * FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf WHERE cpf = %s", (cpf_val,))
                 cols_pessoais = [desc[0] for desc in cur.description]
                 row_pessoais = cur.fetchone()
                 
                 if row_pessoais:
                     d_pessoal = dict(zip(cols_pessoais, row_pessoais))
-                    # Limpa nulls para string vazia
-                    for k, v in d_pessoal.items():
-                        if v is None and k != 'data_nascimento': d_pessoal[k] = ""
+                    # CORREÇÃO: Variável do loop alterada de 'v' para 'val' para não sobrescrever o módulo
+                    for k, val in d_pessoal.items():
+                        if val is None and k != 'data_nascimento': d_pessoal[k] = ""
                     dados['pessoal'] = d_pessoal
                 else:
                     dados['pessoal'] = {}
@@ -347,8 +309,9 @@ def carregar_dados_cliente_completo(cpf):
                     row_clt = cur.fetchone()
                     if row_clt:
                         d_clt = dict(zip(cols_clt, row_clt))
-                        for k, v in d_clt.items():
-                            if v is None and 'data' not in k: d_clt[k] = ""
+                        # CORREÇÃO: Variável do loop alterada de 'v' para 'val'
+                        for k, val in d_clt.items():
+                            if val is None and 'data' not in k: d_clt[k] = ""
                         dados['clt'] = d_clt
                 except:
                     dados['clt'] = {}
@@ -365,8 +328,9 @@ def carregar_dados_cliente_completo(cpf):
                 dados['enderecos'] = []
                 for r in cur.fetchall():
                     d_end = dict(zip(cols_end, r))
-                    for k, v in d_end.items():
-                        if v is None: d_end[k] = ""
+                    # CORREÇÃO: Variável do loop alterada de 'v' para 'val'
+                    for k, val in d_end.items():
+                        if val is None: d_end[k] = ""
                     dados['enderecos'].append(d_end)
 
                 # Agrupamentos
@@ -412,7 +376,7 @@ def buscar_tabela_por_convenio(nome_convenio):
         except Exception:
             return None
 
-@st.cache_data(ttl=3600) # OTIMIZAÇÃO: Cache para não consultar schema toda hora
+@st.cache_data(ttl=3600)
 def listar_colunas_tabela(nome_tabela):
     with get_db_connection() as conn:
         if not conn: return []
@@ -437,10 +401,6 @@ def listar_tipos_convenio_disponiveis():
             return []
 
 def buscar_hierarquia_financeira(cpf):
-    """
-    Função complexa que busca contratos e varre tabelas dinâmicas.
-    Otimizada com Connection Pool para reuso da conexão.
-    """
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
     
     with get_db_connection() as conn:
@@ -449,7 +409,6 @@ def buscar_hierarquia_financeira(cpf):
         estrutura = {}
         try:
             with conn.cursor() as cur:
-                # 1. Contratos Base
                 cur.execute("""
                     SELECT * FROM sistema_consulta.sistema_consulta_contrato 
                     WHERE cpf = %s ORDER BY convenio, matricula, data_inicio DESC
@@ -459,7 +418,6 @@ def buscar_hierarquia_financeira(cpf):
 
                 if not rows_contratos: return {}
 
-                # 2. Mapeamento de Convênios
                 mapa_convenio_tabela = {} 
                 for row in rows_contratos:
                     d_contrato = dict(zip(cols_contrato, row))
@@ -468,7 +426,7 @@ def buscar_hierarquia_financeira(cpf):
                     
                     nome_conv = d_contrato.get('convenio') or 'DESCONHECIDO'
                     num_matr = d_contrato.get('matricula')
-                    if num_matr is None: num_matr = 0 # Valor default para matricula nula
+                    if num_matr is None: num_matr = 0 
                     
                     chave = (nome_conv, num_matr)
 
@@ -478,7 +436,6 @@ def buscar_hierarquia_financeira(cpf):
                         }
                     estrutura[chave]['contratos'].append(d_contrato)
 
-                # Busca tabelas satélites
                 convenios_unicos = list(set([k[0] for k in estrutura.keys()]))
                 if convenios_unicos:
                     cur.execute("""
@@ -489,13 +446,11 @@ def buscar_hierarquia_financeira(cpf):
                     for r in cur.fetchall():
                         mapa_convenio_tabela[r[0]] = r[1]
 
-                # 3. Varredura Dinâmica
                 for (nome_conv, num_matr), dados_grupo in estrutura.items():
                     tabela_ref = mapa_convenio_tabela.get(nome_conv)
                     if tabela_ref:
                         dados_grupo['tabela_ref'] = tabela_ref
                         try:
-                            # Verifica colunas da tabela dinâmica
                             cur.execute(sql.SQL("""
                                 SELECT column_name FROM information_schema.columns 
                                 WHERE table_schema = 'sistema_consulta' AND table_name = %s
@@ -535,12 +490,8 @@ def buscar_hierarquia_financeira(cpf):
 # ==============================================================================
 
 def salvar_novo_cliente(dados_form):
-    """
-    Refatorado: Usa modulo_validadores para proteger o banco.
-    """
-    # Validações prévias
-    cpf_sql = v.ValidadorDocumentos.cpf_para_bigint(dados_form.get('cpf'))
-    if not cpf_sql:
+    cpf_bigint = v.ValidadorDocumentos.cpf_para_bigint(dados_form.get('cpf'))
+    if not cpf_bigint:
         st.error("CPF Inválido! Verifique os dígitos.")
         return False
         
@@ -551,7 +502,7 @@ def salvar_novo_cliente(dados_form):
 
     dados_limpos = {
         "nome": str(dados_form.get('nome') or "").upper().strip(),
-        "cpf": cpf_sql,
+        "cpf": cpf_bigint,
         "identidade": str(dados_form.get('identidade') or "").strip(),
         "sexo": dados_form.get('sexo'),
         "nome_mae": str(dados_form.get('nome_mae') or "").upper().strip(),
@@ -572,8 +523,7 @@ def salvar_novo_cliente(dados_form):
                 sql_insert = f"INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf ({columns}) VALUES ({placeholders})"
                 cur.execute(sql_insert, vals)
                 
-                # Garante na tabela indice
-                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (cpf_sql,))
+                cur.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (cpf_bigint,))
                 
                 conn.commit()
                 return True
@@ -582,7 +532,6 @@ def salvar_novo_cliente(dados_form):
             return False
 
 def inserir_dado_extra(tipo, cpf, dados):
-    """Refatorado com Validadores"""
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
     
     with get_db_connection() as conn:
@@ -590,7 +539,6 @@ def inserir_dado_extra(tipo, cpf, dados):
         try:
             with conn.cursor() as cur:
                 if tipo == "DadosDinâmicos":
-                    # Lógica original para criar novo vínculo
                     if dados.get('_criar_vinculo'):
                         new_mat = v.ValidadorDocumentos.nb_para_bigint(dados.get('matricula'))
                         new_conv = dados.get('convenio')
@@ -607,7 +555,6 @@ def inserir_dado_extra(tipo, cpf, dados):
                     if 'matricula' in campos_dados: campos_dados['matricula'] = v.ValidadorDocumentos.nb_para_bigint(campos_dados['matricula'])
 
                     colunas = list(campos_dados.keys())
-                    # Tratamento simples para valores vazios
                     valores = [val if val != "" else None for val in campos_dados.values()]
                     
                     query = sql.SQL("INSERT INTO sistema_consulta.{} ({}) VALUES ({})").format(
@@ -618,7 +565,6 @@ def inserir_dado_extra(tipo, cpf, dados):
                     cur.execute(query, valores)
 
                 elif tipo == "Contrato":
-                    # Valida Moedas e Datas
                     dt_inicio = v.ValidadorData.para_sql(dados.get('data_inicio'))
                     dt_final = v.ValidadorData.para_sql(dados.get('data_final'))
                     mat_int = v.ValidadorDocumentos.nb_para_bigint(dados.get('matricula'))
@@ -653,9 +599,9 @@ def inserir_dado_extra(tipo, cpf, dados):
                 elif tipo == "Telefone":
                     val = v.ValidadorContato.telefone_para_sql(dados.get('valor'))
                     if not val:
-                        st.error("Telefone inválido (formato incorreto ou DDD inexistente).")
+                        st.error("Telefone inválido.")
                         return "erro"
-                        
+                    
                     cur.execute("SELECT 1 FROM sistema_consulta.sistema_consulta_dados_cadastrais_telefone WHERE cpf = %s AND telefone = %s", (cpf_val, val))
                     if cur.fetchone(): return "duplicado"
                     cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone) VALUES (%s, %s)", (cpf_val, val))
@@ -726,7 +672,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
             with conn.cursor() as cur:
                 # 1. Dados Pessoais
                 pessoal = dados_editados['pessoal']
-                # Validar datas no update também
                 nasc_sql = v.ValidadorData.para_sql(pessoal['data_nascimento'])
                 
                 cur.execute("""
@@ -951,7 +896,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     "nome_pai": pai, "campanhas": campanhas
                 }):
                     st.success("Cadastrado!")
-                    st.session_state['cliente_ativo_cpf'] = v.ValidadorDocumentos.cpf_para_sql(cpf_in)
+                    st.session_state['cliente_ativo_cpf'] = v.ValidadorDocumentos.cpf_para_bigint(cpf_in)
                     st.session_state['modo_visualizacao'] = 'visualizar'
                     time.sleep(1)
                     st.rerun()
