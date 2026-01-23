@@ -6,19 +6,22 @@ import json
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, date
 
 import conexao
 import modulo_validadores as mv
 
-# --- CONFIGURAÇÕES ---
+# --- CONFIGURAÇÕES DE DIRETÓRIO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_JSON = os.path.join(BASE_DIR, "JSON")
 
-if not os.path.exists(PASTA_JSON):
-    try: os.makedirs(PASTA_JSON, exist_ok=True)
-    except: pass
+try:
+    if not os.path.exists(PASTA_JSON):
+        os.makedirs(PASTA_JSON, exist_ok=True)
+except Exception as e:
+    st.error(f"Erro crítico de permissão ao criar pasta JSON: {e}")
 
 def get_conn():
     try:
@@ -29,8 +32,20 @@ def get_conn():
     except: return None
 
 # =============================================================================
-# 1. SANITIZAÇÃO E FORMATAÇÃO (REGRA 3: MAIÚSCULO, DATA, NULL)
+# 1. SANITIZAÇÃO E FORMATAÇÃO (NOVA REGRA)
 # =============================================================================
+
+def registrar_erro_importacao(cpf, erro_msg):
+    try:
+        data_hora = datetime.now().strftime("%d-%m-%Y_%H-%M")
+        nome_arq = f"ERROIMPORTAÇÃO_{cpf}_{data_hora}.txt"
+        caminho = os.path.join(PASTA_JSON, nome_arq)
+        with open(caminho, "w", encoding="utf-8") as f:
+            f.write(f"ERRO NA IMPORTAÇÃO FATOR CONFERI\n")
+            f.write(f"CPF: {cpf}\n")
+            f.write(f"DATA: {datetime.now()}\n")
+            f.write(f"DETALHE DO ERRO:\n{str(erro_msg)}")
+    except: pass
 
 def sanitizar_e_formatar(valor):
     """
@@ -52,13 +67,12 @@ def sanitizar_e_formatar(valor):
         return None
     
     # 2. Regra de Data (DD/MM/YYYY -> YYYY-MM-DD)
-    # Regex simples para identificar dd/mm/yyyy
     if re.match(r'^\d{2}/\d{2}/\d{4}$', v_str):
         try:
             dt_obj = datetime.strptime(v_str, '%d/%m/%Y')
             return dt_obj.strftime('%Y-%m-%d')
         except: 
-            pass # Se der erro, retorna o original
+            pass 
             
     # 3. Regra de Maiúsculo
     return v_str.upper()
@@ -68,16 +82,13 @@ def sanitizar_e_formatar(valor):
 # =============================================================================
 
 def _xml_to_dict_simple(element):
-    # Pega o texto do elemento
     text = element.text.strip() if element.text else None
-    
-    # Se não tem filhos, retorna o texto
     if len(element) == 0:
         return text
 
     result = {}
     for child in element:
-        tag = child.tag.replace('{', '').split('}')[-1].upper() # Remove namespace e põe Upper
+        tag = child.tag.replace('{', '').split('}')[-1].upper()
         child_data = _xml_to_dict_simple(child)
         
         if tag in result:
@@ -90,29 +101,23 @@ def _xml_to_dict_simple(element):
     return result
 
 def parse_xml_to_dict(texto_raw):
-    """Lê XML ou JSON e retorna Dicionário Python Puro"""
     try:
-        # Tenta decodificar se for bytes
         if isinstance(texto_raw, bytes):
             texto_raw = texto_raw.decode('utf-8', errors='ignore')
-        
-        # Limpa encoding do cabeçalho se existir
         texto_raw = texto_raw.replace('ISO-8859-1', 'UTF-8')
 
-        # Tenta ler como JSON direto
         try:
             return json.loads(texto_raw)
         except:
             pass
             
-        # Se falhar, lê como XML
         root = ET.fromstring(texto_raw)
         return _xml_to_dict_simple(root)
     except Exception as e:
         return {}
 
 # =============================================================================
-# 3. NOVA EXTRAÇÃO POR SINTAXE (REGRA 2: ; [] {})
+# 3. EXTRAÇÃO POR SINTAXE SIMPLIFICADA (; [] {})
 # =============================================================================
 
 def extrair_valor_novo_padrao(dados, caminho_str):
@@ -123,26 +128,18 @@ def extrair_valor_novo_padrao(dados, caminho_str):
     """
     if not caminho_str: return None
     
-    # Remove aspas de exemplo (ex: "0000") que o usuário possa ter deixado
     caminho_limpo = re.sub(r'".*?"', '', caminho_str).strip()
-    
-    # Divide pelo separador mandatório ;
     passos = [p.strip() for p in caminho_limpo.split(';') if p.strip()]
     
-    cursor = dados # Começa na raiz
+    cursor = dados 
     
     for i, passo in enumerate(passos):
         if cursor is None: return None
         
-        # Detecta marcadores
         is_list_iter = '[]' in passo
-        # Limpa marcadores para pegar o nome da chave real
         chave = passo.replace('[]', '').replace('{', '').replace('}', '').upper()
         
-        # Lógica de Navegação
         if isinstance(cursor, dict):
-            # Busca a chave no dicionário (case insensitive para garantir)
-            # A chave no JSON já foi convertida para Upper no Parser, mas garantimos aqui
             encontrou = False
             for k, v in cursor.items():
                 if k.upper() == chave:
@@ -152,32 +149,24 @@ def extrair_valor_novo_padrao(dados, caminho_str):
             if not encontrou: return None
             
         elif isinstance(cursor, list) and is_list_iter:
-            # ESTAMOS NUMA LISTA (LOOP)
-            # Precisamos extrair a chave de TODOS os itens
             lista_valores = []
             for item in cursor:
                 if isinstance(item, dict):
-                    # Tenta pegar o valor da chave dentro do item
                     for k, v in item.items():
                         if k.upper() == chave:
                             lista_valores.append(v)
                             break
                 elif isinstance(item, str) and chave == "": 
-                    # Caso onde a lista é de strings simples
                     lista_valores.append(item)
-            
-            # Se for o último passo, retorna a lista encontrada
-            # Se não for, teríamos que lidar com lista de listas (complexo), 
-            # mas pela regra 1:N simples, assumimos que [] é o passo final ou penúltimo.
             cursor = lista_valores
             
         else:
-            return None # Caminho inválido ou estrutura não bate
+            return None
 
     return cursor
 
 # =============================================================================
-# 4. INSERÇÃO NO BANCO (REGRA 3: PASSO A e PASSO B)
+# 4. DISTRIBUIÇÃO DINÂMICA (NOVA LÓGICA DE LOOP + UPSERT)
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -188,7 +177,6 @@ def executar_distribuicao_dinamica(dados_api):
     erros = []
     
     try:
-        # Lê o mapa do banco
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
         tabelas = df_map['tabela_referencia'].unique()
         cur = conn.cursor()
@@ -197,28 +185,26 @@ def executar_distribuicao_dinamica(dados_api):
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
                 
-                # Dicionário para guardar os dados extraídos: { 'coluna_sql': valor_ou_lista }
                 dados_extraidos = {}
-                max_linhas = 1 # Para controlar se vamos inserir 1 linha ou N linhas (loop)
+                max_linhas = 1 
                 
                 # --- PASSO A: EXTRAÇÃO ---
                 for _, row in regras.iterrows():
                     col_sql = str(row['tabela_referencia_coluna']).strip()
                     caminho = str(row['jason_api_fatorconferi_coluna']).strip()
                     
-                    # 1. Extrai usando a nova lógica (;)
+                    # 1. Extrai usando nova sintaxe
                     valor_raw = extrair_valor_novo_padrao(dados_api, caminho)
                     
-                    # 2. Sanitiza (Maiúsculo, Data, Null)
+                    # 2. Sanitiza
                     if isinstance(valor_raw, list):
-                        # Sanitiza cada item da lista
                         valor_final = [sanitizar_e_formatar(v) for v in valor_raw]
                         if len(valor_final) > max_linhas:
                             max_linhas = len(valor_final)
                     else:
                         valor_final = sanitizar_e_formatar(valor_raw)
                         
-                    # 3. Validação Específica de CPF (Remove pontuação para SQL)
+                    # 3. Limpeza de Pontuação CPF para SQL
                     if 'CPF' in col_sql.upper() or 'CPF' in caminho.upper():
                         if isinstance(valor_final, list):
                             valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
@@ -234,7 +220,7 @@ def executar_distribuicao_dinamica(dados_api):
                 placeholders = ", ".join(["%s"] * len(cols))
                 sql_base = f"INSERT INTO {tabela} ({', '.join(cols)}) VALUES ({placeholders})"
                 
-                # Adiciona regra de conflito (UPSERT)
+                # Regra de Conflito (UPSERT)
                 cols_lower = [c.lower() for c in cols]
                 if 'cpf' in cols_lower:
                     update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols if c.lower() != 'cpf'])
@@ -249,8 +235,7 @@ def executar_distribuicao_dinamica(dados_api):
                     
                     for col in cols:
                         val = dados_extraidos[col]
-                        
-                        # Se é lista, pega o item 'i'. Se é valor único (ex: CPF do titular), repete.
+                        # Lógica 1:N (Item da lista ou Valor Fixo)
                         if isinstance(val, list):
                             item = val[i] if i < len(val) else None
                         else:
@@ -259,7 +244,6 @@ def executar_distribuicao_dinamica(dados_api):
                         if item: tem_dado = True
                         linha_vals.append(item)
                     
-                    # Só insere se a linha tiver algum conteúdo útil
                     if tem_dado:
                         cur.execute(sql_base, tuple(linha_vals))
                         count_ins += 1
@@ -278,7 +262,7 @@ def executar_distribuicao_dinamica(dados_api):
         return [], [str(e)]
 
 # =============================================================================
-# 5. FUNÇÕES DE API E INTERFACE (MANTIDAS PADRÃO)
+# 5. FUNÇÕES DE SUPORTE (API E BANCO) - RESTAURADAS
 # =============================================================================
 
 def buscar_credenciais():
@@ -419,7 +403,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
     try:
         cur = conn.cursor()
         
-        # Cache Check
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -428,7 +411,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                 conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
 
-        # Saldo Check
         custo_previsto = 0.0
         if dados_pagador['id']:
              sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
@@ -445,7 +427,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
                  conn.close()
                  return {"sucesso": False, "msg": "Saldo insuficiente."}
 
-        # API Call
         cred = buscar_credenciais()
         if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token API ausente."}
         
@@ -473,7 +454,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         return {"sucesso": False, "msg": str(e)}
 
 # =============================================================================
-# APP INTERFACE
+# 6. INTERFACE E UTILITÁRIOS DE TELA (RESTAURADOS)
 # =============================================================================
 
 def carregar_dados_genericos(nome_tabela):
@@ -482,6 +463,130 @@ def carregar_dados_genericos(nome_tabela):
         try: df = pd.read_sql(f"SELECT * FROM {nome_tabela} ORDER BY id DESC", conn); conn.close(); return df
         except: conn.close(); return None
     return None
+
+def criar_tabela_ambiente():
+    conn = get_conn()
+    if conn:
+        try: 
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_ambiente_consulta (id SERIAL PRIMARY KEY, ambiente VARCHAR(255), origem VARCHAR(255))")
+            conn.commit(); conn.close(); return True
+        except: conn.close(); return False
+    return False
+
+def salvar_alteracoes_genericas(nome_tabela, df_original, df_editado):
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        ids_orig = set(df_original['id'].dropna().astype(int).tolist())
+        for index, row in df_editado.iterrows():
+            cols = [c for c in row.index if c not in ['id', 'data_hora', 'data_criacao']]
+            vals = [row[c] for c in cols]
+            rid = row.get('id')
+            if pd.isna(rid) or rid == '':
+                pl = ", ".join(["%s"]*len(cols)); nm = ", ".join(cols)
+                cur.execute(f"INSERT INTO {nome_tabela} ({nm}) VALUES ({pl})", vals)
+            elif int(rid) in ids_orig:
+                stset = ", ".join([f"{c}=%s" for c in cols])
+                cur.execute(f"UPDATE {nome_tabela} SET {stset} WHERE id=%s", vals + [int(rid)])
+        conn.commit(); conn.close(); return True
+    except: 
+        if conn: conn.close()
+        return False
+
+def listar_clientes_carteira():
+    conn = get_conn()
+    if conn:
+        try: df = pd.read_sql("SELECT * FROM conexoes.fator_cliente_carteira ORDER BY id", conn); conn.close(); return df
+        except: conn.close()
+    return pd.DataFrame()
+
+def criar_tabela_conexao_tabelas():
+    conn = get_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS conexoes.fatorconferi_conexao_tabelas (
+                        id SERIAL PRIMARY KEY,
+                        tabela_referencia TEXT,
+                        tabela_referencia_coluna TEXT,
+                        jason_api_fatorconferi_coluna TEXT
+                    )
+                """)
+                conn.commit()
+            return True
+        except: return False
+        finally: conn.close()
+
+def listar_tabelas_disponiveis():
+    conn = get_conn()
+    if not conn: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT table_schema || '.' || table_name 
+                FROM information_schema.tables 
+                WHERE table_schema IN ('banco_pf', 'conexoes', 'sistema_consulta') 
+                ORDER BY table_schema, table_name
+            """)
+            return [r[0] for r in cur.fetchall()]
+    except: return []
+    finally: conn.close()
+
+def listar_colunas_geral(nome_tabela_completo):
+    conn = get_conn()
+    if not conn: return []
+    try:
+        parts = nome_tabela_completo.split('.')
+        schema = parts[0] if len(parts) > 1 else 'public'
+        tabela = parts[1] if len(parts) > 1 else parts[0]
+        
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position
+            """, (schema, tabela))
+            return [r[0] for r in cur.fetchall()]
+    except: return []
+    finally: conn.close()
+
+def listar_mapeamento_tabela(nome_tabela):
+    conn = get_conn()
+    if not conn: return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas WHERE tabela_referencia = %s", (nome_tabela,))
+            return {row[0]: row[1] for row in cur.fetchall()}
+    except: return {}
+    finally: conn.close()
+
+def listar_todos_mapeamentos():
+    conn = get_conn()
+    if not conn: return pd.DataFrame()
+    try: return pd.read_sql("SELECT * FROM conexoes.fatorconferi_conexao_tabelas ORDER BY id DESC", conn)
+    except: return pd.DataFrame()
+    finally: conn.close()
+
+def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
+    conn = get_conn()
+    if not conn: return False
+    try:
+        cur = conn.cursor()
+        for index, row in df_mapeamento.iterrows():
+            col_sql = row['Coluna SQL']
+            chave_json = str(row['Chave JSON API']).strip()
+            cur.execute("DELETE FROM conexoes.fatorconferi_conexao_tabelas WHERE tabela_referencia = %s AND tabela_referencia_coluna = %s", (nome_tabela, col_sql))
+            if chave_json:
+                cur.execute("INSERT INTO conexoes.fatorconferi_conexao_tabelas (tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna) VALUES (%s, %s, %s)", (nome_tabela, col_sql, chave_json))
+        conn.commit(); return True
+    except: 
+        if conn: conn.rollback()
+        return False
+    finally: conn.close()
 
 def salvar_alteracoes_mapa_completo(df_original, df_editado):
     conn = get_conn()
@@ -507,63 +612,137 @@ def salvar_alteracoes_mapa_completo(df_original, df_editado):
             elif int(rid) in ids_orig:
                 cur.execute("UPDATE conexoes.fatorconferi_conexao_tabelas SET tabela_referencia=%s, tabela_referencia_coluna=%s, jason_api_fatorconferi_coluna=%s WHERE id=%s", (tab, col, js, int(rid)))
         
-        conn.commit(); conn.close()
-        return True
+        conn.commit(); conn.close(); return True
     except: return False
 
 def app_fator_conferi():
-    st.markdown("### ⚡ Painel Fator Conferi")
-    tabs = st.tabs(["🔍 Consulta", "⚙️ Mapa de Dados", "📋 Histórico", "💰 Saldo"])
+    criar_tabela_conexao_tabelas()
 
-    with tabs[0]:
+    st.markdown("### ⚡ Painel Fator Conferi")
+    tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros", "🗺️ Mapa de Dados"])
+
+    with tabs[0]: 
+        st.info("Gestão de Carteiras")
+        df = listar_clientes_carteira()
+        if not df.empty: st.dataframe(df, use_container_width=True)
+
+    with tabs[1]:
+        st.markdown("#### 1.1 Consulta e Importação")
         col_cli, col_cpf = st.columns([2, 2])
-        id_cli_teste = None
+        id_cliente_teste = None
         conn = get_conn()
         if conn:
             try:
-                df = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
-                opcoes = {row['id']: row['nome'] for _, row in df.iterrows()}
-                id_cli_teste = col_cli.selectbox("Cliente Pagador", [None] + list(opcoes.keys()), format_func=lambda x: opcoes[x] if x else "Automático")
+                df_clis = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
+                opcoes_cli = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
+                id_cliente_teste = col_cli.selectbox("Cliente Pagador (Teste Manual)", options=[None] + list(opcoes_cli.keys()), format_func=lambda x: opcoes_cli[x] if x else "Usar Vínculo Automático")
             except: pass
-            conn.close()
+            finally: conn.close()
             
-        cpf_in = col_cpf.text_input("CPF")
-        if st.button("Consultar"):
-            if cpf_in:
-                res = realizar_consulta_cpf(cpf_in, "teste_de_consulta_fatorconferi.cpf", False, id_cli_teste)
-                st.session_state['res_fator'] = res
-                
-                if res['sucesso']:
-                    # CHAMA SOMENTE A NOVA FUNÇÃO DE INSERÇÃO
-                    logs_ok, logs_erro = executar_distribuicao_dinamica(res['dados'])
-                    if logs_ok: st.success(f"Dados inseridos: {', '.join(logs_ok)}")
-                    if logs_erro: st.error(f"Erros: {', '.join(logs_erro)}")
+        cpf_in = col_cpf.text_input("CPF Consultado")
+        forcar = st.checkbox("Ignorar Histórico (Forçar Cobrança)", value=False)
         
-        if 'res_fator' in st.session_state:
-            r = st.session_state['res_fator']
-            if r['sucesso']:
-                st.success(r['msg'])
-                with st.expander("JSON"): st.json(r['dados'])
-            else: st.error(r['msg'])
+        if st.button("🔍 Consultar", type="primary"):
+            if cpf_in:
+                with st.spinner("Buscando..."):
+                    res = realizar_consulta_cpf(cpf_in, "teste_de_consulta_fatorconferi.cpf", forcar, id_cliente_teste)
+                    st.session_state['resultado_fator'] = res
 
-    with tabs[1]:
+                    if res['sucesso']:
+                        # CHAMA A NOVA FUNÇÃO SIMPLIFICADA
+                        lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
+                        if lista_sucessos: st.success(f"✅ Dados distribuídos para: {', '.join(lista_sucessos)}")
+                        if lista_erros: st.error(f"⚠️ Relatório de Importação:\n{chr(10).join(lista_erros)}")
+                            
+        if 'resultado_fator' in st.session_state:
+            res = st.session_state['resultado_fator']
+            if res['sucesso']:
+                if "msg" in res: st.success(res['msg'])
+                with st.expander("Ver Dados Retornados (Estrutura Fiel)", expanded=True): st.json(res['dados'])
+            else: st.error(res.get('msg', 'Erro'))
+
+    with tabs[2]: 
+        if st.button("🔄 Atualizar"): 
+            ok, v = consultar_saldo_api()
+            if ok: st.metric("Saldo Atual", f"R$ {v:.2f}")
+    
+    with tabs[3]: 
+        st.markdown("<p style='color: lightblue; font-size: 12px;'>Tabela: conexoes.fatorconferi_registo_consulta</p>", unsafe_allow_html=True)
+        conn = get_conn()
+        if conn: 
+            df_hist = pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 20", conn)
+            conn.close()
+            event = st.dataframe(df_hist, on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True)
+            if len(event.selection.rows) > 0:
+                idx = event.selection.rows[0]
+                caminho_arq = df_hist.iloc[idx].get("caminho_json")
+                if caminho_arq and os.path.exists(caminho_arq):
+                    with open(caminho_arq, "r", encoding="utf-8") as f:
+                        st.download_button(label=f"⬇️ Baixar JSON", data=f.read(), file_name=os.path.basename(caminho_arq), mime="application/json")
+    
+    with tabs[4]: 
+        st.markdown("### 🛠️ Gestão de Tabelas do Sistema")
+        opcoes_tabelas = {
+            "1. Carteiras de Clientes": "conexoes.fator_cliente_carteira",
+            "2. Origens de Consulta": "conexoes.fatorconferi_origem_consulta_fator",
+            "3. Parâmetros Gerais": "conexoes.fatorconferi_parametros",
+            "4. Registros de Consulta": "conexoes.fatorconferi_registo_consulta",
+            "5. Tipos de Consulta": "conexoes.fatorconferi_tipo_consulta_fator",
+            "6. Valores da Consulta": "conexoes.fatorconferi_valor_da_consulta",
+            "7. Relação de Conexões": "conexoes.relacao",
+            "8. Ambiente de Consulta": "conexoes.fatorconferi_ambiente_consulta"
+        }
+        tabela_escolhida = st.selectbox("Selecione a Tabela:", list(opcoes_tabelas.keys()))
+        nome_sql = opcoes_tabelas[tabela_escolhida]
+        if nome_sql:
+            df_param = carregar_dados_genericos(nome_sql)
+            if df_param is None:
+                st.warning(f"A tabela `{nome_sql}` não foi encontrada.")
+                if nome_sql == "conexoes.fatorconferi_ambiente_consulta":
+                    if st.button("🛠️ Criar Tabela Ambiente Agora"): criar_tabela_ambiente(); st.rerun()
+            else:
+                df_editado = st.data_editor(df_param, key=f"editor_{nome_sql}", num_rows="dynamic", use_container_width=True)
+                if st.button("💾 Salvar Alterações", type="primary"):
+                    if salvar_alteracoes_genericas(nome_sql, df_param, df_editado): st.success("Salvo!"); time.sleep(1); st.rerun()
+
+    with tabs[5]:
+        st.subheader("⚙️ Mapeamento de Dados (API -> SQL)")
         st.info("Sintaxe: SEÇÃO;SUBCAMPO;[]{LISTA}")
-        conn = get_conn()
-        if conn:
-            df_map = pd.read_sql("SELECT * FROM conexoes.fatorconferi_conexao_tabelas ORDER BY id DESC", conn)
-            df_edit = st.data_editor(df_map, num_rows="dynamic", use_container_width=True, key="editor_mapa_geral")
-            if st.button("Salvar Mapa"):
-                if salvar_alteracoes_mapa_completo(df_map, df_edit): st.success("Salvo!")
-            conn.close()
-
-    with tabs[2]:
-        conn = get_conn()
-        if conn:
-            df = pd.read_sql("SELECT * FROM conexoes.fatorconferi_registo_consulta ORDER BY id DESC LIMIT 10", conn)
-            st.dataframe(df, use_container_width=True)
-            conn.close()
-
-    with tabs[3]:
-        if st.button("Ver Saldo API"):
-            ok, val = consultar_saldo_api()
-            if ok: st.metric("Saldo", f"R$ {val:.2f}")
+        
+        lista_tabelas = listar_tabelas_disponiveis()
+        tabela_sel = st.selectbox("1. Selecione a Tabela Destino:", ["(Selecione)"] + lista_tabelas)
+        
+        if tabela_sel != "(Selecione)":
+            colunas_db = listar_colunas_geral(tabela_sel)
+            mapa_existente = listar_mapeamento_tabela(tabela_sel)
+            colunas_pre_selecionadas = [c for c in mapa_existente.keys() if c in colunas_db]
+            
+            colunas_sel = st.multiselect("2. Escolha as colunas para mapear:", options=colunas_db, default=colunas_pre_selecionadas)
+            
+            if colunas_sel:
+                st.divider()
+                st.markdown("#### 3. Editar Mapeamento")
+                dados_grade = []
+                for col in colunas_sel:
+                    val_atual = mapa_existente.get(col, "")
+                    dados_grade.append({"Tabela Destino": tabela_sel, "Coluna SQL": col, "Chave JSON API": val_atual})
+                
+                df_grade = pd.DataFrame(dados_grade)
+                df_editado = st.data_editor(
+                    df_grade,
+                    column_config={"Tabela Destino": st.column_config.TextColumn(disabled=True), "Coluna SQL": st.column_config.TextColumn(disabled=True)},
+                    hide_index=True, use_container_width=True, num_rows="fixed", key=f"editor_mapa_{tabela_sel}"
+                )
+                
+                if st.button("💾 Salvar Mapeamento", type="primary"):
+                    if salvar_mapeamento_grade(tabela_sel, df_editado):
+                        st.success(f"Mapeamento salvo!"); time.sleep(1.5); st.rerun()
+        
+        st.divider()
+        st.markdown("### 📋 Tabela Geral de Conexões (Editável)")
+        df_geral = listar_todos_mapeamentos()
+        df_editado_geral = st.data_editor(df_geral, key="editor_geral_mapeamentos", num_rows="dynamic", use_container_width=True)
+        
+        if st.button("💾 Salvar Alterações Gerais", type="primary"):
+            if salvar_alteracoes_mapa_completo(df_geral, df_editado_geral):
+                st.success("Tabela geral atualizada!"); time.sleep(1.5); st.rerun()
