@@ -3,38 +3,30 @@ import os
 import sys
 import importlib
 
-# --- CONFIGURAÇÃO DE CAMINHOS PARA SUB-MÓDULOS ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.append(BASE_DIR)
+# --- CONFIGURAÇÃO DE CAMINHOS ---
+# Garante que o Python encontre os arquivos na pasta atual
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
-# --- IMPORTAÇÃO SEGURA DOS SUB-MÓDULOS ---
-def importar_modulo_interno(nome_modulo):
+def carregar_modulo(nome_modulo):
+    """
+    Função auxiliar para importar módulos apenas quando necessário (Lazy Import).
+    Isso evita o erro de 'Circular Import'.
+    """
     try:
         if nome_modulo in sys.modules:
+            # Se já foi importado, recarrega para pegar alterações recentes
             return importlib.reload(sys.modules[nome_modulo])
         else:
-            return __import__(nome_modulo)
-            
+            # Se não, importa pela primeira vez
+            return importlib.import_module(nome_modulo)
     except ImportError as e:
-        # CORREÇÃO: Mostra o motivo real da falha de importação
-        st.error(f"🔴 Erro ao importar '{nome_modulo}': {e}")
-        # Dica pro usuário
-        if "modulo_validadores" in str(e):
-            st.warning("DICA: Verifique se o arquivo 'modulo_validadores.py' está na mesma pasta.")
-        if "conexao" in str(e):
-            st.warning("DICA: Verifique se o arquivo 'conexao.py' está na mesma pasta.")
+        st.error(f"🔴 Erro ao carregar '{nome_modulo}': {e}")
         return None
-        
     except Exception as e:
-        st.error(f"Erro crítico ao carregar {nome_modulo}: {e}")
+        st.error(f"🔴 Erro crítico em '{nome_modulo}': {e}")
         return None
-
-# Tenta importar os módulos funcionais
-modulo_cadastro = importar_modulo_interno("modulo_sistema_consulta_cadastro")
-modulo_planilhas = importar_modulo_interno("modulo_sistema_consulta_planilhas")
-modulo_crm = importar_modulo_interno("modulo_sistema_consulta_crm")
-modulo_importacao = importar_modulo_interno("modulo_sistema_consulta_importacao")
 
 def app_sistema_consulta():
     st.markdown("## 👥 CRM CONSULTA")
@@ -42,48 +34,51 @@ def app_sistema_consulta():
     # --- MENU SUPERIOR ---
     menu_opcoes = ["Cadastro / Pesquisa", "Planilhas (Tabelas)", "CRM / Gestão", "Importação"]
     
-    if 'menu_consulta_selecionado' not in st.session_state:
-        st.session_state['menu_consulta_selecionado'] = menu_opcoes[0]
+    # Gerencia o estado da navegação
+    if 'nav_sistema_consulta' not in st.session_state:
+        st.session_state['nav_sistema_consulta'] = menu_opcoes[0]
 
     escolha = st.radio(
-        "", 
+        "Navegação", 
         menu_opcoes, 
         horizontal=True, 
         label_visibility="collapsed",
-        key="nav_sistema_consulta"
+        key="nav_sistema_consulta_radio"
     )
 
     st.divider()
 
-    # --- ROTEAMENTO DE TELAS ---
+    # --- ROTEAMENTO DE TELAS (Com Importação Tardia) ---
     
     if escolha == "Cadastro / Pesquisa":
-        if modulo_cadastro:
-            try:
-                modulo_cadastro.app_cadastro()
-            except Exception as e:
-                st.error(f"Erro ao executar o módulo Cadastro: {e}")
+        # Só importa agora, evitando o ciclo no início do programa
+        mod = carregar_modulo("modulo_sistema_consulta_cadastro")
+        if mod and hasattr(mod, 'app_cadastro'):
+            mod.app_cadastro()
         else:
-            st.warning("⚠️ Módulo 'Cadastro' não carregado. Verifique os erros acima.")
+            st.warning("⚠️ Módulo 'Cadastro' não disponível ou função 'app_cadastro' não encontrada.")
 
     elif escolha == "Planilhas (Tabelas)":
-        if modulo_planilhas:
-            modulo_planilhas.app_planilhas()
+        mod = carregar_modulo("modulo_sistema_consulta_planilhas")
+        if mod and hasattr(mod, 'app_planilhas'):
+            mod.app_planilhas()
         else:
-            st.warning("⚠️ Módulo 'Planilhas' (modulo_sistema_consulta_planilhas.py) não encontrado.")
+            st.warning("⚠️ Módulo 'Planilhas' não disponível.")
             
     elif escolha == "CRM / Gestão":
-        if modulo_crm:
-            modulo_crm.app_crm()
+        mod = carregar_modulo("modulo_sistema_consulta_crm")
+        if mod and hasattr(mod, 'app_crm'):
+            mod.app_crm()
         else:
-            st.warning("⚠️ Módulo 'CRM' (modulo_sistema_consulta_crm.py) não encontrado.")
+            st.warning("⚠️ Módulo 'CRM' não disponível.")
 
     elif escolha == "Importação":
-        if modulo_importacao:
-            modulo_importacao.tela_importacao()
+        mod = carregar_modulo("modulo_sistema_consulta_importacao")
+        if mod and hasattr(mod, 'tela_importacao'):
+            mod.tela_importacao()
         else:
-            st.warning("⚠️ Módulo 'Importação' (modulo_sistema_consulta_importacao.py) não encontrado.")
+            st.warning("⚠️ Módulo 'Importação' não disponível.")
 
-# Bloco para teste individual
+# Bloco para teste isolado deste arquivo
 if __name__ == "__main__":
     app_sistema_consulta()
