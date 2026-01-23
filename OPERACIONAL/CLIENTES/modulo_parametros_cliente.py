@@ -1,24 +1,68 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+from psycopg2 import pool
 import time
+import contextlib
+import sys
+import os
 
-# Tenta importar conexao
+# ==============================================================================
+# 0. CONFIGURAÇÃO DE CAMINHOS
+# ==============================================================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
 try:
     import conexao
 except ImportError:
     st.error("Erro: conexao.py não encontrado na raiz.")
+    conexao = None
 
-# --- CONEXÃO ---
-def get_conn():
+# ==============================================================================
+# 1. CONEXÃO BLINDADA (Connection Pool)
+# ==============================================================================
+
+@st.cache_resource
+def get_pool():
+    if not conexao: return None
     try:
-        return psycopg2.connect(
-            host=conexao.host, port=conexao.port, database=conexao.database, 
-            user=conexao.user, password=conexao.password
+        return psycopg2.pool.SimpleConnectionPool(
+            minconn=1, maxconn=10, 
+            host=conexao.host, port=conexao.port,
+            database=conexao.database, user=conexao.user, password=conexao.password,
+            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
         )
     except Exception as e:
-        print(f"Erro conexão: {e}")
+        st.error(f"Erro fatal no Pool de Conexão: {e}")
         return None
+
+@contextlib.contextmanager
+def get_db_connection():
+    pool_obj = get_pool()
+    if not pool_obj:
+        yield None
+        return
+    
+    conn = pool_obj.getconn()
+    try:
+        conn.rollback() # Health check
+        yield conn
+        pool_obj.putconn(conn)
+    except (psycopg2.InterfaceError, psycopg2.OperationalError):
+        try: pool_obj.putconn(conn, close=True)
+        except: pass
+        try:
+            conn = pool_obj.getconn()
+            yield conn
+            pool_obj.putconn(conn)
+        except Exception:
+            yield None
+    except Exception as e:
+        pool_obj.putconn(conn)
+        raise e
 
 # =============================================================================
 # 1. FUNÇÕES DE BANCO DE DADOS (PARÂMETROS)
@@ -26,139 +70,121 @@ def get_conn():
 
 # --- AGRUPAMENTOS ---
 def listar_agrupamentos(tipo):
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-    try:
-        df = pd.read_sql(f"SELECT id, nome_agrupamento FROM {tabela} ORDER BY id", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_db_connection() as conn:
+        if not conn: return pd.DataFrame()
+        tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+        try:
+            return pd.read_sql(f"SELECT id, nome_agrupamento FROM {tabela} ORDER BY id", conn)
+        except: return pd.DataFrame()
 
 def salvar_agrupamento(tipo, nome):
-    conn = get_conn()
-    if not conn: return False
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-    try:
-        cur = conn.cursor()
-        cur.execute(f"INSERT INTO {tabela} (nome_agrupamento) VALUES (%s)", (nome,))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"INSERT INTO {tabela} (nome_agrupamento) VALUES (%s)", (nome,))
+            conn.commit()
+            return True
+        except: return False
 
 def excluir_agrupamento(tipo, id_agrup):
-    conn = get_conn()
-    if not conn: return False
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-    try:
-        cur = conn.cursor()
-        cur.execute(f"DELETE FROM {tabela} WHERE id = %s", (id_agrup,))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {tabela} WHERE id = %s", (id_agrup,))
+            conn.commit()
+            return True
+        except: return False
 
 def atualizar_agrupamento(tipo, id_agrup, novo_nome):
-    conn = get_conn()
-    if not conn: return False
-    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-    try:
-        cur = conn.cursor()
-        cur.execute(f"UPDATE {tabela} SET nome_agrupamento = %s WHERE id = %s", (novo_nome, id_agrup))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE {tabela} SET nome_agrupamento = %s WHERE id = %s", (novo_nome, id_agrup))
+            conn.commit()
+            return True
+        except: return False
 
 # --- CLIENTE CNPJ ---
 def listar_cliente_cnpj():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, cnpj, nome_empresa FROM admin.cliente_cnpj ORDER BY nome_empresa", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_db_connection() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, cnpj, nome_empresa FROM admin.cliente_cnpj ORDER BY nome_empresa", conn)
+        except: return pd.DataFrame()
 
 def salvar_cliente_cnpj(cnpj, nome):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj, nome))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO admin.cliente_cnpj (cnpj, nome_empresa) VALUES (%s, %s)", (cnpj, nome))
+            conn.commit()
+            return True
+        except: return False
 
 def excluir_cliente_cnpj(id_reg):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM admin.cliente_cnpj WHERE id = %s", (id_reg,))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM admin.cliente_cnpj WHERE id = %s", (id_reg,))
+            conn.commit()
+            return True
+        except: return False
 
 def atualizar_cliente_cnpj(id_reg, cnpj, nome):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE admin.cliente_cnpj SET cnpj=%s, nome_empresa=%s WHERE id=%s", (cnpj, nome, id_reg))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE admin.cliente_cnpj SET cnpj=%s, nome_empresa=%s WHERE id=%s", (cnpj, nome, id_reg))
+            conn.commit()
+            return True
+        except: return False
 
 # --- RELAÇÃO PEDIDO / CARTEIRA ---
 def listar_relacao_pedido_carteira():
-    conn = get_conn()
-    if not conn: return pd.DataFrame()
-    try:
-        df = pd.read_sql("SELECT id, produto, nome_carteira FROM cliente.cliente_carteira_relacao_pedido_carteira ORDER BY id DESC", conn)
-        conn.close(); return df
-    except: 
-        if conn: conn.close()
-        return pd.DataFrame()
+    with get_db_connection() as conn:
+        if not conn: return pd.DataFrame()
+        try:
+            return pd.read_sql("SELECT id, produto, nome_carteira FROM cliente.cliente_carteira_relacao_pedido_carteira ORDER BY id DESC", conn)
+        except: return pd.DataFrame()
 
 def salvar_relacao_pedido_carteira(produto, carteira):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO cliente.cliente_carteira_relacao_pedido_carteira (produto, nome_carteira) VALUES (%s, %s)", (produto, carteira))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO cliente.cliente_carteira_relacao_pedido_carteira (produto, nome_carteira) VALUES (%s, %s)", (produto, carteira))
+            conn.commit()
+            return True
+        except: return False
 
 def atualizar_relacao_pedido_carteira(id_reg, produto, carteira):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE cliente.cliente_carteira_relacao_pedido_carteira SET produto=%s, nome_carteira=%s WHERE id=%s", (produto, carteira, id_reg))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE cliente.cliente_carteira_relacao_pedido_carteira SET produto=%s, nome_carteira=%s WHERE id=%s", (produto, carteira, id_reg))
+            conn.commit()
+            return True
+        except: return False
 
 def excluir_relacao_pedido_carteira(id_reg):
-    conn = get_conn()
-    if not conn: return False
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM cliente.cliente_carteira_relacao_pedido_carteira WHERE id=%s", (id_reg,))
-        conn.commit(); conn.close(); return True
-    except: 
-        if conn: conn.close()
-        return False
+    with get_db_connection() as conn:
+        if not conn: return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM cliente.cliente_carteira_relacao_pedido_carteira WHERE id=%s", (id_reg,))
+            conn.commit()
+            return True
+        except: return False
 
 # =============================================================================
 # 2. DIALOGS DE EDIÇÃO
@@ -289,3 +315,9 @@ def app_parametros():
                 if cc3.button("🗑️", key=f"del_rpc_{r['id']}"): excluir_relacao_pedido_carteira(r['id']); st.rerun()
                 st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
         else: st.info("Vazio.")
+
+if __name__ == "__main__":
+    if get_pool():
+        app_parametros()
+    else:
+        st.error("Erro crítico de conexão.")
