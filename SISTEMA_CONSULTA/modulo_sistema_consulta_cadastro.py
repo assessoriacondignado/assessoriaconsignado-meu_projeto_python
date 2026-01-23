@@ -32,17 +32,23 @@ except ImportError as e:
     st.stop()
 
 # ==============================================================================
-# 1. CONFIGURAÇÃO DE PERFORMANCE (CONNECTION POOL)
+# 1. CONFIGURAÇÃO DE PERFORMANCE (CONNECTION POOL BLINDADO)
 # ==============================================================================
 
 @st.cache_resource
 def get_pool():
     if not conexao: return None
     try:
+        # CORREÇÃO CRÍTICA: Adicionados parâmetros de Keepalive para evitar queda SSL
         return psycopg2.pool.SimpleConnectionPool(
             minconn=1, maxconn=20,
             host=conexao.host, port=conexao.port,
-            database=conexao.database, user=conexao.user, password=conexao.password
+            database=conexao.database, user=conexao.user, password=conexao.password,
+            # Configurações para evitar que o Firewall derrube a conexão ociosa
+            keepalives=1, 
+            keepalives_idle=30, 
+            keepalives_interval=10, 
+            keepalives_count=5
         )
     except Exception as e:
         st.error(f"Erro fatal ao conectar no banco (Pool): {e}")
@@ -50,6 +56,10 @@ def get_pool():
 
 @contextlib.contextmanager
 def get_db_connection():
+    """
+    Gerenciador de contexto BLINDADO contra quedas de conexão.
+    Testa a conexão antes de entregar para o uso.
+    """
     pool_obj = get_pool()
     if not pool_obj:
         yield None
@@ -57,9 +67,32 @@ def get_db_connection():
     
     conn = pool_obj.getconn()
     try:
+        # TESTE DE VIDA: Tenta um rollback leve. Se a conexão caiu (SSL SYSCALL),
+        # isso vai falhar aqui e cair no except, onde pegamos uma nova.
+        conn.rollback()
         yield conn
-    finally:
         pool_obj.putconn(conn)
+        
+    except (psycopg2.InterfaceError, psycopg2.OperationalError):
+        # Se a conexão estava morta, descartamos ela do pool
+        try:
+            pool_obj.putconn(conn, close=True)
+        except:
+            pass
+        
+        # Tenta pegar uma NOVA conexão fresca (Retry imediato)
+        try:
+            conn = pool_obj.getconn()
+            yield conn
+            pool_obj.putconn(conn)
+        except Exception as e:
+            st.error(f"Falha ao reconectar ao banco: {e}")
+            yield None
+            
+    except Exception as e:
+        # Outros erros (SQL, Lógica) não matam a conexão, só devolvem
+        pool_obj.putconn(conn)
+        raise e
 
 # ==============================================================================
 # 2. CONSTANTES E CONFIGURAÇÕES
@@ -280,7 +313,6 @@ def buscar_cliente_dinamica(filtros_aplicados):
             return []
 
 def carregar_dados_cliente_completo(cpf):
-    # CORREÇÃO: Uso de v (módulo) aqui
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
     
     with get_db_connection() as conn:
@@ -295,7 +327,6 @@ def carregar_dados_cliente_completo(cpf):
                 
                 if row_pessoais:
                     d_pessoal = dict(zip(cols_pessoais, row_pessoais))
-                    # CORREÇÃO: Variável do loop alterada de 'v' para 'val' para não sobrescrever o módulo
                     for k, val in d_pessoal.items():
                         if val is None and k != 'data_nascimento': d_pessoal[k] = ""
                     dados['pessoal'] = d_pessoal
@@ -309,7 +340,6 @@ def carregar_dados_cliente_completo(cpf):
                     row_clt = cur.fetchone()
                     if row_clt:
                         d_clt = dict(zip(cols_clt, row_clt))
-                        # CORREÇÃO: Variável do loop alterada de 'v' para 'val'
                         for k, val in d_clt.items():
                             if val is None and 'data' not in k: d_clt[k] = ""
                         dados['clt'] = d_clt
@@ -328,7 +358,6 @@ def carregar_dados_cliente_completo(cpf):
                 dados['enderecos'] = []
                 for r in cur.fetchall():
                     d_end = dict(zip(cols_end, r))
-                    # CORREÇÃO: Variável do loop alterada de 'v' para 'val'
                     for k, val in d_end.items():
                         if val is None: d_end[k] = ""
                     dados['enderecos'].append(d_end)
@@ -670,7 +699,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
         if not conn: return False
         try:
             with conn.cursor() as cur:
-                # 1. Dados Pessoais
                 pessoal = dados_editados['pessoal']
                 nasc_sql = v.ValidadorData.para_sql(pessoal['data_nascimento'])
                 
@@ -688,7 +716,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     cpf_val
                 ))
                 
-                # 2. Telefones (Update/Delete)
                 for item in dados_editados.get('telefones', []):
                     val = v.ValidadorContato.telefone_para_sql(item['valor'])
                     if not val:
@@ -696,7 +723,6 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     else:
                         cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_telefone SET telefone = %s WHERE id = %s", (val, item['id']))
                 
-                # 3. Emails (Update/Delete)
                 for item in dados_editados.get('emails', []):
                     val = str(item['valor']).strip()
                     if not val:
@@ -896,7 +922,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     "nome_pai": pai, "campanhas": campanhas
                 }):
                     st.success("Cadastrado!")
-                    st.session_state['cliente_ativo_cpf'] = v.ValidadorDocumentos.cpf_para_bigint(cpf_in)
+                    st.session_state['cliente_ativo_cpf'] = v.ValidadorDocumentos.cpf_para_sql(cpf_in)
                     st.session_state['modo_visualizacao'] = 'visualizar'
                     time.sleep(1)
                     st.rerun()
