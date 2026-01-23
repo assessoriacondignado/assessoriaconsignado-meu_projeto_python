@@ -85,6 +85,26 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - observacao (text) NULL
    - data_criacao (timestamp without time zone) NULL
 
+[TABELA: admin.contratos_p0]
+   - id_contrato (bigint) NOT NULL
+   - nb (bigint) NOT NULL
+   - cpf (bigint) NOT NULL
+   - codigo_banco (smallint) NULL
+   - valor_parcela (numeric) NULL
+   - prazo_restante (smallint) NULL
+   - taxa_juros (numeric) NULL
+   - data_inicio (date) NULL
+
+[TABELA: admin.contratos_p1]
+   - id_contrato (bigint) NOT NULL
+   - nb (bigint) NOT NULL
+   - cpf (bigint) NOT NULL
+   - codigo_banco (smallint) NULL
+   - valor_parcela (numeric) NULL
+   - prazo_restante (smallint) NULL
+   - taxa_juros (numeric) NULL
+   - data_inicio (date) NULL
+
 [TABELA: admin.logs_acesso]
    - id (integer) NOT NULL
    - id_usuario (integer) NULL
@@ -676,6 +696,25 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - Colunas para filtro (text) NULL
    - tabela_importacao_staging (text) NULL
 
+[TABELA: sistema_consulta.beneficios_analitico]
+   - nb (bigint) NOT NULL
+   - cpf (bigint) NOT NULL
+   - especie_id (smallint) NULL
+   - data_dib (date) NULL
+   - salario_bruto (numeric) NULL
+   - margem_consignavel (numeric) NULL
+   - situacao_beneficio (character(1)) NULL
+
+[TABELA: sistema_consulta.contratos_analitico]
+   - id_contrato (bigint) NOT NULL
+   - nb (bigint) NOT NULL
+   - cpf (bigint) NOT NULL
+   - codigo_banco (smallint) NULL
+   - valor_parcela (numeric) NULL
+   - prazo_restante (smallint) NULL
+   - taxa_juros (numeric) NULL
+   - data_inicio (date) NULL
+
 [TABELA: sistema_consulta.importacao_staging]
    - sessao_id (uuid) NULL
    - cpf (character varying(20)) NULL
@@ -727,8 +766,8 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 [TABELA: sistema_consulta.sistema_consulta_contrato]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NOT NULL
-   - matricula (character varying(100)) NULL
+   - cpf (bigint) NOT NULL
+   - matricula (bigint) NULL
    - convenio (character varying(150)) NULL
    - prazo_aberto (character varying(255)) NULL
    - prazo_pago (character varying(30)) NULL
@@ -750,24 +789,24 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 [TABELA: sistema_consulta.sistema_consulta_cpf]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NOT NULL
+   - cpf (bigint) NOT NULL
    - data_criacao (timestamp without time zone) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_agrupamento_cpf]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NOT NULL
+   - cpf (bigint) NOT NULL
    - agrupamento (text) NULL
    - data_criacao (timestamp without time zone) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_convenio]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NULL
+   - cpf (bigint) NULL
    - convenio (character varying(100)) NULL
    - data_criacao (timestamp without time zone) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_cpf]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NOT NULL
+   - cpf (bigint) NOT NULL
    - nome (text) NULL
    - data_nascimento (date) NULL
    - identidade (text) NULL
@@ -784,13 +823,13 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_email]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NULL
+   - cpf (bigint) NULL
    - email (character varying(255)) NULL
    - data_criacao (timestamp without time zone) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_endereco]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NULL
+   - cpf (bigint) NULL
    - complemento (character varying(255)) NULL
    - rua (character varying(255)) NULL
    - bairro (character varying(255)) NULL
@@ -801,7 +840,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_historico_consulta_usuario]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NULL
+   - cpf (bigint) NULL
    - nome_usuario (text) NULL
    - data_hora_consulta (timestamp without time zone) NULL
 
@@ -812,7 +851,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 [TABELA: sistema_consulta.sistema_consulta_dados_cadastrais_telefone]
    - id (integer) NOT NULL
-   - cpf (character varying(20)) NOT NULL
+   - cpf (bigint) NOT NULL
    - telefone (character varying(20)) NULL
    - data_criacao (timestamp without time zone) NULL
 
@@ -824,7 +863,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 
 [TABELA: sistema_consulta.sistema_consulta_dados_clt]
    - id (integer) NOT NULL
-   - matricula (character varying(100)) NULL
+   - matricula (bigint) NULL
    - convenio (character varying(150)) NULL
    - cnpj_nome (character varying(255)) NULL
    - cnpj_numero (character varying(30)) NULL
@@ -839,7 +878,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - importacao_id (character varying(255)) NULL
    - data_criacao (timestamp without time zone) NULL
    - data_atualizacao (timestamp without time zone) NULL
-   - cpf (character varying(20)) NULL
+   - cpf (bigint) NULL
 
 [TABELA: sistema_consulta.sistema_consulta_importacao]
    - id (integer) NOT NULL

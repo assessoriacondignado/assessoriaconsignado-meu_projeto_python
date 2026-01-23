@@ -98,86 +98,100 @@ class ValidadorDocumentos:
     """
     CPF, CNPJ e Genéricos com validação matemática (Módulo 11).
     AJUSTE: Aceita input com ou sem zero à esquerda, padronizando para 11/14 dígitos.
+    ATUALIZAÇÃO: Suporte a BIGINT para performance no banco.
     """
 
     @staticmethod
     def limpar_numero(valor):
-        """Remove tudo que não é dígito"""
+        """Remove tudo que não é dígito e retorna STRING"""
         if valor is None: return ""
         return re.sub(r'\D', '', str(valor))
 
     @staticmethod
     def cpf_para_sql(cpf_input):
         """
-        1. Limpa caracteres especiais.
-        2. Garante 11 dígitos (adiciona zero à esquerda se o usuário digitou apenas 10).
-        3. Valida matematicamente.
+        [LEGADO - Retorna String]
+        Mantido para compatibilidade com partes do sistema que esperam VARCHAR.
         """
         limpo = ValidadorDocumentos.limpar_numero(cpf_input)
         if not limpo: return None
         
-        # Tratamento do Zero à Esquerda (zfill)
-        # Se digitou '123...' (10 digitos), vira '0123...' (11 digitos)
         cpf_padronizado = limpo.zfill(11) 
-        
-        # Se após o preenchimento não tiver 11 dígitos, é inválido
-        if len(cpf_padronizado) != 11: 
-            return None
-            
-        # Validação Matemática
-        if not ValidadorDocumentos._validar_mod11_cpf(cpf_padronizado): 
-            return None
-        
+        if len(cpf_padronizado) != 11: return None
+        if not ValidadorDocumentos._validar_mod11_cpf(cpf_padronizado): return None
         return cpf_padronizado
 
     @staticmethod
+    def cpf_para_bigint(cpf_input):
+        """
+        [NOVO - Alta Performance]
+        Valida e converte CPF para INTEIRO (BIGINT) para salvar nas tabelas otimizadas.
+        Ex: '001.234.567-89' -> 123456789
+        """
+        # Usa a validação padrão primeiro
+        cpf_str = ValidadorDocumentos.cpf_para_sql(cpf_input)
+        if cpf_str:
+            return int(cpf_str)
+        return None
+
+    @staticmethod
     def cnpj_para_sql(cnpj_input):
-        """Padroniza para 14 dígitos e valida"""
+        """Padroniza para 14 dígitos e valida (Retorna String)"""
         limpo = ValidadorDocumentos.limpar_numero(cnpj_input)
         if not limpo: return None
         
-        # Garante 14 dígitos
         cnpj_padronizado = limpo.zfill(14)
-        
         if len(cnpj_padronizado) != 14: return None
         if not ValidadorDocumentos._validar_mod11_cnpj(cnpj_padronizado): return None
-        
         return cnpj_padronizado
 
     @staticmethod
-    def cpf_para_tela(cpf_limpo):
-        """Visualização: 000.000.000-00"""
-        if not cpf_limpo: return ""
-        # Garante que tenha zeros para a máscara funcionar
-        s = str(cpf_limpo).zfill(11)
+    def nb_para_bigint(nb_input):
+        """
+        [NOVO] Trata Número de Benefício/Matrícula para BIGINT.
+        Remove pontos e traços.
+        """
+        limpo = ValidadorDocumentos.limpar_numero(nb_input)
+        if not limpo: return None
+        try:
+            return int(limpo)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def cpf_para_tela(valor):
+        """
+        Visualização: 000.000.000-00
+        Aceita tanto String quanto Inteiro (do banco).
+        """
+        if valor is None: return ""
+        
+        s = str(valor) # Converte int para str se necessário
+        s = ValidadorDocumentos.limpar_numero(s) # Garante limpeza
+        s = s.zfill(11) # Recupera o zero à esquerda
+        
         if len(s) != 11: return s
         return f"{s[:3]}.{s[3:6]}.{s[6:9]}-{s[9:]}"
 
     @staticmethod
-    def cnpj_para_tela(cnpj_limpo):
+    def cnpj_para_tela(valor):
         """Visualização: 00.000.000/0000-00"""
-        if not cnpj_limpo: return ""
-        s = str(cnpj_limpo).zfill(14)
+        if valor is None: return ""
+        s = str(valor)
+        s = ValidadorDocumentos.limpar_numero(s)
+        s = s.zfill(14)
+        
         if len(s) != 14: return s
         return f"{s[:2]}.{s[2:5]}.{s[5:8]}/{s[8:12]}-{s[12:]}"
 
     @staticmethod
     def preparar_ilike(valor):
         """
-        Prepara valor para busca SQL (ILIKE).
-        Se for CPF/CNPJ incompleto, padroniza com zeros para garantir match no banco.
+        Prepara valor para busca SQL (ILIKE) em campos TEXTO.
+        Para campos numéricos (BIGINT), usar conversão direta.
         """
         limpo = ValidadorDocumentos.limpar_numero(valor)
         if not limpo: return None
-        
-        # Se parece um CPF (tem entre 3 e 11 dígitos), tenta ajustar
-        # Mas para ILIKE genérico, retornamos o limpo entre %
-        # A lógica do zfill é aplicada se tiver proximo de 11 digitos
-        if len(limpo) in [10, 11]:
-            limpo = limpo.zfill(11)
-        elif len(limpo) in [13, 14]:
-            limpo = limpo.zfill(14)
-            
         return f"%{limpo}%"
 
     # --- Lógica Matemática (Privada) ---
@@ -218,7 +232,7 @@ class ValidadorContato:
 
     @staticmethod
     def telefone_para_sql(tel):
-        """Valida DDD e retorna apenas números (11 dígitos)"""
+        """Valida DDD e retorna apenas números (11 dígitos - String)"""
         limpo = ValidadorDocumentos.limpar_numero(tel)
         if not limpo or len(limpo) != 11:
             return None
@@ -232,8 +246,10 @@ class ValidadorContato:
     @staticmethod
     def telefone_para_tela(tel_limpo):
         """(11) 91234-5678"""
-        if not tel_limpo or len(tel_limpo) != 11: return tel_limpo
-        return f"({tel_limpo[:2]}) {tel_limpo[2:7]}-{tel_limpo[7:]}"
+        if not tel_limpo: return ""
+        s = str(tel_limpo) # Caso venha int do banco
+        if len(s) != 11: return s
+        return f"({s[:2]}) {s[2:7]}-{s[7:]}"
 
     @staticmethod
     def cep_para_tela(cep_limpo):
