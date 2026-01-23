@@ -133,51 +133,39 @@ def get_conn():
         print(f"Erro DB: {e}")
         return None
 
-# [ALTERAÇÃO: REMOVIDA CRIPTOGRAFIA]
-def verificar_senha(senha_input, senha_banco):
-    """
-    Verifica senha usando comparação simples de texto.
-    """
-    if not senha_banco: return False
-    try:
-        # Compara as strings limpas (sem espaços extras)
-        return str(senha_input).strip() == str(senha_banco).strip()
-    except:
-        return False
-
+# [SIMPLIFICAÇÃO EXTREMA] Validação SOMENTE ID, EMAIL, SENHA
 def validar_login_db(usuario, senha):
     conn = get_conn()
     if not conn: return {"status": "erro_conexao"}
     
     try:
         cur = conn.cursor()
-        usuario = str(usuario).strip().lower()
-        
-        # Busca usuário
-        sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
-                 FROM clientes_usuarios 
-                 WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) 
-                 AND ativo = TRUE"""
-        cur.execute(sql, (usuario, usuario, usuario))
+        email_login = str(usuario).strip()
+        senha_login = str(senha).strip()
+
+        # SQL ENXUTO: Apenas o necessário para logar
+        # ATENÇÃO: Verifique se sua tabela é 'admin.clientes_usuarios' ou 'clientes_usuarios'
+        # Estou mantendo admin.clientes_usuarios conforme seu pedido anterior
+        sql = """
+            SELECT id, email, senha
+            FROM admin.clientes_usuarios 
+            WHERE email = %s
+        """
+        cur.execute(sql, (email_login,))
         res = cur.fetchone()
         
         if res:
-            uid, nome, cargo, senha_db, email, falhas = res
+            uid, email_banco, senha_banco = res
             
-            # Removemos a verificação de tentativas para facilitar o teste
-            # if falhas >= 50: return {"status": "bloqueado"}
+            # Comparação simples (Texto == Texto)
+            # Se a senha for nula no banco, considera vazia
+            senha_banco_str = str(senha_banco).strip() if senha_banco else ""
             
-            # Validação simples
-            if verificar_senha(senha, senha_db):
-                # Login Sucesso
-                cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (uid,))
-                conn.commit()
-                return {"status": "sucesso", "id": uid, "nome": nome, "cargo": cargo, "email": email}
+            if senha_banco_str == senha_login:
+                # Retorna apenas o básico, pois não buscamos nome/cargo
+                return {"status": "sucesso", "id": uid, "email": email_banco}
             else:
-                # Login Falha
-                cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (uid,))
-                conn.commit()
-                return {"status": "erro_senha", "restantes": 99} # Infinitas tentativas agora
+                return {"status": "erro_senha"}
         
         return {"status": "nao_encontrado"}
     except Exception as e:
@@ -233,7 +221,9 @@ def renderizar_menu_lateral():
 
     with st.sidebar:
         st.markdown("### 🚀 Assessoria")
-        st.markdown(f"Olá, **{st.session_state.get('usuario_nome', '').split()[0]}**")
+        # [AJUSTE] Como não temos 'usuario_nome' do banco, usamos um padrão
+        nome_display = st.session_state.get('usuario_nome', 'Usuário')
+        st.markdown(f"Olá, **{nome_display}**")
         st.markdown("---")
         
         botoes = {
@@ -265,20 +255,24 @@ def main():
     if not st.session_state['logado']:
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
-            st.title("🔐 Acesso Restrito (Modo Simples)")
-            u = st.text_input("Usuário (E-mail/CPF)")
+            st.title("🔐 Acesso Restrito (Login Simples)")
+            u = st.text_input("E-mail")
             s = st.text_input("Senha", type="password")
             
-            # LOGIN LIMPO (SEM DETETIVE)
             if st.button("Entrar", type="primary", use_container_width=True):
                 res = validar_login_db(u, s)
                 if res['status'] == 'sucesso':
                     st.success("Login efetuado com sucesso!")
                     time.sleep(0.5)
-                    st.session_state.update({'logado': True, 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
+                    # [AJUSTE] Definimos valores fixos para nome e cargo pois não vieram do banco
+                    st.session_state.update({
+                        'logado': True, 
+                        'usuario_nome': 'Usuário Logado', 
+                        'usuario_cargo': 'Acesso Geral'
+                    })
                     st.rerun()
                 elif res['status'] == 'erro_senha': st.error("Senha incorreta.")
-                else: st.error("Erro no login ou usuário inexistente.")
+                else: st.error("E-mail não encontrado.")
     
     # 8.2 SISTEMA LOGADO
     else:
