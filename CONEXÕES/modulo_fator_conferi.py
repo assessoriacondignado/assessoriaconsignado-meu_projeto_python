@@ -10,10 +10,25 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 
-import conexao
-import modulo_validadores as mv
+# --- CONFIGURAÇÃO DE CAMINHOS (PATH FIX) ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
-# --- CONFIGURAÇÕES DE DIRETÓRIO ---
+# --- IMPORTAÇÕES ---
+try:
+    import conexao
+except ImportError:
+    conexao = None
+
+try:
+    import modulo_validadores as mv
+except ImportError as e:
+    st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Detalhe: {e}")
+    st.stop()
+
+# --- DIRETÓRIOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_JSON = os.path.join(BASE_DIR, "JSON")
 
@@ -133,7 +148,6 @@ def extrair_valor_novo_padrao(dados, caminho_str):
         if isinstance(cursor, dict):
             encontrou = False
             for k, v in cursor.items():
-                # AQUI ESTA A CORREÇÃO: k.upper().strip()
                 if k.upper().strip() == chave:
                     cursor = v
                     encontrou = True
@@ -145,7 +159,6 @@ def extrair_valor_novo_padrao(dados, caminho_str):
             for item in cursor:
                 if isinstance(item, dict):
                     for k, v in item.items():
-                        # AQUI TAMBÉM: k.upper().strip()
                         if k.upper().strip() == chave:
                             lista_valores.append(v)
                             break
@@ -374,6 +387,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     except Exception as e: return False, f"Erro: {str(e)}"
 
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
+    # Padroniza CPF para string limpa
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
     if not cpf_padrao: return {"sucesso": False, "msg": "CPF Inválido"}
 
@@ -400,6 +414,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
     try:
         cur = conn.cursor()
         
+        # Verifica Cache
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
@@ -436,8 +451,17 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
         except: pass
 
-        cur.execute("INSERT INTO conexoes.fatorconferi_registo_consulta (tipo_consulta, cpf_consultado, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)", 
-                    (cpf_padrao, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente))
+        # --- ATUALIZAÇÃO PARA BIGINT ---
+        # Converte CPF limpo para Inteiro para gravar na nova coluna
+        cpf_num = int(re.sub(r'\D', '', str(cpf_padrao)))
+
+        cur.execute("""
+            INSERT INTO conexoes.fatorconferi_registo_consulta 
+            (tipo_consulta, cpf_consultado, cpf_consultado_num, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) 
+            VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)
+            """, 
+            (cpf_padrao, cpf_num, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente)
+        )
         
         msg_fin = ""
         if dados_pagador['id']:
