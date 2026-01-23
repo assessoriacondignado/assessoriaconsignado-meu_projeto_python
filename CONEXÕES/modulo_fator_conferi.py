@@ -48,12 +48,19 @@ def registrar_erro_importacao(cpf, erro_msg):
     except: pass
 
 def sanitizar_e_formatar(valor):
+    """
+    Aplica regras de limpeza: Nulos, Maiúsculas e Data ISO.
+    """
     if valor is None: return None
-    if isinstance(valor, list): return valor
-    v_str = str(valor).strip()
-    if not v_str or v_str.upper() in ["NULO", "NULL", "NONE", "[]", "{}"]: return None
     
-    # Data BR -> ISO
+    if isinstance(valor, list): return valor
+    
+    v_str = str(valor).strip()
+    
+    if not v_str or v_str.upper() in ["NULO", "NULL", "NONE", "[]", "{}"]:
+        return None
+    
+    # Data BR (dd/mm/yyyy) -> ISO (yyyy-mm-dd)
     if re.match(r'^\d{2}/\d{2}/\d{4}$', v_str):
         try:
             dt_obj = datetime.strptime(v_str, '%d/%m/%Y')
@@ -68,47 +75,69 @@ def sanitizar_e_formatar(valor):
 
 def _xml_to_dict_simple(element):
     text = element.text.strip() if element.text else None
-    if len(element) == 0: return text
+    if len(element) == 0:
+        return text
+
     result = {}
     for child in element:
         tag = child.tag.replace('{', '').split('}')[-1].upper()
         child_data = _xml_to_dict_simple(child)
+        
         if tag in result:
-            if isinstance(result[tag], list): result[tag].append(child_data)
-            else: result[tag] = [result[tag], child_data]
-        else: result[tag] = child_data
+            if isinstance(result[tag], list):
+                result[tag].append(child_data)
+            else:
+                result[tag] = [result[tag], child_data]
+        else:
+            result[tag] = child_data
     return result
 
 def parse_xml_to_dict(texto_raw):
     try:
-        if isinstance(texto_raw, bytes): texto_raw = texto_raw.decode('utf-8', errors='ignore')
+        if isinstance(texto_raw, bytes):
+            texto_raw = texto_raw.decode('utf-8', errors='ignore')
         texto_raw = texto_raw.replace('ISO-8859-1', 'UTF-8')
-        try: return json.loads(texto_raw)
-        except: pass
+
+        try:
+            return json.loads(texto_raw)
+        except:
+            pass
+            
         root = ET.fromstring(texto_raw)
         return _xml_to_dict_simple(root)
-    except: return {}
+    except Exception as e:
+        return {}
 
 # =============================================================================
-# 3. EXTRAÇÃO INTELIGENTE
+# 3. EXTRAÇÃO INTELIGENTE (IGNORA ESPAÇOS NO JSON)
 # =============================================================================
 
 def extrair_valor_novo_padrao(dados, caminho_str):
+    """
+    Navega no JSON usando ';' como separador.
+    Ignora espaços nas chaves do JSON (ex: " TELEFONE " vira "TELEFONE").
+    """
     if not caminho_str: return None
+    
     caminho_limpo = re.sub(r'".*?"', '', caminho_str).strip()
     passos = [p.strip() for p in caminho_limpo.split(';') if p.strip()]
+    
     cursor = dados 
     
     for i, passo in enumerate(passos):
         if cursor is None: return None
+        
         is_list_iter = '[]' in passo
         chave = passo.replace('[]', '').replace('{', '').replace('}', '').upper()
         
         if isinstance(cursor, dict):
             encontrou = False
             for k, v in cursor.items():
-                if k.upper().strip() == chave: # Ignora espaços
-                    cursor = v; encontrou = True; break
+                # AQUI ESTA A CORREÇÃO: k.upper().strip()
+                if k.upper().strip() == chave:
+                    cursor = v
+                    encontrou = True
+                    break
             if not encontrou: return None
             
         elif isinstance(cursor, list) and is_list_iter:
@@ -116,15 +145,21 @@ def extrair_valor_novo_padrao(dados, caminho_str):
             for item in cursor:
                 if isinstance(item, dict):
                     for k, v in item.items():
-                        if k.upper().strip() == chave: lista_valores.append(v); break
+                        # AQUI TAMBÉM: k.upper().strip()
+                        if k.upper().strip() == chave:
+                            lista_valores.append(v)
+                            break
                 elif isinstance(item, str) and chave == "": 
                     lista_valores.append(item)
             cursor = lista_valores
-        else: return None
+            
+        else:
+            return None
+
     return cursor
 
 # =============================================================================
-# 4. DISTRIBUIÇÃO DINÂMICA (CORRIGIDA PARA TELEFONES ÚNICOS)
+# 4. DISTRIBUIÇÃO DINÂMICA
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
@@ -142,6 +177,7 @@ def executar_distribuicao_dinamica(dados_api):
         for tabela in tabelas:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
+                
                 dados_extraidos = {}
                 max_linhas = 1 
                 
@@ -152,15 +188,20 @@ def executar_distribuicao_dinamica(dados_api):
                     
                     valor_raw = extrair_valor_novo_padrao(dados_api, caminho)
                     
+                    # Sanitiza e Formata
                     if isinstance(valor_raw, list):
                         valor_final = [sanitizar_e_formatar(v) for v in valor_raw]
-                        if len(valor_final) > max_linhas: max_linhas = len(valor_final)
+                        if len(valor_final) > max_linhas:
+                            max_linhas = len(valor_final)
                     else:
                         valor_final = sanitizar_e_formatar(valor_raw)
                         
+                    # Limpeza extra para CPF (banco geralmente pede apenas números)
                     if 'CPF' in col_sql.upper() or 'CPF' in caminho.upper():
-                        if isinstance(valor_final, list): valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
-                        else: valor_final = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
+                        if isinstance(valor_final, list):
+                            valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
+                        else:
+                            valor_final = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
 
                     dados_extraidos[col_sql] = valor_final
 
@@ -169,28 +210,17 @@ def executar_distribuicao_dinamica(dados_api):
 
                 cols = list(dados_extraidos.keys())
                 placeholders = ", ".join(["%s"] * len(cols))
-                
-                # Detecta tabelas de lista
-                tabela_lower = tabela.lower()
-                is_lista_1_n = any(x in tabela_lower for x in ['telefone', 'endereco', 'email', 'socio', 'veiculo', 'historico'])
-                
                 sql_base = f"INSERT INTO {tabela} ({', '.join(cols)}) VALUES ({placeholders})"
                 
+                # Lógica para evitar erros de duplicidade (UPSERT)
                 cols_lower = [c.lower() for c in cols]
                 
-                # --- LÓGICA DE CONFLITO ATUALIZADA ---
+                # Se for tabela de lista (telefones/enderecos), NÃO usa ON CONFLICT (CPF) pois CPF repete.
+                is_lista_1_n = any(x in tabela.lower() for x in ['telefone', 'endereco', 'email', 'socio', 'veiculo'])
                 
-                # 1. Regra para TELEFONES (CPF + Telefone deve ser único)
-                # OBS: Requer que você tenha rodado o ALTER TABLE no banco!
-                if 'cpf' in cols_lower and 'telefone' in cols_lower:
-                    sql_base += " ON CONFLICT (cpf, telefone) DO NOTHING"
-                    
-                # 2. Regra para Tabelas Principais (CPF único = Atualiza Dados)
-                elif not is_lista_1_n and 'cpf' in cols_lower:
+                if not is_lista_1_n and 'cpf' in cols_lower:
                     update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols if c.lower() != 'cpf'])
                     sql_base += f" ON CONFLICT (cpf) DO UPDATE SET {update_set}" if update_set else " ON CONFLICT (cpf) DO NOTHING"
-                
-                # 3. Regra Genérica por ID
                 elif 'id' in cols_lower:
                     sql_base += " ON CONFLICT (id) DO NOTHING"
 
@@ -198,10 +228,15 @@ def executar_distribuicao_dinamica(dados_api):
                 for i in range(max_linhas):
                     linha_vals = []
                     tem_dado = False
+                    
                     for col in cols:
                         val = dados_extraidos[col]
-                        if isinstance(val, list): item = val[i] if i < len(val) else None
-                        else: item = val
+                        # Se for lista, pega o item da vez. Se for valor fixo (CPF), repete.
+                        if isinstance(val, list):
+                            item = val[i] if i < len(val) else None
+                        else:
+                            item = val
+                            
                         if item: tem_dado = True
                         linha_vals.append(item)
                     
@@ -310,6 +345,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         sql_custo = "SELECT valor_custo, id_produto, nome_produto FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
         cur.execute(sql_custo, (id_cli, origem_custo_chave))
         res_custo = cur.fetchone()
+        
         if not res_custo: return False, "Custo não definido."
             
         valor_debitar = float(res_custo[0])
@@ -363,6 +399,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
 
     try:
         cur = conn.cursor()
+        
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
