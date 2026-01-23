@@ -30,7 +30,7 @@ except ImportError:
     v = None
 
 # ==============================================================================
-# 1. CONEXÃO BLINDADA (Connection Pool)
+# 1. CONEXÃO BLINDADA (Connection Pool + Retry Logic)
 # ==============================================================================
 
 @st.cache_resource
@@ -41,6 +41,7 @@ def get_pool():
             minconn=1, maxconn=10, 
             host=conexao.host, port=conexao.port,
             database=conexao.database, user=conexao.user, password=conexao.password,
+            # Configurações agressivas de Keepalive para evitar queda SSL
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
         )
     except Exception as e:
@@ -54,23 +55,64 @@ def get_db_connection():
         yield None
         return
     
-    conn = pool_obj.getconn()
+    conn = None
     try:
-        conn.rollback() # Teste de vida
+        conn = pool_obj.getconn()
+        # HEALTH CHECK ATIVO: Tenta um comando leve. Se falhar, a conexão morreu.
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        
         yield conn
         pool_obj.putconn(conn)
-    except (psycopg2.InterfaceError, psycopg2.OperationalError):
-        try: pool_obj.putconn(conn, close=True)
-        except: pass
+        
+    except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.DatabaseError):
+        # Se a conexão morreu (SSL EOF), descarta ela do pool
+        if conn:
+            try: pool_obj.putconn(conn, close=True)
+            except: pass
+        
+        # Tenta pegar uma NOVA conexão fresca (Retry imediato)
         try:
             conn = pool_obj.getconn()
             yield conn
             pool_obj.putconn(conn)
-        except Exception:
+        except Exception as e:
+            st.error(f"Falha ao reconectar ao banco: {e}")
             yield None
+            
     except Exception as e:
-        pool_obj.putconn(conn)
+        # Outros erros de lógica SQL
+        if conn: pool_obj.putconn(conn)
         raise e
+
+def ler_dados_seguro(query, params=None):
+    """
+    Executa pd.read_sql com sistema de retentativa automática (Retry)
+    para evitar o erro 'SSL SYSCALL error: EOF detected'.
+    """
+    max_tentativas = 3
+    for i in range(max_tentativas):
+        try:
+            with get_db_connection() as conn:
+                if not conn: return pd.DataFrame()
+                if params:
+                    return pd.read_sql(query, conn, params=tuple(params))
+                else:
+                    return pd.read_sql(query, conn)
+        except Exception as e:
+            msg = str(e)
+            # Se for erro de conexão, espera e tenta de novo
+            if "SSL" in msg or "EOF" in msg or "terminating" in msg or "closed" in msg:
+                time.sleep(0.5) # Espera meio segundo
+                if i == max_tentativas - 1:
+                    st.error(f"Erro de conexão persistente após 3 tentativas: {e}")
+                    return pd.DataFrame()
+                continue
+            else:
+                # Se for erro de SQL (sintaxe), para na hora
+                st.error(f"Erro SQL: {e}")
+                return pd.DataFrame()
+    return pd.DataFrame()
 
 # --- FUNÇÕES AUXILIARES ---
 
@@ -85,19 +127,11 @@ def hash_senha(senha):
 # --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
 
 def listar_agrupamentos(tipo):
-    with get_db_connection() as conn:
-        if not conn: return pd.DataFrame()
-        tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
-        try:
-            return pd.read_sql(f"SELECT id, nome_agrupamento FROM {tabela} ORDER BY id", conn)
-        except: return pd.DataFrame()
+    tabela = "admin.agrupamento_clientes" if tipo == "cliente" else "admin.agrupamento_empresas"
+    return ler_dados_seguro(f"SELECT id, nome_agrupamento FROM {tabela} ORDER BY id")
 
 def listar_cliente_cnpj():
-    with get_db_connection() as conn:
-        if not conn: return pd.DataFrame()
-        try:
-            return pd.read_sql("SELECT id, cnpj, nome_empresa FROM admin.cliente_cnpj ORDER BY nome_empresa", conn)
-        except: return pd.DataFrame()
+    return ler_dados_seguro("SELECT id, cnpj, nome_empresa FROM admin.cliente_cnpj ORDER BY nome_empresa")
 
 def excluir_cliente_db(id_cliente):
     with get_db_connection() as conn:
@@ -110,17 +144,13 @@ def excluir_cliente_db(id_cliente):
         except: return False
 
 def buscar_usuarios_disponiveis():
-    with get_db_connection() as conn:
-        if not conn: return pd.DataFrame()
-        try:
-            query = """
-                SELECT id, nome, email, cpf 
-                FROM admin.clientes_usuarios 
-                WHERE id NOT IN (SELECT id_usuario_vinculo FROM admin.clientes WHERE id_usuario_vinculo IS NOT NULL) 
-                ORDER BY nome
-            """
-            return pd.read_sql(query, conn)
-        except: return pd.DataFrame()
+    query = """
+        SELECT id, nome, email, cpf 
+        FROM admin.clientes_usuarios 
+        WHERE id NOT IN (SELECT id_usuario_vinculo FROM admin.clientes WHERE id_usuario_vinculo IS NOT NULL) 
+        ORDER BY nome
+    """
+    return ler_dados_seguro(query)
 
 def vincular_usuario_cliente(id_cliente, id_usuario):
     with get_db_connection() as conn:
@@ -143,9 +173,8 @@ def desvincular_usuario_cliente(id_cliente):
         except: return False
 
 def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
-    # Trata CPF para BigInt (Remove zeros a esquerda e caracteres)
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
-    if not cpf_val: cpf_val = 0 # Fallback se inválido (coluna é NOT NULL e BIGINT)
+    if not cpf_val: cpf_val = 0
 
     with get_db_connection() as conn:
         if not conn: return None
@@ -177,28 +206,24 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
 
     if id_vinculo:
         st.success("✅ Este cliente já possui um usuário vinculado.")
-        with get_db_connection() as conn:
-            if conn:
-                try:
-                    df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM admin.clientes_usuarios WHERE id = {id_vinculo}", conn)
-                    if not df_u.empty:
-                        usr = df_u.iloc[0]
-                        # Formata CPF BigInt para tela (Adiciona zeros e pontos)
-                        cpf_tela = v.ValidadorDocumentos.cpf_para_tela(usr['cpf']) if v else str(usr['cpf'])
-                        
-                        st.write(f"**Nome:** {usr['nome']}")
-                        st.write(f"**Login:** {usr['email']}")
-                        st.write(f"**CPF:** {cpf_tela}")
-                        st.markdown("---")
-                        if st.button("🔓 Desvincular Usuário", type="primary"):
-                            if desvincular_usuario_cliente(dados_cliente['id']): 
-                                st.success("Desvinculado!"); time.sleep(1.5); st.rerun()
-                            else: st.error("Erro.")
-                    else:
-                        st.warning("Usuário vinculado não encontrado.")
-                        if st.button("Forçar Desvinculo"): 
-                            desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
-                except: pass
+        df_u = ler_dados_seguro(f"SELECT nome, email, telefone, cpf FROM admin.clientes_usuarios WHERE id = {id_vinculo}")
+        
+        if not df_u.empty:
+            usr = df_u.iloc[0]
+            cpf_tela = v.ValidadorDocumentos.cpf_para_tela(usr['cpf']) if v else str(usr['cpf'])
+            
+            st.write(f"**Nome:** {usr['nome']}")
+            st.write(f"**Login:** {usr['email']}")
+            st.write(f"**CPF:** {cpf_tela}")
+            st.markdown("---")
+            if st.button("🔓 Desvincular Usuário", type="primary"):
+                if desvincular_usuario_cliente(dados_cliente['id']): 
+                    st.success("Desvinculado!"); time.sleep(1.5); st.rerun()
+                else: st.error("Erro.")
+        else:
+            st.warning("Usuário vinculado não encontrado.")
+            if st.button("Forçar Desvinculo"): 
+                desvincular_usuario_cliente(dados_cliente['id']); st.rerun()
     else:
         st.warning("⚠️ Este cliente não tem acesso ao sistema.")
         tab_novo, tab_existente = st.tabs(["✨ Criar Novo", "🔍 Vincular Existente"])
@@ -207,7 +232,6 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 u_email = st.text_input("Login (Email)", value=dados_cliente['email'])
                 u_senha = st.text_input("Senha Inicial", value="1234")
                 
-                # CPF vem BigInt do banco, converte pra tela
                 cpf_origem = dados_cliente.get('cpf')
                 val_cpf_form = v.ValidadorDocumentos.cpf_para_tela(cpf_origem) if v else str(cpf_origem)
                 
@@ -248,44 +272,29 @@ def app_cadastro_cliente():
     if c2.button("➕ Novo", type="primary"): st.session_state['view_cliente'] = 'novo'; st.rerun()
 
     if st.session_state.get('view_cliente', 'lista') == 'lista':
-        with get_db_connection() as conn:
-            if not conn:
-                st.error("Sem conexão com banco de dados.")
-                return
-
-            sql = """
-                SELECT c.*, c.id_usuario_vinculo as id_vinculo, u.nome as nome_usuario_vinculado
-                FROM admin.clientes c
-                LEFT JOIN admin.clientes_usuarios u ON c.id_usuario_vinculo = u.id
-            """
+        # Monta a Query
+        sql = """
+            SELECT c.*, c.id_usuario_vinculo as id_vinculo, u.nome as nome_usuario_vinculado
+            FROM admin.clientes c
+            LEFT JOIN admin.clientes_usuarios u ON c.id_usuario_vinculo = u.id
+        """
+        
+        params = []
+        if filtro:
+            filtro_limpo = v.ValidadorDocumentos.limpar_numero(filtro) if v else filtro
             
-            params = []
-            if filtro:
-                # Lógica de Busca Inteligente (Numérico vs Texto)
-                filtro_limpo = v.ValidadorDocumentos.limpar_numero(filtro) if v else filtro
-                
-                # Se for numérico e tiver tamanho de CPF (aprox), busca exata por BigInt
-                if filtro_limpo and len(filtro_limpo) >= 3 and filtro_limpo.isdigit():
-                    # Tenta buscar pelo CPF numérico
-                    sql += " WHERE c.cpf = %s OR CAST(c.cpf AS TEXT) ILIKE %s OR c.nome ILIKE %s"
-                    # Nota: O OR CAST... ILIKE é um fallback caso o usuário digite parte do CPF
-                    params = [int(filtro_limpo), f"%{filtro_limpo}%", f"%{filtro}%"]
-                else:
-                    # Busca textual padrão
-                    sql += " WHERE c.nome ILIKE %s OR c.nome_empresa ILIKE %s"
-                    params = [f"%{filtro}%", f"%{filtro}%"]
-            
-            sql += " ORDER BY c.id DESC LIMIT 50"
-            
-            try:
-                # Usa params para segurança contra SQL Injection
-                if params:
-                    df_cli = pd.read_sql(sql, conn, params=tuple(params))
-                else:
-                    df_cli = pd.read_sql(sql, conn)
-            except Exception as e:
-                st.error(f"Erro ao ler clientes: {e}")
-                df_cli = pd.DataFrame()
+            # Se for numérico e parecer CPF, busca por BigInt
+            if filtro_limpo and len(filtro_limpo) >= 3 and filtro_limpo.isdigit():
+                sql += " WHERE c.cpf = %s OR CAST(c.cpf AS TEXT) ILIKE %s OR c.nome ILIKE %s"
+                params = [int(filtro_limpo), f"%{filtro_limpo}%", f"%{filtro}%"]
+            else:
+                sql += " WHERE c.nome ILIKE %s OR c.nome_empresa ILIKE %s"
+                params = [f"%{filtro}%", f"%{filtro}%"]
+        
+        sql += " ORDER BY c.id DESC LIMIT 50"
+        
+        # EXECUÇÃO BLINDADA COM RETRY
+        df_cli = ler_dados_seguro(sql, params)
 
         if not df_cli.empty:
             st.markdown("""
@@ -304,10 +313,8 @@ def app_cadastro_cliente():
                     c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 1, 2])
                     c1.write(f"**{limpar_formatacao_texto(row['nome'])}**")
                     
-                    # Formata CPF para visualização
                     cpf_view = v.ValidadorDocumentos.cpf_para_tela(row['cpf']) if v else str(row['cpf'])
                     c2.write(cpf_view or "-")
-                    
                     c3.write(row['nome_empresa'] or "-")
                     
                     nome_vinculo = row['nome_usuario_vinculado']
@@ -335,12 +342,8 @@ def app_cadastro_cliente():
         
         dados = {}
         if st.session_state['view_cliente'] == 'editar':
-            with get_db_connection() as conn:
-                if conn:
-                    try:
-                        df = pd.read_sql(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}", conn)
-                        if not df.empty: dados = df.iloc[0]
-                    except: pass
+            df = ler_dados_seguro(f"SELECT * FROM admin.clientes WHERE id = {st.session_state['cli_id']}")
+            if not df.empty: dados = df.iloc[0]
 
         df_empresas = listar_cliente_cnpj() 
         df_ag_cli = listar_agrupamentos("cliente")
@@ -362,7 +365,6 @@ def app_cadastro_cliente():
             c4, c5, c6, c7 = st.columns(4)
             email = c4.text_input("E-mail *", value=dados.get('email', ''))
             
-            # Input CPF (Lógica BigInt)
             val_cpf_ini = v.ValidadorDocumentos.cpf_para_tela(dados.get('cpf')) if v else dados.get('cpf', '')
             cpf = c5.text_input("CPF *", value=val_cpf_ini)
             
@@ -392,9 +394,7 @@ def app_cadastro_cliente():
             st.markdown("<br>", unsafe_allow_html=True); ca = st.columns([1, 1, 4])
             
             if ca[0].form_submit_button("💾 Salvar"):
-                # Conversão para BigInt
                 cpf_limpo = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else cpf
-                # Fallback para 0 se inválido (coluna é BIGINT)
                 if not cpf_limpo: cpf_limpo = 0
 
                 cnpj_final = ""
