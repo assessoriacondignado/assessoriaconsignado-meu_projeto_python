@@ -9,7 +9,9 @@ import sys
 import os
 import contextlib
 
-# --- CONFIGURAÇÃO DE CAMINHOS ---
+# ==============================================================================
+# 0. CONFIGURAÇÃO DE CAMINHOS
+# ==============================================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -36,7 +38,7 @@ def get_pool():
     if not conexao: return None
     try:
         return psycopg2.pool.SimpleConnectionPool(
-            minconn=1, maxconn=10, # Pool menor para admin
+            minconn=1, maxconn=10, 
             host=conexao.host, port=conexao.port,
             database=conexao.database, user=conexao.user, password=conexao.password,
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
@@ -54,7 +56,7 @@ def get_db_connection():
     
     conn = pool_obj.getconn()
     try:
-        conn.rollback() # Health check
+        conn.rollback() # Teste de vida
         yield conn
         pool_obj.putconn(conn)
     except (psycopg2.InterfaceError, psycopg2.OperationalError):
@@ -141,7 +143,7 @@ def desvincular_usuario_cliente(id_cliente):
         except: return False
 
 def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
-    # Trata CPF para BigInt
+    # Trata CPF para BigInt (Remove zeros a esquerda e caracteres)
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
     if not cpf_val: cpf_val = 0 # Fallback se inválido (coluna é NOT NULL e BIGINT)
 
@@ -181,8 +183,8 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                     df_u = pd.read_sql(f"SELECT nome, email, telefone, cpf FROM admin.clientes_usuarios WHERE id = {id_vinculo}", conn)
                     if not df_u.empty:
                         usr = df_u.iloc[0]
-                        # Formata CPF BigInt para tela
-                        cpf_tela = v.ValidadorDocumentos.cpf_para_tela(usr['cpf']) if v else usr['cpf']
+                        # Formata CPF BigInt para tela (Adiciona zeros e pontos)
+                        cpf_tela = v.ValidadorDocumentos.cpf_para_tela(usr['cpf']) if v else str(usr['cpf'])
                         
                         st.write(f"**Nome:** {usr['nome']}")
                         st.write(f"**Login:** {usr['email']}")
