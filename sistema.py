@@ -134,6 +134,7 @@ def get_conn():
         print(f"Erro DB: {e}")
         return None
 
+# [CORREÇÃO APLICADA] Função híbrida para ler hash e texto
 def verificar_senha(senha_input, senha_hash):
     """
     Verifica senha de forma híbrida: 
@@ -180,6 +181,7 @@ def validar_login_db(usuario, senha):
             uid, nome, cargo, hash_db, email, falhas = res
             if falhas >= 5: return {"status": "bloqueado"}
             
+            # [CORREÇÃO APLICADA] Chamada da função híbrida
             if verificar_senha(senha, hash_db):
                 cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (uid,))
                 conn.commit()
