@@ -187,10 +187,6 @@ def buscar_cliente_rapida(termo):
         termo_limpo = v.ValidadorDocumentos.limpar_numero(termo)
         # Se não tiver números, usa uma máscara que não acha nada (para não quebrar a query) ou repete o texto
         param_like_num = f"%{termo_limpo}%" if termo_limpo else param_like_texto
-
-        # QUERY AJUSTADA:
-        # t.cpf usa 'param_like_num' -> Isso permite achar "255.940..." como "255940..."
-        # e também acha "650..." dentro de "0650..." (correção do zero à esquerda)
         
         query = """
             SELECT t.id, t.nome, t.cpf, t.identidade 
@@ -219,10 +215,12 @@ def buscar_cliente_rapida(termo):
                 ))
                 return cur.fetchall()
         except Exception as e:
-            # Em debug, pode descomentar: st.error(f"Erro busca rápida: {e}")
             return []
 
 def buscar_cliente_dinamica(filtros_aplicados):
+    """
+    Busca Dinâmica com correção de formatação para CPF e Telefone.
+    """
     with get_db_connection() as conn:
         if not conn: return []
 
@@ -238,10 +236,20 @@ def buscar_cliente_dinamica(filtros_aplicados):
             operador_sql = filtro['op']
             tipo_dado = filtro['tipo']
             
+            # --- Correção de Formatação (CPF e Telefone) ---
+            # Remove pontos/traços se a coluna for CPF ou Telefone antes de passar para o SQL
+            def preparar_valor_filtro(valor, col):
+                if col in ['t.cpf', 'telefone', 'cpf']:
+                    return v.ValidadorDocumentos.limpar_numero(valor)
+                return str(valor).strip()
+
             if tipo_dado == 'texto_vinculado':
                 tabela_satelite = filtro['table']
                 sub_where = f"{coluna} {operador_sql} %s"
-                val_final = filtro['mask'].format(filtro['val']) if '{}' in filtro['mask'] else filtro['val']
+                
+                # Aplica limpeza se necessário
+                val_raw = preparar_valor_filtro(filtro['val'], coluna)
+                val_final = filtro['mask'].format(val_raw) if '{}' in filtro['mask'] else val_raw
                 
                 if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
                      exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {coluna} {operador_sql})"
@@ -264,6 +272,7 @@ def buscar_cliente_dinamica(filtros_aplicados):
                         params.append(filtro['val'])
 
             else:
+                # Blocos de Texto Comuns (CPF, Nome, etc)
                 if "IS NULL" in operador_sql or "IS NOT NULL" in operador_sql:
                     if "NOT" in operador_sql:
                         where_clauses.append(f"({coluna} IS NOT NULL AND {coluna} != '')")
@@ -278,10 +287,12 @@ def buscar_cliente_dinamica(filtros_aplicados):
                         valores = str(filtro['val']).split(';')
                         ors = []
                         for v_str in valores:
-                            v_str = v_str.strip()
-                            if v_str:
+                            # Aplica limpeza aqui também (para cada valor separado por ;)
+                            v_str_limpo = preparar_valor_filtro(v_str, coluna)
+                            
+                            if v_str_limpo:
                                 ors.append(f"{coluna} {operador_sql} %s")
-                                val_final = filtro['mask'].format(v_str) if '{}' in filtro['mask'] else v_str
+                                val_final = filtro['mask'].format(v_str_limpo) if '{}' in filtro['mask'] else v_str_limpo
                                 params.append(val_final)
                         if ors:
                             where_clauses.append(f"({' OR '.join(ors)})")
