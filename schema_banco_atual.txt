@@ -24,7 +24,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - telefone (character varying(20)) NULL
    - data_cadastro (timestamp without time zone) NULL
    - id_grupo_whats (text) NULL
-   - cpf (character varying(20)) NULL
+   - cpf (bigint) NULL
    - nome_empresa (character varying(255)) NULL
    - cnpj_empresa (character varying(20)) NULL
    - ids_agrupamento_empresa (text) NULL
@@ -36,7 +36,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
 [TABELA: admin.clientes_usuarios]
    - id (integer) NOT NULL
    - nome (character varying(200)) NOT NULL
-   - cpf (character varying(20)) NOT NULL
+   - cpf (bigint) NOT NULL
    - telefone (character varying(20)) NOT NULL
    - is_whatsapp (boolean) NULL
    - email (character varying(200)) NULL
@@ -123,7 +123,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - codigo (character varying(50)) NOT NULL
    - id_cliente (integer) NULL
    - nome_cliente (character varying(255)) NULL
-   - cpf_cliente (character varying(20)) NULL
+   - cpf_cliente (bigint) NULL
    - telefone_cliente (character varying(20)) NULL
    - id_produto (integer) NULL
    - nome_produto (character varying(255)) NULL
@@ -255,7 +255,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - mensagem (text) NULL
    - tipo (character varying(20)) NULL
    - status (character varying(50)) NULL
-   - cpf_cliente (character varying(20)) NULL
+   - cpf_cliente (bigint) NULL
    - id_cliente (integer) NULL
    - nome_cliente (character varying(255)) NULL
 
@@ -618,7 +618,7 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - id (integer) NOT NULL
    - data_hora (timestamp without time zone) NULL
    - tipo_consulta (character varying(50)) NULL
-   - cpf_consultado (character varying(20)) NULL
+   - cpf_consultado (bigint) NULL
    - id_usuario (integer) NULL
    - nome_usuario (character varying(255)) NULL
    - valor_pago (numeric) NULL

@@ -172,7 +172,8 @@ def desvincular_usuario_cliente(id_cliente):
             return True
         except: return False
 
-def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
+# [ALTERAÇÃO AQUI] Adicionados dados_bancarios, observacao, pasta_caminho
+def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo, dados_bancarios, observacao, pasta_caminho):
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
     if not cpf_val: cpf_val = 0
 
@@ -182,10 +183,12 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
             with conn.cursor() as cur:
                 senha_f = hash_senha(senha)
                 if not nivel: nivel = 'Cliente sem permissão'
+                # [ALTERAÇÃO AQUI] SQL atualizado para incluir os novos campos
                 cur.execute("""
-                    INSERT INTO admin.clientes_usuarios (nome, email, cpf, telefone, senha, nivel, ativo) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-                """, (nome, email, cpf_val, tel, senha_f, nivel, ativo))
+                    INSERT INTO admin.clientes_usuarios 
+                    (nome, email, cpf, telefone, senha, nivel, ativo, dados_bancarios, observacao, pasta_caminho, data_cadastro) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
+                """, (nome, email, cpf_val, tel, senha_f, nivel, ativo, dados_bancarios, observacao, pasta_caminho))
                 res = cur.fetchone()
                 nid = res[0] if res else None
             conn.commit()
@@ -229,17 +232,33 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
         tab_novo, tab_existente = st.tabs(["✨ Criar Novo", "🔍 Vincular Existente"])
         with tab_novo:
             with st.form("form_cria_vincula"):
-                u_email = st.text_input("Login (Email)", value=dados_cliente['email'])
-                u_senha = st.text_input("Senha Inicial", value="1234")
+                c1, c2 = st.columns(2)
+                u_email = c1.text_input("Login (Email)", value=dados_cliente['email'])
+                u_senha = c2.text_input("Senha Inicial", value="1234")
                 
                 cpf_origem = dados_cliente.get('cpf')
                 val_cpf_form = v.ValidadorDocumentos.cpf_para_tela(cpf_origem) if v else str(cpf_origem)
                 
-                u_cpf = st.text_input("CPF", value=val_cpf_form)
-                u_nome = st.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
+                c3, c4 = st.columns(2)
+                u_cpf = c3.text_input("CPF", value=val_cpf_form)
+                u_nome = c4.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
                 
+                # [ALTERAÇÃO AQUI] Novos campos do banco de dados
+                st.markdown("---")
+                st.markdown("###### 📂 Dados Adicionais")
+                u_pasta = st.text_input("Caminho da Pasta (Servidor)", placeholder="Ex: Z:/CLIENTES/NOME_CLIENTE")
+                
+                cc1, cc2 = st.columns(2)
+                u_dados_bancarios = cc1.text_area("Dados Bancários", height=100, placeholder="Pix, Conta, etc...")
+                u_observacao = cc2.text_area("Observação Interna", height=100)
+
                 if st.form_submit_button("Criar e Vincular"):
-                    novo_id = salvar_usuario_novo(u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 'Cliente sem permissão', True)
+                    # [ALTERAÇÃO AQUI] Chamada com os novos parâmetros
+                    novo_id = salvar_usuario_novo(
+                        u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 
+                        'Cliente sem permissão', True, u_dados_bancarios, u_observacao, u_pasta
+                    )
+                    
                     if novo_id: 
                         ok, msg = vincular_usuario_cliente(dados_cliente['id'], novo_id)
                         if ok: st.success("Criado e vinculado!"); time.sleep(1); st.rerun()
