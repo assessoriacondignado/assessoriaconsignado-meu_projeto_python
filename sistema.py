@@ -2,7 +2,6 @@ import streamlit as st
 import os
 import sys
 import psycopg2
-import bcrypt
 from datetime import datetime
 import time
 import importlib
@@ -10,7 +9,7 @@ import importlib
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", page_icon="📈")
 
-# --- 2. CONFIGURAÇÃO DE CAMINHOS (CORREÇÃO DO ERRO) ---
+# --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 if BASE_DIR not in sys.path:
@@ -134,33 +133,17 @@ def get_conn():
         print(f"Erro DB: {e}")
         return None
 
-# [CORREÇÃO APLICADA] Função híbrida para ler hash e texto
-def verificar_senha(senha_input, senha_hash):
+# [ALTERAÇÃO: REMOVIDA CRIPTOGRAFIA]
+def verificar_senha(senha_input, senha_banco):
     """
-    Verifica senha de forma híbrida: 
-    1. Tenta validar via BCRYPT (Seguro).
-    2. Se falhar ou não for hash, compara TEXTO PURO (Legado/Manual).
+    Verifica senha usando comparação simples de texto.
     """
-    if not senha_hash: return False
-    
+    if not senha_banco: return False
     try:
-        # Limpeza de strings para evitar erros bobos
-        s_input = str(senha_input).strip()
-        s_hash = str(senha_hash).strip()
-        
-        # Se parecer um hash BCRYPT (começa com $2b$, $2a$ ou $2y$)
-        if s_hash.startswith(('$2b$', '$2a$', '$2y$')):
-            return bcrypt.checkpw(s_input.encode('utf-8'), s_hash.encode('utf-8'))
-        
-        # FALLBACK: Se não for hash, compara direto (útil se alterou no banco manualmente)
-        return s_input == s_hash
-        
-    except Exception as e:
-        # Se der erro no encode ou checkpw, tenta a comparação simples por segurança
-        try:
-            return str(senha_input).strip() == str(senha_hash).strip()
-        except:
-            return False
+        # Compara as strings limpas (sem espaços extras)
+        return str(senha_input).strip() == str(senha_banco).strip()
+    except:
+        return False
 
 def validar_login_db(usuario, senha):
     conn = get_conn()
@@ -169,7 +152,8 @@ def validar_login_db(usuario, senha):
     try:
         cur = conn.cursor()
         usuario = str(usuario).strip().lower()
-        # Busca por Email, CPF ou Telefone
+        
+        # Busca usuário
         sql = """SELECT id, nome, nivel, senha, email, COALESCE(tentativas_falhas, 0) 
                  FROM clientes_usuarios 
                  WHERE (LOWER(TRIM(email)) = %s OR TRIM(cpf) = %s OR TRIM(telefone) = %s) 
@@ -178,18 +162,23 @@ def validar_login_db(usuario, senha):
         res = cur.fetchone()
         
         if res:
-            uid, nome, cargo, hash_db, email, falhas = res
-            if falhas >= 5: return {"status": "bloqueado"}
+            uid, nome, cargo, senha_db, email, falhas = res
             
-            # [CORREÇÃO APLICADA] Chamada da função híbrida
-            if verificar_senha(senha, hash_db):
+            # Removemos a verificação de tentativas para facilitar o teste
+            # if falhas >= 5: return {"status": "bloqueado"}
+            
+            # Validação simples
+            if verificar_senha(senha, senha_db):
+                # Login Sucesso
                 cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s", (uid,))
                 conn.commit()
                 return {"status": "sucesso", "id": uid, "nome": nome, "cargo": cargo, "email": email}
             else:
+                # Login Falha
                 cur.execute("UPDATE clientes_usuarios SET tentativas_falhas = tentativas_falhas + 1 WHERE id = %s", (uid,))
                 conn.commit()
-                return {"status": "erro_senha", "restantes": 4 - falhas}
+                return {"status": "erro_senha", "restantes": 99} # Infinitas tentativas agora
+        
         return {"status": "nao_encontrado"}
     except Exception as e:
         return {"status": "erro_generico", "msg": str(e)}
@@ -276,7 +265,7 @@ def main():
     if not st.session_state['logado']:
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
-            st.title("🔐 Acesso Restrito")
+            st.title("🔐 Acesso Restrito (Modo Simples)")
             u = st.text_input("Usuário (E-mail/CPF)")
             s = st.text_input("Senha", type="password")
             
@@ -288,8 +277,7 @@ def main():
                     time.sleep(0.5)
                     st.session_state.update({'logado': True, 'usuario_nome': res['nome'], 'usuario_cargo': res['cargo']})
                     st.rerun()
-                elif res['status'] == 'bloqueado': st.error("Usuário bloqueado por excesso de tentativas.")
-                elif res['status'] == 'erro_senha': st.error(f"Senha incorreta. Restam {res.get('restantes')} tentativas.")
+                elif res['status'] == 'erro_senha': st.error("Senha incorreta.")
                 else: st.error("Erro no login ou usuário inexistente.")
     
     # 8.2 SISTEMA LOGADO
@@ -325,12 +313,11 @@ def main():
         elif pagina == "Conexoes":
             modulo_conexoes.app_conexoes() if modulo_conexoes else st.warning("Módulo Conexões Off")
 
-        # --- NOVA ROTA CRM CONSULTA ---
         elif pagina == "CRM_Consulta":
             if modulo_sistema_consulta_menu:
                 modulo_sistema_consulta_menu.app_sistema_consulta()
             else:
-                st.warning("Módulo CRM Consulta não carregado. Verifique a pasta e o arquivo de menu.")
+                st.warning("Módulo CRM Consulta não carregado.")
 
 if __name__ == "__main__":
     main()
