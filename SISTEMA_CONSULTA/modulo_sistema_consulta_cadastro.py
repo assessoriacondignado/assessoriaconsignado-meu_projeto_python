@@ -171,13 +171,26 @@ def buscar_relacao_auxiliar(tipo):
             return [], []
 
 def buscar_cliente_rapida(termo):
-    """Busca otimizada com limpeza de dados via Validador"""
+    """
+    Busca otimizada:
+    - Aplica limpeza no termo para buscar CPF/Telefone sem formatação.
+    - Aplica termo original para buscar Nome/Texto.
+    """
     with get_db_connection() as conn:
         if not conn: return []
         
-        # Limpa entrada (remove pontos/traços) para busca mais eficiente
+        # 1. Prepara termo para TEXTO (Nome, RG, etc) - Mantém acentos/pontuação se houver
+        termo_texto = termo.strip()
+        param_like_texto = f"%{termo_texto}%"
+        
+        # 2. Prepara termo para NÚMEROS (CPF, Telefone) - Remove tudo que não é dígito
         termo_limpo = v.ValidadorDocumentos.limpar_numero(termo)
-        param_like = f"%{termo.strip()}%"
+        # Se não tiver números, usa uma máscara que não acha nada (para não quebrar a query) ou repete o texto
+        param_like_num = f"%{termo_limpo}%" if termo_limpo else param_like_texto
+
+        # QUERY AJUSTADA:
+        # t.cpf usa 'param_like_num' -> Isso permite achar "255.940..." como "255940..."
+        # e também acha "650..." dentro de "0650..." (correção do zero à esquerda)
         
         query = """
             SELECT t.id, t.nome, t.cpf, t.identidade 
@@ -195,19 +208,18 @@ def buscar_cliente_rapida(termo):
         
         try:
             with conn.cursor() as cur:
-                # Se for número puro e tamanho de CPF (11), tenta match exato no CPF (muito mais rápido)
-                if termo_limpo and len(termo_limpo) == 11:
-                    cur.execute(query + " OR t.cpf = %s", (
-                        param_like, param_like, param_like, param_like, 
-                        param_like, param_like, param_like, termo_limpo
-                    ))
-                else:
-                    cur.execute(query, (
-                        param_like, param_like, param_like, param_like, 
-                        param_like, param_like, param_like
-                    ))
+                cur.execute(query, (
+                    param_like_texto, # nome
+                    param_like_num,   # cpf (versão limpa)
+                    param_like_texto, # identidade
+                    param_like_texto, # pai
+                    param_like_texto, # campanhas
+                    param_like_texto, # id_importacao
+                    param_like_num    # telefone (versão limpa)
+                ))
                 return cur.fetchall()
-        except Exception:
+        except Exception as e:
+            # Em debug, pode descomentar: st.error(f"Erro busca rápida: {e}")
             return []
 
 def buscar_cliente_dinamica(filtros_aplicados):
@@ -1121,7 +1133,7 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     df_contratos = pd.DataFrame(lista_contratos)
                     colunas_ordenadas = [
                         'numero_contrato', 'valor_parcela', 'prazo_aberto', 'prazo_pago',
-                        'prazo_total', 'taxa_juros', 'tipo_taxa', 'valor_contrato_inicial',
+                        'prazo_total', 'taxa_juros', 'tipo_taxa', 'valor_contrato_inicial', 
                         'saldo_devedor', 'data_inicio', 'data_averbacao', 'data_final'
                     ]
                     cols_existentes = [c for c in colunas_ordenadas if c in df_contratos.columns]
@@ -1138,9 +1150,9 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
 
                     renomear = {
                         'numero_contrato': 'Nº Contrato', 'valor_parcela': 'Vlr. Parc.',
-                        'prazo_aberto': 'Pz Aberto', 'prazo_pago': 'Pz Pago', 'prazo_total': 'Pz Total',
+                        'prazo_aberto': 'Pz Aberto', 'prazo_pago': 'Pz Pago', 'prazo_total': 'Pz Total', 
                         'taxa_juros': 'Taxa %', 'valor_contrato_inicial': 'Vlr. Inicial',
-                        'saldo_devedor': 'Saldo Dev.', 'data_inicio': 'Dt Início',
+                        'saldo_devedor': 'Saldo Dev.', 'data_inicio': 'Dt Início', 
                         'data_averbacao': 'Dt Averb.', 'data_final': 'Dt Final'
                     }
                     df_show.rename(columns=renomear, inplace=True)
