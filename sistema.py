@@ -165,7 +165,7 @@ def validar_login_db(usuario, senha):
             uid, nome, cargo, senha_db, email, falhas = res
             
             # Removemos a verificação de tentativas para facilitar o teste
-            # if falhas >= 5: return {"status": "bloqueado"}
+            # if falhas >= 50: return {"status": "bloqueado"}
             
             # Validação simples
             if verificar_senha(senha, senha_db):
