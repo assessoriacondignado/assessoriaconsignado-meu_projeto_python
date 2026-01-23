@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
+import sys  # <--- Adicionado para corrigir o erro
 from datetime import datetime
 import time
 import uuid
@@ -10,6 +11,7 @@ import json
 import re
 
 # --- CONFIGURAÇÃO DE CAMINHOS ---
+# Garante que o Python encontre o arquivo conexao.py na pasta raiz
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -268,7 +270,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         csv_buffer = io.StringIO()
         
         # Filtra apenas colunas que existem na tabela staging real do banco
-        # (Idealmente a staging deve ser genérica ou ter todas as colunas possíveis)
         cols_final = [c for c in cols_staging_esperadas if c in df_staging.columns]
         
         df_staging[cols_final].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
@@ -467,10 +468,55 @@ def tela_importacao():
                         st.rerun()
 
     with tab_config:
-        st.subheader("⚙️ Configuração")
-        # (Lógica de configuração mantida igual ao original para brevidade, já que não afeta performance)
-        # ... Insira aqui o código da aba Config original se necessário ...
-        st.info("Utilize a aba de Configuração para criar novos layouts de importação.")
+        st.subheader("⚙️ Configurar Novo Tipo de Importação")
+        if 'config_editando_id' not in st.session_state:
+            st.session_state['config_editando_id'] = None
+            st.session_state['config_convenio'] = ""
+            st.session_state['config_planilha'] = ""
+            st.session_state['config_colunas'] = ["cpf", "nome"]
+
+        lista_tabelas = listar_tabelas_sistema()
+
+        with st.form("form_config_importacao"):
+            conf_convenio = st.text_input("Nome do Convênio (Tipo)", value=st.session_state['config_convenio'])
+            
+            idx_tab = 0
+            if st.session_state['config_planilha'] in lista_tabelas:
+                idx_tab = lista_tabelas.index(st.session_state['config_planilha'])
+            
+            if lista_tabelas:
+                conf_planilha = st.selectbox("Tabela Destino", lista_tabelas, index=idx_tab)
+            else:
+                conf_planilha = st.text_input("Nome da Planilha/Tabela Destino", value=st.session_state['config_planilha'])
+            
+            opcoes_colunas = []
+            if conf_planilha:
+                opcoes_colunas = listar_colunas_tabela(conf_planilha)
+            
+            if not opcoes_colunas:
+                opcoes_colunas = list(CAMPOS_SISTEMA_ALIAS.values())
+
+            default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_colunas]
+            conf_colunas = st.multiselect("Colunas da Tabela", options=opcoes_colunas, default=default_opts)
+            
+            submitted = st.form_submit_button("💾 Salvar Configuração")
+            if submitted:
+                if not conf_convenio or not conf_planilha:
+                    st.error("Campos obrigatórios.")
+                else:
+                    json_colunas = json.dumps(conf_colunas)
+                    if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
+                        st.success("Salvo!"); st.rerun()
+
+        st.divider()
+        st.markdown("#### Configurações Existentes")
+        lista_tipos = get_tipos_importacao()
+        if lista_tipos:
+            for item in lista_tipos:
+                with st.expander(f"📂 {item[1]}"):
+                    st.write(f"**Tabela:** {item[2]}")
+                    if st.button("🗑️ Excluir", key=f"del_{item[0]}"):
+                        excluir_tipo_importacao(item[0]); st.rerun()
 
 if __name__ == "__main__":
     tela_importacao()
