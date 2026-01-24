@@ -364,13 +364,18 @@ def dialog_mensagem_rapida():
 
 # --- 8. MENU LATERAL ---
 def renderizar_menu_lateral():
+    # CORREÇÃO EFETUADA:
+    # O CSS foi alterado para atingir SOMENTE a barra lateral (section[data-testid="stSidebar"])
+    # Isso impede que botões do restante da tela sejam afetados ou que este estilo vaze.
     st.markdown("""
         <style>
-        div.stButton > button {
+        section[data-testid="stSidebar"] div.stButton > button {
             width: 100%; border: none; text-align: left; padding-left: 15px;
             background: transparent; color: #444;
         }
-        div.stButton > button:hover { background: #f0f2f6; color: #FF4B4B; font-weight: bold; }
+        section[data-testid="stSidebar"] div.stButton > button:hover { 
+            background: #f0f2f6; color: #FF4B4B; font-weight: bold; 
+        }
         </style>
     """, unsafe_allow_html=True)
 
