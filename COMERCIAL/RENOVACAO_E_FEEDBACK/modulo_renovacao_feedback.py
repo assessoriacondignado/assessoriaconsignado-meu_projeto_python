@@ -4,6 +4,7 @@ import psycopg2
 import os
 import sys
 import re
+import time
 from datetime import datetime, date
 import modulo_wapi # Integração
 
@@ -255,15 +256,16 @@ def renderizar_excluir_rf(rf):
 # =============================================================================
 
 def app_renovacao_feedback():
-    # Estilização
+    # --- CORREÇÃO DE ESTILO: APLICAR APENAS AO BLOCO PRINCIPAL ---
+    # Usando o seletor 'section[data-testid="stMainBlock"]' para não vazar para a sidebar
     st.markdown("""
         <style>
-        div.stButton > button {
+        section[data-testid="stMainBlock"] div.stButton > button {
             background-color: #FF4B4B !important;
             color: white !important;
             border-color: #FF4B4B !important;
         }
-        div.stButton > button:hover {
+        section[data-testid="stMainBlock"] div.stButton > button:hover {
             background-color: #FF0000 !important;
             border-color: #FF0000 !important;
             color: white !important;
