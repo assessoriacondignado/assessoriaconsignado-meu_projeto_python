@@ -90,13 +90,12 @@ def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor
         return True
     except Exception as e:
         print(f"Erro ao registrar financeiro: {e}")
-        # Importante: Não engolir erro crítico em transação, mas aqui é logado
         return False
 
 def registrar_custo_carteira_upsert(cur, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
-    ATENÇÃO: Recebe o CURSOR (cur) já aberto da transação principal.
-    Não faz commit e não fecha conexão.
+    CORREÇÃO APLICADA: Verifica existência por CLIENTE + PRODUTO (e não origem).
+    Isso evita o erro de duplicidade de chave unique no banco.
     """
     # Tratamento de Nulos
     id_user = str(dados_cliente.get('id_usuario_vinculo', ''))
@@ -112,25 +111,30 @@ def registrar_custo_carteira_upsert(cur, dados_cliente, dados_produto, valor_cus
     nm_cli_str = str(dados_cliente['nome'])
     nm_prod_str = str(dados_produto['nome'])
 
+    # --- LÓGICA DE CORREÇÃO ---
+    # Verifica se esse cliente JÁ tem esse produto registrado, independente da origem
     sql_check = """
         SELECT id FROM cliente.valor_custo_carteira_cliente 
-        WHERE id_cliente = %s AND origem_custo = %s
+        WHERE id_cliente = %s AND id_produto = %s
     """
-    cur.execute(sql_check, (id_cli_str, str(origem_custo_txt)))
+    cur.execute(sql_check, (id_cli_str, id_prod_str))
     resultado = cur.fetchone()
 
     if resultado:
+        # SE JÁ EXISTE: Faz UPDATE atualizando o custo e a origem para a nova
         id_existente = resultado[0]
         sql_update = """
             UPDATE cliente.valor_custo_carteira_cliente SET
                 valor_custo = %s,
+                origem_custo = %s,
                 nome_usuario = %s,
                 id_usuario = %s,
                 data_criacao = NOW()
             WHERE id = %s
         """
-        cur.execute(sql_update, (float(valor_custo), nome_user, id_user, id_existente))
+        cur.execute(sql_update, (float(valor_custo), str(origem_custo_txt), nome_user, id_user, id_existente))
     else:
+        # SE NÃO EXISTE: Faz INSERT
         sql_insert = """
             INSERT INTO cliente.valor_custo_carteira_cliente (
                 id_cliente, nome_cliente,
@@ -172,7 +176,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
         p_obs = str(observacao) if observacao else ""
         
         # CPF (Schema admin.pedidos usa BIGINT)
-        # Remove tudo que não for dígito. Se vazio, vira None (NULL no banco)
         raw_cpf = str(cliente['cpf']) if cliente['cpf'] else ""
         cpf_limpo = re.sub(r'\D', '', raw_cpf)
         p_cpf_cliente = int(cpf_limpo) if cpf_limpo else None
@@ -210,8 +213,7 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
             VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo', NOW())
         """, (id_novo,))
         
-        # --- 4. ATUALIZA CUSTO (UPSERT) ---
-        # Passamos o cursor atual para manter tudo na mesma transação
+        # --- 4. ATUALIZA CUSTO (UPSERT CORRIGIDO) ---
         registrar_custo_carteira_upsert(cur, cliente, produto, p_custo, p_origem)
         
         # --- 5. COMMIT FINAL ---
@@ -225,7 +227,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                 if inst:
                     tpl = modulo_comercial_configuracoes.buscar_template_config("PEDIDOS", "criacao")
                     if tpl:
-                        # Formata primeiro nome
                         primeiro_nome = p_nome_cliente.split()[0].title()
                         msg = tpl.replace("{nome}", primeiro_nome) \
                                  .replace("{pedido}", p_codigo) \
@@ -234,12 +235,15 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], p_tel_cliente, msg)
                         msg_whats = " (WhatsApp Enviado)"
             except Exception as e_w:
-                print(f"Erro envio whats: {e_w}") # Não falha o pedido por erro no whats
+                print(f"Erro envio whats: {e_w}")
 
         return True, f"Pedido {codigo} criado com sucesso!{msg_whats}", id_novo
 
     except psycopg2.Error as e_db:
         conn.rollback()
+        # Tratamento específico para erro de duplicidade (caso ainda ocorra em outra tabela)
+        if e_db.pgcode == '23505':
+            return False, f"Erro: Registro duplicado detectado. Detalhes: {e_db.pgerror}", None
         return False, f"Erro de Banco de Dados: {e_db.pgcode} - {e_db.pgerror}", None
     except Exception as e: 
         conn.rollback()
@@ -254,7 +258,6 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
 def buscar_clientes():
     conn = get_conn()
     if conn:
-        # Busca clientes do schema admin
         query = """
             SELECT c.id, c.nome, c.cpf, c.telefone, c.email, c.id_usuario_vinculo, u.nome as nome_usuario_vinculo
             FROM admin.clientes c
@@ -303,7 +306,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
             
             cur.execute("INSERT INTO admin.pedidos_historico (id_pedido, status_novo, observacao, data_mudanca) VALUES (%s, %s, %s, NOW())", (id_pedido, novo_status, obs_hist))
             
-            # Movimentação financeira se necessário
             if novo_status == "Pago":
                 registrar_movimentacao_financeira(conn, dados_pedido, "CREDITO", dados_pedido['valor_total'])
             elif novo_status == "Cancelado":
@@ -316,7 +318,6 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
                 
                 if res_msg and res_msg[0]:
                     template = res_msg[0]
-                    # Substituição de variáveis
                     msg_final = template.replace("{nome}", str(dados_pedido['nome_cliente']).split()[0]) \
                                         .replace("{nome_completo}", str(dados_pedido['nome_cliente'])) \
                                         .replace("{pedido}", str(dados_pedido['codigo'])) \
@@ -352,7 +353,6 @@ def editar_dados_pedido_completo(id_pedido, dados_novos):
         cur = conn.cursor()
         total = float(dados_novos['qtd']) * float(dados_novos['valor'])
         
-        # Casting e limpeza de CPF para BIGINT
         raw_cpf = str(dados_novos['cliente']['cpf']) if dados_novos['cliente']['cpf'] else ""
         cpf_limpo = re.sub(r'\D', '', raw_cpf)
         p_cpf = int(cpf_limpo) if cpf_limpo else None
@@ -407,7 +407,6 @@ def renderizar_fluxo_pos_venda():
                 dt_prev = st.date_input("Data Previsão", value=date.today())
                 obs_tar = st.text_area("Descrição da Tarefa", value=f"Acompanhar pedido do produto {dados['nome_produto']}")
                 
-                # Checkbox de aviso no fluxo de tarefas
                 avisar_task = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_tarefa_pv")
                 
                 c_btn1, c_btn2 = st.columns(2)
@@ -458,7 +457,6 @@ def renderizar_fluxo_pos_venda():
                 dt_ren = st.date_input("Data para contato", value=date.today())
                 obs_ren = st.text_area("Observação", value="Entrar em contato para renovação.")
                 
-                # Checkbox de aviso no fluxo de renovação
                 avisar_ren = st.checkbox("📱 Avisar cliente via WhatsApp?", value=True, key="chk_aviso_renovacao_pv")
                 
                 c_btn1, c_btn2 = st.columns(2)
@@ -531,8 +529,8 @@ def renderizar_novo_pedido_tab():
         conn_chk = get_conn()
         if conn_chk:
             try:
-                # Nota: Na tabela cliente.valor_custo..., os IDs sao TEXT
                 cur = conn_chk.cursor()
+                # Verifica custo por cliente+produto (não por origem) para exibição correta
                 cur.execute("SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND id_produto = %s", (str(id_cliente), str(id_produto)))
                 chk = cur.fetchone()
                 if chk: custo = float(chk[0])
