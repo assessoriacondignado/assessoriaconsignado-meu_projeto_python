@@ -149,9 +149,10 @@ def processar_atualizacao_cadastral(cpf, nome):
         return False, "<div style='color:red; font-size:10px;'>Módulo Fator Conferi não carregado.</div>"
     
     try:
+        # [CORREÇÃO] Ambiente ajustado para coincidir com o banco de dados
         resultado = modulo_fator_conferi.realizar_consulta_cpf_segura(
             cpf=str(cpf), 
-            ambiente="sistema_consulta_cadastro", 
+            ambiente="sistema_consulta_usuario", 
             forcar_nova=False
         )
     except Exception as e:
