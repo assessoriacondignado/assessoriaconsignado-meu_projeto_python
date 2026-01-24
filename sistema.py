@@ -2,12 +2,21 @@ import streamlit as st
 import os
 import sys
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import importlib
+import secrets
+import string
+
+# Tenta importar bcrypt para segurança de senhas
+try:
+    import bcrypt
+except ImportError:
+    st.error("⚠️ Biblioteca 'bcrypt' não instalada. Execute: pip install bcrypt")
+    st.stop()
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Assessoria Consignado - TESTE", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Assessoria Consignado - SISTEMA", layout="wide", page_icon="📈")
 
 # --- 2. CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -92,37 +101,9 @@ try:
 
 except Exception as e:
     st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
-    
-# --- 4. FUNÇÕES DE ESTADO ---
-def iniciar_estado():
-    if 'ultima_atividade' not in st.session_state:
-        st.session_state['ultima_atividade'] = datetime.now()
-    if 'hora_login' not in st.session_state:
-        st.session_state['hora_login'] = datetime.now()
-    if 'pagina_central' not in st.session_state:
-        st.session_state['pagina_central'] = "Início"
-    if 'logado' not in st.session_state:
-        st.session_state['logado'] = False
+    st.stop()
 
-def resetar_atividade():
-    st.session_state['ultima_atividade'] = datetime.now()
-
-def gerenciar_sessao():
-    TEMPO_LIMITE_MINUTOS = 60
-    agora = datetime.now()
-    tempo_inativo = agora - st.session_state['ultima_atividade']
-    
-    if tempo_inativo.total_seconds() > (TEMPO_LIMITE_MINUTOS * 60):
-        st.session_state.clear()
-        st.error("Sessão expirada. Faça login novamente.")
-        st.stop()
-
-    tempo_total = agora - st.session_state['hora_login']
-    mm, ss = divmod(tempo_total.seconds, 60)
-    hh, mm = divmod(mm, 60)
-    return f"{hh:02d}:{mm:02d}" if hh > 0 else f"{mm:02d}:{ss:02d}"
-
-# --- 5. BANCO DE DADOS ---
+# --- 4. FUNÇÕES DE BANCO DE DADOS ---
 def get_conn():
     try:
         return psycopg2.connect(
@@ -130,10 +111,49 @@ def get_conn():
             user=conexao.user, password=conexao.password, connect_timeout=5
         )
     except Exception as e: 
-        print(f"Erro DB: {e}")
+        st.error(f"Erro Conexão DB: {e}")
         return None
 
-# [SIMPLIFICAÇÃO EXTREMA] Validação SOMENTE ID, EMAIL, SENHA
+# --- 5. FUNÇÕES DE SEGURANÇA E LOGIN ---
+
+def verificar_sessao_unica_db(id_usuario, token_atual):
+    """Verifica se o token da sessão atual ainda é o válido no banco."""
+    conn = get_conn()
+    if not conn: return True # Em caso de erro de DB, permite (fail-open) ou bloqueia, dependendo da politica. Aqui fail-open pra nao travar.
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT token FROM admin.sessoes_ativas WHERE id_usuario = %s", (id_usuario,))
+        res = cur.fetchone()
+        if res and res[0] != token_atual:
+            return False # Token mudou, derruba sessão
+        return True
+    except:
+        return True
+    finally:
+        conn.close()
+
+def registrar_sessao_db(id_usuario, nome_usuario):
+    """Cria um token novo, derruba sessões anteriores e salva no banco."""
+    conn = get_conn()
+    if not conn: return None
+    try:
+        token = secrets.token_urlsafe(32)
+        cur = conn.cursor()
+        # Remove sessão anterior
+        cur.execute("DELETE FROM admin.sessoes_ativas WHERE id_usuario = %s", (id_usuario,))
+        # Cria nova sessão
+        cur.execute("""
+            INSERT INTO admin.sessoes_ativas (token, id_usuario, nome_usuario, data_inicio, ultimo_clique)
+            VALUES (%s, %s, %s, NOW(), NOW())
+        """, (token, id_usuario, nome_usuario))
+        conn.commit()
+        return token
+    except Exception as e:
+        print(f"Erro ao registrar sessão: {e}")
+        return None
+    finally:
+        conn.close()
+
 def validar_login_db(usuario, senha):
     conn = get_conn()
     if not conn: return {"status": "erro_conexao"}
@@ -143,11 +163,10 @@ def validar_login_db(usuario, senha):
         email_login = str(usuario).strip()
         senha_login = str(senha).strip()
 
-        # SQL ENXUTO: Apenas o necessário para logar
-        # ATENÇÃO: Verifique se sua tabela é 'admin.clientes_usuarios' ou 'clientes_usuarios'
-        # Estou mantendo admin.clientes_usuarios conforme seu pedido anterior
+        # Busca dados, incluindo colunas de segurança
+        # Assume-se que as colunas 'tentativas_falhas' e 'bloqueado_ate' existam ou sejam tratadas
         sql = """
-            SELECT id, email, senha
+            SELECT id, email, senha, nome, tentativas_falhas, bloqueado_ate
             FROM admin.clientes_usuarios 
             WHERE email = %s
         """
@@ -155,17 +174,66 @@ def validar_login_db(usuario, senha):
         res = cur.fetchone()
         
         if res:
-            uid, email_banco, senha_banco = res
+            uid, email_banco, senha_banco, nome_banco, tentativas, bloqueado_ate = res
             
-            # Comparação simples (Texto == Texto)
-            # Se a senha for nula no banco, considera vazia
+            # 1. Verifica bloqueio
+            if bloqueado_ate and bloqueado_ate > datetime.now():
+                tempo_restante = (bloqueado_ate - datetime.now()).seconds // 60
+                return {"status": "bloqueado", "msg": f"Conta bloqueada. Tente em {tempo_restante} min."}
+
+            senha_correta = False
+            precisa_atualizar_hash = False
+
+            # 2. Verifica Senha (Hash ou Texto Puro)
             senha_banco_str = str(senha_banco).strip() if senha_banco else ""
             
-            if senha_banco_str == senha_login:
-                # Retorna apenas o básico, pois não buscamos nome/cargo
-                return {"status": "sucesso", "id": uid, "email": email_banco}
+            # Tenta verificar como Hash BCrypt
+            try:
+                if senha_banco_str.startswith('$2b$') or senha_banco_str.startswith('$2a$'):
+                    if bcrypt.checkpw(senha_login.encode('utf-8'), senha_banco_str.encode('utf-8')):
+                        senha_correta = True
+                else:
+                    # Fallback: Texto Puro (Legacy)
+                    if senha_banco_str == senha_login:
+                        senha_correta = True
+                        precisa_atualizar_hash = True
+            except:
+                # Se der erro no bcrypt, tenta texto puro por garantia
+                if senha_banco_str == senha_login:
+                    senha_correta = True
+                    precisa_atualizar_hash = True
+
+            if senha_correta:
+                # Sucesso: Zera tentativas
+                sql_update = "UPDATE admin.clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s"
+                params = [uid]
+                
+                # Se era texto puro, migra para Hash
+                if precisa_atualizar_hash:
+                    novo_hash = bcrypt.hashpw(senha_login.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                    sql_update = "UPDATE admin.clientes_usuarios SET tentativas_falhas = 0, senha = %s WHERE id = %s"
+                    params = [novo_hash, uid]
+                
+                cur.execute(sql_update, tuple(params))
+                conn.commit()
+                
+                return {"status": "sucesso", "id": uid, "email": email_banco, "nome": nome_banco}
+            
             else:
-                return {"status": "erro_senha"}
+                # Senha Errada: Incrementa falhas
+                novas_tentativas = (tentativas or 0) + 1
+                if novas_tentativas >= 5:
+                    # Bloqueia por 15 minutos
+                    bloqueio = datetime.now() + timedelta(minutes=15)
+                    cur.execute("UPDATE admin.clientes_usuarios SET tentativas_falhas = %s, bloqueado_ate = %s WHERE id = %s", 
+                                (novas_tentativas, bloqueio, uid))
+                    conn.commit()
+                    return {"status": "bloqueado", "msg": "Muitas tentativas. Bloqueado por 15 min."}
+                else:
+                    cur.execute("UPDATE admin.clientes_usuarios SET tentativas_falhas = %s WHERE id = %s", 
+                                (novas_tentativas, uid))
+                    conn.commit()
+                    return {"status": "erro_senha", "tentativas": novas_tentativas}
         
         return {"status": "nao_encontrado"}
     except Exception as e:
@@ -173,7 +241,98 @@ def validar_login_db(usuario, senha):
     finally:
         conn.close()
 
-# --- 6. INTERFACE (MENSAGEM RÁPIDA) ---
+def enviar_nova_senha_whatsapp(email_destino):
+    """Gera senha, atualiza banco e envia via WhatsApp"""
+    conn = get_conn()
+    if not conn: return "Erro conexão DB"
+    
+    try:
+        cur = conn.cursor()
+        # Verifica usuario
+        cur.execute("SELECT id, nome, telefone FROM admin.clientes_usuarios WHERE email = %s", (email_destino,))
+        user = cur.fetchone()
+        
+        if not user: return "E-mail não encontrado."
+        uid, nome, telefone = user
+        
+        if not telefone or len(telefone) < 10: return "Usuário sem telefone válido cadastrado."
+
+        # Busca Instancia WAPI Ativa
+        cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+        inst = cur.fetchone()
+        if not inst: return "Nenhuma instância de WhatsApp configurada no sistema."
+        
+        # Gera nova senha aleatoria
+        alfabeto = string.ascii_letters + string.digits
+        nova_senha = ''.join(secrets.choice(alfabeto) for i in range(8))
+        senha_hash = bcrypt.hashpw(nova_senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Atualiza Banco
+        cur.execute("UPDATE admin.clientes_usuarios SET senha = %s, tentativas_falhas = 0, bloqueado_ate = NULL WHERE id = %s", (senha_hash, uid))
+        conn.commit()
+        
+        # Envia WhatsApp
+        msg = f"🔐 *Solicitação de Reset de Senha*\n\nOlá {nome},\nSua nova senha temporária é: *{nova_senha}*\n\nAcesse o sistema e altere sua senha se desejar."
+        
+        res = modulo_wapi.enviar_msg_api(inst[0], inst[1], telefone, msg)
+        
+        if res.get('success') or res.get('messageId'):
+            return "Sucesso! Senha enviada para o WhatsApp cadastrado."
+        else:
+            return f"Erro no envio do WhatsApp: {res}"
+
+    except Exception as e:
+        return f"Erro ao resetar: {e}"
+    finally:
+        conn.close()
+
+# --- 6. FUNÇÕES DE ESTADO E SESSÃO ---
+def iniciar_estado():
+    if 'ultima_atividade' not in st.session_state:
+        st.session_state['ultima_atividade'] = datetime.now()
+    if 'hora_login' not in st.session_state:
+        st.session_state['hora_login'] = datetime.now()
+    if 'pagina_central' not in st.session_state:
+        st.session_state['pagina_central'] = "Início"
+    if 'logado' not in st.session_state:
+        st.session_state['logado'] = False
+    if 'token_sessao' not in st.session_state:
+        st.session_state['token_sessao'] = None
+    if 'tempo_limite_minutos' not in st.session_state:
+        st.session_state['tempo_limite_minutos'] = 60 # Padrão
+
+def resetar_atividade():
+    st.session_state['ultima_atividade'] = datetime.now()
+    # Atualiza DB para indicar atividade (opcional, para controle fino)
+    # Poderia dar update em sessoes_ativas set ultimo_clique = now()
+
+def gerenciar_sessao():
+    # 1. Verifica tempo inativo
+    limite = st.session_state.get('tempo_limite_minutos', 60)
+    agora = datetime.now()
+    tempo_inativo = agora - st.session_state['ultima_atividade']
+    
+    if tempo_inativo.total_seconds() > (limite * 60):
+        st.session_state.clear()
+        st.error("Sessão expirada por inatividade.")
+        st.stop()
+
+    # 2. Verifica Sessão Única (Banco de Dados)
+    if st.session_state.get('logado') and st.session_state.get('token_sessao'):
+        uid = st.session_state.get('usuario_id')
+        token = st.session_state.get('token_sessao')
+        
+        if not verificar_sessao_unica_db(uid, token):
+            st.session_state.clear()
+            st.warning("🔒 Sua conta foi conectada em outro dispositivo/navegador. Esta sessão foi encerrada.")
+            st.stop()
+
+    tempo_total = agora - st.session_state['hora_login']
+    mm, ss = divmod(tempo_total.seconds, 60)
+    hh, mm = divmod(mm, 60)
+    return f"{hh:02d}:{mm:02d}"
+
+# --- 7. INTERFACE (MENSAGEM RÁPIDA) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
     conn = get_conn()
@@ -207,7 +366,7 @@ def dialog_mensagem_rapida():
     finally:
         conn.close()
 
-# --- 7. MENU LATERAL ---
+# --- 8. MENU LATERAL ---
 def renderizar_menu_lateral():
     st.markdown("""
         <style>
@@ -221,9 +380,13 @@ def renderizar_menu_lateral():
 
     with st.sidebar:
         st.markdown("### 🚀 Assessoria")
-        # [AJUSTE] Como não temos 'usuario_nome' do banco, usamos um padrão
         nome_display = st.session_state.get('usuario_nome', 'Usuário')
         st.markdown(f"Olá, **{nome_display}**")
+        
+        # Mostra tempo da sessão (Debug/Info)
+        tempo_online = gerenciar_sessao()
+        st.caption(f"Online há: {tempo_online}")
+
         st.markdown("---")
         
         botoes = {
@@ -247,34 +410,99 @@ def renderizar_menu_lateral():
             st.session_state.clear()
             st.rerun()
 
-# --- 8. FUNÇÃO PRINCIPAL ---
+# --- 9. TELA DE RECUPERAÇÃO DE SENHA ---
+@st.dialog("🔑 Recuperar Senha")
+def dialog_recuperar_senha():
+    st.markdown("Informe seu e-mail cadastrado. Uma nova senha será enviada para o seu **WhatsApp**.")
+    email_rec = st.text_input("E-mail de Cadastro")
+    if st.button("Enviar Nova Senha", type="primary"):
+        with st.spinner("Processando..."):
+            msg = enviar_nova_senha_whatsapp(email_rec)
+            if "Sucesso" in msg:
+                st.success(msg)
+                time.sleep(3)
+                st.rerun()
+            else:
+                st.error(msg)
+
+# --- 10. FUNÇÃO PRINCIPAL ---
 def main():
     iniciar_estado()
     
-    # 8.1 TELA DE LOGIN
+    # 10.1 TELA DE LOGIN
     if not st.session_state['logado']:
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
-            st.title("🔐 Acesso Restrito (Login Simples)")
+            st.title("🔐 Login Seguro")
+            
             u = st.text_input("E-mail")
             s = st.text_input("Senha", type="password")
             
-            if st.button("Entrar", type="primary", use_container_width=True):
+            # Opções de Sessão
+            col_sessao, col_check = st.columns([2, 1])
+            with col_sessao:
+                # O usuário escolhe o tempo de sessão
+                opcoes_tempo = {
+                    "60 minutos": 60,
+                    "4 horas": 240,
+                    "8 horas": 480,
+                    "12 horas": 720
+                }
+                tempo_escolhido = st.selectbox("Tempo de Sessão", list(opcoes_tempo.keys()))
+                
+            with col_check:
+                st.write("") # Espaçamento
+                st.write("") 
+                manter_conectado = st.checkbox("Salvar Login")
+
+            c_btn, c_esq = st.columns([1,1])
+            with c_btn:
+                btn_entrar = st.button("Entrar", type="primary", use_container_width=True)
+            with c_esq:
+                if st.button("Esqueci a Senha", use_container_width=True):
+                    dialog_recuperar_senha()
+            
+            if btn_entrar:
                 res = validar_login_db(u, s)
+                
                 if res['status'] == 'sucesso':
-                    st.success("Login efetuado com sucesso!")
-                    time.sleep(0.5)
-                    # [AJUSTE] Definimos valores fixos para nome e cargo pois não vieram do banco
-                    st.session_state.update({
-                        'logado': True, 
-                        'usuario_nome': 'Usuário Logado', 
-                        'usuario_cargo': 'Acesso Geral'
-                    })
-                    st.rerun()
-                elif res['status'] == 'erro_senha': st.error("Senha incorreta.")
-                else: st.error("E-mail não encontrado.")
+                    # Lógica de Tempo de Sessão
+                    tempo_minutos = opcoes_tempo[tempo_escolhido]
+                    if manter_conectado:
+                        tempo_minutos = 43200 # 30 dias (30 * 24 * 60)
+                    
+                    # Gera Token e Registra no DB (Sessão Única)
+                    token = registrar_sessao_db(res['id'], res['nome'])
+                    
+                    if token:
+                        st.success(f"Bem-vindo, {res['nome']}!")
+                        time.sleep(0.5)
+                        
+                        st.session_state.update({
+                            'logado': True, 
+                            'usuario_id': res['id'],
+                            'usuario_nome': res['nome'],
+                            'token_sessao': token,
+                            'tempo_limite_minutos': tempo_minutos,
+                            'hora_login': datetime.now(),
+                            'ultima_atividade': datetime.now()
+                        })
+                        st.rerun()
+                    else:
+                        st.error("Erro ao criar sessão segura. Tente novamente.")
+
+                elif res['status'] == 'bloqueado':
+                    st.error(res['msg'])
+                elif res['status'] == 'erro_senha':
+                    msg = "Senha incorreta."
+                    if 'tentativas' in res:
+                        restantes = 5 - res['tentativas']
+                        msg += f" Restam {restantes} tentativas."
+                    st.error(msg)
+                else:
+                    st.error("E-mail não encontrado.")
     
-    # 8.2 SISTEMA LOGADO
+    # 10.2 SISTEMA LOGADO
     else:
         renderizar_menu_lateral()
         
@@ -284,6 +512,7 @@ def main():
 
         pagina = st.session_state['pagina_central']
         
+        # Roteamento de Módulos (Mantido Original)
         if pagina == "Início":
             if modulo_chat: modulo_chat.app_chat_screen()
             else: st.info("Painel Inicial (Módulo Chat não detectado)")

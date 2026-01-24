@@ -1,19 +1,13 @@
--- =================================================================
--- PADRONIZAÇÃO FINANCEIRA SCHEMA ADMIN -> NUMERIC(15, 2)
--- =================================================================
+-- 1. Colunas para segurança na tabela de usuários
+ALTER TABLE admin.clientes_usuarios 
+ADD COLUMN IF NOT EXISTS senha_hash VARCHAR(255),
+ADD COLUMN IF NOT EXISTS bloqueado_ate TIMESTAMP WITHOUT TIME ZONE,
+ADD COLUMN IF NOT EXISTS tempo_sessao_padrao INTEGER DEFAULT 60;
 
--- 1. Tabela PEDIDOS
-ALTER TABLE admin.pedidos
-    ALTER COLUMN valor_unitario TYPE NUMERIC(15, 2) 
-    USING (REPLACE(CAST(valor_unitario AS TEXT), ',', '.')::NUMERIC(15, 2)),
-
-    ALTER COLUMN valor_total TYPE NUMERIC(15, 2) 
-    USING (REPLACE(CAST(valor_total AS TEXT), ',', '.')::NUMERIC(15, 2)),
-
-    ALTER COLUMN custo_carteira TYPE NUMERIC(15, 2) 
-    USING (REPLACE(CAST(custo_carteira AS TEXT), ',', '.')::NUMERIC(15, 2));
-
--- 2. Tabela PRODUTOS E SERVIÇOS
-ALTER TABLE admin.produtos_servicos
-    ALTER COLUMN preco TYPE NUMERIC(15, 2) 
-    USING (REPLACE(CAST(preco AS TEXT), ',', '.')::NUMERIC(15, 2));
+-- 2. Tabela para controlar Sessão Única (Token)
+CREATE TABLE IF NOT EXISTS admin.sessoes_ativas (
+    token VARCHAR(255) PRIMARY KEY,
+    id_usuario INTEGER,
+    data_inicio TIMESTAMP DEFAULT NOW(),
+    ultimo_clique TIMESTAMP DEFAULT NOW()
+);
