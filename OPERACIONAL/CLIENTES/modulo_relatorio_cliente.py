@@ -6,8 +6,6 @@ import contextlib
 import os
 import sys
 from datetime import datetime, date
-from fpdf import FPDF
-import io
 
 # ==============================================================================
 # 0. CONFIGURAÇÃO E CONEXÃO (Padrão do Projeto)
@@ -25,9 +23,8 @@ except ImportError:
 # IMPORTAÇÃO DO MÓDULO DE VALIDADORES (PADRONIZAÇÃO)
 try:
     import modulo_validadores as v
-except ImportError as e:
-    st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Detalhe: {e}")
-    st.stop()
+except ImportError:
+    v = None
 
 # Cache da Conexão (Pool)
 @st.cache_resource
@@ -60,47 +57,8 @@ def get_db_connection():
         yield None
 
 # ==============================================================================
-# 1. FUNÇÕES AUXILIARES E PDF
+# 1. FUNÇÕES AUXILIARES
 # ==============================================================================
-
-def criar_pdf(df, titulo="Relatorio"):
-    """Gera um PDF simples a partir de um DataFrame"""
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=10)
-    
-    # Título
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, txt=titulo, ln=True, align='C')
-    pdf.ln(10)
-    
-    if df.empty:
-        pdf.cell(0, 10, "Sem dados para exibir.", ln=True)
-        return pdf.output(dest='S').encode('latin-1', 'ignore')
-
-    # Cabeçalho
-    pdf.set_font("Arial", 'B', 9)
-    cols = df.columns
-    # Largura dinâmica: 190mm total / qtd colunas
-    col_width = 190 / len(cols) if len(cols) > 0 else 190
-    
-    for col in cols:
-        # Tenta limpar nomes técnicos
-        col_name = str(col).replace("_", " ").upper()
-        pdf.cell(col_width, 8, col_name[:15], border=1, align='C')
-    pdf.ln()
-    
-    # Dados
-    pdf.set_font("Arial", size=8)
-    for index, row in df.iterrows():
-        for col in cols:
-            val = str(row[col])
-            # Remove caracteres incompatíveis com latin-1 se necessário
-            val_safe = val.encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(col_width, 8, val_safe[:25], border=1)
-        pdf.ln()
-        
-    return pdf.output(dest='S').encode('latin-1', 'ignore')
 
 def buscar_clientes_vinculados_grupo():
     """
@@ -332,20 +290,17 @@ def app_relatorios():
 
     filtros = {}
     df_resultado = pd.DataFrame()
-    titulo_relatorio = ""
 
     # --- 2 a 5. LÓGICA POR RELATÓRIO ---
     
     # RELATÓRIO 1: CUSTOS
     if "Custos" in tipo_relatorio:
-        titulo_relatorio = f"Custos - {opcoes[id_cliente]}"
         with st.expander("🛠️ Visualização", expanded=True):
             st.info("Produtos contratados e custos vinculados à carteira.")
             df_resultado = carregar_custos(id_cliente)
 
     # RELATÓRIO 2: PEDIDOS
     elif "Pedidos" in tipo_relatorio:
-        titulo_relatorio = f"Pedidos - {opcoes[id_cliente]}"
         with st.expander("🛠️ Filtros e Visualização", expanded=True):
             c1, c2 = st.columns(2)
             filtros['nome'] = c1.text_input("Nome/Código:", key='filtro_nome_ped')
@@ -354,7 +309,6 @@ def app_relatorios():
 
     # RELATÓRIO 3: TAREFAS
     elif "Tarefas" in tipo_relatorio:
-        titulo_relatorio = f"Tarefas - {opcoes[id_cliente]}"
         with st.expander("🛠️ Filtros e Visualização", expanded=True):
             c1, c2 = st.columns(2)
             filtros['nome'] = c1.text_input("Título/Obs:", key='filtro_nome_tar')
@@ -363,7 +317,6 @@ def app_relatorios():
 
     # RELATÓRIO 4: RENOVAÇÃO
     elif "Renovação" in tipo_relatorio:
-        titulo_relatorio = f"Renovações - {opcoes[id_cliente]}"
         with st.expander("🛠️ Filtros e Visualização", expanded=True):
             c1, c2 = st.columns(2)
             filtros['status'] = c1.selectbox("Status Renovação:", ["Todos", "Entrada", "Em Análise", "Concluído", "Pendente"], key='filtro_status_ren')
@@ -371,58 +324,62 @@ def app_relatorios():
 
     # RELATÓRIO 5: EXTRATO
     elif "Extrato" in tipo_relatorio:
-        titulo_relatorio = f"Extrato - {opcoes[id_cliente]}"
         with st.expander("🛠️ Filtros e Visualização", expanded=True):
             c1, c2, c3 = st.columns(3)
-            filtros['data_inicio'] = c1.date_input("De:", value=date(date.today().year, 1, 1), key='filtro_dt_ini')
-            filtros['data_fim'] = c2.date_input("Até:", value=date.today(), key='filtro_dt_fim')
+            # [ALTERAÇÃO] Formato de data ajustado na pesquisa (DD/MM/YYYY)
+            filtros['data_inicio'] = c1.date_input("De:", value=date(date.today().year, 1, 1), key='filtro_dt_ini', format="DD/MM/YYYY")
+            filtros['data_fim'] = c2.date_input("Até:", value=date.today(), key='filtro_dt_fim', format="DD/MM/YYYY")
             filtros['produto'] = c3.text_input("Produto/Motivo:", key='filtro_prod')
             
             df_resultado = carregar_extrato(id_cliente, filtros)
+            
+            if not df_resultado.empty:
+                # Tratamento visual
+                st.dataframe(
+                    df_resultado.style.format({
+                        "Valor": "R$ {:.2f}", 
+                        "Saldo Final": "R$ {:.2f}",
+                        # [ALTERAÇÃO] Garante formatação da data no extrato
+                        "Data": lambda x: pd.to_datetime(x).strftime('%d/%m/%Y %H:%M') if pd.notnull(x) else ""
+                    }),
+                    use_container_width=True
+                )
+            else:
+                st.info("Nenhum lançamento no período.")
 
-    # --- FORMATAÇÃO PADRONIZADA COM MODULO_VALIDADORES ---
-    if not df_resultado.empty:
-        # Copia para não alterar o original que vai pro PDF
+    # --- EXIBIÇÃO PADRÃO E FORMATAÇÃO (EXCETO EXTRATO QUE JÁ MOSTROU) ---
+    if "Extrato" not in tipo_relatorio and not df_resultado.empty:
+        # Copia para formatação
         df_show = df_resultado.copy()
         
         cols_para_formatar = df_show.columns.tolist()
         
         for col in cols_para_formatar:
-            # 1. Datas
+            # 1. Datas (Formatação Forçada para Garantir Exibição)
             if 'Data' in col or 'Previsão' in col:
                 try:
-                    df_show[col] = df_show[col].apply(lambda x: v.ValidadorData.para_tela(str(x)) if x else "")
-                except: pass
+                    # Converte para datetime primeiro para lidar com objetos mistos
+                    df_show[col] = pd.to_datetime(df_show[col], errors='coerce')
+                    # Formata para string BR
+                    df_show[col] = df_show[col].dt.strftime('%d/%m/%Y').fillna("")
+                except: 
+                    pass
             
             # 2. Valores Financeiros
             if 'Valor' in col or 'Custo' in col or 'Saldo' in col:
                 try:
-                    df_show[col] = df_show[col].apply(lambda x: v.ValidadorFinanceiro.para_tela(x) if x is not None else "R$ 0,00")
+                    if v:
+                        df_show[col] = df_show[col].apply(lambda x: v.ValidadorFinanceiro.para_tela(x) if x is not None else "R$ 0,00")
+                    else:
+                        df_show[col] = df_show[col].apply(lambda x: f"R$ {float(x):,.2f}" if x is not None else "")
                 except: pass
 
         st.dataframe(df_show, use_container_width=True, hide_index=True)
     
-    elif "Extrato" in tipo_relatorio:
-        st.info("Nenhum lançamento no período.")
-    else:
+    elif "Extrato" not in tipo_relatorio:
         st.warning("Nenhum registro encontrado.")
 
-    # --- BOTÃO PDF ---
-    if not df_resultado.empty:
-        st.write("")
-        col_pdf, _ = st.columns([1, 4])
-        try:
-            # PDF usa dados brutos ou formatados? Geralmente brutos convertidos para string simples
-            pdf_bytes = criar_pdf(df_resultado, titulo_relatorio)
-            col_pdf.download_button(
-                label="📄 Baixar PDF",
-                data=pdf_bytes,
-                file_name=f"{titulo_relatorio.replace(' ', '_').lower()}.pdf",
-                mime="application/pdf",
-                type="primary"
-            )
-        except Exception as e:
-            st.error(f"Erro ao gerar PDF: {e}")
+    # [ALTERAÇÃO] Removido bloco de Botão PDF
 
     # --- BOTÃO VOLTAR ---
     st.write("---")
