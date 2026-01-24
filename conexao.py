@@ -1,25 +1,65 @@
 import psycopg2
 import streamlit as st
 from sqlalchemy import create_engine
+import os
+import toml
 
 # =============================================================================
-# 1. CARREGAMENTO DE CREDENCIAIS (Via Streamlit Secrets)
+# 1. CARREGAMENTO DE CREDENCIAIS (Híbrido: Streamlit Secrets ou Arquivo Local)
 # =============================================================================
-# Certifique-se de que o arquivo .streamlit/secrets.toml existe e tem essas chaves.
+host = None
+port = None
+database = None
+user = None
+password = None
+
+def carregar_secrets_manualmente():
+    """Tenta localizar e ler o secrets.toml manualmente em caminhos comuns"""
+    caminhos_possiveis = [
+        ".streamlit/secrets.toml",
+        os.path.join(os.getcwd(), ".streamlit/secrets.toml"),
+        "/root/meu_sistema/.streamlit/secrets.toml",
+        "/root/.streamlit/secrets.toml"
+    ]
+    
+    for caminho in caminhos_possiveis:
+        if os.path.exists(caminho):
+            try:
+                dados = toml.load(caminho)
+                return dados
+            except Exception as e:
+                print(f"Erro ao ler arquivo {caminho}: {e}")
+    return None
+
 try:
+    # Tentativa 1: Via Streamlit (Funciona quando roda 'streamlit run')
     host = st.secrets["DB_HOST"]
     port = st.secrets["DB_PORT"]
     database = st.secrets["DB_NAME"]
     user = st.secrets["DB_USER"]
     password = st.secrets["DB_PASS"]
-except Exception as e:
-    st.error("Erro ao carregar secrets. Verifique o arquivo .streamlit/secrets.toml")
-    st.stop()
+    
+except (FileNotFoundError, AttributeError, KeyError):
+    # Tentativa 2: Via arquivo direto (Funciona para scripts Python puros/Webhooks)
+    print("⚠️ Modo Streamlit não detectado ou secrets não carregado. Tentando leitura manual...", flush=True)
+    secrets_dict = carregar_secrets_manualmente()
+    
+    if secrets_dict:
+        try:
+            host = secrets_dict["DB_HOST"]
+            port = secrets_dict["DB_PORT"]
+            database = secrets_dict["DB_NAME"]
+            user = secrets_dict["DB_USER"]
+            password = secrets_dict["DB_PASS"]
+            print("✅ Secrets carregados manualmente com sucesso!", flush=True)
+        except KeyError as e:
+            print(f"❌ Erro: Chave {e} não encontrada no secrets.toml manual.")
+    else:
+        print("❌ CRÍTICO: Não foi possível carregar as credenciais do banco de dados.", flush=True)
 
 # =============================================================================
 # 2. FUNÇÃO DE CONEXÃO PADRÃO (PSYCOPG2)
 # =============================================================================
-# Usada para conexões diretas e rápidas (padrão dos novos módulos)
 def get_conn():
     try:
         conn = psycopg2.connect(
@@ -37,7 +77,6 @@ def get_conn():
 # =============================================================================
 # 3. FUNÇÃO DE CONEXÃO ORM (SQLALCHEMY)
 # =============================================================================
-# Usada por scripts de Pandas (to_sql, read_sql com engine) e legados
 def criar_conexao():
     try:
         url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
@@ -46,7 +85,6 @@ def criar_conexao():
         print(f"Erro de conexão (SQLAlchemy): {e}")
         return None
 
-# Teste simples se rodar direto
 if __name__ == "__main__":
     if get_conn():
         print("Conexão bem-sucedida!")
