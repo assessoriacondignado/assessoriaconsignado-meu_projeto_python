@@ -50,38 +50,17 @@ def get_conn():
 # 1. SANITIZAÇÃO E FORMATAÇÃO
 # =============================================================================
 
-def registrar_erro_importacao(cpf, erro_msg):
-    try:
-        data_hora = datetime.now().strftime("%d-%m-%Y_%H-%M")
-        nome_arq = f"ERROIMPORTAÇÃO_{cpf}_{data_hora}.txt"
-        caminho = os.path.join(PASTA_JSON, nome_arq)
-        with open(caminho, "w", encoding="utf-8") as f:
-            f.write(f"ERRO NA IMPORTAÇÃO FATOR CONFERI\n")
-            f.write(f"CPF: {cpf}\n")
-            f.write(f"DATA: {datetime.now()}\n")
-            f.write(f"DETALHE DO ERRO:\n{str(erro_msg)}")
-    except: pass
-
 def sanitizar_e_formatar(valor):
-    """
-    Aplica regras de limpeza: Nulos, Maiúsculas e Data ISO.
-    """
     if valor is None: return None
-    
     if isinstance(valor, list): return valor
-    
     v_str = str(valor).strip()
-    
     if not v_str or v_str.upper() in ["NULO", "NULL", "NONE", "[]", "{}"]:
         return None
-    
-    # Data BR (dd/mm/yyyy) -> ISO (yyyy-mm-dd)
     if re.match(r'^\d{2}/\d{2}/\d{4}$', v_str):
         try:
             dt_obj = datetime.strptime(v_str, '%d/%m/%Y')
             return dt_obj.strftime('%Y-%m-%d')
         except: pass 
-            
     return v_str.upper()
 
 # =============================================================================
@@ -92,12 +71,10 @@ def _xml_to_dict_simple(element):
     text = element.text.strip() if element.text else None
     if len(element) == 0:
         return text
-
     result = {}
     for child in element:
         tag = child.tag.replace('{', '').split('}')[-1].upper()
         child_data = _xml_to_dict_simple(child)
-        
         if tag in result:
             if isinstance(result[tag], list):
                 result[tag].append(child_data)
@@ -112,36 +89,25 @@ def parse_xml_to_dict(texto_raw):
         if isinstance(texto_raw, bytes):
             texto_raw = texto_raw.decode('utf-8', errors='ignore')
         texto_raw = texto_raw.replace('ISO-8859-1', 'UTF-8')
-
         try:
             return json.loads(texto_raw)
-        except:
-            pass
-            
+        except: pass
         root = ET.fromstring(texto_raw)
         return _xml_to_dict_simple(root)
     except Exception as e:
         return {}
 
 # =============================================================================
-# 3. EXTRAÇÃO INTELIGENTE (IGNORA ESPAÇOS NO JSON)
+# 3. EXTRAÇÃO INTELIGENTE
 # =============================================================================
 
 def extrair_valor_novo_padrao(dados, caminho_str):
-    """
-    Navega no JSON usando ';' como separador.
-    Ignora espaços nas chaves do JSON (ex: " TELEFONE " vira "TELEFONE").
-    """
     if not caminho_str: return None
-    
     caminho_limpo = re.sub(r'".*?"', '', caminho_str).strip()
     passos = [p.strip() for p in caminho_limpo.split(';') if p.strip()]
-    
     cursor = dados 
-    
     for i, passo in enumerate(passos):
         if cursor is None: return None
-        
         is_list_iter = '[]' in passo
         chave = passo.replace('[]', '').replace('{', '').replace('}', '').upper()
         
@@ -153,7 +119,6 @@ def extrair_valor_novo_padrao(dados, caminho_str):
                     encontrou = True
                     break
             if not encontrou: return None
-            
         elif isinstance(cursor, list) and is_list_iter:
             lista_valores = []
             for item in cursor:
@@ -165,73 +130,51 @@ def extrair_valor_novo_padrao(dados, caminho_str):
                 elif isinstance(item, str) and chave == "": 
                     lista_valores.append(item)
             cursor = lista_valores
-            
         else:
             return None
-
     return cursor
 
 # =============================================================================
-# 4. DISTRIBUIÇÃO DINÂMICA (CORRIGIDA - ORDEM DE INSERÇÃO)
+# 4. DISTRIBUIÇÃO DINÂMICA
 # =============================================================================
 
 def executar_distribuicao_dinamica(dados_api):
     conn = get_conn()
     if not conn: return [], ["Erro conexão DB"]
-    
     sucessos = []
     erros = []
-    
     try:
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
-        
-        # --- CORREÇÃO DE ORDEM (PRIORIDADE) ---
         tabelas = df_map['tabela_referencia'].unique().tolist()
         
-        # Define a tabela "Pai" que deve ir primeiro
         tabela_pai = "sistema_consulta.sistema_consulta_dados_cadastrais_cpf"
-        
         if tabela_pai in tabelas:
             tabelas.remove(tabela_pai)
             tabelas.insert(0, tabela_pai)
             
-        tabela_indice = "sistema_consulta.sistema_consulta_cpf"
-        if tabela_indice in tabelas:
-            tabelas.remove(tabela_indice)
-            tabelas.insert(0, tabela_indice) 
-
         cur = conn.cursor()
-        
         for tabela in tabelas:
             try:
                 regras = df_map[df_map['tabela_referencia'] == tabela]
-                
                 dados_extraidos = {}
                 max_linhas = 1 
-                
-                # --- PASSO A: EXTRAÇÃO ---
                 for _, row in regras.iterrows():
                     col_sql = str(row['tabela_referencia_coluna']).strip()
                     caminho = str(row['jason_api_fatorconferi_coluna']).strip()
-                    
                     valor_raw = extrair_valor_novo_padrao(dados_api, caminho)
                     
-                    # Sanitiza e Formata
                     if isinstance(valor_raw, list):
                         valor_final = [sanitizar_e_formatar(v) for v in valor_raw]
-                        if len(valor_final) > max_linhas:
-                            max_linhas = len(valor_final)
+                        if len(valor_final) > max_linhas: max_linhas = len(valor_final)
                     else:
                         valor_final = sanitizar_e_formatar(valor_raw)
                         
-                    # Limpeza extra para CPF
                     if 'CPF' in col_sql.upper() or 'CPF' in caminho.upper():
                         if isinstance(valor_final, list):
                             valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
                         else:
                             valor_final = mv.ValidadorDocumentos.cpf_para_sql(valor_final)
 
-                    # Se for BIGINT, converte para int explicitamente
                     if col_sql == 'cpf' or col_sql == 'matricula':
                          if isinstance(valor_final, list):
                              valor_final = [int(v) if v and str(v).isdigit() else None for v in valor_final]
@@ -240,16 +183,13 @@ def executar_distribuicao_dinamica(dados_api):
 
                     dados_extraidos[col_sql] = valor_final
 
-                # --- PASSO B: INSERÇÃO (LOOP) ---
                 if not dados_extraidos: continue
 
                 cols = list(dados_extraidos.keys())
                 placeholders = ", ".join(["%s"] * len(cols))
                 sql_base = f"INSERT INTO {tabela} ({', '.join(cols)}) VALUES ({placeholders})"
                 
-                # Lógica para evitar erros de duplicidade (UPSERT)
                 cols_lower = [c.lower() for c in cols]
-                
                 is_lista_1_n = any(x in tabela.lower() for x in ['telefone', 'endereco', 'email', 'socio', 'veiculo'])
                 
                 if not is_lista_1_n and 'cpf' in cols_lower:
@@ -264,30 +204,25 @@ def executar_distribuicao_dinamica(dados_api):
                 for i in range(max_linhas):
                     linha_vals = []
                     tem_dado = False
-                    
                     for col in cols:
                         val = dados_extraidos[col]
                         if isinstance(val, list):
                             item = val[i] if i < len(val) else None
                         else:
                             item = val
-                            
                         if item: tem_dado = True
                         linha_vals.append(item)
                     
                     if tem_dado:
                         cur.execute(sql_base, tuple(linha_vals))
                         count_ins += 1
-                
                 sucessos.append(f"{tabela} ({count_ins})")
-
             except Exception as e:
                 conn.rollback() 
                 erros.append(f"Erro em {tabela}: {e}")
         
         conn.commit(); cur.close(); conn.close()
         return sucessos, erros
-
     except Exception as e:
         if conn: conn.close()
         return [], [str(e)]
@@ -373,16 +308,17 @@ def buscar_cliente_vinculado_ao_usuario(id_usuario):
     return cliente
 
 def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
+    # CORREÇÃO CRÍTICA: ID automático e busca de dados
     try:
         cur = conn.cursor()
         id_cli = str(dados_cliente['id'])
         
-        # 1. Busca Custo, Produto e VENDEDOR (id_usuario_vinculo do cliente)
-        # Nota: Estamos buscando o id_usuario_vinculo direto do cliente para garantir que o vendedor receba a comissão/registro
+        # 1. Busca dados do VENDEDOR
         cur.execute("SELECT id_usuario_vinculo FROM admin.clientes WHERE id = %s", (id_cli,))
         res_vendedor = cur.fetchone()
         id_vendedor = str(res_vendedor[0]) if res_vendedor and res_vendedor[0] else '0'
 
+        # 2. Busca Custo e Produto
         sql_custo = "SELECT valor_custo, id_produto, nome_produto FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
         cur.execute(sql_custo, (id_cli, origem_custo_chave))
         res_custo = cur.fetchone()
@@ -395,17 +331,17 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         
         if valor_debitar <= 0: return True, "Gratuito."
 
-        # 2. Busca Saldo Anterior
+        # 3. Busca Saldo Anterior
         sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
         cur.execute(sql_saldo, (id_cli,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         saldo_novo = saldo_anterior - valor_debitar
         
-        # 3. Identifica Operador (Quem clicou no botão)
+        # 4. Nome do Operador
         nome_operador = st.session_state.get('usuario_nome', 'Sistema')
 
-        # 4. INSERT (Sem passar ID, deixando o banco gerar a sequence)
+        # 5. INSERT SEM O CAMPO ID (Banco gera sequência)
         sql_insert = """
             INSERT INTO cliente.extrato_carteira_por_produto (
                 produto_vinculado, id_cliente, nome_cliente, id_usuario, nome_usuario,
@@ -416,8 +352,8 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
             nome_prod_vinc, 
             id_cli, 
             str(dados_cliente['nome']), 
-            id_vendedor,   # ID do Vendedor (Dono da Carteira)
-            nome_operador, # Nome de quem executou a ação (Logado)
+            id_vendedor,   # ID do Vendedor
+            nome_operador, # Nome do Operador
             origem_custo_chave, 
             valor_debitar, 
             saldo_anterior, 
@@ -428,10 +364,6 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
     except Exception as e: return False, f"Erro: {str(e)}"
 
 def obter_dados_financeiros_cliente(conn, id_cliente, origem_custo):
-    """
-    Retorna um dicionário com saldo atual e custo previsto para o cliente/origem.
-    Usado para exibir resumo financeiro antes ou depois da transação.
-    """
     dados = {
         "saldo_atual": 0.0,
         "custo_previsto": 0.0,
@@ -439,7 +371,6 @@ def obter_dados_financeiros_cliente(conn, id_cliente, origem_custo):
     }
     try:
         cur = conn.cursor()
-        # 1. Busca Custo Unitário para essa ferramenta
         sql_custo = "SELECT valor_custo, nome_produto FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
         cur.execute(sql_custo, (str(id_cliente), origem_custo))
         res_custo = cur.fetchone()
@@ -448,121 +379,25 @@ def obter_dados_financeiros_cliente(conn, id_cliente, origem_custo):
             dados["custo_previsto"] = float(res_custo[0])
             dados["produto_vinculado"] = res_custo[1]
         else:
-            # Se não tiver custo específico, pega o geral do sistema (fallback)
             dados["custo_previsto"] = buscar_valor_consulta_atual()
 
-        # 2. Busca Saldo Atual (Último registro do extrato)
         sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
         cur.execute(sql_saldo, (str(id_cliente),))
         res_saldo = cur.fetchone()
         if res_saldo:
             dados["saldo_atual"] = float(res_saldo[0])
             
-    except:
-        pass
-        
+    except: pass
     return dados
 
-# --- FUNÇÃO ORIGINAL (MANTIDA PARA A ABA DE TESTE) ---
-def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
-    # Padroniza CPF para string limpa
-    cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
-    if not cpf_padrao: return {"sucesso": False, "msg": "CPF Inválido"}
-
-    conn = get_conn()
-    if not conn: return {"sucesso": False, "msg": "Erro DB."}
-    
-    id_usuario = st.session_state.get('usuario_id', 0)
-    nome_usuario = st.session_state.get('usuario_nome', 'Sistema')
-    dados_pagador = {"id": None, "nome": None, "id_usuario": id_usuario, "nome_usuario": nome_usuario}
-    
-    if id_cliente_pagador_manual:
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
-            res = cur.fetchone()
-            if res: dados_pagador["id"] = res[0]; dados_pagador["nome"] = res[1]
-        except: pass
-    else:
-        d = buscar_cliente_vinculado_ao_usuario(id_usuario)
-        dados_pagador["id"] = d['id']; dados_pagador["nome"] = d['nome']
-
-    origem_real = buscar_origem_por_ambiente(ambiente)
-
-    try:
-        cur = conn.cursor()
-        
-        # Verifica Cache
-        if not forcar_nova:
-            cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
-            res = cur.fetchone()
-            if res and res[0] and os.path.exists(res[0]):
-                with open(res[0], 'r', encoding='utf-8') as f: dados = json.load(f)
-                conn.close()
-                return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
-
-        custo_previsto = 0.0
-        if dados_pagador['id']:
-             sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
-             cur.execute(sql_custo, (str(dados_pagador['id']), origem_real))
-             res_custo = cur.fetchone()
-             custo_previsto = float(res_custo[0]) if res_custo else buscar_valor_consulta_atual()
-
-             sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
-             cur.execute(sql_saldo, (str(dados_pagador['id']),))
-             res_s = cur.fetchone()
-             saldo_atual = float(res_s[0]) if res_s else 0.0
-
-             if saldo_atual < custo_previsto:
-                 conn.close()
-                 return {"sucesso": False, "msg": "Saldo insuficiente."}
-
-        cred = buscar_credenciais()
-        if not cred['token']: conn.close(); return {"sucesso": False, "msg": "Token API ausente."}
-        
-        resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
-        dados = parse_xml_to_dict(resp.text)
-        
-        nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
-        path = os.path.join(PASTA_JSON, nome_arq)
-        try:
-            with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
-        except: pass
-
-        cpf_num = int(re.sub(r'\D', '', str(cpf_padrao)))
-
-        cur.execute("""
-            INSERT INTO conexoes.fatorconferi_registo_consulta 
-            (tipo_consulta, cpf_consultado, cpf_consultado_num, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) 
-            VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)
-            """, 
-            (cpf_padrao, cpf_num, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente)
-        )
-        
-        msg_fin = ""
-        if dados_pagador['id']:
-            ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
-            msg_fin = f" | {txt_fin}"
-        
-        conn.commit(); conn.close()
-        return {"sucesso": True, "dados": dados, "msg": "Consulta OK." + msg_fin}
-    except Exception as e:
-        if conn: conn.close()
-        return {"sucesso": False, "msg": str(e)}
-
-# --- NOVA FUNÇÃO COM FILA/LOCK (ATUALIZAÇÃO CADASTRAL) ---
 def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
-    """
-    Versão da função realizar_consulta_cpf que utiliza LOCK de banco de dados
-    para garantir execução sequencial (Fila) e retorna objeto financeiro completo.
-    """
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
     if not cpf_padrao: return {"sucesso": False, "msg": "CPF Inválido"}
 
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
-    # Estrutura de retorno financeiro padrão
+    # Inicializa resumo
     resumo_financeiro = {
         "saldo_anterior": 0.0,
         "custo_unitario": 0.0,
@@ -572,79 +407,62 @@ def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pa
     
     try:
         cur = conn.cursor()
-        
-        # --- LOCK: INÍCIO DA FILA ---
-        # 20240101 é uma chave arbitrária para representar a fila de consultas CPF
         cur.execute("SELECT pg_advisory_xact_lock(20240101)") 
         
-        # --- LÓGICA DE NEGÓCIO ---
         id_usuario = st.session_state.get('usuario_id', 0)
-        
-        # DEFINE O PAGADOR (Lógica Obrigatória)
         dados_pagador = {"id": None, "nome": None}
         
-        # 1. Se foi passado manualmente (Admin selecionou na lista)
         if id_cliente_pagador_manual:
              cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
              res = cur.fetchone()
              if res: dados_pagador["id"] = res[0]; dados_pagador["nome"] = res[1]
         
-        # 2. Se não, tenta pegar do vínculo do usuário logado
         if not dados_pagador["id"]:
             d = buscar_cliente_vinculado_ao_usuario(id_usuario)
             dados_pagador["id"] = d['id']; dados_pagador["nome"] = d['nome']
 
-        # Se mesmo assim não tiver pagador, aborta (Regra de Pagador Obrigatório)
         if not dados_pagador["id"]:
             conn.rollback(); conn.close()
             return {"sucesso": False, "msg": "Pagador não identificado. Associe um cliente ao usuário ou selecione na lista."}
 
         origem_real = buscar_origem_por_ambiente(ambiente)
         
-        # --- PREPARA DADOS FINANCEIROS (SNAPSHOT INICIAL) ---
+        # --- PREPARA DADOS FINANCEIROS ---
         info_fin = obter_dados_financeiros_cliente(conn, dados_pagador["id"], origem_real)
-        saldo_inicial = info_fin["saldo_atual"]
-        custo_tabela = info_fin["custo_previsto"]
+        saldo_inicial = float(info_fin["saldo_atual"] or 0.0)
+        custo_tabela = float(info_fin["custo_previsto"] or 0.0)
         
         resumo_financeiro["saldo_anterior"] = saldo_inicial
         resumo_financeiro["custo_unitario"] = custo_tabela
-        resumo_financeiro["saldo_final"] = saldo_inicial # Por enquanto igual
+        # O saldo final inicial é igual ao anterior, pois ainda não debitou
+        resumo_financeiro["saldo_final"] = saldo_inicial 
 
-        # 1. Verifica Cache
         if not forcar_nova:
             cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
             res = cur.fetchone()
             if res and res[0] and os.path.exists(res[0]):
                 with open(res[0], 'r', encoding='utf-8') as f: dados = json.load(f)
-                # Cache encontrado: retorna sucesso e dados financeiros (sem débito)
-                conn.commit() 
-                conn.close()
+                conn.commit(); conn.close()
                 return {"sucesso": True, "dados": dados, "msg": "Dados recuperados (Cache).", "financeiro": resumo_financeiro}
 
-        # Verifica Saldo para API Nova
         if saldo_inicial < custo_tabela:
-             conn.rollback() # Libera Lock
-             conn.close()
+             conn.rollback(); conn.close()
              return {"sucesso": False, "msg": f"Saldo insuficiente. Necessário: R$ {custo_tabela:.2f} | Atual: R$ {saldo_inicial:.2f}"}
 
-        # Chamada API (O Lock segura a fila aqui)
         cred = buscar_credenciais()
         if not cred['token']: 
-            conn.rollback()
-            conn.close()
+            conn.rollback(); conn.close()
             return {"sucesso": False, "msg": "Token API ausente."}
         
         resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
         dados = parse_xml_to_dict(resp.text)
         
-        # Salva JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         try:
             with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
         except: pass
 
-        # Registra Consulta
         cpf_num = int(re.sub(r'\D', '', str(cpf_padrao)))
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
@@ -657,22 +475,19 @@ def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pa
         # --- PROCESSA DÉBITO ---
         ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
         if not ok_fin:
-            conn.rollback() # Se der erro no debito, desfaz registro de consulta
-            conn.close()
+            conn.rollback(); conn.close()
             return {"sucesso": False, "msg": f"Erro na cobrança: {txt_fin}"}
         
-        # Atualiza Resumo Financeiro Final
+        # --- CÁLCULO E ATUALIZAÇÃO DO RESUMO FINANCEIRO PARA A TELA ---
+        # Força o valor debitado e o saldo final recalculado
         resumo_financeiro["valor_debitado"] = custo_tabela
         resumo_financeiro["saldo_final"] = saldo_inicial - custo_tabela
         
-        conn.commit() # SUCESSO: Efetiva tudo e Libera o LOCK
-        conn.close()
+        conn.commit(); conn.close()
         return {"sucesso": True, "dados": dados, "msg": "Consulta Realizada.", "financeiro": resumo_financeiro}
 
     except Exception as e:
-        if conn: 
-            conn.rollback() # Erro geral, libera Lock
-            conn.close()
+        if conn: conn.rollback(); conn.close()
         return {"sucesso": False, "msg": str(e)}
 
 # =============================================================================
