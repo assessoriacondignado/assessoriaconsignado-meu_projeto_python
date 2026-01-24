@@ -31,6 +31,12 @@ except ImportError as e:
     st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Detalhe: {e}")
     st.stop()
 
+# --- IMPORTAÇÃO DO MÓDULO FATOR CONFERI (PARA O BOTÃO) ---
+try:
+    import modulo_fator_conferi
+except ImportError:
+    modulo_fator_conferi = None
+
 # ==============================================================================
 # 1. CONFIGURAÇÃO DE PERFORMANCE (CONNECTION POOL BLINDADO)
 # ==============================================================================
@@ -137,8 +143,86 @@ OPERADORES_SQL = {
 }
 
 # ==============================================================================
-# 3. FUNÇÕES DE BUSCA (LEITURA) - COM CORREÇÃO DE CPF
+# 3. FUNÇÕES DE BUSCA E INTEGRAÇÃO FATOR
 # ==============================================================================
+
+@st.dialog("🔄 Resultado Atualização Cadastral")
+def executar_atualizacao_cadastral(cpf, nome):
+    """
+    Executa a integração com modulo_fator_conferi, realiza cobrança
+    e exibe o recibo formatado em HTML.
+    """
+    if not modulo_fator_conferi:
+        st.error("Módulo Fator Conferi não carregado.")
+        return
+
+    st.write(f"Iniciando consulta para: **{nome}**")
+    
+    # 1. Executa Consulta Segura (Cobrança + Lock)
+    with st.spinner("Conectando ao Bureau e verificando saldo..."):
+        # Usa o ambiente 'sistema_consulta_cadastro' para logar a origem
+        resultado = modulo_fator_conferi.realizar_consulta_cpf_segura(
+            cpf=str(cpf), 
+            ambiente="sistema_consulta_cadastro", 
+            forcar_nova=False
+        )
+
+    if resultado['sucesso']:
+        # 2. Distribui dados nas tabelas
+        with st.spinner("Atualizando tabelas do sistema..."):
+            sucessos, erros = modulo_fator_conferi.executar_distribuicao_dinamica(resultado['dados'])
+        
+        # 3. Prepara Dados para o Recibo
+        fin = resultado.get('financeiro', {})
+        saldo_ant = float(fin.get('saldo_anterior', 0))
+        valor_deb = float(fin.get('valor_debitado', 0))
+        saldo_fim = float(fin.get('saldo_final', 0))
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        cpf_fmt = v.ValidadorDocumentos.cpf_para_tela(cpf)
+
+        # Formata lista de tabelas atualizadas
+        lista_tabs = ""
+        if sucessos:
+            for s in sucessos:
+                lista_tabs += f"<li>{s}</li>"
+        else:
+            lista_tabs = "<li>Nenhuma tabela nova atualizada (dados já existentes).</li>"
+
+        # 4. HTML do Recibo
+        html_recibo = f"""
+        <div style="background-color: #e8f5e9; border: 1px solid #4caf50; border-radius: 8px; padding: 15px; font-family: sans-serif; color: #1b5e20;">
+            <h3 style="margin-top:0; color: #2e7d32;">✅ Consulta Realizada</h3>
+            <p><strong>Data/Hora:</strong> {agora}</p>
+            <p><strong>Cliente:</strong> {nome}</p>
+            <p><strong>CPF:</strong> {cpf_fmt}</p>
+            <hr style="border: 0; border-top: 1px solid #a5d6a7; margin: 10px 0;">
+            
+            <p><strong>Tabelas Atualizadas:</strong></p>
+            <ul style="font-size: 0.9em; margin-bottom: 15px;">
+                {lista_tabs}
+            </ul>
+            
+            <div style="background-color: #ffffff; padding: 10px; border-radius: 5px; border: 1px solid #c8e6c9;">
+                <p style="margin: 5px 0;"><strong>Saldo Anterior:</strong> R$ {saldo_ant:,.2f}</p>
+                <p style="margin: 5px 0; color: #d32f2f;"><strong>Valor Debitado:</strong> R$ {valor_deb:,.2f}</p>
+                <p style="margin: 5px 0; font-size: 1.1em;"><strong>Saldo Final:</strong> <b>R$ {saldo_fim:,.2f}</b></p>
+                <p style="font-size: 0.8em; color: #666; margin-top: 5px;">Obs: saldo geral de sua conta</p>
+            </div>
+        </div>
+        """
+        st.markdown(html_recibo, unsafe_allow_html=True)
+        
+        if erros:
+            with st.expander("⚠️ Avisos de Importação"):
+                for e in erros: st.write(e)
+                
+        # Botão para fechar e recarregar a página para ver os dados novos
+        if st.button("Fechar e Recarregar Dados", type="primary"):
+            st.rerun()
+
+    else:
+        st.error(f"❌ Falha na Consulta: {resultado.get('msg')}")
+
 
 @st.cache_data(ttl=300)
 def buscar_relacao_auxiliar(tipo):
@@ -997,9 +1081,13 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         else:
             with st.expander("📋 Convênios e Contratos", expanded=False): st.info("Nenhum convênio ou contrato localizado.")
 
+    # --- LATERAL: BOTÃO DE ATUALIZAÇÃO ---
     with c_lateral:
-        with st.container(border=True): st.markdown("###### CONEXÃO")
-        with st.container(border=True): st.caption("ATUALIZAÇÃO CADASTRO")
+        with st.container(border=True):
+            st.markdown("###### CONEXÃO")
+            # --- MODIFICAÇÃO AQUI: BOTÃO AO INVÉS DE TEXTO ---
+            if st.button("🔄 Atualizar", key=f"btn_upd_{cpf}", use_container_width=True, help="Consultar e atualizar dados (Custo Aplicável)"):
+                executar_atualizacao_cadastral(cpf, pessoal.get('nome', 'Cliente'))
 
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
@@ -1103,7 +1191,9 @@ def tela_pesquisa():
                     st.rerun()
         with c_conexao:
             with st.container(border=True): st.markdown("###### CONEXÃO")
-            with st.container(border=True): st.caption("ATUALIZAÇÃO CADASTRO")
+            # --- MODIFICAÇÃO AQUI: BOTÃO AO INVÉS DE TEXTO ---
+            if st.button("🔄 Atualizar", key=f"btn_upd_list_{row[2]}", use_container_width=True, help="Consultar e atualizar dados"):
+                executar_atualizacao_cadastral(row[2], row[1])
 
 def app_cadastro():
     if 'modo_visualizacao' not in st.session_state: st.session_state['modo_visualizacao'] = None
