@@ -66,6 +66,13 @@ try:
 except ImportError:
     modulo_permissoes_cliente = None
 
+# [NOVO] 8. Relatórios (modulo_relatorios.py)
+try:
+    import modulo_relatorios
+except ImportError as e:
+    modulo_relatorios = None
+    erros_importacao.append(f"Relatórios: {e}")
+
 
 # --- 3. FUNÇÃO PRINCIPAL DA TELA ---
 def app_clientes():
@@ -87,8 +94,8 @@ def app_clientes():
     if modulo_gestao_tabelas_cliente:   mapa_abas["📊 Tabelas (Admin)"] = modulo_gestao_tabelas_cliente
     if modulo_financeiro_cliente:       mapa_abas["💰 Financeiro"] = modulo_financeiro_cliente
     
-    # Aba Relatórios (Funcionalidade Local)
-    mapa_abas["📈 Relatórios"] = "local_relatorios"
+    # [ALTERAÇÃO] Aba Relatórios Conectada ao Módulo Real
+    if modulo_relatorios:               mapa_abas["📈 Relatórios"] = modulo_relatorios
     
     # Configurações e Admin
     if modulo_parametros_cliente:       mapa_abas["⚙️ Config. Carteiras"] = modulo_parametros_cliente
@@ -126,13 +133,11 @@ def app_clientes():
                 elif nome_aba == "💰 Financeiro":
                     if hasattr(modulo, 'app_financeiro'): modulo.app_financeiro()
 
-                # 5. RELATÓRIOS (Local)
+                # 5. RELATÓRIOS (Atualizado)
                 elif nome_aba == "📈 Relatórios":
-                    st.subheader("Relatórios Gerenciais")
-                    st.info("Área destinada à emissão de relatórios consolidados.")
-                    c1, c2 = st.columns(2)
-                    with c1: st.selectbox("Tipo de Relatório", ["Geral", "Inadimplência", "Novos Clientes"])
-                    with c2: st.button("Gerar PDF")
+                    # [ALTERAÇÃO] Chamada da função real do módulo
+                    if hasattr(modulo, 'app_relatorios'): modulo.app_relatorios()
+                    else: st.warning("Função 'app_relatorios' não encontrada no módulo.")
 
                 # 6. CONFIG. CARTEIRAS
                 elif nome_aba == "⚙️ Config. Carteiras":
