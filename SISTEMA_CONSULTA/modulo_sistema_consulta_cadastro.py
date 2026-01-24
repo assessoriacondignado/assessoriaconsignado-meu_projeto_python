@@ -859,11 +859,8 @@ def modal_confirmar_exclusao(cpf):
 
 def tela_ficha_cliente(cpf, modo='visualizar'):
     if 'modo_edicao' not in st.session_state: st.session_state['modo_edicao'] = False
-    if st.button("⬅️ Voltar", use_container_width=True):
-        st.session_state['cliente_ativo_cpf'] = None
-        st.session_state['modo_visualizacao'] = None
-        st.session_state['modo_edicao'] = False
-        st.rerun()
+    
+    # [REMOVIDO] Botão Voltar do topo
 
     if modo == 'novo':
         st.markdown("## ✨ Novo Cadastro")
@@ -897,12 +894,20 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     c_dados, c_lateral = st.columns([9, 1])
     with c_dados:
         st.divider()
-        c_head, c_act = st.columns([3, 2])
+        # [ALTERAÇÃO] Proporção ajustada para [4, 5] para acomodar 4 botões na direita
+        c_head, c_act = st.columns([4, 5])
         cpf_show = v.ValidadorDocumentos.cpf_para_tela(pessoal.get('cpf', ''))
         c_head.markdown(f"## 👤 {pessoal.get('nome', 'Sem Nome')}")
         c_head.caption(f"CPF: {cpf_show}")
         with c_act:
-            c_ins, c_edit, c_del = st.columns(3)
+            # [ALTERAÇÃO] Divisão em 4 colunas para incluir "Voltar"
+            c_back, c_ins, c_edit, c_del = st.columns(4)
+            with c_back:
+                if st.button("⬅️ Voltar", use_container_width=True):
+                    st.session_state['cliente_ativo_cpf'] = None
+                    st.session_state['modo_visualizacao'] = None
+                    st.session_state['modo_edicao'] = False
+                    st.rerun()
             with c_ins:
                 if st.button("➕ Extra", help="Inserir telefone, email, contrato", use_container_width=True): modal_inserir_dados(cpf, pessoal.get('nome'))
             with c_edit:
