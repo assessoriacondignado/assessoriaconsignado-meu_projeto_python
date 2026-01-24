@@ -146,82 +146,77 @@ OPERADORES_SQL = {
 # 3. FUNÇÕES DE BUSCA E INTEGRAÇÃO FATOR
 # ==============================================================================
 
-@st.dialog("🔄 Resultado Atualização Cadastral")
-def executar_atualizacao_cadastral(cpf, nome):
+def processar_atualizacao_cadastral(cpf, nome):
     """
-    Executa a integração com modulo_fator_conferi, realiza cobrança
-    e exibe o recibo formatado em HTML.
+    Executa a integração com modulo_fator_conferi e retorna o HTML do recibo
+    ou mensagem de erro. NÃO usa @st.dialog para permitir embutir na lateral.
     """
     if not modulo_fator_conferi:
-        st.error("Módulo Fator Conferi não carregado.")
-        return
-
-    st.write(f"Iniciando consulta para: **{nome}**")
+        return False, "<div style='color:red; font-size:10px;'>Módulo Fator Conferi não carregado.</div>"
     
     # 1. Executa Consulta Segura (Cobrança + Lock)
-    with st.spinner("Conectando ao Bureau e verificando saldo..."):
-        # Usa o ambiente 'sistema_consulta_cadastro' para logar a origem
+    try:
         resultado = modulo_fator_conferi.realizar_consulta_cpf_segura(
             cpf=str(cpf), 
             ambiente="sistema_consulta_cadastro", 
             forcar_nova=False
         )
+    except Exception as e:
+        return False, f"<div style='color:red; font-size:10px;'>Erro na consulta: {e}</div>"
 
     if resultado['sucesso']:
         # 2. Distribui dados nas tabelas
-        with st.spinner("Atualizando tabelas do sistema..."):
-            sucessos, erros = modulo_fator_conferi.executar_distribuicao_dinamica(resultado['dados'])
+        sucessos, erros = modulo_fator_conferi.executar_distribuicao_dinamica(resultado['dados'])
         
         # 3. Prepara Dados para o Recibo
         fin = resultado.get('financeiro', {})
         saldo_ant = float(fin.get('saldo_anterior', 0))
         valor_deb = float(fin.get('valor_debitado', 0))
         saldo_fim = float(fin.get('saldo_final', 0))
-        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        cpf_fmt = v.ValidadorDocumentos.cpf_para_tela(cpf)
-
-        # Formata lista de tabelas atualizadas
+        agora = datetime.now().strftime("%d/%m %H:%M")
+        
+        # Formata lista de tabelas atualizadas (Compacta)
         lista_tabs = ""
         if sucessos:
             for s in sucessos:
-                lista_tabs += f"<li>{s}</li>"
+                # Remove prefixo longo para economizar espaço
+                nome_tab = s.replace("sistema_consulta_dados_", "").replace("sistema_consulta_", "")
+                lista_tabs += f"<li style='margin:0; padding:0;'>{nome_tab}</li>"
         else:
-            lista_tabs = "<li>Nenhuma tabela nova atualizada (dados já existentes).</li>"
+            lista_tabs = "<li style='margin:0; padding:0;'>Nenhum dado novo.</li>"
 
-        # 4. HTML do Recibo
+        # 4. HTML do Recibo COMPACTO (Fonte 6 / 10px)
+        # Ajustado para caber na sidebar "CONEXÃO"
         html_recibo = f"""
-        <div style="background-color: #e8f5e9; border: 1px solid #4caf50; border-radius: 8px; padding: 15px; font-family: sans-serif; color: #1b5e20;">
-            <h3 style="margin-top:0; color: #2e7d32;">✅ Consulta Realizada</h3>
-            <p><strong>Data/Hora:</strong> {agora}</p>
-            <p><strong>Cliente:</strong> {nome}</p>
-            <p><strong>CPF:</strong> {cpf_fmt}</p>
-            <hr style="border: 0; border-top: 1px solid #a5d6a7; margin: 10px 0;">
+        <div style="background-color: #f1f8e9; border: 1px solid #4caf50; border-radius: 4px; padding: 5px; font-family: sans-serif; color: #1b5e20; font-size: 10px; line-height: 1.1;">
+            <div style="font-weight:bold; color: #2e7d32; border-bottom: 1px solid #a5d6a7; margin-bottom: 3px; padding-bottom: 2px;">
+                ✅ Atualizado
+            </div>
+            <div style="margin-bottom: 3px;">
+                <b>Data:</b> {agora}<br>
+            </div>
             
-            <p><strong>Tabelas Atualizadas:</strong></p>
-            <ul style="font-size: 0.9em; margin-bottom: 15px;">
+            <div style="font-weight:bold; margin-top: 4px;">Tabelas:</div>
+            <ul style="margin: 0 0 5px 0; padding-left: 12px; font-size: 9px;">
                 {lista_tabs}
             </ul>
             
-            <div style="background-color: #ffffff; padding: 10px; border-radius: 5px; border: 1px solid #c8e6c9;">
-                <p style="margin: 5px 0;"><strong>Saldo Anterior:</strong> R$ {saldo_ant:,.2f}</p>
-                <p style="margin: 5px 0; color: #d32f2f;"><strong>Valor Debitado:</strong> R$ {valor_deb:,.2f}</p>
-                <p style="margin: 5px 0; font-size: 1.1em;"><strong>Saldo Final:</strong> <b>R$ {saldo_fim:,.2f}</b></p>
-                <p style="font-size: 0.8em; color: #666; margin-top: 5px;">Obs: saldo geral de sua conta</p>
+            <div style="background-color: #ffffff; padding: 4px; border-radius: 3px; border: 1px solid #c8e6c9; margin-top: 4px;">
+                <div style="margin-bottom: 2px;"><b>Saldo Ant:</b> {saldo_ant:,.2f}</div>
+                <div style="margin-bottom: 2px; color: #d32f2f;"><b>Débito:</b> -{valor_deb:,.2f}</div>
+                <div style="font-weight:bold; border-top: 1px dotted #ccc; padding-top:2px;">Saldo: {saldo_fim:,.2f}</div>
             </div>
         </div>
         """
-        st.markdown(html_recibo, unsafe_allow_html=True)
         
         if erros:
-            with st.expander("⚠️ Avisos de Importação"):
-                for e in erros: st.write(e)
-                
-        # Botão para fechar e recarregar a página para ver os dados novos
-        if st.button("Fechar e Recarregar Dados", type="primary"):
-            st.rerun()
+             html_recibo += f"<div style='color:orange; font-size:9px; margin-top:2px;'>⚠️ {len(erros)} avisos na importação.</div>"
+             
+        return True, html_recibo
 
     else:
-        st.error(f"❌ Falha na Consulta: {resultado.get('msg')}")
+        msg = resultado.get('msg', 'Erro desconhecido')
+        return False, f"<div style='color:red; font-size:10px; border:1px solid red; padding:5px;'>❌ Falha: {msg}</div>"
 
 
 @st.cache_data(ttl=300)
@@ -347,9 +342,9 @@ def buscar_cliente_dinamica(filtros_aplicados):
                 
                 # Se for telefone (pode ser bigint ou texto), faz cast para garantir like
                 if coluna == 'telefone' and 'LIKE' in operador_sql:
-                     sub_where = f"CAST({coluna} AS TEXT) {operador_sql} %s"
+                      sub_where = f"CAST({coluna} AS TEXT) {operador_sql} %s"
                 else:
-                     sub_where = f"{coluna} {operador_sql} %s"
+                      sub_where = f"{coluna} {operador_sql} %s"
 
                 exists_clause = f"EXISTS (SELECT 1 FROM sistema_consulta.{tabela_satelite} WHERE cpf = t.cpf AND {sub_where})"
                 where_clauses.append(exists_clause)
@@ -357,7 +352,7 @@ def buscar_cliente_dinamica(filtros_aplicados):
 
             elif tipo_dado == 'numero_calculado': # Idade
                 if "IS NULL" in operador_sql:
-                     where_clauses.append(f"t.data_nascimento IS NULL")
+                      where_clauses.append(f"t.data_nascimento IS NULL")
                 elif operador_sql == 'BETWEEN':
                     where_clauses.append(f"EXTRACT(YEAR FROM age(t.data_nascimento)) BETWEEN %s AND %s")
                     params.append(valor_original[0])
@@ -1085,9 +1080,24 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
     with c_lateral:
         with st.container(border=True):
             st.markdown("###### CONEXÃO")
-            # --- MODIFICAÇÃO AQUI: BOTÃO AO INVÉS DE TEXTO ---
-            if st.button("🔄 Atualizar", key=f"btn_upd_{cpf}", use_container_width=True, help="Consultar e atualizar dados (Custo Aplicável)"):
-                executar_atualizacao_cadastral(cpf, pessoal.get('nome', 'Cliente'))
+            
+            # --- LÓGICA DE EXIBIÇÃO: BOTÃO vs RESULTADO ---
+            key_recibo = f"recibo_atualizacao_{cpf}"
+            
+            # Se já tem recibo gravado no estado, mostra o HTML
+            if st.session_state.get(key_recibo):
+                st.markdown(st.session_state[key_recibo], unsafe_allow_html=True)
+                if st.button("❌ Fechar", key=f"btn_close_{cpf}", use_container_width=True):
+                    del st.session_state[key_recibo]
+                    st.rerun()
+            else:
+                # Se não tem, mostra o botão de atualizar
+                if st.button("🔄 Atualizar", key=f"btn_upd_{cpf}", use_container_width=True, help="Consultar e atualizar dados (Custo Aplicável)"):
+                    with st.spinner("Atualizando..."):
+                         sucesso, html_result = processar_atualizacao_cadastral(cpf, pessoal.get('nome', 'Cliente'))
+                         # Salva no estado para persistir na tela
+                         st.session_state[key_recibo] = html_result
+                         st.rerun()
 
 def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
@@ -1190,10 +1200,22 @@ def tela_pesquisa():
                     st.session_state['modo_visualizacao'] = 'visualizar'
                     st.rerun()
         with c_conexao:
-            with st.container(border=True): st.markdown("###### CONEXÃO")
-            # --- MODIFICAÇÃO AQUI: BOTÃO AO INVÉS DE TEXTO ---
-            if st.button("🔄 Atualizar", key=f"btn_upd_list_{row[2]}", use_container_width=True, help="Consultar e atualizar dados"):
-                executar_atualizacao_cadastral(row[2], row[1])
+             with st.container(border=True):
+                st.markdown("###### CONEXÃO")
+                
+                # --- LÓGICA DE EXIBIÇÃO NA PESQUISA ---
+                key_recibo_pesq = f"recibo_atualizacao_pesq_{row[2]}"
+                if st.session_state.get(key_recibo_pesq):
+                    st.markdown(st.session_state[key_recibo_pesq], unsafe_allow_html=True)
+                    if st.button("❌", key=f"btn_close_p_{row[2]}", use_container_width=True):
+                        del st.session_state[key_recibo_pesq]
+                        st.rerun()
+                else:
+                    if st.button("🔄 Atualizar", key=f"btn_upd_list_{row[2]}", use_container_width=True, help="Consultar e atualizar dados"):
+                        with st.spinner(".."):
+                             sucesso, html_result = processar_atualizacao_cadastral(row[2], row[1])
+                             st.session_state[key_recibo_pesq] = html_result
+                             st.rerun()
 
 def app_cadastro():
     if 'modo_visualizacao' not in st.session_state: st.session_state['modo_visualizacao'] = None
