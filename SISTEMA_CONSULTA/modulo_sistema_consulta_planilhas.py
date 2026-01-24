@@ -4,6 +4,7 @@ import psycopg2
 from psycopg2 import sql
 import sys
 import os
+import time
 
 # --- CONFIGURAÇÃO DE CAMINHOS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -62,6 +63,9 @@ def carregar_dados_paginados(tabela, pagina, linhas_por_pagina, filtro_col=None,
     offset = (pagina - 1) * linhas_por_pagina
     
     try:
+        # Usa sql.Identifier para proteger o nome da tabela
+        # Monta a base da query. Ex: FROM sistema_consulta.tabela
+        # Nota: Construção manual simples aqui, mas idealmente usaria sql.SQL
         query_base = f"FROM sistema_consulta.{tabela}"
         params = []
         
@@ -76,15 +80,19 @@ def carregar_dados_paginados(tabela, pagina, linhas_por_pagina, filtro_col=None,
 
         # Conta total (para paginação) - Limitado a 1M para não demorar em tabelas gigantes
         with conn.cursor() as cur:
-            cur.execute(f"SELECT count(*) {query_base}") # Count rápido se tiver índice
+            # CORREÇÃO AQUI: Passar os parâmetros para o execute
+            query_count = f"SELECT count(*) {query_base}"
+            cur.execute(query_count, tuple(params)) 
             total_linhas = cur.fetchone()[0]
             
             # Busca dados
             sql_data = f"SELECT * {query_base} LIMIT %s OFFSET %s"
-            params.extend([linhas_por_pagina, offset])
+            # Adiciona limit e offset aos parâmetros
+            params_dados = params.copy()
+            params_dados.extend([linhas_por_pagina, offset])
             
-            # Usa pandas read_sql com a conexão psycopg2 (mais rápido que engine sqlalchemy)
-            df = pd.read_sql(sql_data, conn, params=params)
+            # Usa pandas read_sql com a conexão psycopg2
+            df = pd.read_sql(sql_data, conn, params=params_dados)
             
         return df, total_linhas
     except Exception as e:
