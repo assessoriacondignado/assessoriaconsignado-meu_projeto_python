@@ -5,7 +5,7 @@ import os
 import toml
 
 # =============================================================================
-# 1. CARREGAMENTO DE CREDENCIAIS (Híbrido: Streamlit Secrets ou Arquivo Local)
+# 1. CARREGAMENTO DE CREDENCIAIS (Híbrido)
 # =============================================================================
 host = None
 port = None
@@ -14,7 +14,7 @@ user = None
 password = None
 
 def carregar_secrets_manualmente():
-    """Tenta localizar e ler o secrets.toml manualmente em caminhos comuns"""
+    """Tenta localizar e ler o secrets.toml manualmente"""
     caminhos_possiveis = [
         ".streamlit/secrets.toml",
         os.path.join(os.getcwd(), ".streamlit/secrets.toml"),
@@ -32,7 +32,7 @@ def carregar_secrets_manualmente():
     return None
 
 try:
-    # Tentativa 1: Via Streamlit (Funciona quando roda 'streamlit run')
+    # Tentativa 1: Via Streamlit
     host = st.secrets["DB_HOST"]
     port = st.secrets["DB_PORT"]
     database = st.secrets["DB_NAME"]
@@ -40,8 +40,8 @@ try:
     password = st.secrets["DB_PASS"]
     
 except (FileNotFoundError, AttributeError, KeyError):
-    # Tentativa 2: Via arquivo direto (Funciona para scripts Python puros/Webhooks)
-    print("⚠️ Modo Streamlit não detectado ou secrets não carregado. Tentando leitura manual...", flush=True)
+    # Tentativa 2: Via arquivo direto (Fallback)
+    print("⚠️  Modo Streamlit nao detectado. Tentando leitura manual...", flush=True)
     secrets_dict = carregar_secrets_manualmente()
     
     if secrets_dict:
@@ -53,30 +53,23 @@ except (FileNotFoundError, AttributeError, KeyError):
             password = secrets_dict["DB_PASS"]
             print("✅ Secrets carregados manualmente com sucesso!", flush=True)
         except KeyError as e:
-            print(f"❌ Erro: Chave {e} não encontrada no secrets.toml manual.")
+            print(f"❌ Erro: Chave {e} nao encontrada no secrets.toml manual.")
     else:
-        print("❌ CRÍTICO: Não foi possível carregar as credenciais do banco de dados.", flush=True)
+        print("❌ CRITICO: Nao foi possivel carregar as credenciais.", flush=True)
 
 # =============================================================================
-# 2. FUNÇÃO DE CONEXÃO PADRÃO (PSYCOPG2)
+# 2. FUNCOES DE CONEXAO
 # =============================================================================
 def get_conn():
     try:
         conn = psycopg2.connect(
-            host=host,
-            port=port,
-            database=database,
-            user=user,
-            password=password
+            host=host, port=port, database=database, user=user, password=password
         )
         return conn
     except Exception as e:
         print(f"Erro de conexão (Psycopg2): {e}")
         return None
 
-# =============================================================================
-# 3. FUNÇÃO DE CONEXÃO ORM (SQLALCHEMY)
-# =============================================================================
 def criar_conexao():
     try:
         url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
@@ -84,9 +77,3 @@ def criar_conexao():
     except Exception as e:
         print(f"Erro de conexão (SQLAlchemy): {e}")
         return None
-
-if __name__ == "__main__":
-    if get_conn():
-        print("Conexão bem-sucedida!")
-    else:
-        print("Falha na conexão.")
