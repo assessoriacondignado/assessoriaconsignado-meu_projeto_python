@@ -6,10 +6,24 @@ import shutil
 import uuid
 import re
 import time
+import sys
 from datetime import datetime
-import conexao
 
-# --- CONFIGURAÇÕES DE DIRETÓRIO ---
+# --- 1. CONFIGURAÇÃO DE IMPORTAÇÃO (PADRONIZAÇÃO) ---
+# Garante que o Python encontre os módulos na raiz do projeto
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+diretorio_comercial = os.path.dirname(diretorio_atual) # Pasta COMERCIAL
+raiz_projeto = os.path.dirname(diretorio_comercial)    # Raiz do Projeto
+
+if raiz_projeto not in sys.path:
+    sys.path.append(raiz_projeto)
+
+try:
+    import conexao
+except ImportError:
+    st.error("Erro crítico: Arquivo conexao.py não localizado.")
+
+# --- CONFIGURAÇÕES DE DIRETÓRIO LOCAL ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -132,7 +146,7 @@ def listar_produtos():
         try:
             query = """
                 SELECT id, codigo, nome, tipo, preco, data_criacao, caminho_pasta, 
-                       ativo, resumo, origem_custo 
+                        ativo, resumo, origem_custo 
                 FROM produtos_servicos 
                 ORDER BY id DESC
             """
