@@ -408,7 +408,43 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         return True, f"Débito R$ {valor_debitar:.2f}"
     except Exception as e: return False, f"Erro: {str(e)}"
 
-# --- FUNÇÃO ORIGINAL (MANTIDA) ---
+def obter_dados_financeiros_cliente(conn, id_cliente, origem_custo):
+    """
+    Retorna um dicionário com saldo atual e custo previsto para o cliente/origem.
+    Usado para exibir resumo financeiro antes ou depois da transação.
+    """
+    dados = {
+        "saldo_atual": 0.0,
+        "custo_previsto": 0.0,
+        "produto_vinculado": "N/D"
+    }
+    try:
+        cur = conn.cursor()
+        # 1. Busca Custo Unitário para essa ferramenta
+        sql_custo = "SELECT valor_custo, nome_produto FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
+        cur.execute(sql_custo, (str(id_cliente), origem_custo))
+        res_custo = cur.fetchone()
+        
+        if res_custo:
+            dados["custo_previsto"] = float(res_custo[0])
+            dados["produto_vinculado"] = res_custo[1]
+        else:
+            # Se não tiver custo específico, pega o geral do sistema (fallback)
+            dados["custo_previsto"] = buscar_valor_consulta_atual()
+
+        # 2. Busca Saldo Atual (Último registro do extrato)
+        sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
+        cur.execute(sql_saldo, (str(id_cliente),))
+        res_saldo = cur.fetchone()
+        if res_saldo:
+            dados["saldo_atual"] = float(res_saldo[0])
+            
+    except:
+        pass
+        
+    return dados
+
+# --- FUNÇÃO ORIGINAL (MANTIDA PARA A ABA DE TESTE) ---
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     # Padroniza CPF para string limpa
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
@@ -499,7 +535,7 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
 def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     """
     Versão da função realizar_consulta_cpf que utiliza LOCK de banco de dados
-    para garantir execução sequencial (Fila) e impedir duplicidade/race condition.
+    para garantir execução sequencial (Fila) e retorna objeto financeiro completo.
     """
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
     if not cpf_padrao: return {"sucesso": False, "msg": "CPF Inválido"}
@@ -507,30 +543,53 @@ def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pa
     conn = get_conn()
     if not conn: return {"sucesso": False, "msg": "Erro DB."}
     
+    # Estrutura de retorno financeiro padrão
+    resumo_financeiro = {
+        "saldo_anterior": 0.0,
+        "custo_unitario": 0.0,
+        "valor_debitado": 0.0,
+        "saldo_final": 0.0
+    }
+    
     try:
         cur = conn.cursor()
         
         # --- LOCK: INÍCIO DA FILA ---
         # 20240101 é uma chave arbitrária para representar a fila de consultas CPF
-        # pg_advisory_xact_lock segura a execução aqui até o commit desta transação
         cur.execute("SELECT pg_advisory_xact_lock(20240101)") 
         
-        # --- LÓGICA DE NEGÓCIO (DENTRO DO LOCK) ---
+        # --- LÓGICA DE NEGÓCIO ---
         id_usuario = st.session_state.get('usuario_id', 0)
-        nome_usuario = st.session_state.get('usuario_nome', 'Sistema')
-        dados_pagador = {"id": None, "nome": None, "id_usuario": id_usuario, "nome_usuario": nome_usuario}
         
+        # DEFINE O PAGADOR (Lógica Obrigatória)
+        dados_pagador = {"id": None, "nome": None}
+        
+        # 1. Se foi passado manualmente (Admin selecionou na lista)
         if id_cliente_pagador_manual:
-            try:
-                cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
-                res = cur.fetchone()
-                if res: dados_pagador["id"] = res[0]; dados_pagador["nome"] = res[1]
-            except: pass
-        else:
+             cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
+             res = cur.fetchone()
+             if res: dados_pagador["id"] = res[0]; dados_pagador["nome"] = res[1]
+        
+        # 2. Se não, tenta pegar do vínculo do usuário logado
+        if not dados_pagador["id"]:
             d = buscar_cliente_vinculado_ao_usuario(id_usuario)
             dados_pagador["id"] = d['id']; dados_pagador["nome"] = d['nome']
 
+        # Se mesmo assim não tiver pagador, aborta (Regra de Pagador Obrigatório)
+        if not dados_pagador["id"]:
+            conn.rollback(); conn.close()
+            return {"sucesso": False, "msg": "Pagador não identificado. Associe um cliente ao usuário ou selecione na lista."}
+
         origem_real = buscar_origem_por_ambiente(ambiente)
+        
+        # --- PREPARA DADOS FINANCEIROS (SNAPSHOT INICIAL) ---
+        info_fin = obter_dados_financeiros_cliente(conn, dados_pagador["id"], origem_real)
+        saldo_inicial = info_fin["saldo_atual"]
+        custo_tabela = info_fin["custo_previsto"]
+        
+        resumo_financeiro["saldo_anterior"] = saldo_inicial
+        resumo_financeiro["custo_unitario"] = custo_tabela
+        resumo_financeiro["saldo_final"] = saldo_inicial # Por enquanto igual
 
         # 1. Verifica Cache
         if not forcar_nova:
@@ -538,68 +597,58 @@ def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pa
             res = cur.fetchone()
             if res and res[0] and os.path.exists(res[0]):
                 with open(res[0], 'r', encoding='utf-8') as f: dados = json.load(f)
-                # Cache encontrado: OK, libera o lock (commit implícito no return/finally? não, precisa commit ou rollback)
-                # Como é leitura, podemos dar commit ou rollback sem efeito colateral
+                # Cache encontrado: retorna sucesso e dados financeiros (sem débito)
                 conn.commit() 
                 conn.close()
-                return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
+                return {"sucesso": True, "dados": dados, "msg": "Dados recuperados (Cache).", "financeiro": resumo_financeiro}
 
-        custo_previsto = 0.0
-        if dados_pagador['id']:
-             sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
-             cur.execute(sql_custo, (str(dados_pagador['id']), origem_real))
-             res_custo = cur.fetchone()
-             custo_previsto = float(res_custo[0]) if res_custo else buscar_valor_consulta_atual()
+        # Verifica Saldo para API Nova
+        if saldo_inicial < custo_tabela:
+             conn.rollback() # Libera Lock
+             conn.close()
+             return {"sucesso": False, "msg": f"Saldo insuficiente. Necessário: R$ {custo_tabela:.2f} | Atual: R$ {saldo_inicial:.2f}"}
 
-             sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
-             cur.execute(sql_saldo, (str(dados_pagador['id']),))
-             res_s = cur.fetchone()
-             saldo_atual = float(res_s[0]) if res_s else 0.0
-
-             if saldo_atual < custo_previsto:
-                 conn.rollback() # Libera Lock
-                 conn.close()
-                 return {"sucesso": False, "msg": "Saldo insuficiente."}
-
+        # Chamada API (O Lock segura a fila aqui)
         cred = buscar_credenciais()
         if not cred['token']: 
             conn.rollback()
             conn.close()
             return {"sucesso": False, "msg": "Token API ausente."}
         
-        # Chamada API (O Lock segura a fila aqui, é esperado)
         resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
         dados = parse_xml_to_dict(resp.text)
         
+        # Salva JSON
         nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
         path = os.path.join(PASTA_JSON, nome_arq)
         try:
             with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
         except: pass
 
+        # Registra Consulta
         cpf_num = int(re.sub(r'\D', '', str(cpf_padrao)))
-
         cur.execute("""
             INSERT INTO conexoes.fatorconferi_registo_consulta 
             (tipo_consulta, cpf_consultado, cpf_consultado_num, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) 
             VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)
             """, 
-            (cpf_padrao, cpf_num, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente)
+            (cpf_padrao, cpf_num, id_usuario, st.session_state.get('usuario_nome', 'Sistema'), custo_tabela, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente)
         )
         
-        msg_fin = ""
-        if dados_pagador['id']:
-            # Passamos a conexão JÁ ABERTA para processar a cobrança na mesma transação
-            ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
-            if not ok_fin:
-                conn.rollback() # Se der erro no debito, desfaz registro de consulta
-                conn.close()
-                return {"sucesso": False, "msg": f"Erro na cobrança: {txt_fin}"}
-            msg_fin = f" | {txt_fin}"
+        # --- PROCESSA DÉBITO ---
+        ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
+        if not ok_fin:
+            conn.rollback() # Se der erro no debito, desfaz registro de consulta
+            conn.close()
+            return {"sucesso": False, "msg": f"Erro na cobrança: {txt_fin}"}
+        
+        # Atualiza Resumo Financeiro Final
+        resumo_financeiro["valor_debitado"] = custo_tabela
+        resumo_financeiro["saldo_final"] = saldo_inicial - custo_tabela
         
         conn.commit() # SUCESSO: Efetiva tudo e Libera o LOCK
         conn.close()
-        return {"sucesso": True, "dados": dados, "msg": "Consulta OK." + msg_fin}
+        return {"sucesso": True, "dados": dados, "msg": "Consulta Realizada.", "financeiro": resumo_financeiro}
 
     except Exception as e:
         if conn: 
@@ -768,7 +817,7 @@ def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
 def app_fator_conferi():
     criar_tabela_conexao_tabelas()
     st.markdown("### ⚡ Painel Fator Conferi")
-    # Adicionada nova aba na lista
+    
     tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros", "🗺️ Mapa de Dados", "🔄 Atualização Cadastral"])
 
     with tabs[0]: 
@@ -892,43 +941,90 @@ def app_fator_conferi():
             if salvar_alteracoes_mapa_completo(df_geral, df_editado_geral):
                 st.success("Tabela geral atualizada!"); time.sleep(1.5); st.rerun()
 
-    # --- NOVA ABA: ATUALIZAÇÃO CADASTRAL (COM FILA) ---
+    # --- NOVA ABA: ATUALIZAÇÃO CADASTRAL (COM FILA E FINANCEIRO) ---
     with tabs[6]:
         st.markdown("#### 🔄 Atualização Cadastral (Produção)")
-        st.warning("⚠️ Atenção: Esta função utiliza fila de processamento. Aguarde a confirmação.")
+        st.warning("⚠️ Atenção: Esta função utiliza fila de processamento e gera custos.")
         
         col_cli_prod, col_cpf_prod = st.columns([2, 2])
         
-        # Pagador Manual (Opcional)
-        id_cliente_prod = None
-        conn = get_conn()
-        if conn:
-            try:
-                df_clis = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
-                opcoes_cli_prod = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
-                id_cliente_prod = col_cli_prod.selectbox("Cliente Pagador (Opcional)", options=[None] + list(opcoes_cli_prod.keys()), format_func=lambda x: opcoes_cli_prod[x] if x else "Automático (Vínculo)", key="sel_cli_prod")
-            except: pass
-            finally: conn.close()
+        # --- LÓGICA DO PAGADOR OBRIGATÓRIO ---
+        # 1. Tenta identificar vínculo do usuário logado
+        id_usuario_logado = st.session_state.get('usuario_id')
+        cliente_vinculado = buscar_cliente_vinculado_ao_usuario(id_usuario_logado)
+        
+        id_cliente_selecionado = None
+        
+        if cliente_vinculado['id']:
+            # Se tem vínculo, TRAVA o campo e usa o ID vinculado
+            col_cli_prod.text_input("Pagador (Vinculado ao Usuário)", value=cliente_vinculado['nome'], disabled=True)
+            id_cliente_selecionado = cliente_vinculado['id']
+        else:
+            # Se é Admin/Sem vínculo, LISTA os clientes mas obriga seleção
+            conn = get_conn()
+            opcoes_cli_prod = {}
+            if conn:
+                try:
+                    df_clis = pd.read_sql("SELECT id, nome FROM admin.clientes WHERE status = 'ATIVO' ORDER BY nome", conn)
+                    opcoes_cli_prod = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
+                except: pass
+                finally: conn.close()
             
+            # Selectbox sem opção None/Vazia (Obrigatório)
+            if opcoes_cli_prod:
+                id_cliente_selecionado = col_cli_prod.selectbox("Pagador (Obrigatório)", options=list(opcoes_cli_prod.keys()), format_func=lambda x: opcoes_cli_prod[x])
+            else:
+                col_cli_prod.error("Nenhum cliente ativo encontrado.")
+
         cpf_prod_in = col_cpf_prod.text_input("CPF para Atualização", key="cpf_prod")
         
         if st.button("🚀 Executar Atualização", type="primary"):
-            if cpf_prod_in:
-                with st.spinner("⏳ Processando na fila... (Aguardando liberação)"):
-                    # CHAMA A NOVA FUNÇÃO COM LOCK
-                    res = realizar_consulta_cpf_segura(cpf_prod_in, "sistema_consulta_usuario", forcar_nova=False, id_cliente_pagador_manual=id_cliente_prod)
+            if not id_cliente_selecionado:
+                st.error("Erro: Pagador é obrigatório.")
+            elif not cpf_prod_in:
+                st.warning("Digite o CPF.")
+            else:
+                # Limpa resultado anterior
+                if 'resultado_prod' in st.session_state: del st.session_state['resultado_prod']
+                
+                with st.spinner("⏳ Processando transação segura..."):
+                    # Passa o ID do cliente explicitamente (seja vinculado ou selecionado)
+                    res = realizar_consulta_cpf_segura(
+                        cpf_prod_in, 
+                        "sistema_consulta_usuario", 
+                        forcar_nova=False, 
+                        id_cliente_pagador_manual=id_cliente_selecionado
+                    )
+                    st.session_state['resultado_prod'] = res
                     
                     if res['sucesso']:
-                        # A distribuição de dados continua sendo feita após a consulta (dados já estão no banco/json)
-                        # A distribuição em si não precisa de lock de consulta, pois é insert em tabelas de dados
-                        lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
-                        st.success(res.get('msg', 'Sucesso!'))
-                        if lista_sucessos: st.info(f"Dados atualizados em: {', '.join(lista_sucessos)}")
-                        if lista_erros: st.error(f"Erros na importação:\n{chr(10).join(lista_erros)}")
-                        
-                        # Mostra prévia
-                        with st.expander("Ver Detalhes"): st.json(res['dados'])
-                    else:
-                        st.error(f"Erro: {res.get('msg')}")
+                        # Executa a distribuição dos dados nas tabelas
+                        executar_distribuicao_dinamica(res['dados'])
+
+        # --- EXIBIÇÃO DO RESULTADO ---
+        if 'resultado_prod' in st.session_state:
+            res = st.session_state['resultado_prod']
+            
+            st.divider()
+            
+            if res['sucesso']:
+                # MENSAGEM DE SUCESSO
+                st.success(res.get('msg', 'Processo concluído.'))
+                
+                # PAINEL FINANCEIRO
+                fin = res.get('financeiro', {})
+                if fin:
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Saldo Anterior", f"R$ {fin.get('saldo_anterior', 0):.2f}")
+                    k2.metric("Custo Consulta", f"R$ {fin.get('custo_unitario', 0):.2f}")
+                    
+                    val_deb = fin.get('valor_debitado', 0)
+                    k3.metric("Valor Debitado", f"R$ {val_deb:.2f}", delta=f"-{val_deb:.2f}" if val_deb > 0 else None, delta_color="inverse")
+                    
+                    k4.metric("Saldo Final", f"R$ {fin.get('saldo_final', 0):.2f}")
+
+                # DADOS TÉCNICOS
+                with st.expander("Ver Dados do Cliente (JSON)"):
+                    st.json(res['dados'])
             else:
-                st.warning("Digite o CPF.")
+                st.error(f"❌ Falha: {res.get('msg')}")
