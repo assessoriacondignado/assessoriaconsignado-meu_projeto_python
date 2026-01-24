@@ -186,7 +186,6 @@ def processar_atualizacao_cadastral(cpf, nome):
             lista_tabs = "<li style='margin:0; padding:0;'>Nenhum dado novo.</li>"
 
         # 4. HTML do Recibo COMPACTO (Fonte 6 / 10px)
-        # Importante: Sem indentação no início das linhas para evitar que o Streamlit mostre como código
         html_recibo = f"""<div style="background-color: #f1f8e9; border: 1px solid #4caf50; border-radius: 4px; padding: 5px; font-family: sans-serif; color: #1b5e20; font-size: 10px; line-height: 1.1;">
 <div style="font-weight:bold; color: #2e7d32; border-bottom: 1px solid #a5d6a7; margin-bottom: 3px; padding-bottom: 2px;">✅ Atualizado</div>
 <div style="margin-bottom: 3px;"><b>Data:</b> {agora}<br></div>
@@ -723,6 +722,14 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     val = str(item['valor']).strip()
                     if not val: cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
                     else: cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
+                
+                # ATUALIZAÇÃO DE ENDEREÇOS
+                for item in dados_editados.get('enderecos', []):
+                     cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
+                                    SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s 
+                                    WHERE id = %s""", 
+                                    (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
+
                 conn.commit()
         except Exception as e:
             st.error(f"Erro ao atualizar: {e}")
@@ -926,44 +933,67 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
         if st.session_state['modo_edicao']:
             with st.form("form_edicao_cliente"):
                 st.info("✏️ Modo Edição Ativo. Edite os campos abaixo e clique em Salvar.")
-                st.markdown("### 📄 Dados Pessoais")
-                ec1, ec2, ec3 = st.columns(3)
-                e_nome = ec1.text_input("Nome", value=pessoal.get('nome',''))
-                e_rg = ec2.text_input("RG", value=pessoal.get('identidade',''))
-                e_nasc = ec3.date_input("Data Nasc.", value=v.ValidadorData.para_sql(pessoal.get('data_nascimento')), format="DD/MM/YYYY")
-                ec4, ec5, ec6 = st.columns(3)
-                e_cnh = ec4.text_input("CNH", value=pessoal.get('cnh',''))
-                e_titulo = ec5.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
-                e_sexo = ec6.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
-                e_mae = st.text_input("Nome da Mãe", value=pessoal.get('nome_mae', ''))
-                ec7, ec8 = st.columns(2)
-                e_pai = ec7.text_input("Nome do Pai", value=pessoal.get('nome_pai', ''))
-                e_campanhas = ec8.text_input("Campanhas", value=pessoal.get('campanhas', ''))
-                st.markdown("---")
-                st.caption("Campos abaixo são gerenciados via '➕ Extra'")
-                ec9, ec10 = st.columns(2)
-                agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
-                ec9.text_input("Agrupamento (Leitura)", value=agrupamento_val, disabled=True)
-                lista_convs = dados.get('convenios_lista', [])
-                conv_str = ", ".join(lista_convs)
-                ec10.text_input("Convênios (Leitura)", value=conv_str, disabled=True)
-                st.divider()
-                col_lista1, col_lista2 = st.columns(2)
-                edicoes_telefones = []
-                edicoes_emails = []
-                with col_lista1:
-                    st.markdown("### 📞 Telefones")
-                    if dados.get('telefones'):
-                        for i, tel in enumerate(dados['telefones']):
-                            novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
-                            edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
-                    else: st.caption("Sem telefones.")
-                with col_lista2:
-                    st.markdown("### 📧 E-mails")
-                    if dados.get('emails'):
-                        for i, mail in enumerate(dados['emails']):
-                            novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
-                            edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
+                
+                # --- [EDIT] DADOS CADASTRAIS (Mesmo Layout do Visualizar) ---
+                with st.expander("📄 Dados Cadastrais", expanded=True):
+                    c1, c2, c3, c4, c5, c6 = st.columns([3, 1.5, 1.5, 1, 1.5, 1.5])
+                    e_nome = c1.text_input("Nome Completo", value=pessoal.get('nome',''))
+                    c2.text_input("CPF", value=cpf_show, disabled=True)
+                    e_rg = c3.text_input("RG", value=pessoal.get('identidade',''))
+                    e_sexo = c4.selectbox("Sexo", ["Masculino", "Feminino", "Outros"], index=["Masculino", "Feminino", "Outros"].index(pessoal.get('sexo', 'Outros')) if pessoal.get('sexo') in ["Masculino", "Feminino", "Outros"] else 0)
+                    e_nasc = c5.date_input("Data Nasc.", value=v.ValidadorData.para_sql(pessoal.get('data_nascimento')), format="DD/MM/YYYY")
+                    idade_str = v.ValidadorData.calcular_tempo(pessoal.get('data_nascimento'), 'completo')
+                    c6.text_input("Idade", value=idade_str, disabled=True)
+                    
+                    c7, c8 = st.columns(2)
+                    e_mae = c7.text_input("Nome da Mãe", value=pessoal.get('nome_mae',''))
+                    e_pai = c8.text_input("Nome do Pai", value=pessoal.get('nome_pai',''))
+                    
+                    c9, c10, c11, c12 = st.columns(4)
+                    e_cnh = c9.text_input("CNH", value=pessoal.get('cnh',''))
+                    e_titulo = c10.text_input("Título Eleitor", value=pessoal.get('titulo_eleitoral',''))
+                    e_campanhas = c11.text_input("Campanha", value=pessoal.get('campanhas',''))
+                    agrupamento_val = dados.get('agrupamentos')[0] if dados.get('agrupamentos') else ""
+                    c12.text_input("Agrupamento", value=agrupamento_val, disabled=True)
+                    
+                    lista_convs = dados.get('convenios_lista', [])
+                    conv_str = ", ".join(lista_convs)
+                    st.text_input("Convênios Vinculados", value=conv_str, disabled=True)
+
+                # --- [EDIT] CONTATOS E ENDEREÇO (Mesmo Layout do Visualizar) ---
+                with st.expander("📍 Contatos e Endereço", expanded=True):
+                    edicoes_telefones = []
+                    edicoes_emails = []
+                    edicoes_enderecos = []
+                    
+                    col_lista1, col_lista2 = st.columns(2)
+                    with col_lista1:
+                        st.markdown("###### 📞 Telefones")
+                        if dados.get('telefones'):
+                            for i, tel in enumerate(dados['telefones']):
+                                novo_val = st.text_input(f"Tel {i+1}", value=tel['valor'], key=f"tel_{tel['id']}")
+                                edicoes_telefones.append({'id': tel['id'], 'valor': novo_val})
+                        else: st.caption("Sem telefones.")
+                    with col_lista2:
+                        st.markdown("###### 📧 E-mails")
+                        if dados.get('emails'):
+                            for i, mail in enumerate(dados['emails']):
+                                novo_val = st.text_input(f"Email {i+1}", value=mail['valor'], key=f"mail_{mail['id']}")
+                                edicoes_emails.append({'id': mail['id'], 'valor': novo_val})
+                    
+                    st.divider()
+                    st.markdown("###### 🏠 Endereço")
+                    if dados.get('enderecos'):
+                        for i, end in enumerate(dados.get('enderecos', [])):
+                            ce1, ce2, ce3, ce4, ce5 = st.columns([3, 2, 2, 1, 1.5])
+                            nr_rua = ce1.text_input("Rua", value=end.get('rua',''), key=f"er_{i}")
+                            nr_bairro = ce2.text_input("Bairro", value=end.get('bairro',''), key=f"eb_{i}")
+                            nr_cidade = ce3.text_input("Cidade", value=end.get('cidade',''), key=f"ec_{i}")
+                            nr_uf = ce4.text_input("UF", value=end.get('uf',''), key=f"eu_{i}")
+                            nr_cep = ce5.text_input("CEP", value=end.get('cep',''), key=f"ecp_{i}")
+                            edicoes_enderecos.append({'id': end['id'], 'rua': nr_rua, 'bairro': nr_bairro, 'cidade': nr_cidade, 'uf': nr_uf, 'cep': nr_cep})
+                    else: st.caption("Sem endereço cadastrado.")
+
                 st.divider()
                 alteracoes_dinamicas = [] 
                 if financeiro:
@@ -984,7 +1014,12 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                                 if edicao_grupo: alteracoes_dinamicas.append({'tabela': tabela_ref, 'id': dados_esp['id'], 'dados': edicao_grupo})
                 st.divider()
                 if st.form_submit_button("💾 CONFIRMAR ALTERAÇÕES", type="primary"):
-                    pacote_dados = {"pessoal": {"nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc, "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae, "nome_pai": e_pai, "campanhas": e_campanhas}, "telefones": edicoes_telefones, "emails": edicoes_emails}
+                    pacote_dados = {
+                        "pessoal": {"nome": e_nome, "identidade": e_rg, "data_nascimento": e_nasc, "cnh": e_cnh, "titulo_eleitoral": e_titulo, "sexo": e_sexo, "nome_mae": e_mae, "nome_pai": e_pai, "campanhas": e_campanhas}, 
+                        "telefones": edicoes_telefones, 
+                        "emails": edicoes_emails,
+                        "enderecos": edicoes_enderecos
+                    }
                     if atualizar_dados_cliente_lote(cpf, pacote_dados, dados_dinamicos=alteracoes_dinamicas):
                         st.success("Dados atualizados com sucesso!")
                         st.session_state['modo_edicao'] = False
