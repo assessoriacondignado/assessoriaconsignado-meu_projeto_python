@@ -361,8 +361,8 @@ def renderizar_fluxo_pos_venda():
                     st.rerun()
                 
                 if c_btn2.button("Cancelar Criação"):
-                     st.session_state.show_task_form = False
-                     st.rerun()
+                      st.session_state.show_task_form = False
+                      st.rerun()
 
         else:
             c1, c2 = st.columns([1, 4])
@@ -752,20 +752,21 @@ def renderizar_renovacao_pedido(ped):
 # =============================================================================
 
 def app_pedidos():
-    # --- ESTILIZAÇÃO PADRÃO VERMELHA ---
+    # --- CORREÇÃO DE ESTILO: APLICAR APENAS AO BLOCO PRINCIPAL ---
+    # Usando o seletor 'section[data-testid="stMainBlock"]' para não vazar para a sidebar
     st.markdown("""
         <style>
-        div.stButton > button {
+        section[data-testid="stMainBlock"] div.stButton > button {
             background-color: #FF4B4B !important;
             color: white !important;
             border-color: #FF4B4B !important;
         }
-        div.stButton > button:hover {
+        section[data-testid="stMainBlock"] div.stButton > button:hover {
             background-color: #FF0000 !important;
             border-color: #FF0000 !important;
             color: white !important;
         }
-        div.stButton > button:active {
+        section[data-testid="stMainBlock"] div.stButton > button:active {
             background-color: #CC0000 !important;
             border-color: #CC0000 !important;
             color: white !important;
