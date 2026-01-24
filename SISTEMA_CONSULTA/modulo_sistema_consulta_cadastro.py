@@ -1212,40 +1212,27 @@ def tela_pesquisa():
 
     if st.session_state.get('resultados_pesquisa'):
         st.divider()
-        c_resultados, c_conexao = st.columns([9, 1])
-        with c_resultados:
-            st.markdown(f"**Resultados: {len(st.session_state['resultados_pesquisa'])}**")
-            cols = st.columns([1, 4, 3, 2])
-            cols[0].write("**ID**")
-            cols[1].write("**Nome**")
-            cols[2].write("**CPF**")
-            cols[3].write("**Ação**")
-            for row in st.session_state['resultados_pesquisa']:
-                c = st.columns([1, 4, 3, 2])
-                c[0].write(str(row[0]))
-                c[1].write(row[1])
-                c[2].write(v.ValidadorDocumentos.cpf_para_tela(row[2]))
-                if c[3].button("📂 Abrir", key=f"abrir_{row[0]}"):
-                    st.session_state['cliente_ativo_cpf'] = row[2]
-                    st.session_state['modo_visualizacao'] = 'visualizar'
-                    st.rerun()
-        with c_conexao:
-             with st.container(border=True):
-                st.markdown("###### CONEXÃO")
-                
-                # --- LÓGICA DE EXIBIÇÃO NA PESQUISA ---
-                key_recibo_pesq = f"recibo_atualizacao_pesq_{row[2]}"
-                if st.session_state.get(key_recibo_pesq):
-                    st.markdown(st.session_state[key_recibo_pesq], unsafe_allow_html=True)
-                    if st.button("❌", key=f"btn_close_p_{row[2]}", use_container_width=True):
-                        del st.session_state[key_recibo_pesq]
-                        st.rerun()
-                else:
-                    if st.button("🔄 Atualizar", key=f"btn_upd_list_{row[2]}", use_container_width=True, help="Consultar e atualizar dados"):
-                        with st.spinner(".."):
-                             sucesso, html_result = processar_atualizacao_cadastral(row[2], row[1])
-                             st.session_state[key_recibo_pesq] = html_result
-                             st.rerun()
+        # [ALTERAÇÃO] Removida a divisão de colunas e a barra lateral "Conexão"
+        st.markdown(f"**Resultados: {len(st.session_state['resultados_pesquisa'])}**")
+        
+        # [ALTERAÇÃO] Layout de resultados agora ocupa a largura total
+        cols = st.columns([1, 4, 3, 2])
+        cols[0].write("**ID**")
+        cols[1].write("**Nome**")
+        cols[2].write("**CPF**")
+        cols[3].write("**Ação**")
+        
+        for row in st.session_state['resultados_pesquisa']:
+            c = st.columns([1, 4, 3, 2])
+            c[0].write(str(row[0]))
+            c[1].write(row[1])
+            c[2].write(v.ValidadorDocumentos.cpf_para_tela(row[2]))
+            
+            # [ALTERAÇÃO] Apenas o botão de Abrir é exibido aqui
+            if c[3].button("📂 Abrir", key=f"abrir_{row[0]}"):
+                st.session_state['cliente_ativo_cpf'] = row[2]
+                st.session_state['modo_visualizacao'] = 'visualizar'
+                st.rerun()
 
 def app_cadastro():
     if 'modo_visualizacao' not in st.session_state: st.session_state['modo_visualizacao'] = None
