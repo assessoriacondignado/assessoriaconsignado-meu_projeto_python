@@ -22,6 +22,13 @@ try:
 except ImportError:
     conexao = None
 
+# IMPORTAÇÃO DO MÓDULO DE VALIDADORES (PADRONIZAÇÃO)
+try:
+    import modulo_validadores as v
+except ImportError as e:
+    st.error(f"Erro crítico: Não foi possível importar 'modulo_validadores'. Detalhe: {e}")
+    st.stop()
+
 # Cache da Conexão (Pool)
 @st.cache_resource
 def get_pool():
@@ -148,25 +155,23 @@ def carregar_custos(id_cliente):
     sql = """
         SELECT nome_produto as "Produto", 
                origem_custo as "Origem", 
-               valor_custo as "Custo Atual (R$)"
+               valor_custo as "Custo Atual"
         FROM cliente.valor_custo_carteira_cliente 
-        WHERE id_cliente = %s -- id_cliente é text nesta tabela (segundo schema fornecido)
+        WHERE id_cliente = %s 
         ORDER BY nome_produto
     """
     with get_db_connection() as conn:
         if conn:
-            # Tenta converter ID para string pois o schema indica 'text'
             return pd.read_sql(sql, conn, params=(str(id_cliente),))
     return pd.DataFrame()
 
 def carregar_pedidos(id_cliente, filtros):
-    # Schema: admin.pedidos
     base_sql = """
         SELECT codigo as "Código", 
                nome_produto as "Produto", 
                data_criacao as "Data", 
                status as "Status", 
-               valor_total as "Valor (R$)" 
+               valor_total as "Valor" 
         FROM admin.pedidos 
         WHERE id_cliente = %s
     """
@@ -188,8 +193,6 @@ def carregar_pedidos(id_cliente, filtros):
     return pd.DataFrame()
 
 def carregar_tarefas(id_cliente, filtros):
-    # Schema: admin.tarefas
-    # Join com Pedidos para pegar nome do produto se necessário
     base_sql = """
         SELECT t.id, 
                p.codigo as "Pedido",
@@ -219,9 +222,6 @@ def carregar_tarefas(id_cliente, filtros):
     return pd.DataFrame()
 
 def carregar_renovacao(id_cliente, filtros):
-    # Schema: admin.renovacao_feedback
-    # Precisa de JOIN com pedidos para filtrar por cliente, pois a tabela admin.renovacao_feedback
-    # tem id_pedido mas não tem id_cliente direto no schema fornecido
     base_sql = """
         SELECT rf.data_previsao as "Previsão", 
                p.nome_produto as "Produto",
@@ -245,8 +245,6 @@ def carregar_renovacao(id_cliente, filtros):
     return pd.DataFrame()
 
 def carregar_extrato(id_cliente, filtros):
-    # Schema: cliente.extrato_carteira_por_produto
-    # Nota: id_cliente é TEXT nesta tabela conforme schema fornecido
     base_sql = """
         SELECT data_lancamento as "Data", 
                tipo_lancamento as "Tipo", 
@@ -308,7 +306,7 @@ def app_relatorios():
     
     opcoes = {row['id']: f"{row['nome']} {(' - ' + row['nome_empresa']) if row['nome_empresa'] else ''}" for _, row in df_clientes.iterrows()}
     
-    # Default: primeiro da lista (que pela lógica de busca é o próprio vinculado se existir)
+    # Default: primeiro da lista
     idx_default = 0
     
     id_cliente = col_sel.selectbox(
@@ -381,31 +379,32 @@ def app_relatorios():
             filtros['produto'] = c3.text_input("Produto/Motivo:", key='filtro_prod')
             
             df_resultado = carregar_extrato(id_cliente, filtros)
-            
-            if not df_resultado.empty:
-                # Tratamento visual
-                st.dataframe(
-                    df_resultado.style.format({
-                        "Valor": "R$ {:.2f}", 
-                        "Saldo Final": "R$ {:.2f}",
-                        "Data": lambda x: pd.to_datetime(x).strftime('%d/%m/%Y %H:%M') if pd.notnull(x) else ""
-                    }),
-                    use_container_width=True
-                )
-            else:
-                st.info("Nenhum lançamento no período.")
 
-    # --- EXIBIÇÃO PADRÃO (EXCETO EXTRATO QUE JÁ MOSTROU) ---
-    if "Extrato" not in tipo_relatorio and not df_resultado.empty:
-        # Formatação genérica de datas
-        for col in df_resultado.columns:
+    # --- FORMATAÇÃO PADRONIZADA COM MODULO_VALIDADORES ---
+    if not df_resultado.empty:
+        # Copia para não alterar o original que vai pro PDF
+        df_show = df_resultado.copy()
+        
+        cols_para_formatar = df_show.columns.tolist()
+        
+        for col in cols_para_formatar:
+            # 1. Datas
             if 'Data' in col or 'Previsão' in col:
                 try:
-                    df_resultado[col] = pd.to_datetime(df_resultado[col]).dt.strftime('%d/%m/%Y')
+                    df_show[col] = df_show[col].apply(lambda x: v.ValidadorData.para_tela(str(x)) if x else "")
                 except: pass
-        
-        st.dataframe(df_resultado, use_container_width=True, hide_index=True)
-    elif "Extrato" not in tipo_relatorio:
+            
+            # 2. Valores Financeiros
+            if 'Valor' in col or 'Custo' in col or 'Saldo' in col:
+                try:
+                    df_show[col] = df_show[col].apply(lambda x: v.ValidadorFinanceiro.para_tela(x) if x is not None else "R$ 0,00")
+                except: pass
+
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+    
+    elif "Extrato" in tipo_relatorio:
+        st.info("Nenhum lançamento no período.")
+    else:
         st.warning("Nenhum registro encontrado.")
 
     # --- BOTÃO PDF ---
@@ -413,6 +412,7 @@ def app_relatorios():
         st.write("")
         col_pdf, _ = st.columns([1, 4])
         try:
+            # PDF usa dados brutos ou formatados? Geralmente brutos convertidos para string simples
             pdf_bytes = criar_pdf(df_resultado, titulo_relatorio)
             col_pdf.download_button(
                 label="📄 Baixar PDF",
