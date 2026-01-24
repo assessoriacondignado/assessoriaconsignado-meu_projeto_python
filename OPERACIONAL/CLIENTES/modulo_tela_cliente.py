@@ -66,11 +66,11 @@ try:
 except ImportError:
     modulo_permissoes_cliente = None
 
-# [NOVO] 8. Relatórios (modulo_relatorios.py)
+# [CORREÇÃO] 8. Relatórios (modulo_relatorio_cliente.py)
 try:
-    import modulo_relatorios
+    import modulo_relatorio_cliente
 except ImportError as e:
-    modulo_relatorios = None
+    modulo_relatorio_cliente = None
     erros_importacao.append(f"Relatórios: {e}")
 
 
@@ -94,8 +94,8 @@ def app_clientes():
     if modulo_gestao_tabelas_cliente:   mapa_abas["📊 Tabelas (Admin)"] = modulo_gestao_tabelas_cliente
     if modulo_financeiro_cliente:       mapa_abas["💰 Financeiro"] = modulo_financeiro_cliente
     
-    # [ALTERAÇÃO] Aba Relatórios Conectada ao Módulo Real
-    if modulo_relatorios:               mapa_abas["📈 Relatórios"] = modulo_relatorios
+    # [CORREÇÃO] Aba Relatórios Conectada ao Módulo Correto
+    if modulo_relatorio_cliente:        mapa_abas["📈 Relatórios"] = modulo_relatorio_cliente
     
     # Configurações e Admin
     if modulo_parametros_cliente:       mapa_abas["⚙️ Config. Carteiras"] = modulo_parametros_cliente
@@ -135,9 +135,9 @@ def app_clientes():
 
                 # 5. RELATÓRIOS (Atualizado)
                 elif nome_aba == "📈 Relatórios":
-                    # [ALTERAÇÃO] Chamada da função real do módulo
+                    # [CORREÇÃO] Chamada da função app_relatorios dentro do módulo modulo_relatorio_cliente
                     if hasattr(modulo, 'app_relatorios'): modulo.app_relatorios()
-                    else: st.warning("Função 'app_relatorios' não encontrada no módulo.")
+                    else: st.warning(f"Função 'app_relatorios' não encontrada em {modulo.__name__}.")
 
                 # 6. CONFIG. CARTEIRAS
                 elif nome_aba == "⚙️ Config. Carteiras":
