@@ -377,24 +377,35 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         cur = conn.cursor()
         id_cli = str(dados_cliente['id'])
         
+        # 1. Busca Custo, Produto e VENDEDOR (id_usuario_vinculo do cliente)
+        # Nota: Estamos buscando o id_usuario_vinculo direto do cliente para garantir que o vendedor receba a comissão/registro
+        cur.execute("SELECT id_usuario_vinculo FROM admin.clientes WHERE id = %s", (id_cli,))
+        res_vendedor = cur.fetchone()
+        id_vendedor = str(res_vendedor[0]) if res_vendedor and res_vendedor[0] else '0'
+
         sql_custo = "SELECT valor_custo, id_produto, nome_produto FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
         cur.execute(sql_custo, (id_cli, origem_custo_chave))
         res_custo = cur.fetchone()
         
-        if not res_custo: return False, "Custo não definido."
+        if not res_custo: return False, "Custo não definido para este cliente/produto."
             
         valor_debitar = float(res_custo[0])
-        id_prod_vinc = res_custo[1] 
-        nome_prod_vinc = res_custo[2]
+        id_prod_vinc = str(res_custo[1]) 
+        nome_prod_vinc = str(res_custo[2])
         
         if valor_debitar <= 0: return True, "Gratuito."
 
+        # 2. Busca Saldo Anterior
         sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
         cur.execute(sql_saldo, (id_cli,))
         res_saldo = cur.fetchone()
         saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         saldo_novo = saldo_anterior - valor_debitar
         
+        # 3. Identifica Operador (Quem clicou no botão)
+        nome_operador = st.session_state.get('usuario_nome', 'Sistema')
+
+        # 4. INSERT (Sem passar ID, deixando o banco gerar a sequence)
         sql_insert = """
             INSERT INTO cliente.extrato_carteira_por_produto (
                 produto_vinculado, id_cliente, nome_cliente, id_usuario, nome_usuario,
@@ -402,8 +413,16 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
             ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), 'DEBITO', %s, %s, %s, %s)
         """
         cur.execute(sql_insert, (
-            nome_prod_vinc, id_cli, dados_cliente['nome'], str(dados_cliente.get('id_usuario', '0')), dados_cliente.get('nome_usuario', 'Sistema'),
-            origem_custo_chave, valor_debitar, saldo_anterior, saldo_novo, id_prod_vinc
+            nome_prod_vinc, 
+            id_cli, 
+            str(dados_cliente['nome']), 
+            id_vendedor,   # ID do Vendedor (Dono da Carteira)
+            nome_operador, # Nome de quem executou a ação (Logado)
+            origem_custo_chave, 
+            valor_debitar, 
+            saldo_anterior, 
+            saldo_novo, 
+            id_prod_vinc
         ))
         return True, f"Débito R$ {valor_debitar:.2f}"
     except Exception as e: return False, f"Erro: {str(e)}"
