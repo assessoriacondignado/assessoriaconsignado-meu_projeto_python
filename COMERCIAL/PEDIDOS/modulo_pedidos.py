@@ -53,19 +53,31 @@ def listar_modelos_mensagens():
     return []
 
 def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor):
-    # Esta função usa o cursor da conexão pai, não comita e deixa a transação fluir
+    # Esta função usa o cursor da conexão pai para manter a transação
     try:
         cur = conn.cursor()
-        id_cliente = dados_pedido['id_cliente']
+        id_cliente = str(dados_pedido['id_cliente'])
+        id_produto = str(dados_pedido['id_produto'])
         
+        # 1. Busca dados adicionais do Cliente (Nome e Usuário Vinculado)
+        cur.execute("SELECT nome, id_usuario_vinculo FROM admin.clientes WHERE id = %s", (id_cliente,))
+        res_cli = cur.fetchone()
+        
+        nome_cliente_real = res_cli[0] if res_cli else dados_pedido.get('nome_cliente', 'Desconhecido')
+        id_usuario_vinculo = str(res_cli[1]) if res_cli and res_cli[1] else None
+        
+        # 2. Define quem está operando (Usuário Logado)
+        nome_operador = st.session_state.get('usuario_nome', 'Sistema')
+
+        # 3. Calcula Saldo Anterior
         cur.execute("""
             SELECT saldo_novo 
             FROM cliente.extrato_carteira_por_produto 
             WHERE id_cliente = %s 
             ORDER BY id DESC LIMIT 1
-        """, (str(id_cliente),))
-        res = cur.fetchone()
-        saldo_anterior = float(res[0]) if res else 0.0
+        """, (id_cliente,))
+        res_saldo = cur.fetchone()
+        saldo_anterior = float(res_saldo[0]) if res_saldo else 0.0
         
         valor_float = float(valor)
         if tipo_lancamento == 'CREDITO':
@@ -73,16 +85,24 @@ def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor
         else: # DEBITO
             saldo_novo = saldo_anterior - valor_float
             
+        # 4. Insere Completo
+        # Nota: Schema cliente.extrato_carteira_por_produto usa TEXT para IDs
         cur.execute("""
             INSERT INTO cliente.extrato_carteira_por_produto (
-                id_cliente, data_lancamento, tipo_lancamento, 
-                produto_vinculado, origem_lancamento, 
-                valor_lancado, saldo_anterior, saldo_novo, nome_usuario
-            ) VALUES (%s, NOW(), %s, %s, 'PEDIDOS', %s, %s, %s, 'Sistema')
+                id_cliente, nome_cliente,
+                id_usuario, nome_usuario,
+                id_produto, produto_vinculado,
+                origem_lancamento, data_lancamento, tipo_lancamento, 
+                valor_lancado, saldo_anterior, saldo_novo
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'PEDIDOS', NOW(), %s, %s, %s, %s)
         """, (
-            str(id_cliente), 
-            tipo_lancamento, 
+            id_cliente, 
+            nome_cliente_real,
+            id_usuario_vinculo, # ID do usuário dono da carteira (vinculo)
+            nome_operador,      # Nome de quem fez a ação (Logado)
+            id_produto,
             f"Pedido {dados_pedido['codigo']} - {dados_pedido['nome_produto']}", 
+            tipo_lancamento, 
             valor_float, 
             saldo_anterior, 
             saldo_novo
@@ -94,10 +114,9 @@ def registrar_movimentacao_financeira(conn, dados_pedido, tipo_lancamento, valor
 
 def registrar_custo_carteira_upsert(cur, dados_cliente, dados_produto, valor_custo, origem_custo_txt):
     """
-    CORREÇÃO APLICADA: Verifica existência por CLIENTE + PRODUTO (e não origem).
-    Isso evita o erro de duplicidade de chave unique no banco.
+    Atualiza ou cria o custo do produto para o cliente.
+    Verifica duplicidade por CLIENTE + PRODUTO.
     """
-    # Tratamento de Nulos
     id_user = str(dados_cliente.get('id_usuario_vinculo', ''))
     nome_user = str(dados_cliente.get('nome_usuario_vinculo', ''))
     
@@ -105,14 +124,12 @@ def registrar_custo_carteira_upsert(cur, dados_cliente, dados_produto, valor_cus
         id_user = '0'
         nome_user = 'Sem Vínculo'
 
-    # Converte IDs para string pois schema cliente.valor_custo... usa TEXT
     id_cli_str = str(dados_cliente['id'])
     id_prod_str = str(dados_produto['id'])
     nm_cli_str = str(dados_cliente['nome'])
     nm_prod_str = str(dados_produto['nome'])
 
-    # --- LÓGICA DE CORREÇÃO ---
-    # Verifica se esse cliente JÁ tem esse produto registrado, independente da origem
+    # Verifica se já existe esse produto para esse cliente
     sql_check = """
         SELECT id FROM cliente.valor_custo_carteira_cliente 
         WHERE id_cliente = %s AND id_produto = %s
@@ -121,7 +138,7 @@ def registrar_custo_carteira_upsert(cur, dados_cliente, dados_produto, valor_cus
     resultado = cur.fetchone()
 
     if resultado:
-        # SE JÁ EXISTE: Faz UPDATE atualizando o custo e a origem para a nova
+        # UPDATE
         id_existente = resultado[0]
         sql_update = """
             UPDATE cliente.valor_custo_carteira_cliente SET
@@ -134,7 +151,7 @@ def registrar_custo_carteira_upsert(cur, dados_cliente, dados_produto, valor_cus
         """
         cur.execute(sql_update, (float(valor_custo), str(origem_custo_txt), nome_user, id_user, id_existente))
     else:
-        # SE NÃO EXISTE: Faz INSERT
+        # INSERT
         sql_insert = """
             INSERT INTO cliente.valor_custo_carteira_cliente (
                 id_cliente, nome_cliente,
@@ -161,35 +178,31 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
     try:
         cur = conn.cursor()
         
-        # --- 1. PREPARAÇÃO E LIMPEZA DOS DADOS (CASTING EXPLÍCITO) ---
+        # --- CASTING EXPLÍCITO (CORREÇÃO NUMPY.INT64) ---
         p_codigo = str(codigo)
-        
-        # IDs (Schema admin.pedidos usa Integer)
         p_id_cliente = int(cliente['id']) 
         p_id_produto = int(produto['id'])
-        
-        # Strings Básicas
         p_nome_cliente = str(cliente['nome']).strip()
         p_nome_produto = str(produto['nome']).strip()
         p_cat_produto = str(produto['tipo'])
         p_origem = str(origem_custo_txt)
         p_obs = str(observacao) if observacao else ""
         
-        # CPF (Schema admin.pedidos usa BIGINT)
+        # Limpeza CPF (BigInt)
         raw_cpf = str(cliente['cpf']) if cliente['cpf'] else ""
         cpf_limpo = re.sub(r'\D', '', raw_cpf)
         p_cpf_cliente = int(cpf_limpo) if cpf_limpo else None
         
-        # Telefone (Schema admin.pedidos usa VARCHAR)
+        # Telefone (String)
         p_tel_cliente = str(cliente['telefone']).strip() if cliente['telefone'] else None
         
-        # Números
+        # Valores Numéricos
         p_qtd = int(qtd)
         p_val_unit = float(valor_unitario)
         p_val_total = float(valor_total)
         p_custo = float(valor_custo_informado)
 
-        # --- 2. INSERT PEDIDO ---
+        # 1. INSERT PEDIDO
         cur.execute("""
             INSERT INTO admin.pedidos (
                 codigo, id_cliente, nome_cliente, cpf_cliente, telefone_cliente,
@@ -207,19 +220,19 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
         
         id_novo = cur.fetchone()[0]
         
-        # --- 3. INSERT HISTÓRICO ---
+        # 2. INSERT HISTÓRICO
         cur.execute("""
             INSERT INTO admin.pedidos_historico (id_pedido, status_novo, observacao, data_mudanca) 
             VALUES (%s, 'Solicitado', 'Criado via Novo Fluxo', NOW())
         """, (id_novo,))
         
-        # --- 4. ATUALIZA CUSTO (UPSERT CORRIGIDO) ---
+        # 3. ATUALIZA CUSTO (UPSERT)
         registrar_custo_carteira_upsert(cur, cliente, produto, p_custo, p_origem)
         
-        # --- 5. COMMIT FINAL ---
         conn.commit()
+        conn.close()
         
-        # --- 6. ENVIO WHATSAPP (FORA DA TRANSAÇÃO DE BANCO) ---
+        # 4. WHATSAPP (Opcional)
         msg_whats = ""
         if avisar_cliente and p_tel_cliente and modulo_comercial_configuracoes:
             try:
@@ -231,25 +244,20 @@ def criar_pedido_novo_fluxo(cliente, produto, qtd, valor_unitario, valor_total, 
                         msg = tpl.replace("{nome}", primeiro_nome) \
                                  .replace("{pedido}", p_codigo) \
                                  .replace("{produto}", p_nome_produto)
-                        
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], p_tel_cliente, msg)
                         msg_whats = " (WhatsApp Enviado)"
-            except Exception as e_w:
-                print(f"Erro envio whats: {e_w}")
+            except: pass
 
         return True, f"Pedido {codigo} criado com sucesso!{msg_whats}", id_novo
 
     except psycopg2.Error as e_db:
         conn.rollback()
-        # Tratamento específico para erro de duplicidade (caso ainda ocorra em outra tabela)
-        if e_db.pgcode == '23505':
-            return False, f"Erro: Registro duplicado detectado. Detalhes: {e_db.pgerror}", None
-        return False, f"Erro de Banco de Dados: {e_db.pgcode} - {e_db.pgerror}", None
+        return False, f"Erro BD: {e_db.pgcode} - {e_db.pgerror}", None
     except Exception as e: 
         conn.rollback()
-        return False, f"Erro Geral ao criar pedido: {str(e)}", None
+        return False, f"Erro Geral: {str(e)}", None
     finally:
-        conn.close()
+        if conn and not conn.closed: conn.close()
 
 # =============================================================================
 # 3. CRUD E FUNÇÕES GERAIS
@@ -295,6 +303,8 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
         try:
             cur = conn.cursor()
             obs_hist = obs
+            
+            # Atualiza Status
             coluna_data = ""
             if novo_status == "Solicitado": coluna_data = ", data_solicitacao = NOW()"
             elif novo_status == "Pago": coluna_data = ", data_pago = NOW()"
@@ -306,12 +316,13 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
             
             cur.execute("INSERT INTO admin.pedidos_historico (id_pedido, status_novo, observacao, data_mudanca) VALUES (%s, %s, %s, NOW())", (id_pedido, novo_status, obs_hist))
             
+            # Movimentação Financeira
             if novo_status == "Pago":
                 registrar_movimentacao_financeira(conn, dados_pedido, "CREDITO", dados_pedido['valor_total'])
             elif novo_status == "Cancelado":
                 registrar_movimentacao_financeira(conn, dados_pedido, "DEBITO", dados_pedido['valor_total'])
             
-            # --- ENVIO DE MENSAGEM ---
+            # Envio Whats
             if avisar and dados_pedido['telefone_cliente']:
                 cur.execute("SELECT mensagem_padrao FROM admin.status WHERE modulo='PEDIDOS' AND status_relacionado=%s", (novo_status,))
                 res_msg = cur.fetchone()
@@ -329,9 +340,11 @@ def atualizar_status_pedido(id_pedido, novo_status, dados_pedido, avisar, obs):
                     if inst:
                         modulo_wapi.enviar_msg_api(inst[0], inst[1], dados_pedido['telefone_cliente'], msg_final)
             
-            conn.commit(); conn.close()
+            conn.commit()
+            conn.close()
             return True, "Status atualizado com sucesso!"
         except Exception as e:
+            conn.rollback()
             print(e); return False, str(e)
     return False, "Erro conexão"
 
@@ -353,6 +366,7 @@ def editar_dados_pedido_completo(id_pedido, dados_novos):
         cur = conn.cursor()
         total = float(dados_novos['qtd']) * float(dados_novos['valor'])
         
+        # Casting e limpeza
         raw_cpf = str(dados_novos['cliente']['cpf']) if dados_novos['cliente']['cpf'] else ""
         cpf_limpo = re.sub(r'\D', '', raw_cpf)
         p_cpf = int(cpf_limpo) if cpf_limpo else None
@@ -530,7 +544,6 @@ def renderizar_novo_pedido_tab():
         if conn_chk:
             try:
                 cur = conn_chk.cursor()
-                # Verifica custo por cliente+produto (não por origem) para exibição correta
                 cur.execute("SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND id_produto = %s", (str(id_cliente), str(id_produto)))
                 chk = cur.fetchone()
                 if chk: custo = float(chk[0])
