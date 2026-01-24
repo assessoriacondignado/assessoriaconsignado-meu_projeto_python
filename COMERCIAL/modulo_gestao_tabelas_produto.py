@@ -6,12 +6,20 @@ from sqlalchemy.exc import SQLAlchemyError
 import sys
 import os
 
+# --- 1. CONFIGURAÇÃO DE IMPORTAÇÃO (PADRONIZAÇÃO) ---
+# Garante que o Python encontre os módulos na raiz do projeto
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+# Se este arquivo estiver dentro de COMERCIAL ou uma subpasta, subimos até a raiz
+raiz_projeto = os.path.dirname(os.path.dirname(diretorio_atual)) # Ajuste conforme profundidade
+if raiz_projeto not in sys.path:
+    sys.path.append(raiz_projeto)
+
 # Tenta importar configurações de conexão
 try:
     import conexao
 except ImportError:
-    # Ajuste de Path: Adiciona o diretório raiz ao path (2 níveis acima: COMERCIAL -> Raiz)
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # Tentativa de fallback subindo mais um nível se necessário
+    sys.path.append(os.path.dirname(raiz_projeto))
     try:
         import conexao
     except ImportError:
