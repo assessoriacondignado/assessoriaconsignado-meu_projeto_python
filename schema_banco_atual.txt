@@ -51,6 +51,9 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - usuario_pai (integer) NULL
    - id_grupo_whats (text) NULL
    - tentativas_falhas (integer) NULL
+   - bloqueado_ate (timestamp without time zone) NULL
+   - senha_hash (character varying(255)) NULL
+   - tempo_sessao_padrao (integer) NULL
 
 [TABELA: admin.config_pedidos]
    - id (integer) NOT NULL
