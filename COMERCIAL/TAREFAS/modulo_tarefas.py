@@ -291,12 +291,6 @@ def renderizar_nova_tarefa_tab():
                 # Nota: Telefone vem do pedido na query interna ou podemos passar se tivermos
                 # A função buscar_pedidos_para_tarefa não traz telefone, mas a criar_tarefa
                 # busca dados se necessário ou usa o que passamos. 
-                # Melhoria: buscar telefone no df ou deixar a função lidar.
-                # Como a função criar_tarefa usa dados_pedido['telefone_cliente'] para avisar,
-                # e nosso df_ped não tem essa coluna explicita no select atual,
-                # o aviso pode falhar se não ajustarmos. 
-                # Ajuste rápido: Vamos assumir que o usuário aceita sem aviso ou corrigimos a query.
-                # Mantendo lógica original, mas o ideal seria corrigir a query no futuro.
                 
                 sucesso = criar_tarefa(
                     id_pedido=sel['id'], 
@@ -318,15 +312,16 @@ def renderizar_nova_tarefa_tab():
 # =============================================================================
 
 def app_tarefas():
-    # Estilização
+    # --- CORREÇÃO DE ESTILO: APLICAR APENAS AO BLOCO PRINCIPAL ---
+    # Usando o seletor 'section[data-testid="stMainBlock"]' para não vazar para a sidebar
     st.markdown("""
         <style>
-        div.stButton > button {
+        section[data-testid="stMainBlock"] div.stButton > button {
             background-color: #FF4B4B !important;
             color: white !important;
             border-color: #FF4B4B !important;
         }
-        div.stButton > button:hover {
+        section[data-testid="stMainBlock"] div.stButton > button:hover {
             background-color: #FF0000 !important;
             border-color: #FF0000 !important;
             color: white !important;
