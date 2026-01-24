@@ -179,35 +179,25 @@ def processar_atualizacao_cadastral(cpf, nome):
         lista_tabs = ""
         if sucessos:
             for s in sucessos:
-                # Remove prefixo longo para economizar espaço
-                nome_tab = s.replace("sistema_consulta_dados_", "").replace("sistema_consulta_", "")
+                # Remove prefixos para economizar espaço
+                nome_tab = s.replace("sistema_consulta.sistema_consulta_dados_", "").replace("sistema_consulta.sistema_consulta_", "").replace("sistema_consulta.", "").replace("sistema_consulta_dados_", "").replace("sistema_consulta_", "")
                 lista_tabs += f"<li style='margin:0; padding:0;'>{nome_tab}</li>"
         else:
             lista_tabs = "<li style='margin:0; padding:0;'>Nenhum dado novo.</li>"
 
         # 4. HTML do Recibo COMPACTO (Fonte 6 / 10px)
-        # Ajustado para caber na sidebar "CONEXÃO"
-        html_recibo = f"""
-        <div style="background-color: #f1f8e9; border: 1px solid #4caf50; border-radius: 4px; padding: 5px; font-family: sans-serif; color: #1b5e20; font-size: 10px; line-height: 1.1;">
-            <div style="font-weight:bold; color: #2e7d32; border-bottom: 1px solid #a5d6a7; margin-bottom: 3px; padding-bottom: 2px;">
-                ✅ Atualizado
-            </div>
-            <div style="margin-bottom: 3px;">
-                <b>Data:</b> {agora}<br>
-            </div>
-            
-            <div style="font-weight:bold; margin-top: 4px;">Tabelas:</div>
-            <ul style="margin: 0 0 5px 0; padding-left: 12px; font-size: 9px;">
-                {lista_tabs}
-            </ul>
-            
-            <div style="background-color: #ffffff; padding: 4px; border-radius: 3px; border: 1px solid #c8e6c9; margin-top: 4px;">
-                <div style="margin-bottom: 2px;"><b>Saldo Ant:</b> {saldo_ant:,.2f}</div>
-                <div style="margin-bottom: 2px; color: #d32f2f;"><b>Débito:</b> -{valor_deb:,.2f}</div>
-                <div style="font-weight:bold; border-top: 1px dotted #ccc; padding-top:2px;">Saldo: {saldo_fim:,.2f}</div>
-            </div>
-        </div>
-        """
+        # Importante: Sem indentação no início das linhas para evitar que o Streamlit mostre como código
+        html_recibo = f"""<div style="background-color: #f1f8e9; border: 1px solid #4caf50; border-radius: 4px; padding: 5px; font-family: sans-serif; color: #1b5e20; font-size: 10px; line-height: 1.1;">
+<div style="font-weight:bold; color: #2e7d32; border-bottom: 1px solid #a5d6a7; margin-bottom: 3px; padding-bottom: 2px;">✅ Atualizado</div>
+<div style="margin-bottom: 3px;"><b>Data:</b> {agora}<br></div>
+<div style="font-weight:bold; margin-top: 4px;">Tabelas:</div>
+<ul style="margin: 0 0 5px 0; padding-left: 12px; font-size: 9px;">{lista_tabs}</ul>
+<div style="background-color: #ffffff; padding: 4px; border-radius: 3px; border: 1px solid #c8e6c9; margin-top: 4px;">
+<div style="margin-bottom: 2px;"><b>Saldo Ant:</b> {saldo_ant:,.2f}</div>
+<div style="margin-bottom: 2px; color: #d32f2f;"><b>Débito:</b> -{valor_deb:,.2f}</div>
+<div style="font-weight:bold; border-top: 1px dotted #ccc; padding-top:2px;">Saldo: {saldo_fim:,.2f}</div>
+</div>
+</div>"""
         
         if erros:
              html_recibo += f"<div style='color:orange; font-size:9px; margin-top:2px;'>⚠️ {len(erros)} avisos na importação.</div>"
