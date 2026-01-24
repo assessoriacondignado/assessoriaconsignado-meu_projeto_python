@@ -186,22 +186,19 @@ def executar_distribuicao_dinamica(dados_api):
         df_map = pd.read_sql("SELECT tabela_referencia, tabela_referencia_coluna, jason_api_fatorconferi_coluna FROM conexoes.fatorconferi_conexao_tabelas", conn)
         
         # --- CORREÇÃO DE ORDEM (PRIORIDADE) ---
-        # Converte para lista para poder ordenar
         tabelas = df_map['tabela_referencia'].unique().tolist()
         
         # Define a tabela "Pai" que deve ir primeiro
         tabela_pai = "sistema_consulta.sistema_consulta_dados_cadastrais_cpf"
         
-        # Se a tabela pai estiver na lista, move ela para a posição 0
         if tabela_pai in tabelas:
             tabelas.remove(tabela_pai)
             tabelas.insert(0, tabela_pai)
             
-        # Garante que a tabela índice também (se houver mapeamento para ela)
         tabela_indice = "sistema_consulta.sistema_consulta_cpf"
         if tabela_indice in tabelas:
             tabelas.remove(tabela_indice)
-            tabelas.insert(0, tabela_indice) # Índice vem antes de tudo se possível
+            tabelas.insert(0, tabela_indice) 
 
         cur = conn.cursor()
         
@@ -227,7 +224,7 @@ def executar_distribuicao_dinamica(dados_api):
                     else:
                         valor_final = sanitizar_e_formatar(valor_raw)
                         
-                    # Limpeza extra para CPF (banco geralmente pede apenas números)
+                    # Limpeza extra para CPF
                     if 'CPF' in col_sql.upper() or 'CPF' in caminho.upper():
                         if isinstance(valor_final, list):
                             valor_final = [mv.ValidadorDocumentos.cpf_para_sql(v) for v in valor_final]
@@ -253,7 +250,6 @@ def executar_distribuicao_dinamica(dados_api):
                 # Lógica para evitar erros de duplicidade (UPSERT)
                 cols_lower = [c.lower() for c in cols]
                 
-                # Se for tabela de lista (telefones/enderecos), NÃO usa ON CONFLICT (CPF) pois CPF repete.
                 is_lista_1_n = any(x in tabela.lower() for x in ['telefone', 'endereco', 'email', 'socio', 'veiculo'])
                 
                 if not is_lista_1_n and 'cpf' in cols_lower:
@@ -261,9 +257,8 @@ def executar_distribuicao_dinamica(dados_api):
                     sql_base += f" ON CONFLICT (cpf) DO UPDATE SET {update_set}" if update_set else " ON CONFLICT (cpf) DO NOTHING"
                 elif 'id' in cols_lower:
                     sql_base += " ON CONFLICT (id) DO NOTHING"
-                # Tabelas satélites sem ID único explícito no mapeamento:
                 elif is_lista_1_n:
-                    sql_base += " ON CONFLICT DO NOTHING" # Evita duplicar telefone igual para mesmo CPF
+                    sql_base += " ON CONFLICT DO NOTHING" 
 
                 count_ins = 0
                 for i in range(max_linhas):
@@ -272,7 +267,6 @@ def executar_distribuicao_dinamica(dados_api):
                     
                     for col in cols:
                         val = dados_extraidos[col]
-                        # Se for lista, pega o item da vez. Se for valor fixo (CPF), repete.
                         if isinstance(val, list):
                             item = val[i] if i < len(val) else None
                         else:
@@ -282,16 +276,12 @@ def executar_distribuicao_dinamica(dados_api):
                         linha_vals.append(item)
                     
                     if tem_dado:
-                        # Verifica se o CPF pai existe antes de inserir filho (segurança extra)
-                        # O ideal é a ordenação acima resolver, mas se falhar, o try/except pega.
                         cur.execute(sql_base, tuple(linha_vals))
                         count_ins += 1
                 
                 sucessos.append(f"{tabela} ({count_ins})")
 
             except Exception as e:
-                # Se falhar uma tabela, não dá rollback em tudo, tenta as próximas
-                # (Mas se falhar o pai, os filhos falharão também, o que é esperado)
                 conn.rollback() 
                 erros.append(f"Erro em {tabela}: {e}")
         
@@ -418,6 +408,7 @@ def processar_cobranca_novo_fluxo(conn, dados_cliente, origem_custo_chave):
         return True, f"Débito R$ {valor_debitar:.2f}"
     except Exception as e: return False, f"Erro: {str(e)}"
 
+# --- FUNÇÃO ORIGINAL (MANTIDA) ---
 def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
     # Padroniza CPF para string limpa
     cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
@@ -483,8 +474,6 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
             with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
         except: pass
 
-        # --- ATUALIZAÇÃO PARA BIGINT ---
-        # Converte CPF limpo para Inteiro para gravar na nova coluna
         cpf_num = int(re.sub(r'\D', '', str(cpf_padrao)))
 
         cur.execute("""
@@ -504,6 +493,118 @@ def realizar_consulta_cpf(cpf, ambiente, forcar_nova=False, id_cliente_pagador_m
         return {"sucesso": True, "dados": dados, "msg": "Consulta OK." + msg_fin}
     except Exception as e:
         if conn: conn.close()
+        return {"sucesso": False, "msg": str(e)}
+
+# --- NOVA FUNÇÃO COM FILA/LOCK (ATUALIZAÇÃO CADASTRAL) ---
+def realizar_consulta_cpf_segura(cpf, ambiente, forcar_nova=False, id_cliente_pagador_manual=None):
+    """
+    Versão da função realizar_consulta_cpf que utiliza LOCK de banco de dados
+    para garantir execução sequencial (Fila) e impedir duplicidade/race condition.
+    """
+    cpf_padrao = mv.ValidadorDocumentos.cpf_para_sql(cpf)
+    if not cpf_padrao: return {"sucesso": False, "msg": "CPF Inválido"}
+
+    conn = get_conn()
+    if not conn: return {"sucesso": False, "msg": "Erro DB."}
+    
+    try:
+        cur = conn.cursor()
+        
+        # --- LOCK: INÍCIO DA FILA ---
+        # 20240101 é uma chave arbitrária para representar a fila de consultas CPF
+        # pg_advisory_xact_lock segura a execução aqui até o commit desta transação
+        cur.execute("SELECT pg_advisory_xact_lock(20240101)") 
+        
+        # --- LÓGICA DE NEGÓCIO (DENTRO DO LOCK) ---
+        id_usuario = st.session_state.get('usuario_id', 0)
+        nome_usuario = st.session_state.get('usuario_nome', 'Sistema')
+        dados_pagador = {"id": None, "nome": None, "id_usuario": id_usuario, "nome_usuario": nome_usuario}
+        
+        if id_cliente_pagador_manual:
+            try:
+                cur.execute("SELECT id, nome FROM admin.clientes WHERE id=%s", (id_cliente_pagador_manual,))
+                res = cur.fetchone()
+                if res: dados_pagador["id"] = res[0]; dados_pagador["nome"] = res[1]
+            except: pass
+        else:
+            d = buscar_cliente_vinculado_ao_usuario(id_usuario)
+            dados_pagador["id"] = d['id']; dados_pagador["nome"] = d['nome']
+
+        origem_real = buscar_origem_por_ambiente(ambiente)
+
+        # 1. Verifica Cache
+        if not forcar_nova:
+            cur.execute("SELECT caminho_json FROM conexoes.fatorconferi_registo_consulta WHERE cpf_consultado=%s AND status_api='SUCESSO' ORDER BY id DESC LIMIT 1", (cpf_padrao,))
+            res = cur.fetchone()
+            if res and res[0] and os.path.exists(res[0]):
+                with open(res[0], 'r', encoding='utf-8') as f: dados = json.load(f)
+                # Cache encontrado: OK, libera o lock (commit implícito no return/finally? não, precisa commit ou rollback)
+                # Como é leitura, podemos dar commit ou rollback sem efeito colateral
+                conn.commit() 
+                conn.close()
+                return {"sucesso": True, "dados": dados, "msg": "Cache recuperado."}
+
+        custo_previsto = 0.0
+        if dados_pagador['id']:
+             sql_custo = "SELECT valor_custo FROM cliente.valor_custo_carteira_cliente WHERE id_cliente = %s AND origem_custo = %s LIMIT 1"
+             cur.execute(sql_custo, (str(dados_pagador['id']), origem_real))
+             res_custo = cur.fetchone()
+             custo_previsto = float(res_custo[0]) if res_custo else buscar_valor_consulta_atual()
+
+             sql_saldo = "SELECT saldo_novo FROM cliente.extrato_carteira_por_produto WHERE id_cliente = %s ORDER BY id DESC LIMIT 1"
+             cur.execute(sql_saldo, (str(dados_pagador['id']),))
+             res_s = cur.fetchone()
+             saldo_atual = float(res_s[0]) if res_s else 0.0
+
+             if saldo_atual < custo_previsto:
+                 conn.rollback() # Libera Lock
+                 conn.close()
+                 return {"sucesso": False, "msg": "Saldo insuficiente."}
+
+        cred = buscar_credenciais()
+        if not cred['token']: 
+            conn.rollback()
+            conn.close()
+            return {"sucesso": False, "msg": "Token API ausente."}
+        
+        # Chamada API (O Lock segura a fila aqui, é esperado)
+        resp = requests.get(f"{cred['url']}?acao=CONS_CPF&TK={cred['token']}&DADO={cpf_padrao}", timeout=30)
+        dados = parse_xml_to_dict(resp.text)
+        
+        nome_arq = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{cpf_padrao}.json"
+        path = os.path.join(PASTA_JSON, nome_arq)
+        try:
+            with open(path, 'w', encoding='utf-8') as f: json.dump(dados, f, indent=4, ensure_ascii=False)
+        except: pass
+
+        cpf_num = int(re.sub(r'\D', '', str(cpf_padrao)))
+
+        cur.execute("""
+            INSERT INTO conexoes.fatorconferi_registo_consulta 
+            (tipo_consulta, cpf_consultado, cpf_consultado_num, id_usuario, nome_usuario, valor_pago, caminho_json, status_api, origem_consulta, data_hora, id_cliente, nome_cliente, ambiente) 
+            VALUES ('CPF SIMPLES', %s, %s, %s, %s, %s, %s, 'SUCESSO', %s, NOW(), %s, %s, %s)
+            """, 
+            (cpf_padrao, cpf_num, id_usuario, nome_usuario, custo_previsto, path, origem_real, dados_pagador['id'], dados_pagador['nome'], ambiente)
+        )
+        
+        msg_fin = ""
+        if dados_pagador['id']:
+            # Passamos a conexão JÁ ABERTA para processar a cobrança na mesma transação
+            ok_fin, txt_fin = processar_cobranca_novo_fluxo(conn, dados_pagador, origem_real)
+            if not ok_fin:
+                conn.rollback() # Se der erro no debito, desfaz registro de consulta
+                conn.close()
+                return {"sucesso": False, "msg": f"Erro na cobrança: {txt_fin}"}
+            msg_fin = f" | {txt_fin}"
+        
+        conn.commit() # SUCESSO: Efetiva tudo e Libera o LOCK
+        conn.close()
+        return {"sucesso": True, "dados": dados, "msg": "Consulta OK." + msg_fin}
+
+    except Exception as e:
+        if conn: 
+            conn.rollback() # Erro geral, libera Lock
+            conn.close()
         return {"sucesso": False, "msg": str(e)}
 
 # =============================================================================
@@ -667,7 +768,8 @@ def salvar_mapeamento_grade(nome_tabela, df_mapeamento):
 def app_fator_conferi():
     criar_tabela_conexao_tabelas()
     st.markdown("### ⚡ Painel Fator Conferi")
-    tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros", "🗺️ Mapa de Dados"])
+    # Adicionada nova aba na lista
+    tabs = st.tabs(["👥 Clientes", "🔍 Teste de Consulta", "💰 Saldo API", "📋 Histórico", "⚙️ Parâmetros", "🗺️ Mapa de Dados", "🔄 Atualização Cadastral"])
 
     with tabs[0]: 
         st.info("Gestão de Carteiras")
@@ -675,7 +777,7 @@ def app_fator_conferi():
         if not df.empty: st.dataframe(df, use_container_width=True)
 
     with tabs[1]:
-        st.markdown("#### 1.1 Consulta e Importação")
+        st.markdown("#### 1.1 Consulta e Importação (TESTE)")
         col_cli, col_cpf = st.columns([2, 2])
         id_cliente_teste = None
         conn = get_conn()
@@ -789,3 +891,44 @@ def app_fator_conferi():
         if st.button("💾 Salvar Alterações Gerais", type="primary"):
             if salvar_alteracoes_mapa_completo(df_geral, df_editado_geral):
                 st.success("Tabela geral atualizada!"); time.sleep(1.5); st.rerun()
+
+    # --- NOVA ABA: ATUALIZAÇÃO CADASTRAL (COM FILA) ---
+    with tabs[6]:
+        st.markdown("#### 🔄 Atualização Cadastral (Produção)")
+        st.warning("⚠️ Atenção: Esta função utiliza fila de processamento. Aguarde a confirmação.")
+        
+        col_cli_prod, col_cpf_prod = st.columns([2, 2])
+        
+        # Pagador Manual (Opcional)
+        id_cliente_prod = None
+        conn = get_conn()
+        if conn:
+            try:
+                df_clis = pd.read_sql("SELECT id, nome FROM admin.clientes ORDER BY nome", conn)
+                opcoes_cli_prod = {row['id']: row['nome'] for _, row in df_clis.iterrows()}
+                id_cliente_prod = col_cli_prod.selectbox("Cliente Pagador (Opcional)", options=[None] + list(opcoes_cli_prod.keys()), format_func=lambda x: opcoes_cli_prod[x] if x else "Automático (Vínculo)", key="sel_cli_prod")
+            except: pass
+            finally: conn.close()
+            
+        cpf_prod_in = col_cpf_prod.text_input("CPF para Atualização", key="cpf_prod")
+        
+        if st.button("🚀 Executar Atualização", type="primary"):
+            if cpf_prod_in:
+                with st.spinner("⏳ Processando na fila... (Aguardando liberação)"):
+                    # CHAMA A NOVA FUNÇÃO COM LOCK
+                    res = realizar_consulta_cpf_segura(cpf_prod_in, "sistema_consulta_usuario", forcar_nova=False, id_cliente_pagador_manual=id_cliente_prod)
+                    
+                    if res['sucesso']:
+                        # A distribuição de dados continua sendo feita após a consulta (dados já estão no banco/json)
+                        # A distribuição em si não precisa de lock de consulta, pois é insert em tabelas de dados
+                        lista_sucessos, lista_erros = executar_distribuicao_dinamica(res['dados'])
+                        st.success(res.get('msg', 'Sucesso!'))
+                        if lista_sucessos: st.info(f"Dados atualizados em: {', '.join(lista_sucessos)}")
+                        if lista_erros: st.error(f"Erros na importação:\n{chr(10).join(lista_erros)}")
+                        
+                        # Mostra prévia
+                        with st.expander("Ver Detalhes"): st.json(res['dados'])
+                    else:
+                        st.error(f"Erro: {res.get('msg')}")
+            else:
+                st.warning("Digite o CPF.")
