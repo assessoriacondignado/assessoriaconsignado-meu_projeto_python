@@ -1,6 +1,7 @@
 import psycopg2
 import requests
 import re
+import json # Importante para tratar erros de JSON
 
 try: 
     import conexao
@@ -89,22 +90,31 @@ def checar_status_api(instance_id, token):
     params = {"instanceId": instance_id}
     try:
         res = requests.get(url, headers=headers, params=params, timeout=10)
-        return res.json() if res.status_code == 200 else {"state": "erro"}
-    except: return {"state": "erro"}
+        if res.status_code == 200:
+            return res.json()
+        return {"state": "erro_api", "details": res.text}
+    except Exception as e: return {"state": "erro_req", "details": str(e)}
 
-# --- NOVA FUNÇÃO SOLICITADA ---
 def obter_info_instancia(instance_id, token):
     """Obtém informações do perfil (Foto, Nome, Número)"""
-    # Endpoint para pegar dados da conexão/perfil
     url = f"{BASE_URL}/instance/info" 
     headers = {"Authorization": f"Bearer {token}"}
     params = {"instanceId": instance_id}
     try:
         res = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        # Se sucesso, retorna o JSON
         if res.status_code == 200:
             return res.json()
-        return None
-    except: return None
+            
+        # Se falha, retorna um dicionário com o erro para debug
+        return {
+            "error": True, 
+            "status_code": res.status_code, 
+            "message": res.text
+        }
+    except Exception as e: 
+        return {"error": True, "message": str(e)}
 
 # ==========================================================
 # 2. FUNÇÕES DE SUPORTE (BANCO DE DADOS)
