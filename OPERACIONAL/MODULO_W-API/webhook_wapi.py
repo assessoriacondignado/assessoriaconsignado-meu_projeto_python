@@ -11,6 +11,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
+# Adiciona raiz do projeto para importar conexao.py
 sys.path.append(os.path.dirname(os.path.dirname(BASE_DIR)))
 
 try:
@@ -31,16 +32,21 @@ def get_conn():
     except: return None
 
 def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
-    if not telefone: return
+    if not telefone: 
+        print("❌ Telefone vazio. Abortando gravação.", flush=True)
+        return
 
     conn = get_conn()
-    if not conn: return
+    if not conn: 
+        print("❌ Sem conexão com banco.", flush=True)
+        return
 
     try:
         cur = conn.cursor()
         
-        # Verifica número
-        cur.execute("SELECT id, id_cliente, nome_cliente FROM wapi_numeros WHERE telefone = %s", (telefone,))
+        # --- ETAPA 1: Gerenciar admin.wapi_numeros ---
+        # Verifica se o número existe
+        cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
         res_num = cur.fetchone()
         
         id_cliente_final = None
@@ -48,11 +54,13 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
         nome_contato_log = push_name 
 
         if res_num:
-            cur.execute("UPDATE wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
+            # Já existe: Atualiza data
+            cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
             id_cliente_final = res_num[1]
             nome_cliente_final = res_num[2]
             if nome_cliente_final: nome_contato_log = nome_cliente_final
         else:
+            # Novo Número: Tenta auto-vincular com admin.clientes
             busca_tel = f"%{telefone[-8:]}"
             cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
             res_cli = cur.fetchone()
@@ -61,28 +69,32 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
                 nome_contato_log = nome_cliente_final
+                print(f"🔗 Auto-vínculo encontrado: {nome_cliente_final}", flush=True)
             
+            # Insere novo número
             cur.execute("""
-                INSERT INTO wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
+                INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                 VALUES (%s, %s, %s, NOW())
             """, (telefone, id_cliente_final, nome_cliente_final))
         
-        # Grava Log
+        # --- ETAPA 2: Gravar Log em admin.wapi_logs ---
         sql_log = """
-            INSERT INTO wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato, id_cliente, nome_cliente) 
-            VALUES (%s, %s, %s, %s, 'Sucesso', %s, %s, %s)
+            INSERT INTO admin.wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato, id_cliente, nome_cliente, data_hora) 
+            VALUES (%s, %s, %s, %s, 'Sucesso', %s, %s, %s, NOW())
         """
         cur.execute(sql_log, (instance_id, telefone, mensagem or "", tipo, nome_contato_log, id_cliente_final, nome_cliente_final))
+        
         conn.commit()
         
-        # --- PRINT NO TERMINAL PARA CONFIRMAR GRAVAÇÃO NO BANCO ---
-        print(f"💾 [BANCO] Salvo: {tipo} | Tel: {telefone} | Msg: {mensagem}", flush=True)
+        # Feedback visual no terminal
+        icone = "➡️ ENVIADA" if tipo == "ENVIADA" else "⬅️ RECEBIDA"
+        print(f"✅ GRAVADO: {icone} | Tel: {telefone} | Msg: {mensagem}", flush=True)
         
         cur.close()
         conn.close()
 
     except Exception as e:
-        print(f"❌ Erro no banco: {e}", flush=True)
+        print(f"❌ Erro no banco de dados: {e}", flush=True)
         if conn: conn.close()
 
 @app.route('/webhook', methods=['POST'])
@@ -90,13 +102,13 @@ def webhook():
     dados = request.json
     if not dados: return jsonify({"status": "vazio"}), 200
     
-    # --- [DEBUG] MOSTRA O JSON INTEIRO NO TERMINAL ---
-    print("\n" + "="*50, flush=True)
-    print("⚡ RECEBIDO NO WEBHOOK (JSON BRUTO):", flush=True)
-    print(json.dumps(dados, indent=2, ensure_ascii=False), flush=True)
-    print("="*50 + "\n", flush=True)
+    # --- DEBUG: Mostra o JSON recebido ---
+    print("\n" + "-"*50, flush=True)
+    # print(json.dumps(dados, indent=2, ensure_ascii=False), flush=True) # Descomente se quiser ver o JSON inteiro
 
     event = dados.get("event")
+    
+    # Adicionado 'webhookDelivery' especificamente para seus envios
     eventos_aceitos = ["message.received", "message.sent", "message.upsert", "webhookReceived", "webhookDelivery"]
     
     if event not in eventos_aceitos:
@@ -108,64 +120,62 @@ def webhook():
     if dados.get("isGroup") is True: 
         return jsonify({"status": "grupo_ignorado"}), 200
 
-    # --- IDENTIFICAÇÃO DO TIPO (ENVIADA/RECEBIDA) ---
+    # --- LÓGICA DE IDENTIFICAÇÃO ---
     is_from_me = dados.get("fromMe") is True
     tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
-    # Captura objetos principais (Suporte a 'remetente' e 'sender')
+    # Captura objetos principais
+    # Seu JSON usa 'remetente' (pt) ou 'sender' (en)
     sender = dados.get("sender") or dados.get("remetente", {})
     chat = dados.get("chat", {})
     
     telefone_bruto = None
     push_name = "Desconhecido"
 
-    # --- [IDENTIFICAÇÃO] LÓGICA DE EXTRAÇÃO DO NÚMERO ---
     if is_from_me:
-        # SE FOR ENVIO: O destino está em 'chat' -> 'id'
+        # [ENVIO] O destino está dentro de 'chat' -> 'id'
         telefone_bruto = chat.get("id")
         push_name = "Sistema/Atendente"
-        print(f"📤 DETECTADO ENVIO PARA: {telefone_bruto}", flush=True)
+        print(f"📤 DETECTADO ENVIO (webhookDelivery)", flush=True)
     else:
-        # SE FOR RECEBIMENTO: A origem está em 'sender'/'remetente' -> 'id'
+        # [RECEBIMENTO] A origem está em 'remetente'/'sender' -> 'id'
         telefone_bruto = sender.get("id") or dados.get("from")
         push_name = sender.get("pushName", "Cliente")
-        print(f"📥 DETECTADO RECEBIMENTO DE: {telefone_bruto}", flush=True)
+        print(f"📥 DETECTADO RECEBIMENTO", flush=True)
 
-    # --- [IDENTIFICAÇÃO] LÓGICA DE EXTRAÇÃO DA MENSAGEM ---
+    # --- LÓGICA DE MENSAGEM ---
+    # Seu JSON tem: msgContent -> extendedTextMessage -> text
     msg_content = dados.get("msgContent", {})
     
-    # Tenta pegar o texto em várias posições possíveis do JSON
     mensagem = (
         msg_content.get("text") or 
         msg_content.get("conversation") or 
         msg_content.get("body") or 
-        # O campo abaixo é o que veio no seu JSON de exemplo:
         msg_content.get("extendedTextMessage", {}).get("text") or 
         ""
     )
     
-    # Se não achar texto, tenta identificar se é mídia
     if not mensagem:
         if "imageMessage" in msg_content: mensagem = "[Imagem]"
         elif "audioMessage" in msg_content: mensagem = "[Áudio]"
         elif "documentMessage" in msg_content: mensagem = "[Documento]"
 
-    print(f"💬 CONTEÚDO CAPTURADO: {mensagem}", flush=True)
-
+    # Limpeza do Telefone
     if telefone_bruto:
         telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
         
-        # Ajuste de DDI BR (55) e 9º dígito
+        # Ajuste DDI 55 e 9º dígito
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             if int(telefone_limpo[4]) >= 6:
                 telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
         
+        print(f"🔎 Processando: {telefone_limpo} | Msg: {mensagem}", flush=True)
         gerenciar_numero_e_log(instance_id, telefone_limpo, mensagem, tipo_log, push_name)
         return jsonify({"status": "processado"}), 200
 
-    print("❌ ERRO: Telefone não identificado no JSON", flush=True)
+    print("⚠️ Telefone não identificado no payload.", flush=True)
     return jsonify({"status": "erro_dados_insuficientes"}), 200
 
 if __name__ == '__main__':
-    # Porta 5001 para evitar conflito com Streamlit
+    # Porta 5001 para não conflitar
     app.run(host='0.0.0.0', port=5001)
