@@ -32,14 +32,19 @@ def get_conn():
     except: return None
 
 def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
+    """
+    Registra ou atualiza o número e salva o log da mensagem no schema admin.
+    """
     if not telefone: return
     conn = get_conn()
     if not conn: return
     try:
         cur = conn.cursor()
-        # Gerenciar admin.wapi_numeros
+        
+        # 1. Gerenciar admin.wapi_numeros
         cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
         res_num = cur.fetchone()
+        
         id_cliente_final = None
         nome_cliente_final = None 
         nome_contato_log = push_name 
@@ -57,19 +62,21 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
                 nome_contato_log = nome_cliente_final
+            
             cur.execute("""
                 INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                 VALUES (%s, %s, %s, NOW())
             """, (telefone, id_cliente_final, nome_cliente_final))
         
-        # Gravar Log em admin.wapi_logs
+        # 2. Gravar Log em admin.wapi_logs
         sql_log = """
             INSERT INTO admin.wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato, id_cliente, nome_cliente, data_hora) 
             VALUES (%s, %s, %s, %s, 'Sucesso', %s, %s, %s, NOW())
         """
         cur.execute(sql_log, (instance_id, telefone, mensagem or "", tipo, nome_contato_log, id_cliente_final, nome_cliente_final))
+        
         conn.commit()
-        print(f"✅ GRAVADO: {tipo} | Tel: {telefone}", flush=True)
+        print(f"💾 [BANCO] Salvo: {tipo} | {telefone} | Msg: {mensagem[:20]}...", flush=True)
         cur.close(); conn.close()
     except Exception as e:
         print(f"❌ Erro no banco: {e}", flush=True)
@@ -80,7 +87,7 @@ def webhook():
     dados = request.json
     if not dados: return jsonify({"status": "vazio"}), 200
     
-    # SALVAR JSON BRUTO
+    # SALVAR JSON BRUTO EM PASTA
     try:
         pasta_json = os.path.join(BASE_DIR, "WAPI_WEBHOOK_JASON")
         if not os.path.exists(pasta_json): os.makedirs(pasta_json)
@@ -90,32 +97,43 @@ def webhook():
             json.dump(dados, f, indent=4, ensure_ascii=False)
     except: pass
 
+    # MOSTRAR NO TERMINAL
+    print("\n" + "="*50)
+    print("⚡ WEBHOOK ACIONADO EM TEMPO REAL")
+    
     event = dados.get("event")
-    # AJUSTE: Adicionados eventos de envio (webhookDelivery/message.sent)
+    # Inclusão de webhookDelivery para capturar envios
     eventos_aceitos = ["message.received", "message.sent", "message.upsert", "webhookReceived", "webhookDelivery"]
     
     if event not in eventos_aceitos:
+        print(f"⚠️ Evento ignorado: {event}")
         return jsonify({"status": "ignorado"}), 200
 
     instance_id = dados.get("instanceId", "PADRAO")
     if dados.get("isGroup") is True: return jsonify({"status": "grupo_ignorado"}), 200
 
+    # IDENTIFICAÇÃO DOS CAMPOS
     is_from_me = dados.get("fromMe") is True
     tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
     sender = dados.get("sender") or dados.get("remetente", {})
     chat = dados.get("chat", {})
     
-    # AJUSTE: Mapeamento de telefone baseado no fluxo (Envio usa chat.id)
+    telefone_bruto = None
+    push_name = "Desconhecido"
+
     if is_from_me:
+        # ENVIO: Pega chat.id conforme amostra JSON
         telefone_bruto = chat.get("id")
         push_name = "Sistema/Atendente"
-        print(f"📤 ACIONAMENTO DE ENVIO DETECTADO EM REAL TIME", flush=True)
+        print(f"📤 FLUXO: ENVIO | DESTINO: {telefone_bruto}")
     else:
+        # RECEBIMENTO: Pega sender.id
         telefone_bruto = sender.get("id") or dados.get("from")
         push_name = sender.get("pushName", "Cliente")
-        print(f"📥 ACIONAMENTO DE RECEBIMENTO DETECTADO EM REAL TIME", flush=True)
+        print(f"📥 FLUXO: RECEBIMENTO | ORIGEM: {telefone_bruto}")
 
+    # CAPTURAR MENSAGEM
     msg_content = dados.get("msgContent", {})
     mensagem = (
         msg_content.get("text") or 
@@ -123,9 +141,12 @@ def webhook():
         msg_content.get("body") or 
         msg_content.get("extendedTextMessage", {}).get("text") or ""
     )
-    
+    print(f"💬 CONTEÚDO: {mensagem}")
+    print("="*50 + "\n")
+
     if telefone_bruto:
         telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
+        # Ajuste DDI 55 e 9º dígito
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             if int(telefone_limpo[4]) >= 6:
                 telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
