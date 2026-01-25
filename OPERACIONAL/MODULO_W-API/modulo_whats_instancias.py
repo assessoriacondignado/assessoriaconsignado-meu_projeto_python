@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import time
-import requests  # Adicionado para requisição HTTP direta
+import requests
 import conexao
 # Importa o módulo central da W-API para evitar duplicação de código
 import modulo_wapi
@@ -50,7 +50,8 @@ def dialog_editar(id_db, nome, inst_id, token):
     if st.button("Salvar Alterações"):
         try:
             conn = get_conn(); cur = conn.cursor()
-            cur.execute("UPDATE wapi_instancias SET nome=%s, api_instance_id=%s, api_token=%s WHERE id=%s", (new_nome, new_id, new_token, id_db))
+            # Ajustado para usar o schema admin.wapi_instancias
+            cur.execute("UPDATE admin.wapi_instancias SET nome=%s, api_instance_id=%s, api_token=%s WHERE id=%s", (new_nome, new_id, new_token, id_db))
             conn.commit(); conn.close()
             st.success("Configurações atualizadas!")
             time.sleep(1); st.rerun()
@@ -61,7 +62,8 @@ def app_instancias():
     st.markdown("### 🤖 Gerenciar Instâncias")
     try:
         conn = get_conn()
-        df_list = pd.read_sql("SELECT id, nome, api_instance_id, api_token FROM wapi_instancias", conn)
+        # CORREÇÃO: Schema explícito 'admin.wapi_instancias'
+        df_list = pd.read_sql("SELECT id, nome, api_instance_id, api_token FROM admin.wapi_instancias", conn)
         conn.close()
 
         if not df_list.empty:
@@ -71,8 +73,7 @@ def app_instancias():
                     with c1:
                         if st.button("📷 QR Code", key=f"qr_{inst['id']}"): dialog_qrcode(inst['api_instance_id'], inst['api_token'])
                         
-                        # --- INICIO DA ATUALIZAÇÃO ---
-                        # Botão ajustado para atualizar webhook/status conforme solicitado
+                        # --- ATUALIZAÇÃO DE STATUS (CORRIGIDA) ---
                         if st.button("📊 Atualizar Status", key=f"st_{inst['id']}"):
                             try:
                                 url = f"https://api.w-api.app/v1/webhook/update-webhook-message-status?instanceId={inst['api_instance_id']}"
@@ -80,18 +81,28 @@ def app_instancias():
                                     "Content-Type": "application/x-www-form-urlencoded",
                                     "Authorization": f"Bearer {inst['api_token']}"
                                 }
-                                # Requisição POST
                                 response = requests.post(url, headers=headers)
-                                res_json = response.json()
                                 
-                                # Verifica erro e exibe mensagem
-                                if res_json.get("error") is False:
-                                    st.success(res_json.get("message", "Webhook de presença atualizado."))
-                                else:
-                                    st.error(f"Erro: {res_json.get('message', 'Erro desconhecido')}")
+                                # Tenta decodificar JSON apenas se houver conteúdo
+                                try:
+                                    res_json = response.json()
+                                    if res_json.get("error") is False:
+                                        st.success(res_json.get("message", "Webhook de presença atualizado."))
+                                    else:
+                                        st.error(f"Erro API: {res_json.get('message', 'Erro desconhecido')}")
+                                except ValueError:
+                                    # Se falhar ao ler JSON, mas o status for 200, considera sucesso parcial ou exibe o texto
+                                    if response.status_code == 200:
+                                        st.success(f"Comando enviado com sucesso! (Status 200)")
+                                        # Opcional: mostrar o retorno texto se quiser debugar
+                                        # st.code(response.text)
+                                    else:
+                                        st.error(f"Falha na requisição (Status: {response.status_code})")
+                                        with st.expander("Ver detalhes do erro"):
+                                            st.code(response.text)
                                     
                             except Exception as e:
-                                st.error(f"Falha na requisição: {e}")
+                                st.error(f"Erro de execução: {e}")
                         # --- FIM DA ATUALIZAÇÃO ---
 
                     with c2:
@@ -100,8 +111,10 @@ def app_instancias():
                     with c3:
                         if st.button("❌ Excluir", key=f"del_{inst['id']}"):
                             conn = get_conn(); cur = conn.cursor()
-                            cur.execute("DELETE FROM wapi_instancias WHERE id=%s", (inst['id'],))
+                            # CORREÇÃO: Schema explícito 'admin.wapi_instancias'
+                            cur.execute("DELETE FROM admin.wapi_instancias WHERE id=%s", (inst['id'],))
                             conn.commit(); conn.close()
                             st.warning("Removida."); time.sleep(1); st.rerun()
         else: st.info("Nenhuma instância cadastrada.")
-    except: pass
+    except Exception as e: 
+        st.error(f"Erro ao carregar instâncias: {e}")
