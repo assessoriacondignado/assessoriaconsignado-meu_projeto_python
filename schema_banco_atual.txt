@@ -277,6 +277,8 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - nome_cliente (character varying(255)) NULL
    - data_registro (timestamp without time zone) NULL
    - data_ultima_interacao (timestamp without time zone) NULL
+   - id_grupo (text) NULL
+   - grupo (text) NULL
 
 [TABELA: admin.wapi_templates]
    - id (integer) NOT NULL

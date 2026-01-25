@@ -24,8 +24,8 @@ def dialog_historico(telefone):
     try:
         # Busca logs filtrando pelo telefone
         query = """
-            SELECT data_hora, tipo, mensagem, status 
-            FROM wapi_logs 
+            SELECT data_hora, tipo, mensagem, status, grupo 
+            FROM admin.wapi_logs 
             WHERE telefone = %s 
             ORDER BY data_hora DESC
         """
@@ -71,14 +71,14 @@ def dialog_editar_vinculo(id_registro, telefone_atual):
                 cur = conn.cursor()
                 # Atualiza tabela de números
                 cur.execute("""
-                    UPDATE wapi_numeros 
+                    UPDATE admin.wapi_numeros 
                     SET id_cliente = %s, nome_cliente = %s 
                     WHERE id = %s
                 """, (int(cli_sel['id']), cli_sel['nome'], id_registro))
                 
-                # Opcional: Atualizar logs antigos deste número para manter histórico coerente
+                # Opcional: Atualizar logs antigos deste número
                 cur.execute("""
-                    UPDATE wapi_logs 
+                    UPDATE admin.wapi_logs 
                     SET id_cliente = %s, nome_cliente = %s 
                     WHERE telefone = %s
                 """, (int(cli_sel['id']), cli_sel['nome'], telefone_atual))
@@ -118,7 +118,7 @@ def dialog_excluir_numero(id_registro, telefone):
         conn = get_conn()
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM wapi_numeros WHERE id = %s", (id_registro,))
+            cur.execute("DELETE FROM admin.wapi_numeros WHERE id = %s", (id_registro,))
             conn.commit()
             conn.close()
             st.success("Registro apagado!")
@@ -139,47 +139,78 @@ def app_numeros():
     # Filtros
     c1, c2 = st.columns([3, 1])
     busca = c1.text_input("🔍 Buscar (Telefone ou Nome)", placeholder="Digite para filtrar...")
-    filtro_tipo = c2.selectbox("Filtrar por", ["Todos", "Vinculados", "Sem Vínculo"])
+    filtro_tipo = c2.selectbox("Filtrar por", ["Todos", "Vinculados", "Grupos", "Sem Vínculo"])
 
-    # Query Base
-    sql = "SELECT id, telefone, id_cliente, nome_cliente, data_ultima_interacao FROM wapi_numeros WHERE 1=1"
+    # Query Base - Agora incluindo colunas de Grupo
+    sql = """
+        SELECT id, telefone, id_cliente, nome_cliente, data_ultima_interacao, id_grupo, grupo 
+        FROM admin.wapi_numeros 
+        WHERE 1=1
+    """
     
-    if filtro_tipo == "Vinculados": sql += " AND id_cliente IS NOT NULL"
-    if filtro_tipo == "Sem Vínculo": sql += " AND id_cliente IS NULL"
-    if busca: sql += f" AND (telefone ILIKE '%%{busca}%%' OR nome_cliente ILIKE '%%{busca}%%')"
+    if filtro_tipo == "Vinculados": 
+        sql += " AND id_cliente IS NOT NULL"
+    elif filtro_tipo == "Grupos":
+        sql += " AND id_grupo IS NOT NULL"
+    elif filtro_tipo == "Sem Vínculo": 
+        # Sem vinculo com cliente e não é grupo (ou grupo sem cliente) - Definição de "Sem Vínculo"
+        sql += " AND id_cliente IS NULL"
+    
+    if busca: 
+        sql += f" AND (telefone ILIKE '%%{busca}%%' OR nome_cliente ILIKE '%%{busca}%%' OR grupo ILIKE '%%{busca}%%')"
     
     sql += " ORDER BY data_ultima_interacao DESC LIMIT 50"
 
-    df = pd.read_sql(sql, conn)
+    try:
+        df = pd.read_sql(sql, conn)
+    except Exception as e:
+        st.error(f"Erro ao ler tabela (Verifique se as colunas id_grupo/grupo foram criadas): {e}")
+        conn.close()
+        return
+
     conn.close()
 
     if not df.empty:
-        # Cabeçalho
-        c_h1, c_h2, c_h3, c_h4 = st.columns([2, 3, 2, 2])
+        # Cabeçalho Ajustado com 5 Colunas
+        # Telefone | Grupo | Cliente | Data | Ações
+        c_h1, c_h2, c_h3, c_h4, c_h5 = st.columns([2, 2, 3, 2, 2])
         c_h1.markdown("**Telefone**")
-        c_h2.markdown("**Cliente Vinculado**")
-        c_h3.markdown("**Última Interação**")
-        c_h4.markdown("**Ações**")
+        c_h2.markdown("**Grupo**")
+        c_h3.markdown("**Cliente Vinculado**")
+        c_h4.markdown("**Última Interação**")
+        c_h5.markdown("**Ações**")
         st.divider()
 
         for idx, row in df.iterrows():
             with st.container():
-                c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
+                c1, c2, c3, c4, c5 = st.columns([2, 2, 3, 2, 2])
                 
+                # 1. Telefone
                 c1.write(row['telefone'])
                 
-                # Coluna Cliente
-                if row['id_cliente']:
-                    c2.success(f"🆔 {row['id_cliente']} - {row['nome_cliente']}")
+                # 2. Grupo (Nova Coluna)
+                if row['grupo'] or row['id_grupo']:
+                    # Mostra nome do grupo ou ID se não tiver nome
+                    nome_grp = row['grupo'] if row['grupo'] else f"ID: {row['id_grupo'][:10]}..."
+                    c2.info(f"👥 {nome_grp}")
                 else:
-                    c2.warning("⚠️ Sem Vínculo")
+                    c2.write("-")
+
+                # 3. Cliente Vinculado
+                if row['id_cliente']:
+                    c3.success(f"🆔 {row['id_cliente']} - {row['nome_cliente']}")
+                else:
+                    c3.warning("⚠️ Sem Vínculo")
                 
-                # Data
-                data_fmt = pd.to_datetime(row['data_ultima_interacao']).strftime('%d/%m %H:%M')
-                c3.write(data_fmt)
+                # 4. Data
+                if row['data_ultima_interacao']:
+                    data_fmt = pd.to_datetime(row['data_ultima_interacao']).strftime('%d/%m %H:%M')
+                    c4.write(data_fmt)
+                else:
+                    c4.write("-")
                 
-                # Botões de Ação (Aumentado para 4 colunas)
-                b1, b2, b3, b4 = c4.columns(4)
+                # 5. Botões de Ação
+                b1, b2, b3, b4 = c5.columns(4)
                 
                 # Botão Editar
                 if b1.button("✏️", key=f"ed_{row['id']}_{idx}", help="Editar / Vincular"):
@@ -192,7 +223,7 @@ def app_numeros():
                 else:
                     b2.write("-")
 
-                # NOVO BOTÃO: Histórico
+                # Botão Histórico
                 if b3.button("📜", key=f"hist_{row['id']}_{idx}", help="Ver Histórico"):
                     dialog_historico(row['telefone'])
 

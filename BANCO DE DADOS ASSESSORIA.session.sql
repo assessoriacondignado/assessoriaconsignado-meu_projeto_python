@@ -1,3 +1,3 @@
-ALTER TABLE admin.wapi_logs 
-ADD COLUMN id_grupo TEXT,
-ADD COLUMN grupo TEXT;
+ALTER TABLE admin.wapi_numeros 
+ADD COLUMN IF NOT EXISTS id_grupo TEXT,
+ADD COLUMN IF NOT EXISTS grupo TEXT;
