@@ -97,7 +97,7 @@ def webhook():
     
     event = dados.get("event")
     
-    # ATUALIZAÇÃO: Adicionado 'webhookDelivery' que é o evento de envio do seu JSON
+    # Lista atualizada com 'webhookDelivery'
     eventos_aceitos = ["message.received", "message.sent", "message.upsert", "webhookReceived", "webhookDelivery"]
     
     if event not in eventos_aceitos:
@@ -105,15 +105,16 @@ def webhook():
 
     instance_id = dados.get("instanceId", "PADRAO")
     
+    # Ignora grupos
     if dados.get("isGroup") is True: 
         return jsonify({"status": "grupo_ignorado"}), 200
 
     # Determina fluxo (Enviada/Recebida)
+    # No seu JSON, 'fromMe' está na raiz
     is_from_me = dados.get("fromMe") is True
     tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
-    # Captura objetos principais
-    # Nota: Seu JSON usa 'remetente', mas mantemos fallback para 'sender'
+    # Captura objetos principais (com suporte a 'remetente' do seu JSON)
     sender = dados.get("sender") or dados.get("remetente", {})
     chat = dados.get("chat", {})
     
@@ -121,13 +122,13 @@ def webhook():
     push_name = "Desconhecido"
 
     if is_from_me:
-        # LÓGICA DE ENVIO (Baseada no seu JSON)
+        # LÓGICA DE ENVIO (webhookDelivery)
         # O destinatário está em chat -> id
         telefone_bruto = chat.get("id")
         push_name = "Sistema/Atendente"
     else:
         # LÓGICA DE RECEBIMENTO
-        # O remetente está em sender/remetente -> id
+        # O remetente está em remetente -> id
         telefone_bruto = sender.get("id") or dados.get("from")
         push_name = sender.get("pushName", "Cliente")
 
@@ -161,5 +162,5 @@ def webhook():
     return jsonify({"status": "erro_dados_insuficientes"}), 200
 
 if __name__ == '__main__':
-    # Porta 5001 para evitar conflito
+    # Porta 5001 para evitar conflito com Streamlit
     app.run(host='0.0.0.0', port=5001)
