@@ -20,6 +20,36 @@ def get_conn():
         return None
 
 # ==========================================================
+# 0. FUNÇÃO UTILITÁRIA DE LIMPEZA (PADRÃO DO SISTEMA)
+# ==========================================================
+def limpar_telefone(telefone_bruto):
+    """
+    Remove caracteres não numéricos, trata 9º dígito
+    e REMOVE O 55 (DDI BRASIL) para padronizar no banco e envio.
+    """
+    if not telefone_bruto: return None
+    
+    # Se for grupo (contém @g.us), retorna como está (apenas strip)
+    if "@g.us" in str(telefone_bruto):
+        return str(telefone_bruto).strip()
+
+    # Limpeza básica
+    temp = str(telefone_bruto).split('@')[0]
+    limpo = re.sub(r'[^0-9]', '', temp)
+    
+    # Regra básica do 9º dígito BR (com 55)
+    if len(limpo) == 12 and limpo.startswith("55"):
+        if int(limpo[4]) >= 6:
+            limpo = f"{limpo[:4]}9{limpo[4:]}"
+
+    # --- REMOVE O 55 ---
+    # Verifica se começa com 55 e tem tamanho de telefone (DD+NUMERO)
+    if limpo.startswith("55") and len(limpo) >= 10:
+        limpo = limpo[2:] 
+
+    return limpo
+
+# ==========================================================
 # 1. FUNÇÕES DE API (W-API)
 # ==========================================================
 BASE_URL = "https://api.w-api.app/v1"
@@ -29,8 +59,8 @@ def enviar_msg_api(instance_id, token, to, message):
     url = f"{BASE_URL}/message/send-text?instanceId={instance_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
-    # Limpeza básica do número
-    contato_limpo = to if "@g.us" in str(to) else re.sub(r'[^0-9]', '', str(to))
+    # Usa a função padronizada de limpeza
+    contato_limpo = limpar_telefone(to)
     
     payload = {"phone": contato_limpo, "message": message, "delayMessage": 3}
     try:
@@ -44,7 +74,8 @@ def enviar_midia_api(instance_id, token, to, base64_data, file_name, caption="")
     url = f"{BASE_URL}/message/send-media?instanceId={instance_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
-    contato_limpo = to if "@g.us" in str(to) else re.sub(r'[^0-9]', '', str(to))
+    # Usa a função padronizada de limpeza
+    contato_limpo = limpar_telefone(to)
     
     payload = {
         "phone": contato_limpo,
