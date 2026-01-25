@@ -65,33 +65,43 @@ def app_registros():
         conn.close()
 
 # ==============================================================================
-#  FUNÇÕES BACKEND
+#  FUNÇÕES BACKEND (LÓGICA UNIFICADA)
 # ==============================================================================
+
 def limpar_telefone(telefone_bruto):
     """Remove 55 e formata."""
     if not telefone_bruto: return None
+    # Se for grupo, retorna limpo (apenas strip)
     if "@g.us" in str(telefone_bruto): return str(telefone_bruto).strip()
+    
     temp = str(telefone_bruto).split('@')[0]
     limpo = re.sub(r'[^0-9]', '', temp)
+    
+    # Ajuste 9º digito
     if len(limpo) == 12 and limpo.startswith("55"):
         if int(limpo[4]) >= 6: limpo = f"{limpo[:4]}9{limpo[4:]}"
+    
+    # Remove 55
     if limpo.startswith("55") and len(limpo) >= 10:
         limpo = limpo[2:] 
     return limpo
 
-def gerenciar_banco_dados(dados_proc):
+def processar_mensagem(dados_proc):
     """
-    Grava dados no banco com COMMITS SEPARADOS para evitar perda total em caso de erro.
+    FUNÇÃO ÚNICA: Identifica Cliente -> Atualiza Triagem -> Grava Log.
+    Tudo na mesma transação para evitar erros de gravação.
     """
+    print(f"🔄 Iniciando processamento para: {dados_proc['telefone']}", flush=True)
+    
     conn = get_conn()
     if not conn: 
-        print("❌ Erro: Sem conexão com banco para gravar.", flush=True)
+        print("❌ ERRO CRÍTICO: Não foi possível conectar ao banco.", flush=True)
         return
     
     try:
         cur = conn.cursor()
         
-        # Variáveis
+        # --- 1. PREPARAÇÃO DOS DADOS ---
         telefone = dados_proc['telefone']
         is_group = dados_proc['is_group']
         id_grupo = dados_proc['id_grupo']
@@ -102,11 +112,9 @@ def gerenciar_banco_dados(dados_proc):
         nome_cliente_final = None
         nome_para_log = push_name 
 
-        # ----------------------------------------------------------------------
-        # 1. IDENTIFICAÇÃO (CLIENTE / GRUPO)
-        # ----------------------------------------------------------------------
+        # --- 2. IDENTIFICAÇÃO DO CLIENTE ---
         
-        # A) Busca por TELEFONE (Exata)
+        # A) Busca Exata por TELEFONE
         if telefone:
             cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone = %s LIMIT 1", (telefone,))
             res_cli = cur.fetchone()
@@ -114,94 +122,95 @@ def gerenciar_banco_dados(dados_proc):
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
                 if not is_group: nome_para_log = nome_cliente_final
-                print(f"✅ Identificado por TELEFONE: {nome_cliente_final}", flush=True)
+                print(f"   ✅ Identificado por Telefone: ID {id_cliente_final}", flush=True)
 
-        # B) Busca por GRUPO (Exata)
+        # B) Busca Exata por ID DO GRUPO (Se não achou por telefone)
         if not id_cliente_final and is_group and id_grupo:
             cur.execute("SELECT id, nome FROM admin.clientes WHERE id_grupo_whats = %s LIMIT 1", (id_grupo,))
             res_grupo = cur.fetchone()
             if res_grupo:
                 id_cliente_final = res_grupo[0]
                 nome_cliente_final = res_grupo[1]
-                print(f"✅ Identificado por GRUPO: {nome_cliente_final}", flush=True)
+                print(f"   ✅ Identificado por Grupo: ID {id_cliente_final}", flush=True)
 
-        # ----------------------------------------------------------------------
-        # 2. TRIAGEM (GRAVAÇÃO INTERMEDIÁRIA)
-        # ----------------------------------------------------------------------
-        # Fazemos um try/except interno aqui para garantir que a triagem não trave o log (e vice versa)
-        try:
-            if telefone:
-                cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
-                res_num = cur.fetchone()
+        # --- 3. ATUALIZAÇÃO DA TRIAGEM (wapi_numeros) ---
+        if telefone:
+            cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
+            res_num = cur.fetchone()
+            
+            if res_num:
+                # Atualiza data
+                cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
                 
-                if res_num:
-                    cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
-                    # Se triagem tem info manual e não achamos no automatico, usa o manual
-                    if not id_cliente_final and res_num[1]:
-                        id_cliente_final = res_num[1]
-                        nome_cliente_final = res_num[2]
-                        if not is_group: nome_para_log = nome_cliente_final
-                    # Se achamos automatico, atualiza a triagem
-                    if id_cliente_final and (res_num[1] != id_cliente_final):
-                        cur.execute("UPDATE admin.wapi_numeros SET id_cliente = %s, nome_cliente = %s WHERE telefone = %s", 
-                                    (id_cliente_final, nome_cliente_final, telefone))
-                else:
-                    cur.execute("""
-                        INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
-                        VALUES (%s, %s, %s, NOW())
-                    """, (telefone, id_cliente_final, nome_cliente_final))
-            
-            # 🔥 COMMIT DA IDENTIFICAÇÃO: Garante que o vínculo foi salvo mesmo se o log falhar depois
-            conn.commit() 
-            
-        except Exception as e_triagem:
-            conn.rollback()
-            print(f"⚠️ Erro na Triagem (mas tentando seguir para log): {e_triagem}", flush=True)
+                # Se não identificamos no automático, mas a triagem tem manual, usa a manual
+                if not id_cliente_final and res_num[1]:
+                    id_cliente_final = res_num[1]
+                    nome_cliente_final = res_num[2]
+                    if not is_group: nome_para_log = nome_cliente_final
+                
+                # Se identificamos agora, atualiza a triagem
+                if id_cliente_final and (res_num[1] != id_cliente_final):
+                     cur.execute("UPDATE admin.wapi_numeros SET id_cliente = %s, nome_cliente = %s WHERE telefone = %s", 
+                                 (id_cliente_final, nome_cliente_final, telefone))
+            else:
+                # Insere novo
+                cur.execute("""
+                    INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
+                    VALUES (%s, %s, %s, NOW())
+                """, (telefone, id_cliente_final, nome_cliente_final))
 
-
-        # ----------------------------------------------------------------------
-        # 3. GRAVAÇÃO DO LOG FINAL (Aqui estava a suspeita)
-        # ----------------------------------------------------------------------
-        print(f"📝 Tentando gravar LOG para: {telefone} | Cliente ID: {id_cliente_final}", flush=True)
+        # --- 4. GRAVAÇÃO DO LOG FINAL (admin.wapi_logs) ---
         
+        # Definição do valor para a coluna 'grupo' (texto)
+        valor_grupo_texto = None
+        if is_group:
+            if nome_cliente_final: valor_grupo_texto = nome_cliente_final
+            elif nome_grupo_orig: valor_grupo_texto = nome_grupo_orig
+            else: valor_grupo_texto = id_grupo
+
         sql_log = """
             INSERT INTO admin.wapi_logs (
-                instance_id, telefone, nome_contato, mensagem, tipo, 
-                status, id_grupo, grupo, cpf_cliente, id_cliente, nome_cliente, data_hora
-            ) VALUES (%s, %s, %s, %s, %s, 'Sucesso', %s, %s, NULL, %s, %s, NOW())
+                data_hora, 
+                instance_id, 
+                telefone, 
+                nome_contato, 
+                mensagem, 
+                tipo, 
+                status, 
+                cpf_cliente, 
+                id_cliente, 
+                nome_cliente, 
+                id_grupo, 
+                grupo
+            ) VALUES (NOW(), %s, %s, %s, %s, %s, 'Sucesso', NULL, %s, %s, %s, %s)
         """
         
-        # Prepara nome do grupo
-        valor_grupo_nome = None
-        if is_group:
-            if nome_cliente_final: valor_grupo_nome = nome_cliente_final
-            elif nome_grupo_orig: valor_grupo_nome = nome_grupo_orig
-            else: valor_grupo_nome = id_grupo
-
-        # Executa insert
         cur.execute(sql_log, (
-            dados_proc['instance_id'],
-            telefone,
-            nome_para_log,
-            dados_proc['mensagem'],
-            dados_proc['tipo'],
-            dados_proc['id_grupo'],
-            valor_grupo_nome,
-            id_cliente_final,
-            nome_cliente_final
+            dados_proc['instance_id'],   # instance_id
+            telefone,                    # telefone
+            nome_para_log,               # nome_contato
+            dados_proc['mensagem'],      # mensagem
+            dados_proc['tipo'],          # tipo
+            # status = 'Sucesso' (Hardcoded no SQL acima)
+            # cpf_cliente = NULL (Hardcoded no SQL acima)
+            id_cliente_final,            # id_cliente
+            nome_cliente_final,          # nome_cliente
+            dados_proc['id_grupo'],      # id_grupo
+            valor_grupo_texto            # grupo
         ))
         
+        # --- 5. COMMIT FINAL (TUDO OU NADA) ---
         conn.commit()
-        print("💾 LOG GRAVADO COM SUCESSO!", flush=True)
-        
-        cur.close(); conn.close()
+        print(f"💾 SUCESSO! Log gravado. ID Cliente: {id_cliente_final}", flush=True)
 
     except Exception as e:
-        # Se der erro no log, faz rollback para limpar transação travada e imprime erro detalhado
         conn.rollback()
-        print(f"❌ ERRO FATAL AO GRAVAR LOG: {e}", flush=True)
-        print(f"❌ DADOS QUE FALHARAM: Tel={dados_proc['telefone']}, IDCli={id_cliente_final}", flush=True)
-        if conn: conn.close()
+        print(f"❌ ERRO AO PROCESSAR/GRAVAR: {e}", flush=True)
+        # Debug extra para ver o que pode estar nulo indevidamente
+        print(f"   DADOS DEBUG: Tel={dados_proc.get('telefone')}, IDCli={id_cliente_final}, IDGrp={dados_proc.get('id_grupo')}", flush=True)
+    finally:
+        cur.close()
+        conn.close()
 
 # ==============================================================================
 #  SERVIDOR WEBHOOK
@@ -257,6 +266,7 @@ def webhook():
             telefone_bruto = sender_data.get("id")
             push_name = sender_data.get("pushName") or "Cliente"
 
+    # Aplica a limpeza PADRÃO (apenas remove 55 e formata)
     telefone_limpo = limpar_telefone(telefone_bruto)
 
     msg_content = dados.get("msgContent", {})
@@ -282,7 +292,8 @@ def webhook():
     }
 
     if telefone_limpo or id_grupo:
-        gerenciar_banco_dados(dados_processados)
+        # CHAMA A FUNÇÃO UNIFICADA
+        processar_mensagem(dados_processados)
         return jsonify({"status": "processado"}), 200
     else:
         return jsonify({"status": "sem_identificacao"}), 200
