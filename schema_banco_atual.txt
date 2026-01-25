@@ -261,6 +261,8 @@ Schemas mapeados: admin, banco_pf, cliente, conexoes, permissão, public, sistem
    - cpf_cliente (bigint) NULL
    - id_cliente (integer) NULL
    - nome_cliente (character varying(255)) NULL
+   - id_grupo (text) NULL
+   - grupo (text) NULL
 
 [TABELA: admin.wapi_modelos]
    - id (integer) NOT NULL
