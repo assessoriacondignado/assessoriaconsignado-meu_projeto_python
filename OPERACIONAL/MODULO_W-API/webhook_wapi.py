@@ -23,25 +23,23 @@ except Exception as e:
 app = Flask(__name__)
 
 def get_conn():
-    return psycopg2.connect(
-        host=conexao.host, port=conexao.port, 
-        database=conexao.database, user=conexao.user, 
-        password=conexao.password
-    )
+    try:
+        return psycopg2.connect(
+            host=conexao.host, port=conexao.port, 
+            database=conexao.database, user=conexao.user, 
+            password=conexao.password
+        )
+    except: return None
 
 def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
     """
-    FLUXO:
-    1. Verifica se o número existe em wapi_numeros.
-    2. Se existir: Atualiza data e pega o ID do cliente.
-    3. Se NÃO existir:
-       3.1 Verifica se o número existe em admin.clientes (tentativa de auto-vínculo).
-       3.2 Cria o registro em wapi_numeros (com ou sem ID).
-    4. Grava o log em wapi_logs com os dados conciliados.
+    Registra ou atualiza o número e salva o log da mensagem.
     """
     if not telefone: return
 
     conn = get_conn()
+    if not conn: return
+
     try:
         cur = conn.cursor()
         
@@ -50,34 +48,28 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
         res_num = cur.fetchone()
         
         id_cliente_final = None
-        nome_cliente_final = None # Nome do cadastro (se houver)
-        nome_contato_log = push_name # Nome que aparecerá no log (pode ser o pushname ou o nome do cliente)
+        nome_cliente_final = None 
+        nome_contato_log = push_name 
 
         if res_num:
-            # 2.1 Já existe: Atualiza interação e pega dados
+            # Já existe: Atualiza data
             cur.execute("UPDATE wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
             id_cliente_final = res_num[1]
             nome_cliente_final = res_num[2]
             if nome_cliente_final:
                 nome_contato_log = nome_cliente_final
         else:
-            # 2.2/2.3 Novo Número: Tenta achar no cadastro de clientes para auto-vincular
-            # Busca flexível pelos últimos 8 dígitos para evitar erro de DDD/9º dígito
+            # Novo Número: Tenta auto-vincular
             busca_tel = f"%{telefone[-8:]}"
             cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
             res_cli = cur.fetchone()
             
             if res_cli:
-                # Achou cliente: Cria vinculado
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
                 nome_contato_log = nome_cliente_final
-                print(f"🔗 Auto-vínculo: {telefone} -> {nome_cliente_final}")
-            else:
-                # Não achou: Cria sem vínculo (ID e Nome NULL)
-                print(f"🆕 Novo número desconhecido: {telefone}")
-
-            # Insere na tabela de números
+            
+            # Insere novo número
             cur.execute("""
                 INSERT INTO wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                 VALUES (%s, %s, %s, NOW())
@@ -91,7 +83,6 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
         cur.execute(sql_log, (instance_id, telefone, mensagem or "", tipo, nome_contato_log, id_cliente_final, nome_cliente_final))
         
         conn.commit()
-        print(f"💾 LOG GRAVADO: {tipo} | {telefone} | Cli: {id_cliente_final}", flush=True)
         cur.close()
         conn.close()
 
@@ -106,40 +97,60 @@ def webhook():
     
     event = dados.get("event")
     
-    # Processa apenas mensagens ou envios
-    if event not in ["message.received", "message.sent", "webhookReceived"]:
+    # ATUALIZAÇÃO: Adicionado 'webhookDelivery' que é o evento de envio do seu JSON
+    eventos_aceitos = ["message.received", "message.sent", "message.upsert", "webhookReceived", "webhookDelivery"]
+    
+    if event not in eventos_aceitos:
         return jsonify({"status": "ignorado"}), 200
 
     instance_id = dados.get("instanceId", "PADRAO")
     
-    # Filtra grupos
-    if dados.get("isGroup") is True: return jsonify({"status": "grupo_ignorado"}), 200
+    if dados.get("isGroup") is True: 
+        return jsonify({"status": "grupo_ignorado"}), 200
 
     # Determina fluxo (Enviada/Recebida)
-    is_from_me = dados.get("fromMe") is True or event == "message.sent"
+    is_from_me = dados.get("fromMe") is True
     tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
-    # Captura dados
-    sender = dados.get("sender", {})
+    # Captura objetos principais
+    # Nota: Seu JSON usa 'remetente', mas mantemos fallback para 'sender'
+    sender = dados.get("sender") or dados.get("remetente", {})
     chat = dados.get("chat", {})
     
+    telefone_bruto = None
+    push_name = "Desconhecido"
+
     if is_from_me:
-        telefone_bruto = chat.get("id") or dados.get("to")
+        # LÓGICA DE ENVIO (Baseada no seu JSON)
+        # O destinatário está em chat -> id
+        telefone_bruto = chat.get("id")
         push_name = "Sistema/Atendente"
     else:
+        # LÓGICA DE RECEBIMENTO
+        # O remetente está em sender/remetente -> id
         telefone_bruto = sender.get("id") or dados.get("from")
-        push_name = sender.get("pushName", "Desconhecido")
+        push_name = sender.get("pushName", "Cliente")
 
     # Tratamento da Mensagem
-    msg_content = dados.get("msgContent") or {}
+    msg_content = dados.get("msgContent", {})
     mensagem = (
-        msg_content.get("text") or msg_content.get("conversation") or 
-        msg_content.get("body") or msg_content.get("extendedTextMessage", {}).get("text") or ""
+        msg_content.get("text") or 
+        msg_content.get("conversation") or 
+        msg_content.get("body") or 
+        msg_content.get("extendedTextMessage", {}).get("text") or 
+        ""
     )
+    
+    if not mensagem:
+        if "imageMessage" in msg_content: mensagem = "[Imagem]"
+        elif "audioMessage" in msg_content: mensagem = "[Áudio]"
+        elif "documentMessage" in msg_content: mensagem = "[Documento]"
 
     if telefone_bruto:
         # Limpeza do telefone
         telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
+        
+        # Ajuste de DDI e 9º dígito
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             if int(telefone_limpo[4]) >= 6:
                 telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
@@ -147,7 +158,8 @@ def webhook():
         gerenciar_numero_e_log(instance_id, telefone_limpo, mensagem, tipo_log, push_name)
         return jsonify({"status": "processado"}), 200
 
-    return jsonify({"status": "erro_dados"}), 200
+    return jsonify({"status": "erro_dados_insuficientes"}), 200
 
 if __name__ == '__main__':
+    # Porta 5001 para evitar conflito
     app.run(host='0.0.0.0', port=5001)
