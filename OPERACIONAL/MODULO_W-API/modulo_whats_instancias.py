@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import time
+import requests  # Adicionado para requisição HTTP direta
 import conexao
 # Importa o módulo central da W-API para evitar duplicação de código
 import modulo_wapi
@@ -69,10 +70,30 @@ def app_instancias():
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         if st.button("📷 QR Code", key=f"qr_{inst['id']}"): dialog_qrcode(inst['api_instance_id'], inst['api_token'])
-                        if st.button("📊 Status", key=f"st_{inst['id']}"):
-                            # Uso da função centralizada
-                            res_st = modulo_wapi.checar_status_api(inst['api_instance_id'], inst['api_token'])
-                            st.write(f"Estado: **{res_st.get('state')}**")
+                        
+                        # --- INICIO DA ATUALIZAÇÃO ---
+                        # Botão ajustado para atualizar webhook/status conforme solicitado
+                        if st.button("📊 Atualizar Status", key=f"st_{inst['id']}"):
+                            try:
+                                url = f"https://api.w-api.app/v1/webhook/update-webhook-message-status?instanceId={inst['api_instance_id']}"
+                                headers = {
+                                    "Content-Type": "application/x-www-form-urlencoded",
+                                    "Authorization": f"Bearer {inst['api_token']}"
+                                }
+                                # Requisição POST
+                                response = requests.post(url, headers=headers)
+                                res_json = response.json()
+                                
+                                # Verifica erro e exibe mensagem
+                                if res_json.get("error") is False:
+                                    st.success(res_json.get("message", "Webhook de presença atualizado."))
+                                else:
+                                    st.error(f"Erro: {res_json.get('message', 'Erro desconhecido')}")
+                                    
+                            except Exception as e:
+                                st.error(f"Falha na requisição: {e}")
+                        # --- FIM DA ATUALIZAÇÃO ---
+
                     with c2:
                         if st.button("🔢 Código OTP", key=f"otp_{inst['id']}"): dialog_otp(inst['api_instance_id'], inst['api_token'])
                         if st.button("📝 Editar", key=f"ed_{inst['id']}"): dialog_editar(inst['id'], inst['nome'], inst['api_instance_id'], inst['api_token'])
