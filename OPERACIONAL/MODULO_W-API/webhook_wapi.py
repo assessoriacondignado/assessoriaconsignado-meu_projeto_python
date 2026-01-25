@@ -7,18 +7,16 @@ import json
 from datetime import datetime
 import pandas as pd
 
-# Tenta importar streamlit, mas não falha se for rodar apenas como API/Webhook num env sem ele
+# Tenta importar streamlit
 try:
     import streamlit as st
 except ImportError:
     st = None
 
-# --- CONFIGURAÇÃO DE CAMINHO DINÂMICO ---
+# --- CONFIGURAÇÃO DE CAMINHO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
-
-# Adiciona raiz do projeto
 sys.path.append(os.path.dirname(os.path.dirname(BASE_DIR)))
 
 try:
@@ -39,119 +37,64 @@ def get_conn():
     except: return None
 
 # ==============================================================================
-#  INTERFACE VISUAL (STREAMLIT) - ABA LOGS
+#  INTERFACE VISUAL (STREAMLIT)
 # ==============================================================================
 def app_registros():
-    """
-    Função chamada pelo sistema principal para exibir a tela de logs.
-    """
-    if st is None:
-        print("Streamlit não instalado neste ambiente.")
-        return
-
+    if st is None: return
     st.markdown("### 📋 Histórico de Logs (Webhook)")
     st.markdown("---")
-
     conn = get_conn()
     if not conn:
         st.error("Erro ao conectar ao banco de dados.")
         return
-
     try:
-        # Busca os últimos 500 registros
         query = """
-            SELECT 
-                instance_id,
-                data_hora, 
-                tipo, 
-                telefone, 
-                id_cliente,
-                nome_cliente,
-                nome_contato, 
-                grupo, 
-                mensagem, 
-                status 
-            FROM admin.wapi_logs 
-            ORDER BY data_hora DESC 
-            LIMIT 500
+            SELECT instance_id, data_hora, tipo, telefone, id_cliente, nome_cliente,
+                   nome_contato, grupo, mensagem, status 
+            FROM admin.wapi_logs ORDER BY data_hora DESC LIMIT 500
         """
-        
         df = pd.read_sql_query(query, conn)
-        
         if not df.empty:
-            st.dataframe(
-                df, 
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "instance_id": "Instância",
-                    "data_hora": st.column_config.DatetimeColumn("Data/Hora", format="DD/MM/YYYY HH:mm:ss"),
-                    "tipo": "Tipo",
-                    "telefone": "Telefone",
-                    "id_cliente": "ID Cliente",
-                    "nome_cliente": "Cliente Identificado",
-                    "nome_contato": "Contato (PushName)",
-                    "grupo": "Grupo / Origem",
-                    "mensagem": "Conteúdo",
-                    "status": "Status"
-                }
-            )
-            
-            if st.button("🔄 Atualizar Lista"):
-                st.rerun()
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            if st.button("🔄 Atualizar Lista"): st.rerun()
         else:
             st.info("Nenhum registro encontrado.")
-
     except Exception as e:
         st.error(f"Erro ao carregar dados: {e}")
     finally:
         conn.close()
 
 # ==============================================================================
-#  FUNÇÕES UTILITÁRIAS (BACKEND)
+#  FUNÇÕES BACKEND
 # ==============================================================================
-
 def limpar_telefone(telefone_bruto):
-    """
-    Remove caracteres não numéricos, trata 9º dígito
-    e REMOVE O 55 (DDI BRASIL) para padronizar no banco.
-    """
+    """Remove 55 e formata."""
     if not telefone_bruto: return None
-    
-    # Se for ID de grupo, retorna limpo (apenas strip para tirar espaços extras se houver)
-    if "@g.us" in str(telefone_bruto):
-        return str(telefone_bruto).strip()
-
+    if "@g.us" in str(telefone_bruto): return str(telefone_bruto).strip()
     temp = str(telefone_bruto).split('@')[0]
     limpo = re.sub(r'[^0-9]', '', temp)
-    
-    # Regra básica do 9º dígito BR
     if len(limpo) == 12 and limpo.startswith("55"):
-        if int(limpo[4]) >= 6:
-            limpo = f"{limpo[:4]}9{limpo[4:]}"
-
-    # --- REMOVE O 55 ---
-    # Verifica se começa com 55 e tem tamanho de telefone (DD+NUMERO)
+        if int(limpo[4]) >= 6: limpo = f"{limpo[:4]}9{limpo[4:]}"
     if limpo.startswith("55") and len(limpo) >= 10:
         limpo = limpo[2:] 
-
     return limpo
 
 def gerenciar_banco_dados(dados_proc):
     """
-    Grava os dados processados no banco de dados.
-    AJUSTE: BUSCA EXATA (SEM FILTROS PARCIAIS OU FORMATAÇÃO NO SQL)
+    Grava dados no banco com COMMITS SEPARADOS para evitar perda total em caso de erro.
     """
     conn = get_conn()
-    if not conn: return
+    if not conn: 
+        print("❌ Erro: Sem conexão com banco para gravar.", flush=True)
+        return
     
     try:
         cur = conn.cursor()
         
-        telefone = dados_proc['telefone'] # Já vem sem o 55
+        # Variáveis
+        telefone = dados_proc['telefone']
         is_group = dados_proc['is_group']
-        id_grupo = dados_proc['id_grupo'] # ID Exato do Grupo
-        
+        id_grupo = dados_proc['id_grupo']
         push_name = dados_proc['nome_contato']
         nome_grupo_orig = dados_proc.get('nome_grupo')
         
@@ -159,68 +102,68 @@ def gerenciar_banco_dados(dados_proc):
         nome_cliente_final = None
         nome_para_log = push_name 
 
-        # ======================================================================
-        # 1. TENTATIVA PRIORITÁRIA: BUSCA PELO TELEFONE (BUSCA EXATA)
-        # ======================================================================
+        # ----------------------------------------------------------------------
+        # 1. IDENTIFICAÇÃO (CLIENTE / GRUPO)
+        # ----------------------------------------------------------------------
+        
+        # A) Busca por TELEFONE (Exata)
         if telefone:
-            # AJUSTE: Removemos o LIKE e o f"%{...}"
-            # Agora busca EXATAMENTE o telefone que chegou na coluna do banco
             cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone = %s LIMIT 1", (telefone,))
             res_cli = cur.fetchone()
-            
             if res_cli:
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
                 if not is_group: nome_para_log = nome_cliente_final
                 print(f"✅ Identificado por TELEFONE: {nome_cliente_final}", flush=True)
 
-        # ======================================================================
-        # 2. TENTATIVA SECUNDÁRIA: BUSCA PELO GRUPO (BUSCA EXATA)
-        # ======================================================================
+        # B) Busca por GRUPO (Exata)
         if not id_cliente_final and is_group and id_grupo:
-            # AJUSTE: Removemos o TRIM()
-            # O ID deve bater exatamente como está salvo no banco
-            sql_grupo = "SELECT id, nome FROM admin.clientes WHERE id_grupo_whats = %s LIMIT 1"
-            cur.execute(sql_grupo, (id_grupo,))
+            cur.execute("SELECT id, nome FROM admin.clientes WHERE id_grupo_whats = %s LIMIT 1", (id_grupo,))
             res_grupo = cur.fetchone()
-            
             if res_grupo:
                 id_cliente_final = res_grupo[0]
                 nome_cliente_final = res_grupo[1]
                 print(f"✅ Identificado por GRUPO: {nome_cliente_final}", flush=True)
 
-        # ======================================================================
-        # 3. GESTÃO DA TABELA DE TRIAGEM (WAPI_NUMEROS)
-        # ======================================================================
-        if telefone:
-            cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
-            res_num = cur.fetchone()
+        # ----------------------------------------------------------------------
+        # 2. TRIAGEM (GRAVAÇÃO INTERMEDIÁRIA)
+        # ----------------------------------------------------------------------
+        # Fazemos um try/except interno aqui para garantir que a triagem não trave o log (e vice versa)
+        try:
+            if telefone:
+                cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
+                res_num = cur.fetchone()
+                
+                if res_num:
+                    cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
+                    # Se triagem tem info manual e não achamos no automatico, usa o manual
+                    if not id_cliente_final and res_num[1]:
+                        id_cliente_final = res_num[1]
+                        nome_cliente_final = res_num[2]
+                        if not is_group: nome_para_log = nome_cliente_final
+                    # Se achamos automatico, atualiza a triagem
+                    if id_cliente_final and (res_num[1] != id_cliente_final):
+                        cur.execute("UPDATE admin.wapi_numeros SET id_cliente = %s, nome_cliente = %s WHERE telefone = %s", 
+                                    (id_cliente_final, nome_cliente_final, telefone))
+                else:
+                    cur.execute("""
+                        INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
+                        VALUES (%s, %s, %s, NOW())
+                    """, (telefone, id_cliente_final, nome_cliente_final))
             
-            if res_num:
-                # Atualiza data
-                cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
-                
-                # Se não achou na busca oficial, mas tem na triagem, usa da triagem
-                if not id_cliente_final and res_num[1]:
-                    id_cliente_final = res_num[1]
-                    nome_cliente_final = res_num[2]
-                    if not is_group: nome_para_log = nome_cliente_final
-                
-                # Se achou na busca oficial agora, atualiza a triagem
-                if id_cliente_final and (res_num[1] != id_cliente_final):
-                     cur.execute("UPDATE admin.wapi_numeros SET id_cliente = %s, nome_cliente = %s WHERE telefone = %s", 
-                                 (id_cliente_final, nome_cliente_final, telefone))
+            # 🔥 COMMIT DA IDENTIFICAÇÃO: Garante que o vínculo foi salvo mesmo se o log falhar depois
+            conn.commit() 
+            
+        except Exception as e_triagem:
+            conn.rollback()
+            print(f"⚠️ Erro na Triagem (mas tentando seguir para log): {e_triagem}", flush=True)
 
-            else:
-                # Insere novo
-                cur.execute("""
-                    INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
-                    VALUES (%s, %s, %s, NOW())
-                """, (telefone, id_cliente_final, nome_cliente_final))
 
-        # ======================================================================
-        # GRAVAÇÃO DO LOG FINAL
-        # ======================================================================
+        # ----------------------------------------------------------------------
+        # 3. GRAVAÇÃO DO LOG FINAL (Aqui estava a suspeita)
+        # ----------------------------------------------------------------------
+        print(f"📝 Tentando gravar LOG para: {telefone} | Cliente ID: {id_cliente_final}", flush=True)
+        
         sql_log = """
             INSERT INTO admin.wapi_logs (
                 instance_id, telefone, nome_contato, mensagem, tipo, 
@@ -228,15 +171,14 @@ def gerenciar_banco_dados(dados_proc):
             ) VALUES (%s, %s, %s, %s, %s, 'Sucesso', %s, %s, NULL, %s, %s, NOW())
         """
         
+        # Prepara nome do grupo
         valor_grupo_nome = None
         if is_group:
-            if nome_cliente_final:
-                valor_grupo_nome = nome_cliente_final
-            elif nome_grupo_orig:
-                valor_grupo_nome = nome_grupo_orig
-            else:
-                valor_grupo_nome = id_grupo
+            if nome_cliente_final: valor_grupo_nome = nome_cliente_final
+            elif nome_grupo_orig: valor_grupo_nome = nome_grupo_orig
+            else: valor_grupo_nome = id_grupo
 
+        # Executa insert
         cur.execute(sql_log, (
             dados_proc['instance_id'],
             telefone,
@@ -250,41 +192,38 @@ def gerenciar_banco_dados(dados_proc):
         ))
         
         conn.commit()
-        
-        categoria = "GRUPO" if is_group else "CLIENTE"
-        status_ident = f"✅ {nome_cliente_final}" if nome_cliente_final else "⚠️ Não Identificado"
-        print(f"💾 LOG: {categoria} | {telefone} | {status_ident}", flush=True)
+        print("💾 LOG GRAVADO COM SUCESSO!", flush=True)
         
         cur.close(); conn.close()
 
     except Exception as e:
-        print(f" ❌ Erro ao gravar no banco: {e}", flush=True)
+        # Se der erro no log, faz rollback para limpar transação travada e imprime erro detalhado
+        conn.rollback()
+        print(f"❌ ERRO FATAL AO GRAVAR LOG: {e}", flush=True)
+        print(f"❌ DADOS QUE FALHARAM: Tel={dados_proc['telefone']}, IDCli={id_cliente_final}", flush=True)
         if conn: conn.close()
 
 # ==============================================================================
-#  SERVIDOR WEBHOOK (FLASK)
+#  SERVIDOR WEBHOOK
 # ==============================================================================
 @app.route('/webhook', methods=['POST'])
 def webhook():
     dados = request.json
     if not dados: return jsonify({"status": "vazio"}), 200
     
-    # 1. Log JSON (Backup)
+    # 1. Log JSON
     try:
         pasta_json = os.path.join(BASE_DIR, "WAPI_WEBHOOK_JASON")
         if not os.path.exists(pasta_json): os.makedirs(pasta_json)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         evento_nome = dados.get('event', 'msg')
-        nome_arquivo = f"{timestamp}_{evento_nome}.json"
-        with open(os.path.join(pasta_json, nome_arquivo), "w", encoding="utf-8") as f:
+        with open(os.path.join(pasta_json, f"{timestamp}_{evento_nome}.json"), "w", encoding="utf-8") as f:
             json.dump(dados, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"⚠️ Erro ao salvar JSON: {e}")
+    except: pass
 
     # 2. Filtros
     event = dados.get("event")
-    eventos_aceitos = ["webhookReceived", "webhookDelivery", "message.received", "message.sent"]
-    if event not in eventos_aceitos:
+    if event not in ["webhookReceived", "webhookDelivery", "message.received", "message.sent"]:
         return jsonify({"status": "ignorado"}), 200
 
     # 3. Extração
@@ -309,7 +248,7 @@ def webhook():
              push_name = sender_data.get("pushName") or "Sistema"
         else:
             telefone_bruto = sender_data.get("id")
-            push_name = sender_data.get("pushName") or "Membro do Grupo"
+            push_name = sender_data.get("pushName") or "Membro"
     else:
         if from_me:
             telefone_bruto = chat_data.get("id")
@@ -318,8 +257,6 @@ def webhook():
             telefone_bruto = sender_data.get("id")
             push_name = sender_data.get("pushName") or "Cliente"
 
-    # Aplica a limpeza PADRÃO (apenas remove 55 e formata)
-    # Importante: A busca no banco usará este número LIMPO.
     telefone_limpo = limpar_telefone(telefone_bruto)
 
     msg_content = dados.get("msgContent", {})
