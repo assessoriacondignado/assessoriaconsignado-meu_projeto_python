@@ -4,7 +4,7 @@ import psycopg2
 import time
 import requests
 import conexao
-# Importa o módulo central da W-API
+# Importa o módulo central da W-API para usar a limpeza
 import modulo_wapi
 
 def get_conn():
@@ -30,13 +30,18 @@ def dialog_qrcode(inst_id, token):
 
 @st.dialog("🔢 Conectar via Código (OTP)")
 def dialog_otp(inst_id, token):
-    phone = st.text_input("Número com DDI (Ex: 5511999999999)")
+    st.markdown("Insira o número **com DDI** para solicitar o código (o WhatsApp exige o formato internacional aqui).")
+    phone = st.text_input("Ex: 5511999999999")
     if st.button("Gerar Código"):
-        res = modulo_wapi.obter_otp_api(inst_id, token, phone)
-        if res and res.get('code'):
-            st.code(res['code'], language="text")
-            st.success("Insira este código no seu aparelho WhatsApp.")
-        else: st.error("Erro ao gerar código OTP.")
+        if phone:
+            # Aqui enviamos o phone como digitado, pois a API precisa do DDI para conectar
+            res = modulo_wapi.obter_otp_api(inst_id, token, phone)
+            if res and res.get('code'):
+                st.code(res['code'], language="text")
+                st.success("Insira este código no seu aparelho WhatsApp.")
+            else: st.error("Erro ao gerar código OTP.")
+        else:
+            st.warning("Digite o número.")
 
 @st.dialog("📝 Editar Instância")
 def dialog_editar(id_db, nome, inst_id, token):
@@ -68,7 +73,7 @@ def app_instancias():
                 
                 with st.expander(f"Instância: **{inst['nome']}** | Status DB: :{cor_status}[{status_bd}]"):
                     
-                    # --- BOTÃO CARREGAR INFO (ATUALIZADO COM FALLBACK) ---
+                    # --- BOTÃO CARREGAR INFO ---
                     if st.button("🔄 Carregar Info / Verificar Status", key=f"info_{inst['id']}"):
                         with st.spinner("Consultando API..."):
                             # 1. Tenta pegar Info Completa (Foto/Nome)
@@ -83,8 +88,13 @@ def app_instancias():
                                         st.image(info['profilePicUrl'], width=100)
                                     else: st.info("Sem foto")
                                 with ci2:
+                                    # Pega o número bruto da API
+                                    raw_number = info.get('ownerJid', '')
+                                    # --- APLICA LIMPEZA PARA VISUALIZAÇÃO ---
+                                    clean_number = modulo_wapi.limpar_telefone(raw_number) if raw_number else "Desconhecido"
+                                    
                                     st.write(f"**Nome:** {info.get('profileName', 'Desconhecido')}")
-                                    st.write(f"**Número:** {info.get('ownerJid', 'Desconhecido')}")
+                                    st.write(f"**Número Conectado:** {clean_number}")
                             
                             # 2. Lógica de Atualização e Fallback
                             novo_status = None
@@ -96,7 +106,6 @@ def app_instancias():
                                 # Se falhou Info, tenta checar apenas o STATUS DA CONEXÃO
                                 st.warning("Não foi possível obter foto/perfil. Verificando conexão básica...")
                                 
-                                # Mostra o erro original para debug se necessário
                                 if info and info.get('error'):
                                     st.caption(f"Debug Info API: Code {info.get('status_code')} - {info.get('message')}")
 
