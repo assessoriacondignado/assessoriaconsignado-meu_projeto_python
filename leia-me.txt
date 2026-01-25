@@ -26,3 +26,6 @@ Copie e cole a linha abaixo inteira e aperte Enter:
 • Use sempre aspas duplas "" na mensagem do commit.
 • Verifique se o terminal exibiu "Everything up-to-date" ao final.
 
+
+4️⃣ cd /root/meu_sistema/OPERACIONAL/MODULO_W-API
+python webhook_wapi.py
