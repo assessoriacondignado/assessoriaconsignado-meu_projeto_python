@@ -27,11 +27,15 @@ def app_registros():
 
     try:
         # Busca os últimos 500 registros
+        # Adicionadas as colunas: instance_id, id_cliente e nome_cliente
         query = """
             SELECT 
+                instance_id,
                 data_hora, 
                 tipo, 
                 telefone, 
+                id_cliente,
+                nome_cliente,
                 nome_contato, 
                 grupo, 
                 mensagem, 
@@ -51,17 +55,20 @@ def app_registros():
             if 'telefone' in df.columns:
                 df['telefone'] = df['telefone'].apply(lambda x: modulo_wapi.limpar_telefone(x) if x else x)
 
-            # Exibe a tabela formatada
+            # Exibe a tabela formatada com as novas colunas
             st.dataframe(
                 df, 
                 use_container_width=True,
                 hide_index=True,
                 column_config={
+                    "instance_id": "Instância",
                     "data_hora": st.column_config.DatetimeColumn("Data/Hora", format="DD/MM/YYYY HH:mm:ss"),
                     "tipo": "Tipo",
                     "telefone": "Telefone",
-                    "nome_contato": "Contato",
-                    "grupo": "Grupo / Cliente",
+                    "id_cliente": "ID Cliente",
+                    "nome_cliente": "Cliente Identificado",
+                    "nome_contato": "Contato (PushName)",
+                    "grupo": "Grupo / Origem",
                     "mensagem": "Conteúdo",
                     "status": "Status"
                 }
