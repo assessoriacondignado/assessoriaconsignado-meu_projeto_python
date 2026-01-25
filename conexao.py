@@ -5,7 +5,7 @@ import os
 import toml
 
 # =============================================================================
-# 1. CARREGAMENTO DE CREDENCIAIS (Híbrido)
+# 1. CARREGAMENTO DE CREDENCIAIS (Hibrido)
 # =============================================================================
 host = None
 port = None
@@ -67,7 +67,7 @@ def get_conn():
         )
         return conn
     except Exception as e:
-        print(f"Erro de conexão (Psycopg2): {e}")
+        print(f"Erro de conexao (Psycopg2): {e}")
         return None
 
 def criar_conexao():
@@ -75,5 +75,5 @@ def criar_conexao():
         url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
         return create_engine(url)
     except Exception as e:
-        print(f"Erro de conexão (SQLAlchemy): {e}")
+        print(f"Erro de conexao (SQLAlchemy): {e}")
         return None
