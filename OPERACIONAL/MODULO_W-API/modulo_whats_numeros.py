@@ -3,6 +3,8 @@ import pandas as pd
 import psycopg2
 import time
 import conexao
+# Importa o módulo central para padronização
+import modulo_wapi
 
 def get_conn():
     try:
@@ -16,20 +18,22 @@ def get_conn():
 
 @st.dialog("📜 Histórico de Mensagens")
 def dialog_historico(telefone):
-    st.write(f"Histórico para: **{telefone}**")
+    # Garante que busca pelo formato limpo (sem 55)
+    telefone_limpo = modulo_wapi.limpar_telefone(telefone)
+    st.write(f"Histórico para: **{telefone_limpo}**")
     
     conn = get_conn()
     if not conn: st.error("Erro conexão"); return
 
     try:
-        # Busca logs filtrando pelo telefone
+        # Busca logs filtrando pelo telefone limpo
         query = """
             SELECT data_hora, tipo, mensagem, status, grupo 
             FROM admin.wapi_logs 
             WHERE telefone = %s 
             ORDER BY data_hora DESC
         """
-        df = pd.read_sql(query, conn, params=(telefone,))
+        df = pd.read_sql(query, conn, params=(telefone_limpo,))
         conn.close()
 
         if not df.empty:
@@ -43,7 +47,9 @@ def dialog_historico(telefone):
 
 @st.dialog("✏️ Editar Vínculo")
 def dialog_editar_vinculo(id_registro, telefone_atual):
-    st.write(f"Vinculando número: **{telefone_atual}**")
+    # Padroniza o telefone para operações de banco
+    telefone_clean = modulo_wapi.limpar_telefone(telefone_atual)
+    st.write(f"Vinculando número: **{telefone_clean}**")
     
     conn = get_conn()
     if not conn: st.error("Erro conexão"); return
@@ -59,7 +65,8 @@ def dialog_editar_vinculo(id_registro, telefone_atual):
         return
 
     # Cria lista de opções formatada
-    opcoes = df_cli.apply(lambda x: f"{x['nome']} | Tel: {x['telefone'] or 'S/N'} (ID: {x['id']})", axis=1)
+    # Aplica limpeza também na visualização do telefone do cliente
+    opcoes = df_cli.apply(lambda x: f"{x['nome']} | Tel: {modulo_wapi.limpar_telefone(x['telefone']) or 'S/N'} (ID: {x['id']})", axis=1)
     
     idx_cli = st.selectbox("Escolha o Cliente", range(len(df_cli)), format_func=lambda x: opcoes[x], index=None, placeholder="Digite para buscar...")
 
@@ -69,19 +76,21 @@ def dialog_editar_vinculo(id_registro, telefone_atual):
             try:
                 conn = get_conn()
                 cur = conn.cursor()
-                # Atualiza tabela de números
+                
+                # 1. Atualiza tabela de números (Conciliação)
                 cur.execute("""
                     UPDATE admin.wapi_numeros 
                     SET id_cliente = %s, nome_cliente = %s 
                     WHERE id = %s
                 """, (int(cli_sel['id']), cli_sel['nome'], id_registro))
                 
-                # Opcional: Atualizar logs antigos deste número
+                # 2. Atualiza logs antigos deste número (Usando o formato limpo)
+                # Isso "conserta" logs antigos vinculando-os ao cliente escolhido
                 cur.execute("""
                     UPDATE admin.wapi_logs 
                     SET id_cliente = %s, nome_cliente = %s 
                     WHERE telefone = %s
-                """, (int(cli_sel['id']), cli_sel['nome'], telefone_atual))
+                """, (int(cli_sel['id']), cli_sel['nome'], telefone_clean))
                 
                 conn.commit()
                 conn.close()
@@ -102,7 +111,7 @@ def dialog_ver_cliente(id_cliente):
             row = df.iloc[0]
             st.write(f"**Nome:** {row['nome']}")
             st.write(f"**E-mail:** {row['email']}")
-            st.write(f"**Telefone:** {row['telefone']}")
+            st.write(f"**Telefone:** {modulo_wapi.limpar_telefone(row['telefone'])}")
             st.write(f"**CPF:** {row.get('cpf', '-')}")
         else:
             st.warning("Cliente não encontrado (talvez excluído).")
@@ -153,7 +162,6 @@ def app_numeros():
     elif filtro_tipo == "Grupos":
         sql += " AND id_grupo IS NOT NULL"
     elif filtro_tipo == "Sem Vínculo": 
-        # Sem vinculo com cliente e não é grupo (ou grupo sem cliente) - Definição de "Sem Vínculo"
         sql += " AND id_cliente IS NULL"
     
     if busca: 
@@ -171,6 +179,12 @@ def app_numeros():
     conn.close()
 
     if not df.empty:
+        
+        # --- PADRONIZAÇÃO VISUAL ---
+        # Aplica a limpeza nos telefones carregados do banco
+        if 'telefone' in df.columns:
+            df['telefone'] = df['telefone'].apply(lambda x: modulo_wapi.limpar_telefone(x) if x else x)
+
         # Cabeçalho Ajustado com 5 Colunas
         # Telefone | Grupo | Cliente | Data | Ações
         c_h1, c_h2, c_h3, c_h4, c_h5 = st.columns([2, 2, 3, 2, 2])
@@ -185,13 +199,13 @@ def app_numeros():
             with st.container():
                 c1, c2, c3, c4, c5 = st.columns([2, 2, 3, 2, 2])
                 
-                # 1. Telefone
+                # 1. Telefone (Já limpo pelo apply acima)
                 c1.write(row['telefone'])
                 
-                # 2. Grupo (Nova Coluna)
+                # 2. Grupo
                 if row['grupo'] or row['id_grupo']:
                     # Mostra nome do grupo ou ID se não tiver nome
-                    nome_grp = row['grupo'] if row['grupo'] else f"ID: {row['id_grupo'][:10]}..."
+                    nome_grp = row['grupo'] if row['grupo'] else f"ID: {str(row['id_grupo'])[:10]}..."
                     c2.info(f"👥 {nome_grp}")
                 else:
                     c2.write("-")
