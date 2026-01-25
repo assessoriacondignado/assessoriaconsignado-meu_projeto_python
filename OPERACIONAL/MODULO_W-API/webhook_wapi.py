@@ -54,6 +54,7 @@ def gerenciar_banco_dados(dados_proc):
     """
     Grava os dados processados no banco de dados.
     Lógica de Cascata: Tenta Grupo -> Se falhar, Tenta Telefone.
+    BLINDADO: Usa TRIM/STRIP para evitar erros com espaços em branco.
     """
     conn = get_conn()
     if not conn: return
@@ -63,7 +64,10 @@ def gerenciar_banco_dados(dados_proc):
         
         telefone = dados_proc['telefone']
         is_group = dados_proc['is_group']
-        id_grupo = dados_proc['id_grupo']
+        
+        # --- FIX 1: Limpeza preventiva do ID do Grupo (remove espaços/quebras de linha) ---
+        id_grupo = dados_proc['id_grupo'].strip() if dados_proc['id_grupo'] else None
+        
         push_name = dados_proc['nome_contato']
         
         id_cliente_final = None
@@ -74,14 +78,16 @@ def gerenciar_banco_dados(dados_proc):
         # 1. TENTATIVA 1: BUSCA PELO GRUPO (Se for mensagem de grupo)
         # ======================================================================
         if is_group and id_grupo:
-            cur.execute("SELECT id, nome FROM admin.clientes WHERE id_grupo_whats = %s LIMIT 1", (id_grupo,))
+            # --- FIX 2: Usa TRIM no SQL para garantir match mesmo se houver sujeira no banco ---
+            sql_grupo = "SELECT id, nome FROM admin.clientes WHERE TRIM(id_grupo_whats) = %s LIMIT 1"
+            cur.execute(sql_grupo, (id_grupo,))
             res_grupo = cur.fetchone()
             
             if res_grupo:
                 id_cliente_final = res_grupo[0]
                 nome_cliente_final = res_grupo[1]
-                # Se achou pelo grupo, não precisamos mudar o nome_para_log (mantém quem enviou)
-                # Mas sabemos que o "Cliente" pagador é a empresa do grupo.
+                # Se achou pelo grupo, mantém o push_name de quem enviou para o log,
+                # mas o vínculo financeiro/cliente é da empresa dona do grupo.
 
         # ======================================================================
         # 2. TENTATIVA 2: BUSCA PELO TELEFONE (Se id_cliente ainda for None)
@@ -101,6 +107,7 @@ def gerenciar_banco_dados(dados_proc):
                 if res_num[1]: 
                     id_cliente_final = res_num[1]
                     nome_cliente_final = res_num[2]
+                    if nome_cliente_final and not is_group: nome_para_log = nome_cliente_final
             
             else:
                 # B) Se não está na triagem, tenta Auto-Match na tabela clientes (Pelo Telefone)
@@ -111,7 +118,7 @@ def gerenciar_banco_dados(dados_proc):
                 if res_cli:
                     id_cliente_final = res_cli[0]
                     nome_cliente_final = res_cli[1]
-                    # Se achou pelo telefone pessoal, atualiza o nome do log para o nome oficial
+                    # Se achou pelo telefone pessoal e não é grupo, atualiza o nome do log
                     if not is_group: nome_para_log = nome_cliente_final 
                 
                 # Registra esse novo número na tabela de triagem

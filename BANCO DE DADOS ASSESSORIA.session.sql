@@ -1,3 +1,7 @@
-ALTER TABLE admin.wapi_numeros 
-ADD COLUMN IF NOT EXISTS id_grupo TEXT,
-ADD COLUMN IF NOT EXISTS grupo TEXT;
+SELECT 
+    id, 
+    nome, 
+    id_grupo_whats, 
+    LENGTH(id_grupo_whats) as tamanho_string
+FROM admin.clientes 
+WHERE id_grupo_whats LIKE '%120363237636078252%';
