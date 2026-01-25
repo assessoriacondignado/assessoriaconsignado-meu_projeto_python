@@ -71,7 +71,7 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
                 nome_contato_log = nome_cliente_final
                 print(f"🔗 Auto-vínculo encontrado: {nome_cliente_final}", flush=True)
             
-            # Insere novo número
+            # Insere novo número na tabela correta (admin.)
             cur.execute("""
                 INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                 VALUES (%s, %s, %s, NOW())
@@ -88,7 +88,7 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
         
         # Feedback visual no terminal
         icone = "➡️ ENVIADA" if tipo == "ENVIADA" else "⬅️ RECEBIDA"
-        print(f"✅ GRAVADO: {icone} | Tel: {telefone} | Msg: {mensagem}", flush=True)
+        print(f"✅ GRAVADO NO BANCO: {icone} | Tel: {telefone} | Msg: {mensagem}", flush=True)
         
         cur.close()
         conn.close()
@@ -104,7 +104,7 @@ def webhook():
     
     # --- DEBUG: Mostra o JSON recebido ---
     print("\n" + "-"*50, flush=True)
-    # print(json.dumps(dados, indent=2, ensure_ascii=False), flush=True) # Descomente se quiser ver o JSON inteiro
+    # print(json.dumps(dados, indent=2, ensure_ascii=False), flush=True) # Descomente se quiser ver o JSON completo
 
     event = dados.get("event")
     
