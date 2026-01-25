@@ -89,13 +89,12 @@ def limpar_telefone(telefone_bruto):
 def processar_mensagem(dados_proc):
     """
     FUNÇÃO ÚNICA: Identifica Cliente -> Atualiza Triagem -> Grava Log.
-    Tudo na mesma transação para evitar erros de gravação.
     """
-    print(f"🔄 Iniciando processamento para: {dados_proc['telefone']}", flush=True)
+    print(f"🔄 PROCESSANDO MSG: {dados_proc['telefone']} (Grupo: {dados_proc['is_group']})", flush=True)
     
     conn = get_conn()
     if not conn: 
-        print("❌ ERRO CRÍTICO: Não foi possível conectar ao banco.", flush=True)
+        print("❌ ERRO CRÍTICO: Sem conexão com banco.", flush=True)
         return
     
     try:
@@ -104,10 +103,16 @@ def processar_mensagem(dados_proc):
         # --- 1. PREPARAÇÃO DOS DADOS ---
         telefone = dados_proc['telefone']
         is_group = dados_proc['is_group']
-        id_grupo = dados_proc['id_grupo']
+        
+        # LIMPEZA EXTREMA DO ID DO GRUPO (Remove espaços invisíveis)
+        id_grupo = None
+        if dados_proc['id_grupo']:
+            id_grupo = str(dados_proc['id_grupo']).strip()
+
         push_name = dados_proc['nome_contato']
         nome_grupo_orig = dados_proc.get('nome_grupo')
         
+        # Variáveis de Rascunho (serão preenchidas se acharmos algo)
         id_cliente_final = None
         nome_cliente_final = None
         nome_para_log = push_name 
@@ -122,16 +127,26 @@ def processar_mensagem(dados_proc):
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
                 if not is_group: nome_para_log = nome_cliente_final
-                print(f"   ✅ Identificado por Telefone: ID {id_cliente_final}", flush=True)
+                print(f"   ✅ MATCH TELEFONE: ID {id_cliente_final} - {nome_cliente_final}", flush=True)
 
         # B) Busca Exata por ID DO GRUPO (Se não achou por telefone)
+        # Só entra aqui se for grupo E tiver um ID de grupo válido
         if not id_cliente_final and is_group and id_grupo:
-            cur.execute("SELECT id, nome FROM admin.clientes WHERE id_grupo_whats = %s LIMIT 1", (id_grupo,))
+            
+            # DEBUG: Mostra o que estamos buscando exatamente
+            print(f"   🔍 Buscando GRUPO no Banco: '{id_grupo}' (Len: {len(id_grupo)})", flush=True)
+            
+            # SQL COM TRIM: Ignora espaços no banco de dados
+            sql_grupo = "SELECT id, nome FROM admin.clientes WHERE TRIM(id_grupo_whats) = %s LIMIT 1"
+            cur.execute(sql_grupo, (id_grupo,))
             res_grupo = cur.fetchone()
+            
             if res_grupo:
                 id_cliente_final = res_grupo[0]
                 nome_cliente_final = res_grupo[1]
-                print(f"   ✅ Identificado por Grupo: ID {id_cliente_final}", flush=True)
+                print(f"   ✅ MATCH GRUPO: ID {id_cliente_final} - {nome_cliente_final}", flush=True)
+            else:
+                print(f"   ⚠️ GRUPO NÃO ENCONTRADO NO BANCO DE DADOS.", flush=True)
 
         # --- 3. ATUALIZAÇÃO DA TRIAGEM (wapi_numeros) ---
         if telefone:
@@ -139,9 +154,7 @@ def processar_mensagem(dados_proc):
             res_num = cur.fetchone()
             
             if res_num:
-                # Atualiza data
                 cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
-                
                 # Se não identificamos no automático, mas a triagem tem manual, usa a manual
                 if not id_cliente_final and res_num[1]:
                     id_cliente_final = res_num[1]
@@ -153,7 +166,6 @@ def processar_mensagem(dados_proc):
                      cur.execute("UPDATE admin.wapi_numeros SET id_cliente = %s, nome_cliente = %s WHERE telefone = %s", 
                                  (id_cliente_final, nome_cliente_final, telefone))
             else:
-                # Insere novo
                 cur.execute("""
                     INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                     VALUES (%s, %s, %s, NOW())
@@ -161,53 +173,42 @@ def processar_mensagem(dados_proc):
 
         # --- 4. GRAVAÇÃO DO LOG FINAL (admin.wapi_logs) ---
         
-        # Definição do valor para a coluna 'grupo' (texto)
+        # Lógica visual para a coluna 'grupo' (texto)
         valor_grupo_texto = None
         if is_group:
-            if nome_cliente_final: valor_grupo_texto = nome_cliente_final
-            elif nome_grupo_orig: valor_grupo_texto = nome_grupo_orig
-            else: valor_grupo_texto = id_grupo
+            if nome_cliente_final: valor_grupo_texto = nome_cliente_final # Prioridade 1: Nome do Cliente
+            elif nome_grupo_orig: valor_grupo_texto = nome_grupo_orig     # Prioridade 2: Nome do Grupo (Whats)
+            else: valor_grupo_texto = id_grupo                            # Prioridade 3: ID do Grupo
+
+        # DEBUG FINAL ANTES DE GRAVAR
+        if is_group:
+            print(f"   📝 Preparando Log GRUPO -> ID Cliente: {id_cliente_final}, Nome Cliente: {nome_cliente_final}", flush=True)
 
         sql_log = """
             INSERT INTO admin.wapi_logs (
-                data_hora, 
-                instance_id, 
-                telefone, 
-                nome_contato, 
-                mensagem, 
-                tipo, 
-                status, 
-                cpf_cliente, 
-                id_cliente, 
-                nome_cliente, 
-                id_grupo, 
-                grupo
+                data_hora, instance_id, telefone, nome_contato, mensagem, tipo, 
+                status, cpf_cliente, id_cliente, nome_cliente, id_grupo, grupo
             ) VALUES (NOW(), %s, %s, %s, %s, %s, 'Sucesso', NULL, %s, %s, %s, %s)
         """
         
         cur.execute(sql_log, (
-            dados_proc['instance_id'],   # instance_id
-            telefone,                    # telefone
-            nome_para_log,               # nome_contato
-            dados_proc['mensagem'],      # mensagem
-            dados_proc['tipo'],          # tipo
-            # status = 'Sucesso' (Hardcoded no SQL acima)
-            # cpf_cliente = NULL (Hardcoded no SQL acima)
-            id_cliente_final,            # id_cliente
-            nome_cliente_final,          # nome_cliente
-            dados_proc['id_grupo'],      # id_grupo
-            valor_grupo_texto            # grupo
+            dados_proc['instance_id'],
+            telefone,
+            nome_para_log,
+            dados_proc['mensagem'],
+            dados_proc['tipo'],
+            id_cliente_final,    # Vai para a coluna id_cliente
+            nome_cliente_final,  # Vai para a coluna nome_cliente
+            id_grupo,            # Vai para a coluna id_grupo
+            valor_grupo_texto    # Vai para a coluna grupo
         ))
         
-        # --- 5. COMMIT FINAL (TUDO OU NADA) ---
         conn.commit()
-        print(f"💾 SUCESSO! Log gravado. ID Cliente: {id_cliente_final}", flush=True)
+        print(f"💾 LOG GRAVADO SUCESSO. (ID Cliente Final Gravado: {id_cliente_final})", flush=True)
 
     except Exception as e:
         conn.rollback()
-        print(f"❌ ERRO AO PROCESSAR/GRAVAR: {e}", flush=True)
-        # Debug extra para ver o que pode estar nulo indevidamente
-        print(f"   DADOS DEBUG: Tel={dados_proc.get('telefone')}, IDCli={id_cliente_final}, IDGrp={dados_proc.get('id_grupo')}", flush=True)
+        print(f"❌ ERRO FATAL AO GRAVAR: {e}", flush=True)
     finally:
         cur.close()
         conn.close()
@@ -266,7 +267,7 @@ def webhook():
             telefone_bruto = sender_data.get("id")
             push_name = sender_data.get("pushName") or "Cliente"
 
-    # Aplica a limpeza PADRÃO (apenas remove 55 e formata)
+    # Aplica a limpeza PADRÃO
     telefone_limpo = limpar_telefone(telefone_bruto)
 
     msg_content = dados.get("msgContent", {})
@@ -292,7 +293,6 @@ def webhook():
     }
 
     if telefone_limpo or id_grupo:
-        # CHAMA A FUNÇÃO UNIFICADA
         processar_mensagem(dados_processados)
         return jsonify({"status": "processado"}), 200
     else:
