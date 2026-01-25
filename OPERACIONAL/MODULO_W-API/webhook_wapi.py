@@ -16,13 +16,14 @@ sys.path.append(os.path.dirname(os.path.dirname(BASE_DIR)))
 
 try:
     import conexao
-    print("✅ Conexão importada com sucesso no Webhook!", flush=True)
+    print(" ✅  Conexão importada com sucesso no Webhook!", flush=True)
 except Exception as e:
-    print(f"❌ Erro crítico no conexao.py: {e}", flush=True)
+    print(f" ❌  Erro crítico no conexao.py: {e}", flush=True)
 
 app = Flask(__name__)
 
 def get_conn():
+    """Estabelece conexão com o banco de dados"""
     try:
         return psycopg2.connect(
             host=conexao.host, port=conexao.port, 
@@ -33,11 +34,12 @@ def get_conn():
 
 def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
     """
-    Registra ou atualiza o número e salva o log da mensagem no schema admin.
+    Grava os logs na tabela admin.wapi_logs e gerencia admin.wapi_numeros
     """
     if not telefone: return
     conn = get_conn()
     if not conn: return
+    
     try:
         cur = conn.cursor()
         
@@ -55,6 +57,7 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
             nome_cliente_final = res_num[2]
             if nome_cliente_final: nome_contato_log = nome_cliente_final
         else:
+            # Auto-vínculo com admin.clientes
             busca_tel = f"%{telefone[-8:]}"
             cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
             res_cli = cur.fetchone()
@@ -68,18 +71,20 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
                 VALUES (%s, %s, %s, NOW())
             """, (telefone, id_cliente_final, nome_cliente_final))
         
-        # 2. Gravar Log em admin.wapi_logs
+        # 2. Gravar Log em admin.wapi_logs conforme campos da planilha
         sql_log = """
-            INSERT INTO admin.wapi_logs (instance_id, telefone, mensagem, tipo, status, nome_contato, id_cliente, nome_cliente, data_hora) 
-            VALUES (%s, %s, %s, %s, 'Sucesso', %s, %s, %s, NOW())
+            INSERT INTO admin.wapi_logs (
+                instance_id, telefone, mensagem, tipo, status, 
+                nome_contato, id_cliente, nome_cliente, data_hora
+            ) VALUES (%s, %s, %s, %s, 'Sucesso', %s, %s, %s, NOW())
         """
         cur.execute(sql_log, (instance_id, telefone, mensagem or "", tipo, nome_contato_log, id_cliente_final, nome_cliente_final))
         
         conn.commit()
-        print(f"💾 [BANCO] Salvo: {tipo} | {telefone} | Msg: {mensagem[:20]}...", flush=True)
+        print(f" ✅  LOG GRAVADO: {tipo} | {telefone}", flush=True)
         cur.close(); conn.close()
     except Exception as e:
-        print(f"❌ Erro no banco: {e}", flush=True)
+        print(f" ❌  Erro no banco: {e}", flush=True)
         if conn: conn.close()
 
 @app.route('/webhook', methods=['POST'])
@@ -87,7 +92,7 @@ def webhook():
     dados = request.json
     if not dados: return jsonify({"status": "vazio"}), 200
     
-    # SALVAR JSON BRUTO EM PASTA
+    # SALVAR JSON PARA AUDITORIA
     try:
         pasta_json = os.path.join(BASE_DIR, "WAPI_WEBHOOK_JASON")
         if not os.path.exists(pasta_json): os.makedirs(pasta_json)
@@ -97,56 +102,45 @@ def webhook():
             json.dump(dados, f, indent=4, ensure_ascii=False)
     except: pass
 
-    # MOSTRAR NO TERMINAL
-    print("\n" + "="*50)
-    print("⚡ WEBHOOK ACIONADO EM TEMPO REAL")
-    
     event = dados.get("event")
-    # Inclusão de webhookDelivery para capturar envios
+    # Inclusão de webhookDelivery para registrar envios
     eventos_aceitos = ["message.received", "message.sent", "message.upsert", "webhookReceived", "webhookDelivery"]
     
     if event not in eventos_aceitos:
-        print(f"⚠️ Evento ignorado: {event}")
         return jsonify({"status": "ignorado"}), 200
 
     instance_id = dados.get("instanceId", "PADRAO")
     if dados.get("isGroup") is True: return jsonify({"status": "grupo_ignorado"}), 200
 
-    # IDENTIFICAÇÃO DOS CAMPOS
+    # LÓGICA DE IDENTIFICAÇÃO (MUDANÇA CONFORME O FLUXO)
     is_from_me = dados.get("fromMe") is True
     tipo_log = "ENVIADA" if is_from_me else "RECEBIDA"
 
-    sender = dados.get("sender") or dados.get("remetente", {})
-    chat = dados.get("chat", {})
-    
-    telefone_bruto = None
-    push_name = "Desconhecido"
-
+    # Diferenciação de campos entre envio (chat.id) e recebimento (sender.id)
     if is_from_me:
-        # ENVIO: Pega chat.id conforme amostra JSON
-        telefone_bruto = chat.get("id")
-        push_name = "Sistema/Atendente"
-        print(f"📤 FLUXO: ENVIO | DESTINO: {telefone_bruto}")
+        # ENVIO (webhookDelivery)
+        telefone_bruto = dados.get("chat", {}).get("id")
+        push_name = dados.get("remetente", {}).get("pushName", "Sistema/Atendente")
+        print(f" 📤  ENVIO DETECTADO EM REAL TIME", flush=True)
     else:
-        # RECEBIMENTO: Pega sender.id
+        # RECEBIMENTO (webhookReceived)
+        sender = dados.get("sender") or dados.get("remetente", {})
         telefone_bruto = sender.get("id") or dados.get("from")
         push_name = sender.get("pushName", "Cliente")
-        print(f"📥 FLUXO: RECEBIMENTO | ORIGEM: {telefone_bruto}")
+        print(f" 📥  RECEBIMENTO DETECTADO EM REAL TIME", flush=True)
 
-    # CAPTURAR MENSAGEM
+    # EXTRAÇÃO DA MENSAGEM (MAPEAMENTO ROBUSTO)
     msg_content = dados.get("msgContent", {})
     mensagem = (
         msg_content.get("text") or 
+        msg_content.get("extendedTextMessage", {}).get("text") or 
         msg_content.get("conversation") or 
-        msg_content.get("body") or 
-        msg_content.get("extendedTextMessage", {}).get("text") or ""
+        msg_content.get("body") or ""
     )
-    print(f"💬 CONTEÚDO: {mensagem}")
-    print("="*50 + "\n")
 
     if telefone_bruto:
         telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
-        # Ajuste DDI 55 e 9º dígito
+        # Ajuste de 55 + 9º dígito se necessário
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             if int(telefone_limpo[4]) >= 6:
                 telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
