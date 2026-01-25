@@ -92,6 +92,20 @@ def checar_status_api(instance_id, token):
         return res.json() if res.status_code == 200 else {"state": "erro"}
     except: return {"state": "erro"}
 
+# --- NOVA FUNÇÃO SOLICITADA ---
+def obter_info_instancia(instance_id, token):
+    """Obtém informações do perfil (Foto, Nome, Número)"""
+    # Endpoint para pegar dados da conexão/perfil
+    url = f"{BASE_URL}/instance/info" 
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"instanceId": instance_id}
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+        return None
+    except: return None
+
 # ==========================================================
 # 2. FUNÇÕES DE SUPORTE (BANCO DE DADOS)
 # ==========================================================
