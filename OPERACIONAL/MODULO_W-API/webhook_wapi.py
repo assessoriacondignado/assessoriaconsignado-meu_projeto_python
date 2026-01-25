@@ -32,26 +32,17 @@ def get_conn():
     except: return None
 
 def limpar_telefone(telefone_bruto):
-    """
-    Remove caracteres não numéricos, trata 9º dígito
-    e REMOVE O 55 (DDI BRASIL) antes de salvar.
-    """
+    """Remove caracteres não numéricos e formata."""
     if not telefone_bruto: return None
     # Remove o sufixo @...
     temp = telefone_bruto.split('@')[0]
     # Deixa apenas números
     limpo = re.sub(r'[^0-9]', '', temp)
     
-    # Regra básica do 9º dígito BR (Lógica executada antes de tirar o 55)
+    # Regra básica do 9º dígito BR
     if len(limpo) == 12 and limpo.startswith("55"):
         if int(limpo[4]) >= 6:
             limpo = f"{limpo[:4]}9{limpo[4:]}"
-
-    # --- REMOVE O 55 ---
-    # Verifica se começa com 55 e tem tamanho de telefone (DD+NUMERO)
-    if limpo.startswith("55") and len(limpo) >= 10:
-        limpo = limpo[2:] # Remove os dois primeiros dígitos
-
     return limpo
 
 def gerenciar_banco_dados(dados_proc):
@@ -75,7 +66,6 @@ def gerenciar_banco_dados(dados_proc):
         # --- REGRA 1: SE O ISGRUPO for false, deve registrar cliente ---
         if not is_group and telefone:
             # Verifica se já existe na tabela de números capturados
-            # Nota: Como o 'telefone' já vem sem o 55, a busca será feita sem o 55
             cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
             res_num = cur.fetchone()
             
@@ -87,7 +77,6 @@ def gerenciar_banco_dados(dados_proc):
                 if nome_cliente_final: nome_para_log = nome_cliente_final
             else:
                 # Tenta achar em clientes oficiais para vincular (auto-match)
-                # Busca pelos últimos 8 dígitos para garantir match mesmo sem 9º dígito ou DD
                 busca_tel = f"%{telefone[-8:]}"
                 cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
                 res_cli = cur.fetchone()
@@ -97,7 +86,7 @@ def gerenciar_banco_dados(dados_proc):
                     nome_cliente_final = res_cli[1]
                     nome_para_log = nome_cliente_final
                 
-                # Registra novo número na tabela de triagem (SEM O 55)
+                # Registra novo número na tabela de triagem
                 cur.execute("""
                     INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                     VALUES (%s, %s, %s, NOW())
@@ -114,7 +103,7 @@ def gerenciar_banco_dados(dados_proc):
         
         cur.execute(sql_log, (
             dados_proc['instance_id'],    # * instance_id
-            telefone,                     # * telefone (já sem o 55)
+            telefone,                     # * telefone
             nome_para_log,                # * nome_contato
             dados_proc['mensagem'],       # * mensagem
             dados_proc['tipo'],           # * tipo
@@ -212,7 +201,7 @@ def webhook():
             telefone_bruto = sender_data.get("id")
             push_name = sender_data.get("pushName") or "Cliente"
 
-    # Limpeza do número (* telefone) - AQUI OCORRE A REMOÇÃO DO 55
+    # Limpeza do número (* telefone)
     telefone_limpo = limpar_telefone(telefone_bruto)
 
     # Conteúdo da Mensagem (* mensagem)
