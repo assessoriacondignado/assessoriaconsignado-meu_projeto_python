@@ -14,7 +14,6 @@ user = None
 password = None
 
 def carregar_secrets_manualmente():
-    """Tenta localizar e ler o secrets.toml manualmente"""
     caminhos_possiveis = [
         ".streamlit/secrets.toml",
         os.path.join(os.getcwd(), ".streamlit/secrets.toml"),
