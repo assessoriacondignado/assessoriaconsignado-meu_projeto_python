@@ -118,7 +118,7 @@ def limpar_telefone(telefone_bruto):
     """
     if not telefone_bruto: return None
     
-    # Se for ID de grupo, retorna limpo (apenas strip)
+    # Se for ID de grupo, retorna limpo (apenas strip para tirar espaços extras se houver)
     if "@g.us" in str(telefone_bruto):
         return str(telefone_bruto).strip()
 
@@ -140,10 +140,7 @@ def limpar_telefone(telefone_bruto):
 def gerenciar_banco_dados(dados_proc):
     """
     Grava os dados processados no banco de dados.
-    PRIORIDADE DE IDENTIFICAÇÃO:
-    1. Busca Cliente pelo TELEFONE.
-    2. Se falhar, Busca Cliente pelo ID DO GRUPO (se for grupo).
-    3. Registra na Triagem.
+    AJUSTE: BUSCA EXATA (SEM FILTROS PARCIAIS OU FORMATAÇÃO NO SQL)
     """
     conn = get_conn()
     if not conn: return
@@ -153,7 +150,7 @@ def gerenciar_banco_dados(dados_proc):
         
         telefone = dados_proc['telefone'] # Já vem sem o 55
         is_group = dados_proc['is_group']
-        id_grupo = dados_proc['id_grupo'].strip() if dados_proc['id_grupo'] else None
+        id_grupo = dados_proc['id_grupo'] # ID Exato do Grupo
         
         push_name = dados_proc['nome_contato']
         nome_grupo_orig = dados_proc.get('nome_grupo')
@@ -163,29 +160,27 @@ def gerenciar_banco_dados(dados_proc):
         nome_para_log = push_name 
 
         # ======================================================================
-        # 1. TENTATIVA PRIORITÁRIA: BUSCA PELO TELEFONE
+        # 1. TENTATIVA PRIORITÁRIA: BUSCA PELO TELEFONE (BUSCA EXATA)
         # ======================================================================
-        # Verifica se o número que mandou mensagem é de um cliente cadastrado
         if telefone:
-            # Busca pelos últimos 8 dígitos para garantir match
-            busca_tel = f"%{telefone[-8:]}"
-            cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone LIKE %s LIMIT 1", (busca_tel,))
+            # AJUSTE: Removemos o LIKE e o f"%{...}"
+            # Agora busca EXATAMENTE o telefone que chegou na coluna do banco
+            cur.execute("SELECT id, nome FROM admin.clientes WHERE telefone = %s LIMIT 1", (telefone,))
             res_cli = cur.fetchone()
             
             if res_cli:
                 id_cliente_final = res_cli[0]
                 nome_cliente_final = res_cli[1]
-                # Se achou pelo telefone, este é o nome principal (exceto em grupos, onde mantemos pushname no contato)
                 if not is_group: nome_para_log = nome_cliente_final
-                
                 print(f"✅ Identificado por TELEFONE: {nome_cliente_final}", flush=True)
 
         # ======================================================================
-        # 2. TENTATIVA SECUNDÁRIA: BUSCA PELO GRUPO (Fallback)
+        # 2. TENTATIVA SECUNDÁRIA: BUSCA PELO GRUPO (BUSCA EXATA)
         # ======================================================================
-        # Se NÃO achou pelo telefone E é uma mensagem de grupo, tenta pelo ID do Grupo
         if not id_cliente_final and is_group and id_grupo:
-            sql_grupo = "SELECT id, nome FROM admin.clientes WHERE TRIM(id_grupo_whats) = %s LIMIT 1"
+            # AJUSTE: Removemos o TRIM()
+            # O ID deve bater exatamente como está salvo no banco
+            sql_grupo = "SELECT id, nome FROM admin.clientes WHERE id_grupo_whats = %s LIMIT 1"
             cur.execute(sql_grupo, (id_grupo,))
             res_grupo = cur.fetchone()
             
@@ -198,27 +193,26 @@ def gerenciar_banco_dados(dados_proc):
         # 3. GESTÃO DA TABELA DE TRIAGEM (WAPI_NUMEROS)
         # ======================================================================
         if telefone:
-            # Verifica se já existe na triagem
             cur.execute("SELECT id, id_cliente, nome_cliente FROM admin.wapi_numeros WHERE telefone = %s", (telefone,))
             res_num = cur.fetchone()
             
             if res_num:
-                # Se já existe, atualiza data
+                # Atualiza data
                 cur.execute("UPDATE admin.wapi_numeros SET data_ultima_interacao = NOW() WHERE telefone = %s", (telefone,))
                 
-                # Se ainda não tínhamos identificado o cliente, mas na triagem tem vínculo manual, usamos ele
+                # Se não achou na busca oficial, mas tem na triagem, usa da triagem
                 if not id_cliente_final and res_num[1]:
                     id_cliente_final = res_num[1]
                     nome_cliente_final = res_num[2]
                     if not is_group: nome_para_log = nome_cliente_final
                 
-                # Se agora identificamos (nos passos 1 ou 2), atualizamos a triagem para ficar igual
+                # Se achou na busca oficial agora, atualiza a triagem
                 if id_cliente_final and (res_num[1] != id_cliente_final):
                      cur.execute("UPDATE admin.wapi_numeros SET id_cliente = %s, nome_cliente = %s WHERE telefone = %s", 
                                  (id_cliente_final, nome_cliente_final, telefone))
 
             else:
-                # Se não existe, insere novo registro na triagem
+                # Insere novo
                 cur.execute("""
                     INSERT INTO admin.wapi_numeros (telefone, id_cliente, nome_cliente, data_ultima_interacao) 
                     VALUES (%s, %s, %s, NOW())
@@ -234,10 +228,8 @@ def gerenciar_banco_dados(dados_proc):
             ) VALUES (%s, %s, %s, %s, %s, 'Sucesso', %s, %s, NULL, %s, %s, NOW())
         """
         
-        # Define o nome que aparecerá na coluna 'grupo'
         valor_grupo_nome = None
         if is_group:
-            # Preferência visual: Nome do Cliente > Nome do Grupo (Whats) > ID do Grupo
             if nome_cliente_final:
                 valor_grupo_nome = nome_cliente_final
             elif nome_grupo_orig:
@@ -326,7 +318,8 @@ def webhook():
             telefone_bruto = sender_data.get("id")
             push_name = sender_data.get("pushName") or "Cliente"
 
-    # Aplica a limpeza (Remove o 55)
+    # Aplica a limpeza PADRÃO (apenas remove 55 e formata)
+    # Importante: A busca no banco usará este número LIMPO.
     telefone_limpo = limpar_telefone(telefone_bruto)
 
     msg_content = dados.get("msgContent", {})
