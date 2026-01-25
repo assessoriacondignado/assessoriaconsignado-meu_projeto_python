@@ -75,8 +75,8 @@ def gerenciar_numero_e_log(instance_id, telefone, mensagem, tipo, push_name):
         cur.execute(sql_log, (instance_id, telefone, mensagem or "", tipo, nome_contato_log, id_cliente_final, nome_cliente_final))
         conn.commit()
         
-        # --- PRINT NO TERMINAL PARA VOCÊ VER A GRAVAÇÃO ---
-        print(f"💾 [BANCO] Salvo: {tipo} para {telefone} | Msg: {mensagem}", flush=True)
+        # --- PRINT NO TERMINAL PARA CONFIRMAR GRAVAÇÃO NO BANCO ---
+        print(f"💾 [BANCO] Salvo: {tipo} | Tel: {telefone} | Msg: {mensagem}", flush=True)
         
         cur.close()
         conn.close()
@@ -90,7 +90,7 @@ def webhook():
     dados = request.json
     if not dados: return jsonify({"status": "vazio"}), 200
     
-    # --- AQUI VOCÊ VÊ O JSON CHEGANDO NO TERMINAL ---
+    # --- [DEBUG] MOSTRA O JSON INTEIRO NO TERMINAL ---
     print("\n" + "="*50, flush=True)
     print("⚡ RECEBIDO NO WEBHOOK (JSON BRUTO):", flush=True)
     print(json.dumps(dados, indent=2, ensure_ascii=False), flush=True)
@@ -119,39 +119,43 @@ def webhook():
     telefone_bruto = None
     push_name = "Desconhecido"
 
+    # --- [IDENTIFICAÇÃO] LÓGICA DE EXTRAÇÃO DO NÚMERO ---
     if is_from_me:
-        # --- AQUI ESTÁ O CAMPO DE ENVIO ---
-        # No seu JSON: "chat": { "id": "558299..." }
+        # SE FOR ENVIO: O destino está em 'chat' -> 'id'
         telefone_bruto = chat.get("id")
         push_name = "Sistema/Atendente"
         print(f"📤 DETECTADO ENVIO PARA: {telefone_bruto}", flush=True)
     else:
-        # --- AQUI ESTÁ O CAMPO DE RECEBIMENTO ---
+        # SE FOR RECEBIMENTO: A origem está em 'sender'/'remetente' -> 'id'
         telefone_bruto = sender.get("id") or dados.get("from")
         push_name = sender.get("pushName", "Cliente")
         print(f"📥 DETECTADO RECEBIMENTO DE: {telefone_bruto}", flush=True)
 
-    # --- AQUI PEGA A MENSAGEM ---
-    # No seu JSON: "msgContent" -> "extendedTextMessage" -> "text"
+    # --- [IDENTIFICAÇÃO] LÓGICA DE EXTRAÇÃO DA MENSAGEM ---
     msg_content = dados.get("msgContent", {})
+    
+    # Tenta pegar o texto em várias posições possíveis do JSON
     mensagem = (
         msg_content.get("text") or 
         msg_content.get("conversation") or 
         msg_content.get("body") or 
-        msg_content.get("extendedTextMessage", {}).get("text") or # <--- SEU CASO CAI AQUI
+        # O campo abaixo é o que veio no seu JSON de exemplo:
+        msg_content.get("extendedTextMessage", {}).get("text") or 
         ""
     )
     
+    # Se não achar texto, tenta identificar se é mídia
     if not mensagem:
         if "imageMessage" in msg_content: mensagem = "[Imagem]"
         elif "audioMessage" in msg_content: mensagem = "[Áudio]"
         elif "documentMessage" in msg_content: mensagem = "[Documento]"
 
-    print(f"💬 CONTEÚDO DA MENSAGEM: {mensagem}", flush=True)
+    print(f"💬 CONTEÚDO CAPTURADO: {mensagem}", flush=True)
 
     if telefone_bruto:
         telefone_limpo = re.sub(r'[^0-9]', '', str(telefone_bruto))
         
+        # Ajuste de DDI BR (55) e 9º dígito
         if len(telefone_limpo) == 12 and telefone_limpo.startswith("55"):
             if int(telefone_limpo[4]) >= 6:
                 telefone_limpo = f"{telefone_limpo[:4]}9{telefone_limpo[4:]}"
@@ -163,4 +167,5 @@ def webhook():
     return jsonify({"status": "erro_dados_insuficientes"}), 200
 
 if __name__ == '__main__':
+    # Porta 5001 para evitar conflito com Streamlit
     app.run(host='0.0.0.0', port=5001)
