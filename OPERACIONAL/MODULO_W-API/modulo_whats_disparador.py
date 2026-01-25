@@ -5,7 +5,7 @@ import requests
 import re
 import conexao
 import base64
-# Importa o módulo WAPI para usar a função de envio
+# Importa o módulo WAPI para usar a função de envio e limpeza
 import modulo_wapi 
 
 def get_conn():
@@ -30,20 +30,33 @@ def app_disparador():
             
             # Seleção do Destinatário
             tipo_dest = st.radio("Destino", ["Cliente", "Manual"], horizontal=True)
+            
+            destino = None # Inicializa variável
+
             if tipo_dest == "Cliente":
                 cli_sel = st.selectbox("Selecionar Cliente", df_cli['nome'].tolist())
-                destino = df_cli[df_cli['nome'] == cli_sel].iloc[0]['telefone']
-                st.caption(f"Telefone: {destino}")
+                # Pega o telefone bruto do banco
+                telefone_bruto = df_cli[df_cli['nome'] == cli_sel].iloc[0]['telefone']
+                
+                # --- APLICA LIMPEZA (Remove 55 e ajusta 9º dígito) ---
+                destino = modulo_wapi.limpar_telefone(telefone_bruto)
+                
+                st.caption(f"Telefone Original: {telefone_bruto} | Formatado: {destino}")
             else:
-                destino = st.text_input("Número (DDI+DDD+Número)")
+                telefone_manual = st.text_input("Número (DDD+Número)")
+                
+                # --- APLICA LIMPEZA NO INPUT MANUAL ---
+                if telefone_manual:
+                    destino = modulo_wapi.limpar_telefone(telefone_manual)
+                    st.caption(f"Número processado: {destino}")
 
             # Conteúdo da Mensagem
             msg = st.text_area("Texto / Legenda da Mídia")
             
-            # --- NOVO: UPLOAD DE MÍDIA ---
+            # --- UPLOAD DE MÍDIA ---
             st.markdown("##### 📎 Anexar Arquivo (Opcional)")
             arquivo = st.file_uploader("Envie imagem, áudio, vídeo ou documento", 
-                                       type=['png', 'jpg', 'jpeg', 'pdf', 'mp3', 'mp4', 'ogg', 'wav'])
+                                     type=['png', 'jpg', 'jpeg', 'pdf', 'mp3', 'mp4', 'ogg', 'wav'])
 
             if st.button("🚀 Enviar Agora"):
                 if destino:
@@ -59,9 +72,10 @@ def app_disparador():
                                 b64_encoded = base64.b64encode(bytes_data).decode('utf-8')
                                 mime_type = arquivo.type
                                 
-                                # Monta a string Data URI scheme (ex: data:image/png;base64,...)
+                                # Monta a string Data URI scheme
                                 base64_full = f"data:{mime_type};base64,{b64_encoded}"
                                 
+                                # O modulo_wapi já faz a limpeza novamente por segurança
                                 res = modulo_wapi.enviar_midia_api(
                                     row_inst['api_instance_id'], 
                                     row_inst['api_token'], 
