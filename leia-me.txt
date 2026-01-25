@@ -29,3 +29,4 @@ Copie e cole a linha abaixo inteira e aperte Enter:
 
 4️⃣
 cd /root/meu_sistema/OPERACIONAL/MODULO_W-API python webhook_wapi.py
+fuser -k 5001/tcp && sleep 10 && python webhook_wapi.pytail -n 20 /var/log/webhook_wapi_error.log
