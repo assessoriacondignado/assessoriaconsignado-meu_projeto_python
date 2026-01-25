@@ -68,7 +68,7 @@ def app_instancias():
                 
                 with st.expander(f"Instância: **{inst['nome']}** | Status DB: :{cor_status}[{status_bd}]"):
                     
-                    # --- BOTÃO CARREGAR INFO (ATUALIZADO COM FALLBACK) ---
+                    # --- BOTÃO CARREGAR INFO / STATUS (MANTIDO) ---
                     if st.button("🔄 Carregar Info / Verificar Status", key=f"info_{inst['id']}"):
                         with st.spinner("Consultando API..."):
                             # 1. Tenta pegar Info Completa (Foto/Nome)
@@ -93,13 +93,7 @@ def app_instancias():
                                 novo_status = 'conectado'
                                 st.success("Dados recuperados com sucesso!")
                             else:
-                                # Se falhou Info, tenta checar apenas o STATUS DA CONEXÃO
                                 st.warning("Não foi possível obter foto/perfil. Verificando conexão básica...")
-                                
-                                # Mostra o erro original para debug se necessário
-                                if info and info.get('error'):
-                                    st.caption(f"Debug Info API: Code {info.get('status_code')} - {info.get('message')}")
-
                                 status_check = modulo_wapi.checar_status_api(inst['api_instance_id'], inst['api_token'])
                                 estado_real = status_check.get('state')
                                 
@@ -129,24 +123,30 @@ def app_instancias():
                     with c1:
                         if st.button("📷 QR Code", key=f"qr_{inst['id']}"): dialog_qrcode(inst['api_instance_id'], inst['api_token'])
                         
-                        if st.button("📊 Forçar Webhook", key=f"st_{inst['id']}"):
+                        # --- ATUALIZAÇÃO APLICADA (MÉTODO PUT) ---
+                        if st.button("📊 Configurar Webhook", key=f"st_{inst['id']}"):
                             try:
-                                url = f"https://api.w-api.app/v1/webhook/update-webhook-message-status?instanceId={inst['api_instance_id']}"
+                                # URL alterada para 'update-webhook-chat-presence'
+                                url = f"https://api.w-api.app/v1/webhook/update-webhook-chat-presence?instanceId={inst['api_instance_id']}"
                                 headers = {
                                     "Content-Type": "application/x-www-form-urlencoded",
                                     "Authorization": f"Bearer {inst['api_token']}"
                                 }
-                                response = requests.post(url, headers=headers)
+                                # Método alterado para PUT
+                                response = requests.put(url, headers=headers)
+                                
                                 try:
                                     res_json = response.json()
                                     if res_json.get("error") is False:
-                                        st.success(res_json.get("message", "Webhook atualizado."))
+                                        st.success(res_json.get("message", "Webhook configurado com sucesso!"))
                                     else:
                                         st.error(f"Erro API: {res_json.get('message')}")
                                 except:
+                                    # Fallback se não for JSON
                                     st.code(f"Status: {response.status_code}\n{response.text}")
                             except Exception as e:
-                                st.error(f"Erro: {e}")
+                                st.error(f"Erro na requisição: {e}")
+                        # --- FIM DA ATUALIZAÇÃO ---
 
                     with c2:
                         if st.button("🔢 Código OTP", key=f"otp_{inst['id']}"): dialog_otp(inst['api_instance_id'], inst['api_token'])
