@@ -149,7 +149,6 @@ def processar_atualizacao_cadastral(cpf, nome):
         return False, "<div style='color:red; font-size:10px;'>Módulo Fator Conferi não carregado.</div>"
     
     try:
-        # [CORREÇÃO] Ambiente ajustado para coincidir com o banco de dados
         resultado = modulo_fator_conferi.realizar_consulta_cpf_segura(
             cpf=str(cpf), 
             ambiente="sistema_consulta_usuario", 
@@ -364,6 +363,17 @@ def listar_contratos_cliente(cpf):
                 return cur.fetchall()
         except Exception: return []
 
+def listar_convenios_cliente(cpf):
+    """Retorna lista de convênios vinculados ao cliente (Tabela Dados Cadastrais Convenio)"""
+    cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
+    with get_db_connection() as conn:
+        if not conn: return []
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY convenio", (cpf_val,))
+                return [r[0] for r in cur.fetchall()]
+        except Exception: return []
+
 def buscar_tabela_por_convenio(nome_convenio):
     with get_db_connection() as conn:
         if not conn: return None
@@ -392,6 +402,30 @@ def listar_tipos_convenio_disponiveis():
                 cur.execute("SELECT nome_convenio FROM sistema_consulta.sistema_consulta_convenio_tipo ORDER BY nome_convenio")
                 return [r[0] for r in cur.fetchall()]
         except Exception: return []
+
+def buscar_dados_dinamicos_especificos(tabela, cpf, matricula):
+    """Busca dados de uma tabela dinâmica específica usando CPF e Matrícula"""
+    cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
+    mat_val = v.ValidadorDocumentos.nb_para_bigint(str(matricula))
+    with get_db_connection() as conn:
+        if not conn: return {}
+        try:
+            with conn.cursor() as cur:
+                # Verifica se a tabela tem coluna matricula
+                colunas = listar_colunas_tabela(tabela)
+                if 'matricula' not in colunas:
+                     query = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s LIMIT 1").format(sql.Identifier(tabela.replace('sistema_consulta.', '')))
+                     cur.execute(query, (cpf_val,))
+                else:
+                     query = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s LIMIT 1").format(sql.Identifier(tabela.replace('sistema_consulta.', '')))
+                     cur.execute(query, (cpf_val, mat_val))
+                
+                row = cur.fetchone()
+                if row:
+                    cols = [desc[0] for desc in cur.description]
+                    return dict(zip(cols, row))
+                return {}
+        except Exception: return {}
 
 def buscar_hierarquia_financeira(cpf):
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(str(cpf))
@@ -489,21 +523,62 @@ def inserir_dado_extra(tipo, cpf, dados):
         try:
             with conn.cursor() as cur:
                 if tipo == "DadosDinâmicos":
+                    tabela_alvo = dados.get('_tabela')
+                    campos_dados = {k: val for k, val in dados.items() if not k.startswith('_')}
+                    if not tabela_alvo or not campos_dados: return "erro"
+                    
+                    if 'cpf' in campos_dados: campos_dados['cpf'] = cpf_val
+                    mat_original = campos_dados.get('matricula')
+                    if mat_original: campos_dados['matricula'] = v.ValidadorDocumentos.nb_para_bigint(mat_original)
+                    
+                    # Logica de Vinculo (Contratos/Convenio) - Só faz se for solicitado (novo)
                     if dados.get('_criar_vinculo'):
-                        new_mat = v.ValidadorDocumentos.nb_para_bigint(dados.get('matricula'))
+                        new_mat = campos_dados.get('matricula')
                         new_conv = dados.get('convenio')
                         if new_mat:
                             cur.execute("INSERT INTO sistema_consulta.sistema_consulta_contrato (cpf, matricula, convenio) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", (cpf_val, new_mat, new_conv))
                             cur.execute("INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_convenio (cpf, convenio) VALUES (%s, %s) ON CONFLICT DO NOTHING", (cpf_val, new_conv))
-                    tabela_alvo = dados.get('_tabela')
-                    campos_dados = {k: val for k, val in dados.items() if not k.startswith('_')}
-                    if not tabela_alvo or not campos_dados: return "erro"
-                    if 'cpf' in campos_dados: campos_dados['cpf'] = cpf_val
-                    if 'matricula' in campos_dados: campos_dados['matricula'] = v.ValidadorDocumentos.nb_para_bigint(campos_dados['matricula'])
+                    
+                    # Logica UPSERT para Dados da Tabela Dinâmica
                     colunas = list(campos_dados.keys())
                     valores = [val if val != "" else None for val in campos_dados.values()]
-                    query = sql.SQL("INSERT INTO sistema_consulta.{} ({}) VALUES ({})").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')), sql.SQL(', ').join(map(sql.Identifier, colunas)), sql.SQL(', ').join(sql.Placeholder() * len(colunas)))
-                    cur.execute(query, valores)
+                    
+                    # Verifica se já existe o registro (Para Update)
+                    reg_existe = False
+                    if 'matricula' in campos_dados and campos_dados['matricula']:
+                         query_check = sql.SQL("SELECT 1 FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')))
+                         cur.execute(query_check, (cpf_val, campos_dados['matricula']))
+                         if cur.fetchone(): reg_existe = True
+                    else:
+                         query_check = sql.SQL("SELECT 1 FROM sistema_consulta.{} WHERE cpf = %s").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')))
+                         cur.execute(query_check, (cpf_val,))
+                         if cur.fetchone(): reg_existe = True
+
+                    if reg_existe:
+                        # UPDATE
+                        set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in colunas]
+                        if 'matricula' in campos_dados and campos_dados['matricula']:
+                            query = sql.SQL("UPDATE sistema_consulta.{} SET {} WHERE cpf = %s AND matricula = %s").format(
+                                sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')),
+                                sql.SQL(', ').join(set_clauses)
+                            )
+                            # Params: values + cpf + matricula
+                            cur.execute(query, valores + [cpf_val, campos_dados['matricula']])
+                        else:
+                            query = sql.SQL("UPDATE sistema_consulta.{} SET {} WHERE cpf = %s").format(
+                                sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')),
+                                sql.SQL(', ').join(set_clauses)
+                            )
+                            cur.execute(query, valores + [cpf_val])
+                    else:
+                        # INSERT
+                        query = sql.SQL("INSERT INTO sistema_consulta.{} ({}) VALUES ({})").format(
+                            sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')),
+                            sql.SQL(', ').join(map(sql.Identifier, colunas)),
+                            sql.SQL(', ').join(sql.Placeholder() * len(colunas))
+                        )
+                        cur.execute(query, valores)
+
                 elif tipo == "Contrato":
                     dt_inicio = v.ValidadorData.para_sql(dados.get('data_inicio'))
                     dt_final = v.ValidadorData.para_sql(dados.get('data_final'))
@@ -576,7 +651,7 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     if not val: cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
                     else: cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
                 for item in dados_editados.get('enderecos', []):
-                     cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
+                      cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
                 conn.commit()
         except Exception as e: st.error(f"Erro ao atualizar: {e}"); return False
     if dados_dinamicos: atualizar_dados_dinamicos(dados_dinamicos)
@@ -613,17 +688,24 @@ def modal_inserir_dados(cpf, nome_cliente):
             criar_novo = False
             matricula_sel = None
             convenio_sel = None
+            
+            # --- Lógica de Seleção para Novo ou Existente ---
             if selecao == "➕ Cadastrar Novo Convênio/Matrícula":
                 st.info("Informe os dados para criar um novo vínculo.")
                 c_new1, c_new2 = st.columns(2)
-                lista_tipos = listar_tipos_convenio_disponiveis()
-                sel_tipo = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos)
+                # Alteração: Lista apenas convenios que o cliente já possui
+                lista_tipos_cliente = listar_convenios_cliente(cpf)
+                if not lista_tipos_cliente:
+                     st.warning("Cliente não possui convênios cadastrados (Tabela Dados Cadastrais Convênio). Cadastre um 'Convênio (Cadastro)' primeiro.")
+                sel_tipo = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos_cliente)
                 matricula_sel = c_new2.text_input("Nova Matrícula")
                 if sel_tipo and sel_tipo != "(Selecione)" and matricula_sel: convenio_sel = sel_tipo; criar_novo = True
             elif selecao:
                 parts = selecao.split(" - ", 1)
                 if len(parts) > 0: matricula_sel = parts[0]
                 if len(parts) > 1: convenio_sel = parts[1]
+            
+            # --- Renderização do Formulário Dinâmico ---
             if matricula_sel and convenio_sel:
                 tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
                 if tabela_alvo:
@@ -634,13 +716,31 @@ def modal_inserir_dados(cpf, nome_cliente):
                         dados_submit['cpf'] = cpf
                         dados_submit['matricula'] = matricula_sel
                         if criar_novo: dados_submit['_criar_vinculo'] = True; dados_submit['convenio'] = convenio_sel
+                        
+                        # Busca dados pré-existentes para edição se não for novo
+                        dados_existentes = {}
+                        if not criar_novo:
+                            dados_existentes = buscar_dados_dinamicos_especificos(tabela_alvo, cpf, matricula_sel)
+
                         cols_form = st.columns(2)
                         idx = 0
                         for col in colunas:
                             if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
                                 with cols_form[idx % 2]:
-                                    if 'data' in col.lower(): dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=None, format="DD/MM/YYYY")
-                                    else: dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize())
+                                    val_inicial = dados_existentes.get(col, "")
+                                    if 'data' in col.lower():
+                                        # Tenta converter string SQL Date para objeto Date se necessário
+                                        val_date = val_inicial
+                                        if isinstance(val_date, str):
+                                             val_date = v.ValidadorData.sql_para_obj(val_date) # Assumindo que validador tenha isso ou retorna None
+                                             # Fallback simples caso validador não tenha sql_para_obj exposto ou falhe
+                                             if not val_date and val_inicial:
+                                                 try: val_date = datetime.strptime(val_inicial, '%Y-%m-%d').date()
+                                                 except: val_date = None
+                                        
+                                        dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=val_date, format="DD/MM/YYYY")
+                                    else:
+                                        dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize(), value=str(val_inicial) if val_inicial is not None else "")
                                 idx += 1
         elif tipo_insercao == "Contrato":
             c1, c2 = st.columns(2)
@@ -663,14 +763,21 @@ def modal_inserir_dados(cpf, nome_cliente):
         elif tipo_insercao == "E-mail": dados_submit['valor'] = st.text_input("Novo E-mail")
         elif tipo_insercao == "Endereço":
             dados_submit['cep'] = st.text_input("CEP"); dados_submit['rua'] = st.text_input("Rua"); dados_submit['bairro'] = st.text_input("Bairro"); dados_submit['cidade'] = st.text_input("Cidade"); dados_submit['uf'] = st.text_input("UF", max_chars=2)
-        elif tipo_insercao == "Convênio (Cadastro)": dados_submit['valor'] = st.text_input("Nome do Convênio")
+        elif tipo_insercao == "Convênio (Cadastro)": 
+            # Alteração: Uso de Selectbox com base na tabela tipo_convenio
+            lista_todos_convenios = listar_tipos_convenio_disponiveis()
+            dados_submit['valor'] = st.selectbox("Nome do Convênio", options=["(Selecione)"] + lista_todos_convenios)
         
         if st.form_submit_button("✅ Salvar Inclusão"):
-            tipo_envio = "DadosDinâmicos" if tipo_insercao == "Dados de Convênio" else tipo_insercao
-            status = inserir_dado_extra(tipo_envio, cpf, dados_submit)
-            if status == "sucesso": st.success(f"{tipo_insercao} inserido com sucesso!"); time.sleep(1); st.rerun()
-            elif status == "duplicado": st.warning("Dado já existente!")
-            else: st.error("Erro ao inserir.")
+            # Validação simples para o selectbox
+            if tipo_insercao == "Convênio (Cadastro)" and dados_submit['valor'] == "(Selecione)":
+                st.error("Selecione um convênio válido.")
+            else:
+                tipo_envio = "DadosDinâmicos" if tipo_insercao == "Dados de Convênio" else tipo_insercao
+                status = inserir_dado_extra(tipo_envio, cpf, dados_submit)
+                if status == "sucesso": st.success(f"{tipo_insercao} inserido/atualizado com sucesso!"); time.sleep(1); st.rerun()
+                elif status == "duplicado": st.warning("Dado já existente!")
+                else: st.error("Erro ao inserir.")
 
 @st.dialog("📂 Visualizador de Agrupamentos")
 def modal_agrupamentos():
