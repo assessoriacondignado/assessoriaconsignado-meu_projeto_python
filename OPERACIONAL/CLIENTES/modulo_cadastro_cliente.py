@@ -50,6 +50,10 @@ def get_pool():
 
 @contextlib.contextmanager
 def get_db_connection():
+    """
+    Gerenciador de contexto robusto para conexões de banco de dados.
+    Garante que a conexão retorne ao pool (putconn) mesmo em caso de erro (finally).
+    """
     pool_obj = get_pool()
     if not pool_obj:
         yield None
@@ -57,33 +61,39 @@ def get_db_connection():
     
     conn = None
     try:
-        conn = pool_obj.getconn()
-        # HEALTH CHECK ATIVO: Tenta um comando leve. Se falhar, a conexão morreu.
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        
-        yield conn
-        pool_obj.putconn(conn)
-        
-    except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.DatabaseError):
-        # Se a conexão morreu (SSL EOF), descarta ela do pool
+        # --- ETAPA 1: TENTATIVA DE OBTENÇÃO DA CONEXÃO ---
+        try:
+            conn = pool_obj.getconn()
+            # HEALTH CHECK ATIVO
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.DatabaseError):
+            # Se a conexão veio morta, descarta e tenta pegar uma nova (Retry)
+            if conn:
+                try: pool_obj.putconn(conn, close=True)
+                except: pass
+            # Tenta pegar nova conexão fresca
+            conn = pool_obj.getconn()
+
+        # --- ETAPA 2: ENTREGA DA CONEXÃO E GARANTIA DE DEVOLUÇÃO ---
+        try:
+            yield conn
+        finally:
+            # BLOCO FINALLY: Executa SEMPRE, sucesso ou erro
+            if conn:
+                try:
+                    pool_obj.putconn(conn)
+                except Exception as e_put:
+                    st.warning(f"Erro ao devolver conexão ao pool: {e_put}")
+
+    except Exception as e:
+        # Captura falhas graves de conexão (Ex: Banco caiu durante o processo)
+        st.error(f"Falha na comunicação com o banco: {e}")
+        # Se sobrou uma conexão pendurada aqui por algum motivo bizarro, tenta devolver
         if conn:
             try: pool_obj.putconn(conn, close=True)
             except: pass
-        
-        # Tenta pegar uma NOVA conexão fresca (Retry imediato)
-        try:
-            conn = pool_obj.getconn()
-            yield conn
-            pool_obj.putconn(conn)
-        except Exception as e:
-            st.error(f"Falha ao reconectar ao banco: {e}")
-            yield None
-            
-    except Exception as e:
-        # Outros erros de lógica SQL
-        if conn: pool_obj.putconn(conn)
-        raise e
+        yield None
 
 def ler_dados_seguro(query, params=None):
     """
@@ -102,7 +112,7 @@ def ler_dados_seguro(query, params=None):
         except Exception as e:
             msg = str(e)
             # Se for erro de conexão, espera e tenta de novo
-            if "SSL" in msg or "EOF" in msg or "terminating" in msg or "closed" in msg:
+            if "SSL" in msg or "EOF" in msg or "terminating" in msg or "closed" in msg or "pool" in msg:
                 time.sleep(0.5) # Espera meio segundo
                 if i == max_tentativas - 1:
                     st.error(f"Erro de conexão persistente após 3 tentativas: {e}")
@@ -172,7 +182,6 @@ def desvincular_usuario_cliente(id_cliente):
             return True
         except: return False
 
-# [ALTERAÇÃO AQUI] Adicionados dados_bancarios, observacao, pasta_caminho
 def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo, dados_bancarios, observacao, pasta_caminho):
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
     if not cpf_val: cpf_val = 0
@@ -183,7 +192,6 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo, dados_bancar
             with conn.cursor() as cur:
                 senha_f = hash_senha(senha)
                 if not nivel: nivel = 'Cliente sem permissão'
-                # [ALTERAÇÃO AQUI] SQL atualizado para incluir os novos campos
                 cur.execute("""
                     INSERT INTO admin.clientes_usuarios 
                     (nome, email, cpf, telefone, senha, nivel, ativo, dados_bancarios, observacao, pasta_caminho, data_cadastro) 
@@ -243,7 +251,6 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 u_cpf = c3.text_input("CPF", value=val_cpf_form)
                 u_nome = c4.text_input("Nome", value=limpar_formatacao_texto(dados_cliente['nome']))
                 
-                # [ALTERAÇÃO AQUI] Novos campos do banco de dados
                 st.markdown("---")
                 st.markdown("###### 📂 Dados Adicionais")
                 u_pasta = st.text_input("Caminho da Pasta (Servidor)", placeholder="Ex: Z:/CLIENTES/NOME_CLIENTE")
@@ -253,7 +260,6 @@ def dialog_gestao_usuario_vinculo(dados_cliente):
                 u_observacao = cc2.text_area("Observação Interna", height=100)
 
                 if st.form_submit_button("Criar e Vincular"):
-                    # [ALTERAÇÃO AQUI] Chamada com os novos parâmetros
                     novo_id = salvar_usuario_novo(
                         u_nome, u_email, u_cpf, dados_cliente['telefone'], u_senha, 
                         'Cliente sem permissão', True, u_dados_bancarios, u_observacao, u_pasta
