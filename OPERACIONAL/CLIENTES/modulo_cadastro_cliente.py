@@ -37,11 +37,11 @@ except ImportError:
 def get_pool():
     if not conexao: return None
     try:
-        return psycopg2.pool.SimpleConnectionPool(
-            minconn=1, maxconn=10, 
+        # [ALTERAÇÃO AQUI] Mudança para ThreadedConnectionPool e aumento de capacidade
+        return psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=30, 
             host=conexao.host, port=conexao.port,
             database=conexao.database, user=conexao.user, password=conexao.password,
-            # Configurações agressivas de Keepalive para evitar queda SSL
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
         )
     except Exception as e:
@@ -51,8 +51,7 @@ def get_pool():
 @contextlib.contextmanager
 def get_db_connection():
     """
-    Gerenciador de contexto robusto para conexões de banco de dados.
-    Garante que a conexão retorne ao pool (putconn) mesmo em caso de erro (finally).
+    Gerenciador de contexto robusto com AUTO-RECOVERY para Pool Esgotado.
     """
     pool_obj = get_pool()
     if not pool_obj:
@@ -64,32 +63,40 @@ def get_db_connection():
         # --- ETAPA 1: TENTATIVA DE OBTENÇÃO DA CONEXÃO ---
         try:
             conn = pool_obj.getconn()
-            # HEALTH CHECK ATIVO
+        except (psycopg2.pool.PoolError, IndexError):
+            # [ALTERAÇÃO AQUI] SE O POOL ESTIVER CHEIO/ESGOTADO:
+            # Força a limpeza do cache e cria um novo pool imediatamente
+            st.warning("⚠️ Pool de conexões esgotado. Reiniciando pool...")
+            get_pool.clear() # Limpa o cache do Streamlit
+            pool_obj = get_pool() # Cria novo pool
+            conn = pool_obj.getconn() # Tenta pegar conexão do novo pool
+
+        # HEALTH CHECK ATIVO
+        try:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
         except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.DatabaseError):
-            # Se a conexão veio morta, descarta e tenta pegar uma nova (Retry)
+            # Se a conexão veio morta, descarta e pega outra
             if conn:
                 try: pool_obj.putconn(conn, close=True)
                 except: pass
-            # Tenta pegar nova conexão fresca
             conn = pool_obj.getconn()
 
-        # --- ETAPA 2: ENTREGA DA CONEXÃO E GARANTIA DE DEVOLUÇÃO ---
+        # --- ETAPA 2: ENTREGA DA CONEXÃO ---
         try:
             yield conn
         finally:
-            # BLOCO FINALLY: Executa SEMPRE, sucesso ou erro
+            # BLOCO FINALLY: Executa SEMPRE
             if conn:
                 try:
                     pool_obj.putconn(conn)
                 except Exception as e_put:
-                    st.warning(f"Erro ao devolver conexão ao pool: {e_put}")
+                    # Se der erro ao devolver, não trava o app, apenas loga
+                    # st.warning(f"Aviso: Erro ao devolver conexão: {e_put}")
+                    pass
 
     except Exception as e:
-        # Captura falhas graves de conexão (Ex: Banco caiu durante o processo)
         st.error(f"Falha na comunicação com o banco: {e}")
-        # Se sobrou uma conexão pendurada aqui por algum motivo bizarro, tenta devolver
         if conn:
             try: pool_obj.putconn(conn, close=True)
             except: pass
@@ -98,7 +105,6 @@ def get_db_connection():
 def ler_dados_seguro(query, params=None):
     """
     Executa pd.read_sql com sistema de retentativa automática (Retry)
-    para evitar o erro 'SSL SYSCALL error: EOF detected'.
     """
     max_tentativas = 3
     for i in range(max_tentativas):
@@ -111,15 +117,13 @@ def ler_dados_seguro(query, params=None):
                     return pd.read_sql(query, conn)
         except Exception as e:
             msg = str(e)
-            # Se for erro de conexão, espera e tenta de novo
             if "SSL" in msg or "EOF" in msg or "terminating" in msg or "closed" in msg or "pool" in msg:
-                time.sleep(0.5) # Espera meio segundo
+                time.sleep(0.5)
                 if i == max_tentativas - 1:
-                    st.error(f"Erro de conexão persistente após 3 tentativas: {e}")
+                    st.error(f"Erro de conexão persistente: {e}")
                     return pd.DataFrame()
                 continue
             else:
-                # Se for erro de SQL (sintaxe), para na hora
                 st.error(f"Erro SQL: {e}")
                 return pd.DataFrame()
     return pd.DataFrame()
