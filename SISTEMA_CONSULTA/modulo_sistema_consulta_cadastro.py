@@ -370,7 +370,7 @@ def listar_convenios_cliente(cpf):
         if not conn: return []
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY convenio", (cpf_val,))
+                cur.execute("SELECT DISTINCT convenio FROM sistema_consulta.sistema_consulta_dados_cadastrais_convenio WHERE cpf = %s ORDER BY convenio", (cpf_val,))
                 return [r[0] for r in cur.fetchall()]
         except Exception: return []
 
@@ -698,8 +698,16 @@ def modal_inserir_dados(cpf, nome_cliente):
                 if not lista_tipos_cliente:
                      st.warning("Cliente não possui convênios cadastrados (Tabela Dados Cadastrais Convênio). Cadastre um 'Convênio (Cadastro)' primeiro.")
                 sel_tipo = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos_cliente)
-                matricula_sel = c_new2.text_input("Nova Matrícula")
-                if sel_tipo and sel_tipo != "(Selecione)" and matricula_sel: convenio_sel = sel_tipo; criar_novo = True
+                
+                # Validação de Tabela de Referência (Requisito 1.2 e 1.3)
+                if sel_tipo and sel_tipo != "(Selecione)":
+                    tabela_check = buscar_tabela_por_convenio(sel_tipo)
+                    if not tabela_check:
+                         st.error(f"🚫 Tabela não cadastrada para o convênio: {sel_tipo}. Impossível inserir dados.")
+                         matricula_sel = None # Bloqueia inserção
+                    else:
+                         matricula_sel = c_new2.text_input("Nova Matrícula")
+                         if matricula_sel: convenio_sel = sel_tipo; criar_novo = True
             elif selecao:
                 parts = selecao.split(" - ", 1)
                 if len(parts) > 0: matricula_sel = parts[0]
@@ -732,8 +740,7 @@ def modal_inserir_dados(cpf, nome_cliente):
                                         # Tenta converter string SQL Date para objeto Date se necessário
                                         val_date = val_inicial
                                         if isinstance(val_date, str):
-                                             val_date = v.ValidadorData.sql_para_obj(val_date) # Assumindo que validador tenha isso ou retorna None
-                                             # Fallback simples caso validador não tenha sql_para_obj exposto ou falhe
+                                             val_date = v.ValidadorData.sql_para_obj(val_date) 
                                              if not val_date and val_inicial:
                                                  try: val_date = datetime.strptime(val_inicial, '%Y-%m-%d').date()
                                                  except: val_date = None
