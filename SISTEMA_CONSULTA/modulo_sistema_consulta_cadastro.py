@@ -58,48 +58,29 @@ def get_pool():
 
 @contextlib.contextmanager
 def get_db_connection():
-    """
-    Gerenciador de contexto otimizado para evitar vazamento de conexões (Pool Exhausted).
-    Usa 'finally' para garantir que putconn seja sempre chamado, mesmo com st.stop().
-    """
     pool_obj = get_pool()
     if not pool_obj:
         yield None
         return
     
-    conn = None
+    conn = pool_obj.getconn()
     try:
-        # Tenta obter conexão. Se o pool estiver esgotado, pode lançar exceção.
+        conn.rollback()
+        yield conn
+        pool_obj.putconn(conn)
+    except (psycopg2.InterfaceError, psycopg2.OperationalError):
+        try: pool_obj.putconn(conn, close=True)
+        except: pass
         try:
             conn = pool_obj.getconn()
-        except psycopg2.pool.PoolError:
-            st.error("⚠️ Sistema sobrecarregado (Muitas conexões). Aguarde um momento.")
+            yield conn
+            pool_obj.putconn(conn)
+        except Exception as e:
+            st.error(f"Falha ao reconectar ao banco: {e}")
             yield None
-            return
-
-        conn.rollback() # Limpa transações anteriores
-        yield conn
-        
-    except (psycopg2.InterfaceError, psycopg2.OperationalError):
-        # Se a conexão caiu no meio do caminho, tenta limpar
-        if conn:
-            try: pool_obj.putconn(conn, close=True)
-            except: pass
-        conn = None # Força a re-tentativa se necessário ou falha limpa
-        yield None
-        
     except Exception as e:
-        # Erro genérico durante o uso
+        pool_obj.putconn(conn)
         raise e
-        
-    finally:
-        # BLINDAGEM: Garante que a conexão volta para o pool 
-        # independende de erros ou paradas do Streamlit
-        if conn and pool_obj:
-            try:
-                pool_obj.putconn(conn)
-            except Exception:
-                pass
 
 # ==============================================================================
 # 2. CONSTANTES E CONFIGURAÇÕES
@@ -670,7 +651,7 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     if not val: cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
                     else: cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
                 for item in dados_editados.get('enderecos', []):
-                       cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
+                      cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
                 conn.commit()
         except Exception as e: st.error(f"Erro ao atualizar: {e}"); return False
     if dados_dinamicos: atualizar_dados_dinamicos(dados_dinamicos)
@@ -769,7 +750,7 @@ def modal_inserir_dados(cpf, nome_cliente):
                                              if not val_date and val_inicial:
                                                  try: val_date = datetime.strptime(val_inicial, '%Y-%m-%d').date()
                                                  except: val_date = None
-                                         
+                                        
                                         dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=val_date, format="DD/MM/YYYY")
                                     else:
                                         dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize(), value=str(val_inicial) if val_inicial is not None else "")
