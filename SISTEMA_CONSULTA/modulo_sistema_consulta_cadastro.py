@@ -692,22 +692,28 @@ def modal_inserir_dados(cpf, nome_cliente):
             # --- Lógica de Seleção para Novo ou Existente ---
             if selecao == "➕ Cadastrar Novo Convênio/Matrícula":
                 st.info("Informe os dados para criar um novo vínculo.")
-                c_new1, c_new2 = st.columns(2)
-                # Alteração: Lista apenas convenios que o cliente já possui
+                
+                # Lista apenas convênios que o cliente já possui para evitar erro de digitação/inconsistência
                 lista_tipos_cliente = listar_convenios_cliente(cpf)
                 if not lista_tipos_cliente:
                      st.warning("Cliente não possui convênios cadastrados (Tabela Dados Cadastrais Convênio). Cadastre um 'Convênio (Cadastro)' primeiro.")
-                sel_tipo = c_new1.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_tipos_cliente)
                 
-                # Validação de Tabela de Referência (Requisito 1.2 e 1.3)
+                # Novo Campo Intermediário: Seleção do Convênio Vinculado
+                sel_tipo = st.selectbox("Selecione o Convênio Vinculado", options=["(Selecione)"] + lista_tipos_cliente)
+                
+                # Validação de Tabela de Referência (Só ativa se selecionar um convênio válido)
                 if sel_tipo and sel_tipo != "(Selecione)":
                     tabela_check = buscar_tabela_por_convenio(sel_tipo)
                     if not tabela_check:
                          st.error(f"🚫 Tabela não cadastrada para o convênio: {sel_tipo}. Impossível inserir dados.")
-                         matricula_sel = None # Bloqueia inserção
+                         matricula_sel = None 
                     else:
-                         matricula_sel = c_new2.text_input("Nova Matrícula")
-                         if matricula_sel: convenio_sel = sel_tipo; criar_novo = True
+                         # Só mostra o campo de matrícula e libera o form se a tabela existir
+                         matricula_sel = st.text_input("Nova Matrícula")
+                         if matricula_sel: 
+                             convenio_sel = sel_tipo
+                             criar_novo = True
+
             elif selecao:
                 parts = selecao.split(" - ", 1)
                 if len(parts) > 0: matricula_sel = parts[0]
