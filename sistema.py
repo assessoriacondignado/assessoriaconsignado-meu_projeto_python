@@ -2,6 +2,8 @@ import streamlit as st
 import os
 import sys
 import psycopg2
+from psycopg2 import pool
+import contextlib
 from datetime import datetime, timedelta
 import time
 import importlib
@@ -103,188 +105,218 @@ except Exception as e:
     st.error(f"🔥 Erro Crítico Geral nas Importações: {e}")
     st.stop()
 
-# --- 4. FUNÇÕES DE BANCO DE DADOS ---
-def get_conn():
+# --- 4. FUNÇÕES DE BANCO DE DADOS (POOL CONNECTION) ---
+
+@st.cache_resource
+def get_pool():
     try:
-        return psycopg2.connect(
+        # Cria um pool compartilhado para o sistema principal
+        return psycopg2.pool.SimpleConnectionPool(
+            minconn=1, maxconn=10,
             host=conexao.host, port=conexao.port, database=conexao.database, 
             user=conexao.user, password=conexao.password, connect_timeout=5
         )
-    except Exception as e: 
-        st.error(f"Erro Conexão DB: {e}")
+    except Exception as e:
+        st.error(f"Erro Fatal ao criar Pool de Conexão: {e}")
+        return None
+
+@contextlib.contextmanager
+def get_db_connection():
+    pool_obj = get_pool()
+    if not pool_obj:
+        yield None
+        return
+    
+    conn = None
+    try:
+        conn = pool_obj.getconn()
+        yield conn
+    except Exception as e:
+        st.error(f"Erro de conexão DB: {e}")
+        if conn:
+            try: conn.rollback()
+            except: pass
+        yield None
+    finally:
+        if conn and pool_obj:
+            try:
+                pool_obj.putconn(conn)
+            except Exception:
+                pass
+
+def get_conn():
+    """Mantido para compatibilidade, mas recomenda-se usar get_db_connection"""
+    try:
+        p = get_pool()
+        if p: return p.getconn()
+        return None
+    except:
         return None
 
 # --- 5. FUNÇÕES DE SEGURANÇA E LOGIN ---
 
 def verificar_sessao_unica_db(id_usuario, token_atual):
     """Verifica se o token da sessão atual ainda é o válido no banco."""
-    conn = get_conn()
-    if not conn: return True 
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT token FROM admin.sessoes_ativas WHERE id_usuario = %s", (id_usuario,))
-        res = cur.fetchone()
-        if res and res[0] != token_atual:
-            return False # Token mudou, derruba sessão
-        return True
-    except:
-        return True
-    finally:
-        conn.close()
+    # Alteração: Uso de context manager do pool
+    with get_db_connection() as conn:
+        if not conn: return True 
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT token FROM admin.sessoes_ativas WHERE id_usuario = %s", (id_usuario,))
+            res = cur.fetchone()
+            if res and res[0] != token_atual:
+                return False # Token mudou, derruba sessão
+            return True
+        except:
+            return True
 
 def registrar_sessao_db(id_usuario, nome_usuario):
     """Cria um token novo, derruba sessões anteriores e salva no banco."""
-    conn = get_conn()
-    if not conn: return None
-    try:
-        token = secrets.token_urlsafe(32)
-        cur = conn.cursor()
-        # Remove sessão anterior
-        cur.execute("DELETE FROM admin.sessoes_ativas WHERE id_usuario = %s", (id_usuario,))
-        # Cria nova sessão
-        cur.execute("""
-            INSERT INTO admin.sessoes_ativas (token, id_usuario, nome_usuario, data_inicio, ultimo_clique)
-            VALUES (%s, %s, %s, NOW(), NOW())
-        """, (token, id_usuario, nome_usuario))
-        conn.commit()
-        return token
-    except Exception as e:
-        print(f"Erro ao registrar sessão: {e}")
-        return None
-    finally:
-        conn.close()
+    with get_db_connection() as conn:
+        if not conn: return None
+        try:
+            token = secrets.token_urlsafe(32)
+            cur = conn.cursor()
+            # Remove sessão anterior
+            cur.execute("DELETE FROM admin.sessoes_ativas WHERE id_usuario = %s", (id_usuario,))
+            # Cria nova sessão
+            cur.execute("""
+                INSERT INTO admin.sessoes_ativas (token, id_usuario, nome_usuario, data_inicio, ultimo_clique)
+                VALUES (%s, %s, %s, NOW(), NOW())
+            """, (token, id_usuario, nome_usuario))
+            conn.commit()
+            return token
+        except Exception as e:
+            print(f"Erro ao registrar sessão: {e}")
+            return None
 
 def validar_login_db(usuario, senha):
-    conn = get_conn()
-    if not conn: return {"status": "erro_conexao"}
-    
-    try:
-        cur = conn.cursor()
-        email_login = str(usuario).strip()
-        senha_login = str(senha).strip()
-
-        # Busca dados, incluindo colunas de segurança e tempo padrao
-        sql = """
-            SELECT id, email, senha, nome, tentativas_falhas, bloqueado_ate, tempo_sessao_padrao
-            FROM admin.clientes_usuarios 
-            WHERE email = %s
-        """
-        cur.execute(sql, (email_login,))
-        res = cur.fetchone()
+    with get_db_connection() as conn:
+        if not conn: return {"status": "erro_conexao"}
         
-        if res:
-            # Desempacota considerando que tempo_sessao_padrao pode ser None
-            uid, email_banco, senha_banco, nome_banco, tentativas, bloqueado_ate, tempo_padrao = res
-            
-            # 1. Verifica bloqueio
-            if bloqueado_ate and bloqueado_ate > datetime.now():
-                tempo_restante = (bloqueado_ate - datetime.now()).seconds // 60
-                return {"status": "bloqueado", "msg": f"Conta bloqueada. Tente em {tempo_restante} min."}
+        try:
+            cur = conn.cursor()
+            email_login = str(usuario).strip()
+            senha_login = str(senha).strip()
 
-            senha_correta = False
-            precisa_atualizar_hash = False
-
-            # 2. Verifica Senha (Hash ou Texto Puro)
-            senha_banco_str = str(senha_banco).strip() if senha_banco else ""
+            # Busca dados, incluindo colunas de segurança e tempo padrao
+            sql = """
+                SELECT id, email, senha, nome, tentativas_falhas, bloqueado_ate, tempo_sessao_padrao
+                FROM admin.clientes_usuarios 
+                WHERE email = %s
+            """
+            cur.execute(sql, (email_login,))
+            res = cur.fetchone()
             
-            try:
-                if senha_banco_str.startswith('$2b$') or senha_banco_str.startswith('$2a$'):
-                    if bcrypt.checkpw(senha_login.encode('utf-8'), senha_banco_str.encode('utf-8')):
-                        senha_correta = True
-                else:
+            if res:
+                # Desempacota considerando que tempo_sessao_padrao pode ser None
+                uid, email_banco, senha_banco, nome_banco, tentativas, bloqueado_ate, tempo_padrao = res
+                
+                # 1. Verifica bloqueio
+                if bloqueado_ate and bloqueado_ate > datetime.now():
+                    tempo_restante = (bloqueado_ate - datetime.now()).seconds // 60
+                    return {"status": "bloqueado", "msg": f"Conta bloqueada. Tente em {tempo_restante} min."}
+
+                senha_correta = False
+                precisa_atualizar_hash = False
+
+                # 2. Verifica Senha (Hash ou Texto Puro)
+                senha_banco_str = str(senha_banco).strip() if senha_banco else ""
+                
+                try:
+                    if senha_banco_str.startswith('$2b$') or senha_banco_str.startswith('$2a$'):
+                        if bcrypt.checkpw(senha_login.encode('utf-8'), senha_banco_str.encode('utf-8')):
+                            senha_correta = True
+                    else:
+                        if senha_banco_str == senha_login:
+                            senha_correta = True
+                            precisa_atualizar_hash = True
+                except:
                     if senha_banco_str == senha_login:
                         senha_correta = True
                         precisa_atualizar_hash = True
-            except:
-                if senha_banco_str == senha_login:
-                    senha_correta = True
-                    precisa_atualizar_hash = True
 
-            if senha_correta:
-                # Sucesso: Zera tentativas
-                sql_update = "UPDATE admin.clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s"
-                params = [uid]
-                
-                if precisa_atualizar_hash:
-                    novo_hash = bcrypt.hashpw(senha_login.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                    sql_update = "UPDATE admin.clientes_usuarios SET tentativas_falhas = 0, senha = %s WHERE id = %s"
-                    params = [novo_hash, uid]
-                
-                cur.execute(sql_update, tuple(params))
-                conn.commit()
-                
-                # Retorna também o tempo padrão configurado no banco
-                return {
-                    "status": "sucesso", 
-                    "id": uid, 
-                    "email": email_banco, 
-                    "nome": nome_banco,
-                    "tempo_padrao": tempo_padrao
-                }
-            
-            else:
-                # Senha Errada
-                novas_tentativas = (tentativas or 0) + 1
-                if novas_tentativas >= 5:
-                    bloqueio = datetime.now() + timedelta(minutes=15)
-                    cur.execute("UPDATE admin.clientes_usuarios SET tentativas_falhas = %s, bloqueado_ate = %s WHERE id = %s", 
-                                (novas_tentativas, bloqueio, uid))
+                if senha_correta:
+                    # Sucesso: Zera tentativas
+                    sql_update = "UPDATE admin.clientes_usuarios SET tentativas_falhas = 0 WHERE id = %s"
+                    params = [uid]
+                    
+                    if precisa_atualizar_hash:
+                        novo_hash = bcrypt.hashpw(senha_login.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                        sql_update = "UPDATE admin.clientes_usuarios SET tentativas_falhas = 0, senha = %s WHERE id = %s"
+                        params = [novo_hash, uid]
+                    
+                    cur.execute(sql_update, tuple(params))
                     conn.commit()
-                    return {"status": "bloqueado", "msg": "Muitas tentativas. Bloqueado por 15 min."}
+                    
+                    # Retorna também o tempo padrão configurado no banco
+                    return {
+                        "status": "sucesso", 
+                        "id": uid, 
+                        "email": email_banco, 
+                        "nome": nome_banco,
+                        "tempo_padrao": tempo_padrao
+                    }
+                
                 else:
-                    cur.execute("UPDATE admin.clientes_usuarios SET tentativas_falhas = %s WHERE id = %s", 
-                                (novas_tentativas, uid))
-                    conn.commit()
-                    return {"status": "erro_senha", "tentativas": novas_tentativas}
-        
-        return {"status": "nao_encontrado"}
-    except Exception as e:
-        # Se der erro (ex: coluna tempo_sessao_padrao nao existe), tenta buscar sem ela como fallback
-        if "tempo_sessao_padrao" in str(e):
-            return {"status": "erro_generico", "msg": "Erro de tabela DB (coluna nova faltante)."}
-        return {"status": "erro_generico", "msg": str(e)}
-    finally:
-        conn.close()
+                    # Senha Errada
+                    novas_tentativas = (tentativas or 0) + 1
+                    if novas_tentativas >= 5:
+                        bloqueio = datetime.now() + timedelta(minutes=15)
+                        cur.execute("UPDATE admin.clientes_usuarios SET tentativas_falhas = %s, bloqueado_ate = %s WHERE id = %s", 
+                                    (novas_tentativas, bloqueio, uid))
+                        conn.commit()
+                        return {"status": "bloqueado", "msg": "Muitas tentativas. Bloqueado por 15 min."}
+                    else:
+                        cur.execute("UPDATE admin.clientes_usuarios SET tentativas_falhas = %s WHERE id = %s", 
+                                    (novas_tentativas, uid))
+                        conn.commit()
+                        return {"status": "erro_senha", "tentativas": novas_tentativas}
+            
+            return {"status": "nao_encontrado"}
+        except Exception as e:
+            # Se der erro (ex: coluna tempo_sessao_padrao nao existe), tenta buscar sem ela como fallback
+            if "tempo_sessao_padrao" in str(e):
+                return {"status": "erro_generico", "msg": "Erro de tabela DB (coluna nova faltante)."}
+            return {"status": "erro_generico", "msg": str(e)}
 
 def enviar_nova_senha_whatsapp(email_destino):
     """Gera senha, atualiza banco e envia via WhatsApp"""
-    conn = get_conn()
-    if not conn: return "Erro conexão DB"
-    
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT id, nome, telefone FROM admin.clientes_usuarios WHERE email = %s", (email_destino,))
-        user = cur.fetchone()
+    with get_db_connection() as conn:
+        if not conn: return "Erro conexão DB"
         
-        if not user: return "E-mail não encontrado."
-        uid, nome, telefone = user
-        
-        if not telefone or len(telefone) < 10: return "Usuário sem telefone válido cadastrado."
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, nome, telefone FROM admin.clientes_usuarios WHERE email = %s", (email_destino,))
+            user = cur.fetchone()
+            
+            if not user: return "E-mail não encontrado."
+            uid, nome, telefone = user
+            
+            if not telefone or len(telefone) < 10: return "Usuário sem telefone válido cadastrado."
 
-        cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
-        inst = cur.fetchone()
-        if not inst: return "Nenhuma instância de WhatsApp configurada no sistema."
-        
-        alfabeto = string.ascii_letters + string.digits
-        nova_senha = ''.join(secrets.choice(alfabeto) for i in range(8))
-        senha_hash = bcrypt.hashpw(nova_senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        cur.execute("UPDATE admin.clientes_usuarios SET senha = %s, tentativas_falhas = 0, bloqueado_ate = NULL WHERE id = %s", (senha_hash, uid))
-        conn.commit()
-        
-        msg = f"🔐 *Solicitação de Reset de Senha*\n\nOlá {nome},\nSua nova senha temporária é: *{nova_senha}*\n\nAcesse o sistema e altere sua senha se desejar."
-        
-        res = modulo_wapi.enviar_msg_api(inst[0], inst[1], telefone, msg)
-        
-        if res.get('success') or res.get('messageId'):
-            return "Sucesso! Senha enviada para o WhatsApp cadastrado."
-        else:
-            return f"Erro no envio do WhatsApp: {res}"
+            cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+            inst = cur.fetchone()
+            if not inst: return "Nenhuma instância de WhatsApp configurada no sistema."
+            
+            alfabeto = string.ascii_letters + string.digits
+            nova_senha = ''.join(secrets.choice(alfabeto) for i in range(8))
+            senha_hash = bcrypt.hashpw(nova_senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            
+            cur.execute("UPDATE admin.clientes_usuarios SET senha = %s, tentativas_falhas = 0, bloqueado_ate = NULL WHERE id = %s", (senha_hash, uid))
+            conn.commit()
+            
+            msg = f"🔐 *Solicitação de Reset de Senha*\n\nOlá {nome},\nSua nova senha temporária é: *{nova_senha}*\n\nAcesse o sistema e altere sua senha se desejar."
+            
+            res = modulo_wapi.enviar_msg_api(inst[0], inst[1], telefone, msg)
+            
+            if res.get('success') or res.get('messageId'):
+                return "Sucesso! Senha enviada para o WhatsApp cadastrado."
+            else:
+                return f"Erro no envio do WhatsApp: {res}"
 
-    except Exception as e:
-        return f"Erro ao resetar: {e}"
-    finally:
-        conn.close()
+        except Exception as e:
+            return f"Erro ao resetar: {e}"
 
 # --- 6. FUNÇÕES DE ESTADO E SESSÃO ---
 def iniciar_estado():
@@ -331,36 +363,36 @@ def gerenciar_sessao():
 # --- 7. INTERFACE (MENSAGEM RÁPIDA) ---
 @st.dialog("🚀 Mensagem Rápida")
 def dialog_mensagem_rapida():
-    conn = get_conn()
-    if not conn: st.error("Erro Conexão DB"); return
+    with get_db_connection() as conn:
+        if not conn: st.error("Erro Conexão DB"); return
 
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
-        inst = cur.fetchone()
-        if not inst: st.warning("Configure a API do WhatsApp primeiro."); return
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT api_instance_id, api_token FROM wapi_instancias LIMIT 1")
+            inst = cur.fetchone()
+            if not inst: st.warning("Configure a API do WhatsApp primeiro."); return
 
-        opcao = st.radio("Destino", ["Cliente Cadastrado", "Número Avulso"], horizontal=True)
-        destino = ""
-        
-        if opcao == "Cliente Cadastrado":
-            cur.execute("SELECT nome, telefone FROM admin.clientes ORDER BY nome LIMIT 50")
-            clis = cur.fetchall()
-            if clis:
-                sel = st.selectbox("Selecione", [f"{c[0]} | {c[1]}" for c in clis])
-                destino = sel.split("|")[1].strip() if sel else ""
-        else:
-            destino = st.text_input("Número (ex: 5511999999999)")
+            opcao = st.radio("Destino", ["Cliente Cadastrado", "Número Avulso"], horizontal=True)
+            destino = ""
+            
+            if opcao == "Cliente Cadastrado":
+                cur.execute("SELECT nome, telefone FROM admin.clientes ORDER BY nome LIMIT 50")
+                clis = cur.fetchall()
+                if clis:
+                    sel = st.selectbox("Selecione", [f"{c[0]} | {c[1]}" for c in clis])
+                    destino = sel.split("|")[1].strip() if sel else ""
+            else:
+                destino = st.text_input("Número (ex: 5511999999999)")
 
-        msg = st.text_area("Mensagem")
-        if st.button("Enviar", type="primary"):
-            if destino and msg:
-                res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
-                if res.get('success'): st.success("Enviado!"); time.sleep(1); st.rerun()
-                else: st.error("Erro no envio.")
-            else: st.warning("Preencha todos os campos.")
-    finally:
-        conn.close()
+            msg = st.text_area("Mensagem")
+            if st.button("Enviar", type="primary"):
+                if destino and msg:
+                    res = modulo_wapi.enviar_msg_api(inst[0], inst[1], destino, msg)
+                    if res.get('success'): st.success("Enviado!"); time.sleep(1); st.rerun()
+                    else: st.error("Erro no envio.")
+                else: st.warning("Preencha todos os campos.")
+        except Exception as e:
+            st.error(f"Erro ao enviar: {e}")
 
 # --- 8. MENU LATERAL ---
 def renderizar_menu_lateral():
