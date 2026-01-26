@@ -288,9 +288,9 @@ def buscar_cliente_dinamica(filtros_aplicados):
                     params.append(valor_original[0]); params.append(valor_original[1])
                 else:
                     if coluna == 't.cpf' and 'LIKE' in operador_sql:
-                         where_clauses.append(f"CAST({coluna} AS TEXT) {operador_sql} %s")
-                         val_raw = preparar_valor_filtro_texto(valor_original)
-                         params.append(filtro['mask'].format(val_raw))
+                          where_clauses.append(f"CAST({coluna} AS TEXT) {operador_sql} %s")
+                          val_raw = preparar_valor_filtro_texto(valor_original)
+                          params.append(filtro['mask'].format(val_raw))
                     else:
                         val_raw = preparar_valor_filtro_texto(valor_original)
                         where_clauses.append(f"{coluna} {operador_sql} %s")
@@ -414,11 +414,11 @@ def buscar_dados_dinamicos_especificos(tabela, cpf, matricula):
                 # Verifica se a tabela tem coluna matricula
                 colunas = listar_colunas_tabela(tabela)
                 if 'matricula' not in colunas:
-                     query = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s LIMIT 1").format(sql.Identifier(tabela.replace('sistema_consulta.', '')))
-                     cur.execute(query, (cpf_val,))
+                      query = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s LIMIT 1").format(sql.Identifier(tabela.replace('sistema_consulta.', '')))
+                      cur.execute(query, (cpf_val,))
                 else:
-                     query = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s LIMIT 1").format(sql.Identifier(tabela.replace('sistema_consulta.', '')))
-                     cur.execute(query, (cpf_val, mat_val))
+                      query = sql.SQL("SELECT * FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s LIMIT 1").format(sql.Identifier(tabela.replace('sistema_consulta.', '')))
+                      cur.execute(query, (cpf_val, mat_val))
                 
                 row = cur.fetchone()
                 if row:
@@ -546,13 +546,13 @@ def inserir_dado_extra(tipo, cpf, dados):
                     # Verifica se já existe o registro (Para Update)
                     reg_existe = False
                     if 'matricula' in campos_dados and campos_dados['matricula']:
-                         query_check = sql.SQL("SELECT 1 FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')))
-                         cur.execute(query_check, (cpf_val, campos_dados['matricula']))
-                         if cur.fetchone(): reg_existe = True
+                          query_check = sql.SQL("SELECT 1 FROM sistema_consulta.{} WHERE cpf = %s AND matricula = %s").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')))
+                          cur.execute(query_check, (cpf_val, campos_dados['matricula']))
+                          if cur.fetchone(): reg_existe = True
                     else:
-                         query_check = sql.SQL("SELECT 1 FROM sistema_consulta.{} WHERE cpf = %s").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')))
-                         cur.execute(query_check, (cpf_val,))
-                         if cur.fetchone(): reg_existe = True
+                          query_check = sql.SQL("SELECT 1 FROM sistema_consulta.{} WHERE cpf = %s").format(sql.Identifier(tabela_alvo.replace('sistema_consulta.', '')))
+                          cur.execute(query_check, (cpf_val,))
+                          if cur.fetchone(): reg_existe = True
 
                     if reg_existe:
                         # UPDATE
@@ -651,7 +651,7 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     if not val: cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
                     else: cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
                 for item in dados_editados.get('enderecos', []):
-                      cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
+                       cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
                 conn.commit()
         except Exception as e: st.error(f"Erro ao atualizar: {e}"); return False
     if dados_dinamicos: atualizar_dados_dinamicos(dados_dinamicos)
@@ -681,80 +681,47 @@ def modal_inserir_dados(cpf, nome_cliente):
     with st.form("form_insercao_modal"):
         dados_submit = {}
         if tipo_insercao == "Dados de Convênio":
-            lista_contratos = listar_contratos_cliente(cpf)
-            opcoes_matr = [f"{m} - {c}" for m, c in lista_contratos]
-            opcoes_matr.append("➕ Cadastrar Novo Convênio/Matrícula")
-            selecao = st.selectbox("Selecione a Matrícula", options=opcoes_matr)
-            criar_novo = False
-            matricula_sel = None
-            convenio_sel = None
+            st.info("Informe os dados para incluir um novo registro.")
+            # 1. Listar apenas convênios que o CPF já possui
+            lista_convenios_existentes = listar_convenios_cliente(cpf)
             
-            # --- Lógica de Seleção para Novo ou Existente ---
-            if selecao == "➕ Cadastrar Novo Convênio/Matrícula":
-                st.info("Informe os dados para criar um novo vínculo.")
+            if not lista_convenios_existentes:
+                st.warning("Este cliente não possui convênios vinculados para inclusão de dados.")
+            else:
+                # 2. Selecionar Convênio
+                convenio_sel = st.selectbox("Selecione o Convênio Vinculado", options=["(Selecione)"] + lista_convenios_existentes)
                 
-                # Lista apenas convênios que o cliente já possui para evitar erro de digitação/inconsistência
-                lista_tipos_cliente = listar_convenios_cliente(cpf)
-                if not lista_tipos_cliente:
-                     st.warning("Cliente não possui convênios cadastrados (Tabela Dados Cadastrais Convênio). Cadastre um 'Convênio (Cadastro)' primeiro.")
-                
-                # Novo Campo Intermediário: Seleção do Convênio Vinculado
-                sel_tipo = st.selectbox("Selecione o Convênio Vinculado", options=["(Selecione)"] + lista_tipos_cliente)
-                
-                # Validação de Tabela de Referência (Só ativa se selecionar um convênio válido)
-                if sel_tipo and sel_tipo != "(Selecione)":
-                    tabela_check = buscar_tabela_por_convenio(sel_tipo)
-                    if not tabela_check:
-                         st.error(f"🚫 Tabela não cadastrada para o convênio: {sel_tipo}. Impossível inserir dados.")
-                         matricula_sel = None 
-                    else:
-                         # Só mostra o campo de matrícula e libera o form se a tabela existir
-                         matricula_sel = st.text_input("Nova Matrícula")
-                         if matricula_sel: 
-                             convenio_sel = sel_tipo
-                             criar_novo = True
+                if convenio_sel and convenio_sel != "(Selecione)":
+                    # 3. Informar Matrícula (Campo Livre para Inserção)
+                    matricula_sel = st.text_input("Informe a Matrícula (Novo Registro)")
+                    
+                    if matricula_sel:
+                        tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
+                        if tabela_alvo:
+                            colunas = listar_colunas_tabela(tabela_alvo)
+                            if not colunas:
+                                st.error("Tabela sem colunas configuradas.")
+                            else:
+                                dados_submit['_tabela'] = tabela_alvo
+                                dados_submit['cpf'] = cpf
+                                dados_submit['matricula'] = matricula_sel
+                                dados_submit['convenio'] = convenio_sel
+                                dados_submit['_criar_vinculo'] = True # Mantém para garantir consistência
+                                
+                                cols_form = st.columns(2)
+                                idx = 0
+                                for col in colunas:
+                                    if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
+                                        with cols_form[idx % 2]:
+                                            # SEMPRE VAZIO - APENAS INCLUSÃO
+                                            if 'data' in col.lower():
+                                                dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=None, format="DD/MM/YYYY")
+                                            else:
+                                                dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize(), value="")
+                                        idx += 1
+                        else:
+                            st.error(f"Tabela não encontrada para o convênio: {convenio_sel}")
 
-            elif selecao:
-                parts = selecao.split(" - ", 1)
-                if len(parts) > 0: matricula_sel = parts[0]
-                if len(parts) > 1: convenio_sel = parts[1]
-            
-            # --- Renderização do Formulário Dinâmico ---
-            if matricula_sel and convenio_sel:
-                tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
-                if tabela_alvo:
-                    colunas = listar_colunas_tabela(tabela_alvo)
-                    if not colunas: st.error("Tabela sem colunas.")
-                    else:
-                        dados_submit['_tabela'] = tabela_alvo
-                        dados_submit['cpf'] = cpf
-                        dados_submit['matricula'] = matricula_sel
-                        if criar_novo: dados_submit['_criar_vinculo'] = True; dados_submit['convenio'] = convenio_sel
-                        
-                        # Busca dados pré-existentes para edição se não for novo
-                        dados_existentes = {}
-                        if not criar_novo:
-                            dados_existentes = buscar_dados_dinamicos_especificos(tabela_alvo, cpf, matricula_sel)
-
-                        cols_form = st.columns(2)
-                        idx = 0
-                        for col in colunas:
-                            if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
-                                with cols_form[idx % 2]:
-                                    val_inicial = dados_existentes.get(col, "")
-                                    if 'data' in col.lower():
-                                        # Tenta converter string SQL Date para objeto Date se necessário
-                                        val_date = val_inicial
-                                        if isinstance(val_date, str):
-                                             val_date = v.ValidadorData.sql_para_obj(val_date) 
-                                             if not val_date and val_inicial:
-                                                 try: val_date = datetime.strptime(val_inicial, '%Y-%m-%d').date()
-                                                 except: val_date = None
-                                        
-                                        dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=val_date, format="DD/MM/YYYY")
-                                    else:
-                                        dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize(), value=str(val_inicial) if val_inicial is not None else "")
-                                idx += 1
         elif tipo_insercao == "Contrato":
             c1, c2 = st.columns(2)
             dados_submit['matricula'] = c1.text_input("Matrícula")
@@ -777,12 +744,10 @@ def modal_inserir_dados(cpf, nome_cliente):
         elif tipo_insercao == "Endereço":
             dados_submit['cep'] = st.text_input("CEP"); dados_submit['rua'] = st.text_input("Rua"); dados_submit['bairro'] = st.text_input("Bairro"); dados_submit['cidade'] = st.text_input("Cidade"); dados_submit['uf'] = st.text_input("UF", max_chars=2)
         elif tipo_insercao == "Convênio (Cadastro)": 
-            # Alteração: Uso de Selectbox com base na tabela tipo_convenio
             lista_todos_convenios = listar_tipos_convenio_disponiveis()
             dados_submit['valor'] = st.selectbox("Nome do Convênio", options=["(Selecione)"] + lista_todos_convenios)
         
         if st.form_submit_button("✅ Salvar Inclusão"):
-            # Validação simples para o selectbox
             if tipo_insercao == "Convênio (Cadastro)" and dados_submit['valor'] == "(Selecione)":
                 st.error("Selecione um convênio válido.")
             else:
@@ -937,7 +902,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                     lista_contratos = grupo.get('contratos', [])
                     if lista_contratos:
                         df_contratos = pd.DataFrame(lista_contratos)
-                        # [ALTERAÇÃO] Ordem das colunas ajustada
                         colunas_ordenadas = ['numero_contrato', 'data_inicio', 'data_averbacao', 'data_final', 'valor_parcela', 'prazo_aberto', 'prazo_pago', 'prazo_total', 'taxa_juros', 'tipo_taxa', 'valor_contrato_inicial', 'saldo_devedor']
                         cols_existentes = [c for c in colunas_ordenadas if c in df_contratos.columns]
                         df_show = df_contratos[cols_existentes].copy()
@@ -947,7 +911,6 @@ def tela_ficha_cliente(cpf, modo='visualizar'):
                         for col_date in ['data_inicio', 'data_averbacao', 'data_final']:
                             if col_date in df_show.columns: df_show[col_date] = df_show[col_date].apply(v.ValidadorData.para_tela)
                         
-                        # [ALTERAÇÃO] Renomeação ajustada
                         renomear = {'numero_contrato': 'Nº Contrato', 'valor_parcela': 'Vlr. Parc.', 'prazo_aberto': 'Pz Aberto', 'prazo_pago': 'Pz Pago', 'prazo_total': 'Pz Total', 'taxa_juros': 'Taxa %', 'tipo_taxa': 'Tipo Taxa', 'valor_contrato_inicial': 'Vlr. Inicial', 'saldo_devedor': 'Saldo Dev.', 'data_inicio': 'Dt Início', 'data_averbacao': 'Dt Averb.', 'data_final': 'Dt Final'}
                         df_show.rename(columns=renomear, inplace=True)
                         st.dataframe(df_show, use_container_width=True, hide_index=True)
@@ -970,7 +933,6 @@ def tela_pesquisa():
     st.markdown("#### 🔍 Buscar Cliente")
     tab1, tab2 = st.tabs(["Pesquisa Rápida", "Pesquisa Completa"])
     with tab1:
-        # [ALTERAÇÃO] Layout Pesquisa Rápida (80% / 10% / 10%)
         c_input, c_btn_search, c_btn_clear = st.columns([0.8, 0.1, 0.1])
         termo = c_input.text_input("Digite CPF, Nome ou Telefone", label_visibility="collapsed", key="search_term_input")
         if c_btn_search.button("🔍", type="primary", use_container_width=True, help="Buscar"):
@@ -1051,7 +1013,6 @@ def tela_pesquisa():
                     if not res_completa: st.toast("Nenhum registro encontrado.", icon="⚠️")
                 else: st.warning("Preencha pelo menos um campo para filtrar.")
 
-    # --- Lógica de Exibição com Paginação ---
     resultados = st.session_state.get('resultados_pesquisa', [])
     if resultados:
         st.divider()
@@ -1084,7 +1045,6 @@ def tela_pesquisa():
                 st.session_state['modo_visualizacao'] = 'visualizar'
                 st.rerun()
         
-        # --- Navegador de Páginas ---
         if total_paginas > 1:
             st.write("---")
             c_nav = st.columns([1, 1, 3, 1, 1])
@@ -1102,10 +1062,8 @@ def tela_pesquisa():
                 st.session_state['pagina_atual'] = total_paginas; st.rerun()
 
 def app_cadastro():
-    # [ALTERAÇÃO] Injeção de CSS Global para Botões e Cabeçalho de Tabela
     st.markdown("""
         <style>
-        /* Estilo Compacto de Botões com Hover Vermelho */
         .stButton > button {
             padding: 0px 5px !important; 
             font-size: 0.85em !important;
@@ -1115,11 +1073,10 @@ def app_cadastro():
             border-radius: 4px;
         }
         .stButton > button:hover {
-            background-color: #ffe6e6 !important; /* Vermelho Claro 50% */
+            background-color: #ffe6e6 !important;
             color: black !important;
             border-color: #ffcccc !important;
         }
-        /* Cabeçalho de Tabela Vermelho Claro */
         thead tr th {
             background-color: #ffe6e6 !important;
             color: black !important;
