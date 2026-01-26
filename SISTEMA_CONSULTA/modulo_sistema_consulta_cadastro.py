@@ -651,7 +651,7 @@ def atualizar_dados_cliente_lote(cpf, dados_editados, dados_dinamicos=None):
                     if not val: cur.execute("DELETE FROM sistema_consulta.sistema_consulta_dados_cadastrais_email WHERE id = %s", (item['id'],))
                     else: cur.execute("UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_email SET email = %s WHERE id = %s", (val, item['id']))
                 for item in dados_editados.get('enderecos', []):
-                       cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
+                      cur.execute("""UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_endereco SET rua = %s, bairro = %s, cidade = %s, uf = %s, cep = %s WHERE id = %s""", (item['rua'], item['bairro'], item['cidade'], item['uf'], item['cep'], item['id']))
                 conn.commit()
         except Exception as e: st.error(f"Erro ao atualizar: {e}"); return False
     if dados_dinamicos: atualizar_dados_dinamicos(dados_dinamicos)
@@ -678,44 +678,83 @@ def excluir_cliente_total(cpf):
 def modal_inserir_dados(cpf, nome_cliente):
     st.write(f"Cliente: **{nome_cliente}**")
     tipo_insercao = st.selectbox("Selecione o Tipo", ["Telefone", "E-mail", "Endereço", "Contrato", "Dados de Convênio", "Convênio (Cadastro)"])
-    
     with st.form("form_insercao_modal"):
         dados_submit = {}
-        
         if tipo_insercao == "Dados de Convênio":
-            st.info("Insira novos registros para os convênios vinculados.")
-            # 1. Buscar convênios que o CPF já tem
-            lista_convenios = listar_convenios_cliente(cpf)
-
-            if not lista_convenios:
-                st.warning("Este cliente não possui convênios vinculados.")
-            else:
-                # 2. Selecionar Convênio
-                convenio_sel = st.selectbox("Selecione o Convênio", options=["(Selecione)"] + lista_convenios)
-
-                if convenio_sel != "(Selecione)":
-                    tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
-                    if not tabela_alvo:
-                        st.error(f"Tabela não configurada para o convênio: {convenio_sel}")
+            lista_contratos = listar_contratos_cliente(cpf)
+            opcoes_matr = [f"{m} - {c}" for m, c in lista_contratos]
+            opcoes_matr.append("➕ Cadastrar Novo Convênio/Matrícula")
+            selecao = st.selectbox("Selecione a Matrícula", options=opcoes_matr)
+            criar_novo = False
+            matricula_sel = None
+            convenio_sel = None
+            
+            # --- Lógica de Seleção para Novo ou Existente ---
+            if selecao == "➕ Cadastrar Novo Convênio/Matrícula":
+                st.info("Informe os dados para criar um novo vínculo.")
+                
+                # Lista apenas convênios que o cliente já possui para evitar erro de digitação/inconsistência
+                lista_tipos_cliente = listar_convenios_cliente(cpf)
+                if not lista_tipos_cliente:
+                     st.warning("Cliente não possui convênios cadastrados (Tabela Dados Cadastrais Convênio). Cadastre um 'Convênio (Cadastro)' primeiro.")
+                
+                # Novo Campo Intermediário: Seleção do Convênio Vinculado
+                sel_tipo = st.selectbox("Selecione o Convênio Vinculado", options=["(Selecione)"] + lista_tipos_cliente)
+                
+                # Validação de Tabela de Referência (Só ativa se selecionar um convênio válido)
+                if sel_tipo and sel_tipo != "(Selecione)":
+                    tabela_check = buscar_tabela_por_convenio(sel_tipo)
+                    if not tabela_check:
+                         st.error(f"🚫 Tabela não cadastrada para o convênio: {sel_tipo}. Impossível inserir dados.")
+                         matricula_sel = None 
                     else:
-                        colunas = listar_colunas_tabela(tabela_alvo)
-                        if colunas:
-                            dados_submit['_tabela'] = tabela_alvo
-                            dados_submit['cpf'] = cpf
-                            
-                            cols_form = st.columns(2)
-                            idx = 0
-                            for col in colunas:
-                                # Pular campos de controle automático
-                                if col not in ['id', 'cpf', 'nome', 'agrupamento']:
-                                    with cols_form[idx % 2]:
-                                        # Detecção básica de tipo (Data ou Texto)
-                                        if 'data' in col.lower():
-                                            dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=None, format="DD/MM/YYYY")
-                                        else:
-                                            dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize(), value="")
-                                    idx += 1
+                         # Só mostra o campo de matrícula e libera o form se a tabela existir
+                         matricula_sel = st.text_input("Nova Matrícula")
+                         if matricula_sel: 
+                             convenio_sel = sel_tipo
+                             criar_novo = True
 
+            elif selecao:
+                parts = selecao.split(" - ", 1)
+                if len(parts) > 0: matricula_sel = parts[0]
+                if len(parts) > 1: convenio_sel = parts[1]
+            
+            # --- Renderização do Formulário Dinâmico ---
+            if matricula_sel and convenio_sel:
+                tabela_alvo = buscar_tabela_por_convenio(convenio_sel)
+                if tabela_alvo:
+                    colunas = listar_colunas_tabela(tabela_alvo)
+                    if not colunas: st.error("Tabela sem colunas.")
+                    else:
+                        dados_submit['_tabela'] = tabela_alvo
+                        dados_submit['cpf'] = cpf
+                        dados_submit['matricula'] = matricula_sel
+                        if criar_novo: dados_submit['_criar_vinculo'] = True; dados_submit['convenio'] = convenio_sel
+                        
+                        # Busca dados pré-existentes para edição se não for novo
+                        dados_existentes = {}
+                        if not criar_novo:
+                            dados_existentes = buscar_dados_dinamicos_especificos(tabela_alvo, cpf, matricula_sel)
+
+                        cols_form = st.columns(2)
+                        idx = 0
+                        for col in colunas:
+                            if col not in ['id', 'cpf', 'matricula', 'nome', 'agrupamento']:
+                                with cols_form[idx % 2]:
+                                    val_inicial = dados_existentes.get(col, "")
+                                    if 'data' in col.lower():
+                                        # Tenta converter string SQL Date para objeto Date se necessário
+                                        val_date = val_inicial
+                                        if isinstance(val_date, str):
+                                             val_date = v.ValidadorData.sql_para_obj(val_date) 
+                                             if not val_date and val_inicial:
+                                                 try: val_date = datetime.strptime(val_inicial, '%Y-%m-%d').date()
+                                                 except: val_date = None
+                                        
+                                        dados_submit[col] = st.date_input(col.replace('_', ' ').capitalize(), value=val_date, format="DD/MM/YYYY")
+                                    else:
+                                        dados_submit[col] = st.text_input(col.replace('_', ' ').capitalize(), value=str(val_inicial) if val_inicial is not None else "")
+                                idx += 1
         elif tipo_insercao == "Contrato":
             c1, c2 = st.columns(2)
             dados_submit['matricula'] = c1.text_input("Matrícula")
@@ -733,26 +772,19 @@ def modal_inserir_dados(cpf, nome_cliente):
             c9, c10 = st.columns(2)
             dados_submit['data_inicio'] = c9.date_input("Data Início", value=None)
             dados_submit['data_final'] = c10.date_input("Data Final", value=None)
-        
-        elif tipo_insercao == "Telefone": 
-            dados_submit['valor'] = st.text_input("Novo Telefone", placeholder="(00) 00000-0000")
-        
-        elif tipo_insercao == "E-mail": 
-            dados_submit['valor'] = st.text_input("Novo E-mail")
-        
+        elif tipo_insercao == "Telefone": dados_submit['valor'] = st.text_input("Novo Telefone", placeholder="(00) 00000-0000")
+        elif tipo_insercao == "E-mail": dados_submit['valor'] = st.text_input("Novo E-mail")
         elif tipo_insercao == "Endereço":
             dados_submit['cep'] = st.text_input("CEP"); dados_submit['rua'] = st.text_input("Rua"); dados_submit['bairro'] = st.text_input("Bairro"); dados_submit['cidade'] = st.text_input("Cidade"); dados_submit['uf'] = st.text_input("UF", max_chars=2)
-        
         elif tipo_insercao == "Convênio (Cadastro)": 
+            # Alteração: Uso de Selectbox com base na tabela tipo_convenio
             lista_todos_convenios = listar_tipos_convenio_disponiveis()
             dados_submit['valor'] = st.selectbox("Nome do Convênio", options=["(Selecione)"] + lista_todos_convenios)
         
         if st.form_submit_button("✅ Salvar Inclusão"):
-            # Validações
-            if tipo_insercao == "Convênio (Cadastro)" and dados_submit.get('valor') == "(Selecione)":
+            # Validação simples para o selectbox
+            if tipo_insercao == "Convênio (Cadastro)" and dados_submit['valor'] == "(Selecione)":
                 st.error("Selecione um convênio válido.")
-            elif tipo_insercao == "Dados de Convênio" and (not dados_submit.get('_tabela') or not dados_submit.get('cpf')):
-                st.error("Dados incompletos ou convênio não selecionado.")
             else:
                 tipo_envio = "DadosDinâmicos" if tipo_insercao == "Dados de Convênio" else tipo_insercao
                 status = inserir_dado_extra(tipo_envio, cpf, dados_submit)
