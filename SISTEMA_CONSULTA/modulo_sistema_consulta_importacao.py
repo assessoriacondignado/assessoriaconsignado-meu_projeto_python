@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
-import sys  # <--- Adicionado para corrigir o erro
+import sys 
 from datetime import datetime
 import time
 import uuid
@@ -357,7 +357,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 # --- INTERFACE ---
 
 def tela_importacao():
-    st.markdown("## 📥 Importar Dados (Enterprise Mode)")
+    # Removido Título principal a pedido
     
     tab_import, tab_config = st.tabs(["Importação", "Config"])
     
@@ -468,7 +468,7 @@ def tela_importacao():
                         st.rerun()
 
     with tab_config:
-        st.subheader("⚙️ Configurar Novo Tipo de Importação")
+        # Removido subheader "Configurar Novo Tipo de Importação" a pedido
         if 'config_editando_id' not in st.session_state:
             st.session_state['config_editando_id'] = None
             st.session_state['config_convenio'] = ""
@@ -515,6 +515,18 @@ def tela_importacao():
             for item in lista_tipos:
                 with st.expander(f"📂 {item[1]}"):
                     st.write(f"**Tabela:** {item[2]}")
+                    
+                    # --- NOVO: Visualização das Colunas Selecionadas ---
+                    try:
+                        cols_salvas = json.loads(item[3]) if item[3] else []
+                        if cols_salvas:
+                            st.multiselect("Colunas Selecionadas:", options=cols_salvas, default=cols_salvas, disabled=True, key=f"view_cols_{item[0]}")
+                        else:
+                            st.caption("Nenhuma coluna específica configurada.")
+                    except:
+                        st.caption("Erro ao ler dados das colunas.")
+                    # ---------------------------------------------------
+
                     if st.button("🗑️ Excluir", key=f"del_{item[0]}"):
                         excluir_tipo_importacao(item[0]); st.rerun()
 
