@@ -427,9 +427,14 @@ def tela_importacao():
                 
                 if colunas_permitidas:
                     for col_tec in colunas_permitidas:
-                        nome_visual = ALIAS_INVERSO.get(col_tec, col_tec)
+                        # --- CORREÇÃO APLICADA: Converte visual para técnico ---
+                        # Se o valor salvo for um alias visual (ex: "CPF (Obrigatório)"), converte para "cpf"
+                        col_tecnica_real = CAMPOS_SISTEMA_ALIAS.get(col_tec, col_tec)
+                        
+                        nome_visual = ALIAS_INVERSO.get(col_tecnica_real, col_tecnica_real)
                         opcoes_display.append(nome_visual)
-                        mapa_display_to_tecnico[nome_visual] = col_tec
+                        mapa_display_to_tecnico[nome_visual] = col_tecnica_real
+                        # --------------------------------------------------------
                 else:
                     opcoes_display = ["(Selecione)"] + list(CAMPOS_SISTEMA_ALIAS.keys())
                     mapa_display_to_tecnico = CAMPOS_SISTEMA_ALIAS
@@ -516,7 +521,7 @@ def tela_importacao():
                 with st.expander(f"📂 {item[1]}"):
                     st.write(f"**Tabela:** {item[2]}")
                     
-                    # --- NOVO: Visualização das Colunas Selecionadas ---
+                    # --- Visualização das Colunas Selecionadas ---
                     try:
                         cols_salvas = json.loads(item[3]) if item[3] else []
                         if cols_salvas:
