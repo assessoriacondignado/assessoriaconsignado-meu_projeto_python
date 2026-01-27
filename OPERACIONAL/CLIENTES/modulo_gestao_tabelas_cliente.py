@@ -8,7 +8,7 @@ import time
 import contextlib
 
 # ==============================================================================
-# 0. CONFIGURAÇÃO DE CAMINHOS
+# 0. CONFIGURAÇÃO DE CAMINHOS modulo_gestao_tabelas_clientes
 # ==============================================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -34,8 +34,8 @@ TABELAS_READ_ONLY = [
     'cliente.extrato_carteira_por_produto'
 ]
 
-# Schemas permitidos para visualização neste módulo
-SCHEMAS_PERMITIDOS = ('admin', 'cliente')
+# (AJUSTE) Schemas de sistema que devem ser ocultados. O restante aparecerá livremente.
+SCHEMAS_SISTEMA = ('information_schema', 'pg_catalog', 'pg_toast')
 
 # ==============================================================================
 # 2. CONEXÃO BLINDADA
@@ -76,17 +76,19 @@ def get_conn():
 # ==============================================================================
 
 def listar_schemas_filtrados():
-    """Retorna apenas os schemas definidos em SCHEMAS_PERMITIDOS"""
+    """Retorna TODOS os schemas, exceto os de sistema do Postgres"""
     with get_conn() as conn:
         if not conn: return []
         try:
             with conn.cursor() as cur:
-                cur.execute(f"""
+                # (AJUSTE) Query alterada para listar tudo que NÃO for de sistema
+                cur.execute("""
                     SELECT schema_name 
                     FROM information_schema.schemata 
-                    WHERE schema_name IN %s
+                    WHERE schema_name NOT IN %s
+                    AND schema_name NOT LIKE 'pg_temp_%%'
                     ORDER BY schema_name
-                """, (SCHEMAS_PERMITIDOS,))
+                """, (SCHEMAS_SISTEMA,))
                 return [r[0] for r in cur.fetchall()]
         except: return []
 
@@ -174,7 +176,7 @@ def app_tabelas():
     lista_sch = listar_schemas_filtrados()
     
     if not lista_sch:
-        st.warning("⚠️ Schemas 'admin' ou 'cliente' não encontrados. Verifique a conexão.")
+        st.warning("⚠️ Nenhum schema encontrado ou erro de conexão.")
         return
 
     # Tenta selecionar 'admin' por padrão
