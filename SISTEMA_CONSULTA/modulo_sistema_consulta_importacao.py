@@ -293,7 +293,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         
         # 2. SQL Transformação e Carga Final
         
-        # A) Dados Cadastrais (CPF como BIGINT) - CORREÇÃO DE DUPLICIDADE AQUI
+        # A) Dados Cadastrais (CPF como BIGINT)
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
             (cpf, nome, data_nascimento, identidade, sexo, nome_mae)
@@ -321,7 +321,8 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         """, (sessao_id,))
 
         # C) Contratos/Benefícios
-        if 'matricula' in df_staging.columns:
+        # --- CORREÇÃO: Só executa se a coluna matricula existir no DB ---
+        if 'matricula' in df_staging.columns and 'matricula' in cols_reais_db:
             cur.execute(f"""
                 INSERT INTO sistema_consulta.sistema_consulta_contrato
                 (cpf, matricula, convenio, numero_contrato, valor_parcela)
@@ -337,6 +338,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                   AND regexp_replace(matricula, '[^0-9]', '', 'g') <> ''
                 ON CONFLICT DO NOTHING;
             """, (sessao_id,))
+        # ----------------------------------------------------------------
 
         # D) Telefones
         cur.execute(f"""
