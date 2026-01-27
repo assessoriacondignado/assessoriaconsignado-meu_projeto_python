@@ -30,15 +30,16 @@ except ImportError:
     v = None
 
 # ==============================================================================
-# 1. CONEXÃO BLINDADA (Connection Pool)
+# 1. CONEXÃO BLINDADA (Connection Pool + Auto-Recovery)
 # ==============================================================================
 
 @st.cache_resource
 def get_pool():
     if not conexao: return None
     try:
-        return psycopg2.pool.SimpleConnectionPool(
-            minconn=1, maxconn=10, 
+        # [ATUALIZADO] ThreadedConnectionPool para maior capacidade e segurança em threads
+        return psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=30, 
             host=conexao.host, port=conexao.port,
             database=conexao.database, user=conexao.user, password=conexao.password,
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
@@ -49,28 +50,71 @@ def get_pool():
 
 @contextlib.contextmanager
 def get_conn():
+    """
+    Gerenciador de contexto robusto com AUTO-RECOVERY.
+    Se o pool estiver cheio ou quebrado, ele reinicia automaticamente.
+    """
     pool_obj = get_pool()
     if not pool_obj:
         yield None
         return
     
-    conn = pool_obj.getconn()
+    conn = None
     try:
-        conn.rollback() # Health check
-        yield conn
-        pool_obj.putconn(conn)
-    except (psycopg2.InterfaceError, psycopg2.OperationalError):
-        try: pool_obj.putconn(conn, close=True)
-        except: pass
+        # Tenta pegar conexão
         try:
             conn = pool_obj.getconn()
-            yield conn
-            pool_obj.putconn(conn)
-        except Exception:
-            yield None
+        except (psycopg2.pool.PoolError, IndexError):
+            # Se der erro de pool cheio, limpa e recria
+            st.warning("⚠️ Pool de conexões reiniciado (Auto-Recovery)...")
+            get_pool.clear()
+            pool_obj = get_pool()
+            conn = pool_obj.getconn()
+
+        # Health Check (Verifica se a conexão está viva)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.DatabaseError):
+            # Conexão morta, descarta e tenta outra
+            if conn:
+                try: pool_obj.putconn(conn, close=True)
+                except: pass
+            conn = pool_obj.getconn()
+
+        yield conn
+
     except Exception as e:
-        pool_obj.putconn(conn)
-        raise e
+        st.error(f"Erro de Conexão: {e}")
+        if conn:
+            try: pool_obj.putconn(conn, close=True)
+            except: pass
+        yield None
+    finally:
+        if conn:
+            try: pool_obj.putconn(conn)
+            except: pass
+
+def ler_dados_seguro(query, params=None):
+    """
+    Executa leituras no banco com retentativa automática (Retry Logic)
+    """
+    max_tentativas = 3
+    for i in range(max_tentativas):
+        try:
+            with get_conn() as conn:
+                if not conn: return pd.DataFrame()
+                if params:
+                    return pd.read_sql(query, conn, params=tuple(params))
+                else:
+                    return pd.read_sql(query, conn)
+        except Exception as e:
+            time.sleep(0.5)
+            if i == max_tentativas - 1:
+                st.error(f"Erro ao ler dados: {e}")
+                return pd.DataFrame()
+            continue
+    return pd.DataFrame()
 
 # --- FUNÇÕES AUXILIARES ---
 
@@ -82,28 +126,20 @@ def limpar_formatacao_texto(texto):
     if not texto: return ""
     return str(texto).replace('*', '').strip()
 
-# --- FUNÇÕES DE BANCO DE DADOS ---
+# --- FUNÇÕES DE BANCO DE DADOS (CRUD ATUALIZADO) ---
 
 def listar_permissoes_nivel():
-    with get_conn() as conn:
-        if not conn: return pd.DataFrame()
-        try:
-            return pd.read_sql("SELECT id, nivel FROM permissão.permissão_grupo_nivel ORDER BY id", conn)
-        except: return pd.DataFrame()
+    return ler_dados_seguro("SELECT id, nivel FROM permissão.permissão_grupo_nivel ORDER BY id")
 
 def buscar_usuario_por_id(id_user):
-    with get_conn() as conn:
-        if not conn: return None
-        try:
-            df = pd.read_sql(f"SELECT * FROM clientes_usuarios WHERE id = {id_user}", conn)
-            if not df.empty: return df.iloc[0]
-            return None
-        except: return None
+    df = ler_dados_seguro(f"SELECT * FROM clientes_usuarios WHERE id = {id_user}")
+    if not df.empty: return df.iloc[0]
+    return None
 
 def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
     # Trata CPF para BigInt
     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
-    if not cpf_val: cpf_val = 0 # Fallback
+    if not cpf_val: cpf_val = 0
 
     with get_conn() as conn:
         if not conn: return None
@@ -122,7 +158,7 @@ def salvar_usuario_novo(nome, email, cpf, tel, senha, nivel, ativo):
             conn.commit()
             return nid
         except Exception as e:
-            print(e)
+            st.error(f"Erro ao salvar: {e}")
             return None
 
 def atualizar_usuario_existente(id_user, nome, email, nivel, senha, ativo, cpf=None, tel=None):
@@ -130,7 +166,7 @@ def atualizar_usuario_existente(id_user, nome, email, nivel, senha, ativo, cpf=N
         if not conn: return False
         try:
             with conn.cursor() as cur:
-                # Se CPF foi passado, atualiza também
+                # Prepara valor do CPF
                 if cpf is not None:
                     cpf_val = v.ValidadorDocumentos.cpf_para_bigint(cpf) if v else 0
                     if not cpf_val: cpf_val = 0
@@ -143,7 +179,7 @@ def atualizar_usuario_existente(id_user, nome, email, nivel, senha, ativo, cpf=N
                         cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, ativo=%s, cpf=%s, telefone=%s WHERE id=%s", 
                                     (nome, email, nivel, ativo, cpf_val, tel, id_user))
                 else:
-                    # Modo compatibilidade legado (sem atualizar CPF)
+                    # Modo legado
                     if senha:
                         senha_f = hash_senha(senha)
                         cur.execute("UPDATE clientes_usuarios SET nome=%s, email=%s, nivel=%s, senha=%s, ativo=%s WHERE id=%s", 
@@ -154,7 +190,7 @@ def atualizar_usuario_existente(id_user, nome, email, nivel, senha, ativo, cpf=N
             conn.commit()
             return True
         except Exception as e:
-            print(e)
+            st.error(f"Erro ao atualizar: {e}")
             return False
 
 # --- FUNÇÃO PRINCIPAL DO MÓDULO ---
@@ -173,26 +209,16 @@ def app_usuario():
             st.session_state['view_usuario'] = 'novo'
             st.rerun()
 
-        with get_conn() as conn:
-            if not conn:
-                st.error("Erro de conexão.")
-                return
-
-            sql_u = "SELECT id, nome, email, nivel, ativo FROM clientes_usuarios WHERE 1=1"
-            params = []
-            if busca_user: 
-                sql_u += " AND (nome ILIKE %s OR email ILIKE %s)"
-                params = [f"%{busca_user}%", f"%{busca_user}%"]
-            sql_u += " ORDER BY id DESC"
-            
-            try:
-                if params:
-                    df_users = pd.read_sql(sql_u, conn, params=tuple(params))
-                else:
-                    df_users = pd.read_sql(sql_u, conn)
-            except Exception as e:
-                st.error(f"Erro na consulta: {e}")
-                df_users = pd.DataFrame()
+        # Montagem da Query de Listagem
+        sql_u = "SELECT id, nome, email, nivel, ativo FROM clientes_usuarios WHERE 1=1"
+        params = []
+        if busca_user: 
+            sql_u += " AND (nome ILIKE %s OR email ILIKE %s)"
+            params = [f"%{busca_user}%", f"%{busca_user}%"]
+        sql_u += " ORDER BY id DESC"
+        
+        # [ALTERAÇÃO] Uso da leitura segura
+        df_users = ler_dados_seguro(sql_u, params)
 
         # --- Tabela Visual ---
         if not df_users.empty:
@@ -305,7 +331,4 @@ def app_usuario():
                 st.rerun()
 
 if __name__ == "__main__":
-    if get_pool():
-        app_usuario()
-    else:
-        st.error("Erro crítico de conexão.")
+    app_usuario()
