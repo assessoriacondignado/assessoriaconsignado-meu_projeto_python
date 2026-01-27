@@ -357,7 +357,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 # --- INTERFACE ---
 
 def tela_importacao():
-    # Removido Título principal a pedido
     
     tab_import, tab_config = st.tabs(["Importação", "Config"])
     
@@ -427,14 +426,12 @@ def tela_importacao():
                 
                 if colunas_permitidas:
                     for col_tec in colunas_permitidas:
-                        # --- CORREÇÃO APLICADA: Converte visual para técnico ---
                         # Se o valor salvo for um alias visual (ex: "CPF (Obrigatório)"), converte para "cpf"
                         col_tecnica_real = CAMPOS_SISTEMA_ALIAS.get(col_tec, col_tec)
                         
                         nome_visual = ALIAS_INVERSO.get(col_tecnica_real, col_tecnica_real)
                         opcoes_display.append(nome_visual)
                         mapa_display_to_tecnico[nome_visual] = col_tecnica_real
-                        # --------------------------------------------------------
                 else:
                     opcoes_display = ["(Selecione)"] + list(CAMPOS_SISTEMA_ALIAS.keys())
                     mapa_display_to_tecnico = CAMPOS_SISTEMA_ALIAS
@@ -473,7 +470,6 @@ def tela_importacao():
                         st.rerun()
 
     with tab_config:
-        # Removido subheader "Configurar Novo Tipo de Importação" a pedido
         if 'config_editando_id' not in st.session_state:
             st.session_state['config_editando_id'] = None
             st.session_state['config_convenio'] = ""
@@ -481,6 +477,11 @@ def tela_importacao():
             st.session_state['config_colunas'] = ["cpf", "nome"]
 
         lista_tabelas = listar_tabelas_sistema()
+
+        # Texto do botão muda dependendo se está editando ou criando
+        lbl_btn = "💾 Salvar Configuração"
+        if st.session_state['config_editando_id']:
+            lbl_btn = "💾 Atualizar Configuração"
 
         with st.form("form_config_importacao"):
             conf_convenio = st.text_input("Nome do Convênio (Tipo)", value=st.session_state['config_convenio'])
@@ -504,14 +505,39 @@ def tela_importacao():
             default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_colunas]
             conf_colunas = st.multiselect("Colunas da Tabela", options=opcoes_colunas, default=default_opts)
             
-            submitted = st.form_submit_button("💾 Salvar Configuração")
+            submitted = st.form_submit_button(lbl_btn)
+            
             if submitted:
                 if not conf_convenio or not conf_planilha:
                     st.error("Campos obrigatórios.")
                 else:
                     json_colunas = json.dumps(conf_colunas)
-                    if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
-                        st.success("Salvo!"); st.rerun()
+                    
+                    # --- Lógica de Salvar / Atualizar ---
+                    if st.session_state['config_editando_id']:
+                        # Atualiza existente
+                        if atualizar_tipo_importacao(st.session_state['config_editando_id'], conf_convenio, conf_planilha, json_colunas):
+                            st.success("Configuração atualizada com sucesso!")
+                            # Limpa edição
+                            st.session_state['config_editando_id'] = None
+                            st.session_state['config_convenio'] = ""
+                            st.session_state['config_planilha'] = ""
+                            st.session_state['config_colunas'] = ["cpf", "nome"]
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Erro ao atualizar.")
+                    else:
+                        # Cria novo
+                        if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
+                            st.success("Configuração salva!")
+                            st.session_state['config_convenio'] = ""
+                            st.session_state['config_planilha'] = ""
+                            st.session_state['config_colunas'] = ["cpf", "nome"]
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Erro ao salvar.")
 
         st.divider()
         st.markdown("#### Configurações Existentes")
@@ -521,7 +547,6 @@ def tela_importacao():
                 with st.expander(f"📂 {item[1]}"):
                     st.write(f"**Tabela:** {item[2]}")
                     
-                    # --- Visualização das Colunas Selecionadas ---
                     try:
                         cols_salvas = json.loads(item[3]) if item[3] else []
                         if cols_salvas:
@@ -530,10 +555,24 @@ def tela_importacao():
                             st.caption("Nenhuma coluna específica configurada.")
                     except:
                         st.caption("Erro ao ler dados das colunas.")
-                    # ---------------------------------------------------
 
-                    if st.button("🗑️ Excluir", key=f"del_{item[0]}"):
-                        excluir_tipo_importacao(item[0]); st.rerun()
+                    # --- BOTÕES DE AÇÃO (EXCLUIR E EDITAR) ---
+                    c_del, c_edit = st.columns([1, 5])
+                    with c_del:
+                        if st.button("🗑️ Excluir", key=f"del_{item[0]}"):
+                            excluir_tipo_importacao(item[0])
+                            st.rerun()
+                    with c_edit:
+                        if st.button("✏️ Editar", key=f"edit_{item[0]}"):
+                            # Carrega dados para o formulário
+                            st.session_state['config_editando_id'] = item[0]
+                            st.session_state['config_convenio'] = item[1]
+                            st.session_state['config_planilha'] = item[2]
+                            try:
+                                st.session_state['config_colunas'] = json.loads(item[3])
+                            except:
+                                st.session_state['config_colunas'] = []
+                            st.rerun()
 
 if __name__ == "__main__":
     tela_importacao()
