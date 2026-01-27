@@ -267,10 +267,16 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 
     try:
         cur = conn.cursor()
+        
+        # --- ATUALIZAÇÃO: Verifica quais colunas REALMENTE existem no banco ---
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'sistema_consulta' AND table_name = 'importacao_staging'")
+        cols_reais_db = {r[0] for r in cur.fetchall()}
+        # ----------------------------------------------------------------------
+
         csv_buffer = io.StringIO()
         
-        # Filtra apenas colunas que existem na tabela staging real do banco
-        cols_final = [c for c in cols_staging_esperadas if c in df_staging.columns]
+        # Filtra apenas colunas que existem na tabela staging real do banco E no DataFrame
+        cols_final = [c for c in cols_staging_esperadas if c in df_staging.columns and c in cols_reais_db]
         
         df_staging[cols_final].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
         csv_buffer.seek(0)
