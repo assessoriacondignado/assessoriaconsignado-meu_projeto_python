@@ -21,9 +21,9 @@ try:
 except ImportError:
     modulo_cadastro_cliente = None
 
-# 2. Tabelas / Gestão (Arquivo Físico: modulo_gestao_tabelas_clientes.py)
+# 2. Tabelas / Gestão (Arquivo Físico: modulo_gestao_tabelas_cliente.py)
 try:
-    import modulo_gestao_tabelas_clientes as modulo_gestao_tabelas_cliente
+    import modulo_gestao_tabelas_cliente as modulo_gestao_tabelas_cliente
 except ImportError:
     modulo_gestao_tabelas_cliente = None
 
@@ -64,7 +64,7 @@ except: modulo_parametros_cliente = None
 
 # --- 3. FUNÇÃO PRINCIPAL DA TELA ---
 def app_clientes():
-    st.markdown("## 👥 Central de Clientes")
+    st.markdown("## 👥 Central de Cliente")
 
     # --- DEFINIÇÃO DE ABAS FIXAS ---
     # Ordem solicitada: Cadastro -> Importação -> Relatórios -> Tabelas -> Usuários -> Regras
@@ -119,7 +119,7 @@ def app_clientes():
             elif hasattr(modulo_gestao_tabelas_cliente, 'app_planilhas'):
                 modulo_gestao_tabelas_cliente.app_planilhas()
         else:
-            st.error("⚠️ Módulo 'Tabelas' (modulo_gestao_tabelas_clientes.py) não encontrado.")
+            st.error("⚠️ Módulo 'Tabelas' (modulo_gestao_tabelas_cliente.py) não encontrado.")
 
     # 5. USUÁRIOS
     with t_usuarios:
