@@ -24,10 +24,10 @@ except ImportError as e:
     modulo_cadastro_cliente = None
     erros_importacao.append(f"Cadastro: {e}")
 
-# 2. Tabelas / Gestão (modulo_sistema_consulta_planilhas.py)
+# 2. Tabelas / Gestão (modulo_gestao_tabelas_clientes.py)
 try:
-    # Usamos um alias para manter a lógica, mas apontamos para o arquivo correto
-    import modulo_sistema_consulta_planilhas as modulo_gestao_tabelas_cliente
+    # [AJUSTE] Apontando para o arquivo correto
+    import modulo_gestao_tabelas_clientes as modulo_gestao_tabelas_cliente
 except ImportError as e:
     modulo_gestao_tabelas_cliente = None
     # erros_importacao.append(f"Tabelas: {e}")
@@ -66,7 +66,7 @@ try:
 except ImportError:
     modulo_permissoes_cliente = None
 
-# [CORREÇÃO] 8. Relatórios (modulo_relatorio_cliente.py)
+# 8. Relatórios (modulo_relatorio_cliente.py)
 try:
     import modulo_relatorio_cliente
 except ImportError as e:
@@ -94,7 +94,7 @@ def app_clientes():
     if modulo_gestao_tabelas_cliente:   mapa_abas["📊 Tabelas (Admin)"] = modulo_gestao_tabelas_cliente
     if modulo_financeiro_cliente:       mapa_abas["💰 Financeiro"] = modulo_financeiro_cliente
     
-    # [CORREÇÃO] Aba Relatórios Conectada ao Módulo Correto
+    # Aba Relatórios Conectada ao Módulo Correto
     if modulo_relatorio_cliente:        mapa_abas["📈 Relatórios"] = modulo_relatorio_cliente
     
     # Configurações e Admin
@@ -133,9 +133,8 @@ def app_clientes():
                 elif nome_aba == "💰 Financeiro":
                     if hasattr(modulo, 'app_financeiro'): modulo.app_financeiro()
 
-                # 5. RELATÓRIOS (Atualizado)
+                # 5. RELATÓRIOS
                 elif nome_aba == "📈 Relatórios":
-                    # [CORREÇÃO] Chamada da função app_relatorios dentro do módulo modulo_relatorio_cliente
                     if hasattr(modulo, 'app_relatorios'): modulo.app_relatorios()
                     else: st.warning(f"Função 'app_relatorios' não encontrada em {modulo.__name__}.")
 
