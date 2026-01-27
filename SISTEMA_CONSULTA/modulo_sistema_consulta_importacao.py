@@ -242,6 +242,9 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                               'nome_pai', 'campanhas', 'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 
                               'bairro', 'cidade', 'uf', 'matricula', 'numero_contrato', 'valor_parcela']
     
+    # Lista de colunas que devem ser tratadas como data
+    COLUNAS_DATA = ['data_nascimento', 'data_admissao', 'data_abertura_empresa', 'data_inicio_emprego']
+
     # Adiciona colunas extras do mapeamento se houver
     for col_db in mapeamento_usuario.keys():
         if col_db not in cols_staging_esperadas: cols_staging_esperadas.append(col_db)
@@ -256,8 +259,15 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         col_excel = mapeamento_usuario.get(col_sys)
         if col_excel:
             serie = df.loc[df.index, col_excel]
-            # Limpeza básica de texto
-            df_staging[col_sys] = serie.apply(lambda x: str(x).strip() if pd.notnull(x) else None)
+            
+            # --- CORREÇÃO APLICADA: Tratamento de Datas ---
+            if col_sys in COLUNAS_DATA:
+                # Converte para objeto date e depois para string YYYY-MM-DD
+                df_staging[col_sys] = serie.apply(lambda x: converter_data_iso(x))
+                df_staging[col_sys] = df_staging[col_sys].apply(lambda x: x.strftime('%Y-%m-%d') if x else None)
+            else:
+                # Limpeza básica de texto para outros campos
+                df_staging[col_sys] = serie.apply(lambda x: str(x).strip() if pd.notnull(x) else None)
         else:
             if col_sys not in df_staging.columns: df_staging[col_sys] = None
 
@@ -268,11 +278,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     try:
         cur = conn.cursor()
         
-        # --- ATUALIZAÇÃO: Verifica quais colunas REALMENTE existem no banco ---
+        # --- Verifica quais colunas REALMENTE existem no banco ---
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'sistema_consulta' AND table_name = 'importacao_staging'")
         cols_reais_db = {r[0] for r in cur.fetchall()}
-        # ----------------------------------------------------------------------
-
+        
         csv_buffer = io.StringIO()
         
         # Filtra apenas colunas que existem na tabela staging real do banco E no DataFrame
@@ -284,14 +293,14 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         # 1. Carga Rápida (COPY)
         cur.copy_expert(f"COPY sistema_consulta.importacao_staging ({','.join(cols_final)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
         
-        # 2. SQL Transformação e Carga Final (AQUI ESTÁ A OTIMIZAÇÃO BIGINT)
+        # 2. SQL Transformação e Carga Final
         
         # A) Dados Cadastrais (CPF como BIGINT)
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
             (cpf, nome, data_nascimento, identidade, sexo, nome_mae)
             SELECT DISTINCT
-                CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT), -- Converte para BIGINT
+                CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
                 UPPER(nome),
                 CAST(data_nascimento AS DATE),
                 identidade,
@@ -313,14 +322,14 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             ON CONFLICT DO NOTHING;
         """, (sessao_id,))
 
-        # C) Contratos/Benefícios (Se houver matricula mapeada)
+        # C) Contratos/Benefícios
         if 'matricula' in df_staging.columns:
             cur.execute(f"""
                 INSERT INTO sistema_consulta.sistema_consulta_contrato
                 (cpf, matricula, convenio, numero_contrato, valor_parcela)
                 SELECT DISTINCT
                     CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
-                    CAST(NULLIF(regexp_replace(matricula, '[^0-9]', '', 'g'), '') AS BIGINT), -- NB como BIGINT
+                    CAST(NULLIF(regexp_replace(matricula, '[^0-9]', '', 'g'), '') AS BIGINT),
                     convenio,
                     numero_contrato,
                     CAST(REPLACE(REPLACE(valor_parcela, '.', ''), ',', '.') AS NUMERIC)
@@ -331,14 +340,14 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                 ON CONFLICT DO NOTHING;
             """, (sessao_id,))
 
-        # D) Telefones (Vincula ao CPF BIGINT)
+        # D) Telefones
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
             SELECT DISTINCT 
                 CAST(NULLIF(regexp_replace(s.cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
                 t.tel
             FROM sistema_consulta.importacao_staging s,
-            LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3)) AS t(tel) -- Ajuste conforme colunas reais
+            LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3)) AS t(tel)
             WHERE s.sessao_id = %s AND t.tel IS NOT NULL
             ON CONFLICT DO NOTHING;
         """, (sessao_id,))
@@ -351,7 +360,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         cur.execute("DELETE FROM sistema_consulta.importacao_staging WHERE sessao_id = %s", (sessao_id,))
         conn.commit()
         
-        return qtd_total, 0, 0, [] # Retorna total processado (simplificado)
+        return qtd_total, 0, 0, [] 
 
     except Exception as e:
         conn.rollback()
@@ -432,9 +441,7 @@ def tela_importacao():
                 
                 if colunas_permitidas:
                     for col_tec in colunas_permitidas:
-                        # Se o valor salvo for um alias visual (ex: "CPF (Obrigatório)"), converte para "cpf"
                         col_tecnica_real = CAMPOS_SISTEMA_ALIAS.get(col_tec, col_tec)
-                        
                         nome_visual = ALIAS_INVERSO.get(col_tecnica_real, col_tecnica_real)
                         opcoes_display.append(nome_visual)
                         mapa_display_to_tecnico[nome_visual] = col_tecnica_real
@@ -484,7 +491,6 @@ def tela_importacao():
 
         lista_tabelas = listar_tabelas_sistema()
 
-        # Texto do botão muda dependendo se está editando ou criando
         lbl_btn = "💾 Salvar Configuração"
         if st.session_state['config_editando_id']:
             lbl_btn = "💾 Atualizar Configuração"
@@ -519,12 +525,9 @@ def tela_importacao():
                 else:
                     json_colunas = json.dumps(conf_colunas)
                     
-                    # --- Lógica de Salvar / Atualizar ---
                     if st.session_state['config_editando_id']:
-                        # Atualiza existente
                         if atualizar_tipo_importacao(st.session_state['config_editando_id'], conf_convenio, conf_planilha, json_colunas):
                             st.success("Configuração atualizada com sucesso!")
-                            # Limpa edição
                             st.session_state['config_editando_id'] = None
                             st.session_state['config_convenio'] = ""
                             st.session_state['config_planilha'] = ""
@@ -534,7 +537,6 @@ def tela_importacao():
                         else:
                             st.error("Erro ao atualizar.")
                     else:
-                        # Cria novo
                         if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
                             st.success("Configuração salva!")
                             st.session_state['config_convenio'] = ""
@@ -562,7 +564,6 @@ def tela_importacao():
                     except:
                         st.caption("Erro ao ler dados das colunas.")
 
-                    # --- BOTÕES DE AÇÃO (EXCLUIR E EDITAR) ---
                     c_del, c_edit = st.columns([1, 5])
                     with c_del:
                         if st.button("🗑️ Excluir", key=f"del_{item[0]}"):
@@ -570,7 +571,6 @@ def tela_importacao():
                             st.rerun()
                     with c_edit:
                         if st.button("✏️ Editar", key=f"edit_{item[0]}"):
-                            # Carrega dados para o formulário
                             st.session_state['config_editando_id'] = item[0]
                             st.session_state['config_convenio'] = item[1]
                             st.session_state['config_planilha'] = item[2]
