@@ -260,13 +260,11 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         if col_excel:
             serie = df.loc[df.index, col_excel]
             
-            # --- CORREÇÃO APLICADA: Tratamento de Datas ---
+            # Tratamento de Datas
             if col_sys in COLUNAS_DATA:
-                # Converte para objeto date e depois para string YYYY-MM-DD
                 df_staging[col_sys] = serie.apply(lambda x: converter_data_iso(x))
                 df_staging[col_sys] = df_staging[col_sys].apply(lambda x: x.strftime('%Y-%m-%d') if x else None)
             else:
-                # Limpeza básica de texto para outros campos
                 df_staging[col_sys] = serie.apply(lambda x: str(x).strip() if pd.notnull(x) else None)
         else:
             if col_sys not in df_staging.columns: df_staging[col_sys] = None
@@ -295,11 +293,11 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         
         # 2. SQL Transformação e Carga Final
         
-        # A) Dados Cadastrais (CPF como BIGINT)
+        # A) Dados Cadastrais (CPF como BIGINT) - CORREÇÃO DE DUPLICIDADE AQUI
         cur.execute(f"""
             INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
             (cpf, nome, data_nascimento, identidade, sexo, nome_mae)
-            SELECT DISTINCT
+            SELECT DISTINCT ON (CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT))
                 CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
                 UPPER(nome),
                 CAST(data_nascimento AS DATE),
