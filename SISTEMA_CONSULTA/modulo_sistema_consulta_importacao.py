@@ -321,24 +321,38 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         """, (sessao_id,))
 
         # C) Contratos/Benefícios
-        # --- CORREÇÃO: Só executa se a coluna matricula existir no DB ---
-        if 'matricula' in df_staging.columns and 'matricula' in cols_reais_db:
+        # --- CORREÇÃO: Dinâmico para Matrícula OU Convênio ---
+        tem_matricula = 'matricula' in cols_reais_db
+        tem_convenio = 'convenio' in cols_reais_db
+        tem_contrato = 'numero_contrato' in cols_reais_db
+        tem_valor = 'valor_parcela' in cols_reais_db
+
+        if tem_matricula or tem_convenio:
+            sel_matricula = "CAST(NULLIF(regexp_replace(matricula, '[^0-9]', '', 'g'), '') AS BIGINT)" if tem_matricula else "NULL"
+            sel_convenio = "convenio" if tem_convenio else "NULL"
+            sel_contrato = "numero_contrato" if tem_contrato else "NULL"
+            sel_valor = "CAST(REPLACE(REPLACE(valor_parcela, '.', ''), ',', '.') AS NUMERIC)" if tem_valor else "NULL"
+            
+            filtros_extras = ""
+            if tem_matricula:
+                filtros_extras += " AND regexp_replace(matricula, '[^0-9]', '', 'g') <> ''"
+            
             cur.execute(f"""
                 INSERT INTO sistema_consulta.sistema_consulta_contrato
                 (cpf, matricula, convenio, numero_contrato, valor_parcela)
                 SELECT DISTINCT
                     CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
-                    CAST(NULLIF(regexp_replace(matricula, '[^0-9]', '', 'g'), '') AS BIGINT),
-                    convenio,
-                    numero_contrato,
-                    CAST(REPLACE(REPLACE(valor_parcela, '.', ''), ',', '.') AS NUMERIC)
+                    {sel_matricula},
+                    {sel_convenio},
+                    {sel_contrato},
+                    {sel_valor}
                 FROM sistema_consulta.importacao_staging
                 WHERE sessao_id = %s 
                   AND regexp_replace(cpf, '[^0-9]', '', 'g') <> ''
-                  AND regexp_replace(matricula, '[^0-9]', '', 'g') <> ''
+                  {filtros_extras}
                 ON CONFLICT DO NOTHING;
             """, (sessao_id,))
-        # ----------------------------------------------------------------
+        # --------------------------------------------------------
 
         # D) Telefones
         cur.execute(f"""
