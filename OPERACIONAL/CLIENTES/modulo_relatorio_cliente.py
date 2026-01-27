@@ -5,10 +5,11 @@ from psycopg2 import pool
 import contextlib
 import os
 import sys
+import time
 from datetime import datetime, date
 
 # ==============================================================================
-# 0. CONFIGURAÇÃO E CONEXÃO (Padrão do Projeto)
+# 0. CONFIGURAÇÃO E CONEXÃO (Padrão Blindado)
 # ==============================================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -26,66 +27,118 @@ try:
 except ImportError:
     v = None
 
-# Cache da Conexão (Pool)
+# --- 1. CONEXÃO BLINDADA (Connection Pool + Retry Logic) ---
+
 @st.cache_resource
 def get_pool():
     if not conexao: return None
     try:
-        return psycopg2.pool.SimpleConnectionPool(
-            minconn=1, maxconn=20,
+        # [ATUALIZADO] ThreadedConnectionPool para maior robustez
+        return psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=30,
             host=conexao.host, port=conexao.port,
             database=conexao.database, user=conexao.user, password=conexao.password,
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5
         )
     except Exception as e:
-        st.error(f"Erro de Conexão: {e}")
+        st.error(f"Erro fatal no Pool de Conexão: {e}")
         return None
 
 @contextlib.contextmanager
 def get_db_connection():
+    """
+    Gerenciador de contexto robusto com AUTO-RECOVERY para Pool Esgotado.
+    """
     pool_obj = get_pool()
     if not pool_obj:
         yield None
         return
-    conn = pool_obj.getconn()
+    
+    conn = None
     try:
-        conn.rollback()
+        # Tenta obter conexão
+        try:
+            conn = pool_obj.getconn()
+        except (psycopg2.pool.PoolError, IndexError):
+            # Se pool estiver cheio/travado, reinicia
+            st.warning("⚠️ Pool de conexões esgotado. Reiniciando pool...")
+            get_pool.clear()
+            pool_obj = get_pool()
+            conn = pool_obj.getconn()
+
+        # Health Check
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.DatabaseError):
+            if conn:
+                try: pool_obj.putconn(conn, close=True)
+                except: pass
+            conn = pool_obj.getconn()
+
         yield conn
-        pool_obj.putconn(conn)
-    except Exception:
-        pool_obj.putconn(conn, close=True)
+
+    except Exception as e:
+        st.error(f"Falha na comunicação com o banco: {e}")
+        if conn:
+            try: pool_obj.putconn(conn, close=True)
+            except: pass
         yield None
+    finally:
+        if conn:
+            try: pool_obj.putconn(conn)
+            except: pass
+
+def ler_dados_seguro(query, params=None):
+    """
+    Executa pd.read_sql com sistema de retentativa automática (Retry)
+    """
+    max_tentativas = 3
+    for i in range(max_tentativas):
+        try:
+            with get_db_connection() as conn:
+                if not conn: return pd.DataFrame()
+                if params:
+                    return pd.read_sql(query, conn, params=tuple(params))
+                else:
+                    return pd.read_sql(query, conn)
+        except Exception as e:
+            msg = str(e)
+            if "SSL" in msg or "EOF" in msg or "terminating" in msg or "closed" in msg or "pool" in msg:
+                time.sleep(0.5)
+                if i == max_tentativas - 1:
+                    st.error(f"Erro de conexão persistente: {e}")
+                    return pd.DataFrame()
+                continue
+            else:
+                st.error(f"Erro SQL: {e}")
+                return pd.DataFrame()
+    return pd.DataFrame()
 
 # ==============================================================================
-# 1. FUNÇÕES AUXILIARES
+# 2. FUNÇÕES AUXILIARES E REGRAS
 # ==============================================================================
 
 def buscar_clientes_vinculados_grupo():
     """
     Busca clientes vinculados à mesma empresa ou grupo.
-    Regra: 
-    1. Se usuário tem vínculo direto, traz o cliente e outros com mesmo 'nome_empresa'.
-    2. Se não tem vínculo (Admin), traz todos.
     """
     id_usuario = st.session_state.get('usuario_id')
     
     # Query Base
-    base_sql = "SELECT id, nome, nome_empresa FROM admin.clientes WHERE status = 'ATIVO'"
+    base_sql = "SELECT id, nome, nome_empresa FROM admin.clientes WHERE status = 'ATIVO' ORDER BY nome"
     
+    # 1. Se for admin, retorna todos via leitura segura
+    nivel = st.session_state.get('usuario_nivel', '')
+    if 'admin' in nivel.lower() or not id_usuario:
+        return ler_dados_seguro(base_sql)
+            
+    # 2. Filtra por vinculo do usuário
+    # Precisamos ler todos primeiro ou fazer query especifica. 
+    # Para manter consistência com lógica anterior, buscamos o vinculo especifico.
     with get_db_connection() as conn:
         if not conn: return pd.DataFrame()
-        
-        # 1. Tenta achar vínculo direto
-        df_todos = pd.read_sql(base_sql + " ORDER BY nome", conn)
-        
-        # Se for admin (sem id_usuario na session ou flag admin), retorna todos
-        nivel = st.session_state.get('usuario_nivel', '')
-        if 'admin' in nivel.lower() or not id_usuario:
-            return df_todos
-            
-        # 2. Filtra por vinculo do usuário
         try:
-            # Busca qual cliente esse usuário representa
             cur = conn.cursor()
             cur.execute("SELECT id, nome_empresa FROM admin.clientes WHERE id_usuario_vinculo = %s LIMIT 1", (id_usuario,))
             res = cur.fetchone()
@@ -94,19 +147,24 @@ def buscar_clientes_vinculados_grupo():
                 meu_cli_id = res[0]
                 minha_empresa = res[1]
                 
-                # Se tiver empresa, traz todos da empresa. Se não, só ele mesmo.
+                # Usa ler_dados_seguro com filtro SQL direto para ser mais eficiente
                 if minha_empresa:
-                    return df_todos[df_todos['nome_empresa'] == minha_empresa]
+                    return ler_dados_seguro(
+                        "SELECT id, nome, nome_empresa FROM admin.clientes WHERE status = 'ATIVO' AND nome_empresa = %s ORDER BY nome", 
+                        [minha_empresa]
+                    )
                 else:
-                    return df_todos[df_todos['id'] == meu_cli_id]
+                    return ler_dados_seguro(
+                        "SELECT id, nome, nome_empresa FROM admin.clientes WHERE status = 'ATIVO' AND id = %s ORDER BY nome", 
+                        [meu_cli_id]
+                    )
             else:
-                # Usuário sem cliente vinculado vê vazio ou todos? (Assumindo vazio por segurança)
                 return pd.DataFrame(columns=['id', 'nome'])
         except:
-            return df_todos # Fallback
+            return ler_dados_seguro(base_sql) # Fallback
 
 # ==============================================================================
-# 2. FUNÇÕES DE BUSCA DE DADOS (QUERIES REAIS)
+# 3. CARREGAMENTO DE DADOS (USANDO LER_DADOS_SEGURO)
 # ==============================================================================
 
 def carregar_custos(id_cliente):
@@ -118,10 +176,7 @@ def carregar_custos(id_cliente):
         WHERE id_cliente = %s 
         ORDER BY nome_produto
     """
-    with get_db_connection() as conn:
-        if conn:
-            return pd.read_sql(sql, conn, params=(str(id_cliente),))
-    return pd.DataFrame()
+    return ler_dados_seguro(sql, [str(id_cliente)])
 
 def carregar_pedidos(id_cliente, filtros):
     base_sql = """
@@ -144,11 +199,7 @@ def carregar_pedidos(id_cliente, filtros):
         params.append(filtros['status'])
         
     base_sql += " ORDER BY data_criacao DESC"
-
-    with get_db_connection() as conn:
-        if conn:
-            return pd.read_sql(base_sql, conn, params=tuple(params))
-    return pd.DataFrame()
+    return ler_dados_seguro(base_sql, params)
 
 def carregar_tarefas(id_cliente, filtros):
     base_sql = """
@@ -173,11 +224,7 @@ def carregar_tarefas(id_cliente, filtros):
         params.append(filtros['status'])
 
     base_sql += " ORDER BY t.data_previsao DESC"
-
-    with get_db_connection() as conn:
-        if conn:
-            return pd.read_sql(base_sql, conn, params=tuple(params))
-    return pd.DataFrame()
+    return ler_dados_seguro(base_sql, params)
 
 def carregar_renovacao(id_cliente, filtros):
     base_sql = """
@@ -196,11 +243,7 @@ def carregar_renovacao(id_cliente, filtros):
         params.append(filtros['status'])
 
     base_sql += " ORDER BY rf.data_previsao DESC"
-
-    with get_db_connection() as conn:
-        if conn:
-            return pd.read_sql(base_sql, conn, params=tuple(params))
-    return pd.DataFrame()
+    return ler_dados_seguro(base_sql, params)
 
 def carregar_extrato(id_cliente, filtros):
     base_sql = """
@@ -225,18 +268,14 @@ def carregar_extrato(id_cliente, filtros):
         params.append(f"%{filtros['produto']}%")
         
     base_sql += " ORDER BY data_lancamento DESC"
-
-    with get_db_connection() as conn:
-        if conn:
-            return pd.read_sql(base_sql, conn, params=tuple(params))
-    return pd.DataFrame()
+    return ler_dados_seguro(base_sql, params)
 
 # ==============================================================================
-# 3. INTERFACE DO USUÁRIO
+# 4. INTERFACE DO USUÁRIO
 # ==============================================================================
 
 def app_relatorios():
-    # CSS Global para Botões e Tabelas
+    # CSS Global
     st.markdown("""
         <style>
         .stButton > button {
@@ -264,7 +303,6 @@ def app_relatorios():
     
     opcoes = {row['id']: f"{row['nome']} {(' - ' + row['nome_empresa']) if row['nome_empresa'] else ''}" for _, row in df_clientes.iterrows()}
     
-    # Default: primeiro da lista
     idx_default = 0
     
     id_cliente = col_sel.selectbox(
@@ -326,7 +364,6 @@ def app_relatorios():
     elif "Extrato" in tipo_relatorio:
         with st.expander("🛠️ Filtros e Visualização", expanded=True):
             c1, c2, c3 = st.columns(3)
-            # [ALTERAÇÃO] Formato de data ajustado na pesquisa (DD/MM/YYYY)
             filtros['data_inicio'] = c1.date_input("De:", value=date(date.today().year, 1, 1), key='filtro_dt_ini', format="DD/MM/YYYY")
             filtros['data_fim'] = c2.date_input("Até:", value=date.today(), key='filtro_dt_fim', format="DD/MM/YYYY")
             filtros['produto'] = c3.text_input("Produto/Motivo:", key='filtro_prod')
@@ -334,12 +371,10 @@ def app_relatorios():
             df_resultado = carregar_extrato(id_cliente, filtros)
             
             if not df_resultado.empty:
-                # Tratamento visual
                 st.dataframe(
                     df_resultado.style.format({
                         "Valor": "R$ {:.2f}", 
                         "Saldo Final": "R$ {:.2f}",
-                        # [ALTERAÇÃO] Garante formatação da data no extrato
                         "Data": lambda x: pd.to_datetime(x).strftime('%d/%m/%Y %H:%M') if pd.notnull(x) else ""
                     }),
                     use_container_width=True
@@ -347,23 +382,18 @@ def app_relatorios():
             else:
                 st.info("Nenhum lançamento no período.")
 
-    # --- EXIBIÇÃO PADRÃO E FORMATAÇÃO (EXCETO EXTRATO QUE JÁ MOSTROU) ---
+    # --- EXIBIÇÃO PADRÃO E FORMATAÇÃO ---
     if "Extrato" not in tipo_relatorio and not df_resultado.empty:
-        # Copia para formatação
         df_show = df_resultado.copy()
-        
         cols_para_formatar = df_show.columns.tolist()
         
         for col in cols_para_formatar:
-            # 1. Datas (Formatação Forçada para Garantir Exibição)
+            # 1. Datas
             if 'Data' in col or 'Previsão' in col:
                 try:
-                    # Converte para datetime primeiro para lidar com objetos mistos
                     df_show[col] = pd.to_datetime(df_show[col], errors='coerce')
-                    # Formata para string BR
                     df_show[col] = df_show[col].dt.strftime('%d/%m/%Y').fillna("")
-                except: 
-                    pass
+                except: pass
             
             # 2. Valores Financeiros
             if 'Valor' in col or 'Custo' in col or 'Saldo' in col:
@@ -378,8 +408,6 @@ def app_relatorios():
     
     elif "Extrato" not in tipo_relatorio:
         st.warning("Nenhum registro encontrado.")
-
-    # [ALTERAÇÃO] Removido bloco de Botão PDF
 
     # --- BOTÃO VOLTAR ---
     st.write("---")
