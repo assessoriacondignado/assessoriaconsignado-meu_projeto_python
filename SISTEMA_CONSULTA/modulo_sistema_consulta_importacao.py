@@ -3,15 +3,20 @@ import pandas as pd
 import psycopg2
 import os
 import sys 
-from datetime import datetime
+from datetime import datetime, date
 import time
 import uuid
 import io
 import json
 import re
 
+# Importa os validadores (Certifique-se que modulo_validadores.py está na pasta)
+try:
+    from modulo_validadores import ValidadorDocumentos, ValidadorContato, ValidadorData
+except ImportError:
+    st.error("ERRO CRÍTICO: modulo_validadores.py não encontrado.")
+
 # --- CONFIGURAÇÃO DE CAMINHOS ---
-# Garante que o Python encontre o arquivo conexao.py na pasta raiz
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -24,9 +29,11 @@ except ImportError:
 
 # --- CONFIGURAÇÕES ---
 PASTA_ARQUIVOS = os.path.join(current_dir, "ARQUIVOS_IMPORTADOS")
+PASTA_ERROS = os.path.join(PASTA_ARQUIVOS, "ERROS")
 os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
+os.makedirs(PASTA_ERROS, exist_ok=True)
 
-# --- ALIAS LEGADO (Mantido para compatibilidade visual) ---
+# --- ALIAS LEGADO ---
 CAMPOS_SISTEMA_ALIAS = {
     "CPF (Obrigatório)": "cpf", "Nome do Cliente": "nome", "RG": "identidade",
     "Data Nascimento": "data_nascimento", "Sexo": "sexo", "Nome da Mãe": "nome_mae",
@@ -42,30 +49,7 @@ for i in range(1, 11): CAMPOS_SISTEMA_ALIAS[f"Telefone {i}"] = f"telefone_{i}"
 for i in range(1, 4): CAMPOS_SISTEMA_ALIAS[f"E-mail {i}"] = f"email_{i}"
 ALIAS_INVERSO = {v: k for k, v in CAMPOS_SISTEMA_ALIAS.items()}
 
-# --- FUNÇÕES AUXILIARES ---
-def limpar_texto(valor):
-    if pd.isna(valor) or valor is None: return ""
-    return str(valor).strip()
-
-def limpar_formatar_cpf(valor):
-    if pd.isna(valor) or valor is None: return ""
-    limpo = ''.join(filter(str.isdigit, str(valor)))
-    if not limpo: return ""
-    return limpo.zfill(11)
-
-def limpar_formatar_telefone(valor):
-    if pd.isna(valor) or valor is None: return None
-    limpo = ''.join(filter(str.isdigit, str(valor)))
-    if len(limpo) == 11: return limpo
-    return None
-
-def converter_data_iso(valor):
-    if not valor or pd.isna(valor): return None
-    try: return datetime.strptime(str(valor), "%d/%m/%Y").date()
-    except:
-        try: return datetime.strptime(str(valor), "%Y-%m-%d").date()
-        except: return None
-
+# --- FUNÇÕES AUXILIARES DE DB ---
 def get_db_connection():
     if not conexao: return None
     try:
@@ -77,7 +61,251 @@ def get_db_connection():
         st.error(f"Erro de conexão: {e}")
         return None
 
-# --- FUNÇÕES DE METADADOS ---
+# --- FUNÇÕES DE IMPORTAÇÃO (REGRAS DE NEGÓCIO) ---
+
+def buscar_cpfs_existentes(lista_cpfs_bigint):
+    """Retorna um dicionário {cpf_bigint: {coluna: valor}} para verificar campos vazios."""
+    if not lista_cpfs_bigint: return {}
+    
+    conn = get_db_connection()
+    if not conn: return {}
+    
+    dados_existentes = {}
+    try:
+        with conn.cursor() as cur:
+            # Converte lista para string SQL segura
+            cpfs_str = ",".join(str(c) for c in lista_cpfs_bigint)
+            query = f"""
+                SELECT cpf, nome, identidade, data_nascimento, sexo, nome_mae, cnh, titulo_eleitoral
+                FROM sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
+                WHERE cpf IN ({cpfs_str})
+            """
+            cur.execute(query)
+            colunas = [desc[0] for desc in cur.description]
+            for row in cur.fetchall():
+                dados_existentes[row[0]] = dict(zip(colunas, row))
+    except Exception as e:
+        st.error(f"Erro ao buscar CPFs: {e}")
+    finally:
+        conn.close()
+    return dados_existentes
+
+def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabela_destino):
+    """
+    IMPORTAÇÃO VIA CÓDIGO (Python Logic)
+    1. Valida CPF.
+    2. Verifica Duplicados no Arquivo.
+    3. Verifica Existência no Banco.
+    4. Aplica regras: Novo -> Insert; Existente -> Update (se vazio).
+    """
+    conn = get_db_connection()
+    if not conn: return 0, 0, 0, []
+
+    sessao_id = str(uuid.uuid4())
+    
+    # Contadores
+    qtd_novos = 0
+    qtd_atualizados = 0
+    qtd_erros = 0
+    linhas_erro = [] # Lista de dicts para o relatório
+
+    # Preparar Dados
+    # Inverte o mapeamento para facilitar: {col_excel: col_sistema}
+    map_excel_sys = {v: k for k, v in mapeamento_usuario.items()}
+    
+    # Prepara lista de CPFs para consulta em lote (otimização)
+    cache_processamento = [] # Armazena dados pré-processados
+    cpfs_validos_lote = set()
+
+    # Verifica duplicidade no arquivo
+    cpfs_vistos_arquivo = set()
+
+    for idx, row in df.iterrows():
+        # Busca o CPF na coluna mapeada
+        col_cpf_excel = mapeamento_usuario.get('cpf')
+        raw_cpf = row.get(col_cpf_excel) if col_cpf_excel else None
+        
+        cpf_bigint = ValidadorDocumentos.cpf_para_bigint(raw_cpf)
+        
+        if not cpf_bigint:
+            qtd_erros += 1
+            linhas_erro.append({"linha": idx + 2, "erro": "CPF Inválido ou Ausente", "dados": str(row.to_dict())})
+            continue
+
+        if cpf_bigint in cpfs_vistos_arquivo:
+            qtd_erros += 1
+            linhas_erro.append({"linha": idx + 2, "erro": "CPF Duplicado no arquivo", "dados": str(raw_cpf)})
+            continue
+        
+        cpfs_vistos_arquivo.add(cpf_bigint)
+        cpfs_validos_lote.add(cpf_bigint)
+        
+        # Monta objeto de dados limpos
+        dados_limpos = {'cpf': cpf_bigint, 'idx_origem': idx}
+        
+        # Extrai outros campos simples
+        for campo_sys, col_excel in mapeamento_usuario.items():
+            if campo_sys == 'cpf': continue
+            valor = row.get(col_excel)
+            
+            # Tratamento de Datas
+            if 'data' in campo_sys:
+                dados_limpos[campo_sys] = ValidadorData.para_sql(valor)
+            else:
+                dados_limpos[campo_sys] = str(valor).strip() if pd.notnull(valor) and str(valor).strip() != '' else None
+
+        cache_processamento.append(dados_limpos)
+
+    # 2. Buscar Dados Existentes no Banco (Bulk Select)
+    # Retorna {cpf_bigint: {col_banco: valor, ...}}
+    db_cache_dados = buscar_cpfs_existentes(list(cpfs_validos_lote))
+
+    try:
+        cursor = conn.cursor()
+        
+        # Listas para Bulk Insert/Update
+        inserts_cadastro = []
+        updates_cadastro = [] # Lista de tuples (query, params)
+        
+        inserts_telefones = []
+        inserts_emails = []
+        
+        inserts_endereco = []
+        # updates_endereco não usado pois faremos UPSERT
+
+        # 3. Processamento Lógico
+        for item in cache_processamento:
+            cpf = item['cpf']
+            existe_no_db = cpf in db_cache_dados
+            dados_db = db_cache_dados.get(cpf, {})
+            
+            # --- A) DADOS CADASTRAIS ---
+            if not existe_no_db:
+                # NOVO REGISTRO
+                qtd_novos += 1
+                inserts_cadastro.append((
+                    cpf, item.get('nome'), item.get('data_nascimento'), item.get('identidade'), 
+                    item.get('sexo'), item.get('nome_mae'), item.get('cnh'), item.get('titulo_eleitoral')
+                ))
+                # Insere também no índice leve
+                cursor.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (cpf,))
+            else:
+                # ATUALIZAÇÃO (Somente campos vazios no DB)
+                campos_atualizar = {}
+                # Mapeamento campo_db -> campo_item
+                mapa_campos = {
+                    'nome': 'nome', 'data_nascimento': 'data_nascimento', 'identidade': 'identidade',
+                    'sexo': 'sexo', 'nome_mae': 'nome_mae', 'cnh': 'cnh', 'titulo_eleitoral': 'titulo_eleitoral'
+                }
+                
+                flag_atualizou = False
+                for campo_db, campo_item in mapa_campos.items():
+                    val_db = dados_db.get(campo_db)
+                    val_novo = item.get(campo_item)
+                    
+                    # Se DB é None ou Vazio E Novo tem valor -> Atualiza
+                    if (val_db is None or str(val_db).strip() == '') and (val_novo is not None):
+                        campos_atualizar[campo_db] = val_novo
+                        flag_atualizou = True
+                
+                if flag_atualizou:
+                    qtd_atualizados += 1
+                    # Monta query dinâmica de update
+                    set_clause = ", ".join([f"{k} = %s" for k in campos_atualizar.keys()])
+                    vals = list(campos_atualizar.values()) + [cpf]
+                    updates_cadastro.append((f"UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf SET {set_clause} WHERE cpf = %s", vals))
+
+            # --- B) TELEFONES ---
+            # Itera sobre todas as colunas telefone_1 a telefone_10 do item
+            for key, val in item.items():
+                if key.startswith('telefone_') and val:
+                    tel_limpo = ValidadorContato.telefone_para_sql(val)
+                    if tel_limpo:
+                        # Regra: Inserir se não existe. 
+                        inserts_telefones.append((cpf, tel_limpo))
+
+            # --- C) EMAILS ---
+            for key, val in item.items():
+                if key.startswith('email_') and val:
+                    if ValidadorContato.email_valido(val):
+                        inserts_emails.append((cpf, val))
+
+            # --- D) ENDEREÇO ---
+            # Se tem dados de endereço
+            tem_endereco = any(item.get(k) for k in ['rua', 'cep', 'bairro', 'cidade', 'uf'])
+            if tem_endereco:
+                # Regra: se o cpf já possuir o cep cadastrado, deve atualizar toda linha
+                inserts_endereco.append((
+                    cpf, item.get('cep'), item.get('rua'), item.get('bairro'), item.get('cidade'), item.get('uf'), item.get('complemento')
+                ))
+
+        # --- 4. EXECUTAR NO BANCO (COMMITS) ---
+        
+        # A) Cadastros Novos
+        if inserts_cadastro:
+            sql_insert = """
+                INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
+                (cpf, nome, data_nascimento, identidade, sexo, nome_mae, cnh, titulo_eleitoral)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (cpf) DO NOTHING
+            """
+            cursor.executemany(sql_insert, inserts_cadastro)
+        
+        # B) Atualizações Cadastrais
+        for query, params in updates_cadastro:
+            cursor.execute(query, params)
+
+        # C) Telefones
+        if inserts_telefones:
+            # Remove duplicatas da lista Python
+            inserts_telefones = list(set(inserts_telefones))
+            cursor.executemany("""
+                INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
+                VALUES (%s, %s) ON CONFLICT DO NOTHING
+            """, inserts_telefones)
+
+        # D) Emails
+        if inserts_emails:
+            inserts_emails = list(set(inserts_emails))
+            cursor.executemany("""
+                INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_email (cpf, email)
+                VALUES (%s, %s) ON CONFLICT DO NOTHING
+            """, inserts_emails)
+
+        # E) Endereços (Upsert)
+        if inserts_endereco:
+            cursor.executemany("""
+                INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
+                (cpf, cep, rua, bairro, cidade, uf, complemento)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (cpf) DO UPDATE SET
+                cep = EXCLUDED.cep, rua = EXCLUDED.rua, bairro = EXCLUDED.bairro,
+                cidade = EXCLUDED.cidade, uf = EXCLUDED.uf, complemento = EXCLUDED.complemento
+            """, inserts_endereco)
+
+        conn.commit()
+        
+        # --- 5. GERAÇÃO DE RELATÓRIO DE ERROS ---
+        path_erro = None
+        if linhas_erro:
+            df_erro = pd.DataFrame(linhas_erro)
+            nome_arq_erro = f"erros_{id_importacao_db}_{int(time.time())}.csv"
+            path_erro = os.path.join(PASTA_ERROS, nome_arq_erro)
+            df_erro.to_csv(path_erro, index=False, sep=';')
+        
+        # Atualiza Status Importação
+        atualizar_fim_importacao(id_importacao_db, qtd_novos, qtd_atualizados, qtd_erros, path_erro)
+
+        return qtd_novos, qtd_atualizados, qtd_erros, linhas_erro
+
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Erro Crítico no processamento: {e}")
+        return 0, 0, 0, [{'erro': str(e)}]
+    finally:
+        conn.close()
+
+# --- FUNÇÕES DE METADADOS E UI (MANTIDAS DO ORIGINAL) ---
 def listar_tabelas_sistema():
     conn = get_db_connection()
     if not conn: return []
@@ -99,7 +327,6 @@ def listar_colunas_tabela(nome_tabela_completo):
     except: return []
     finally: conn.close()
 
-# --- HISTÓRICO E CONFIG ---
 def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
     conn = get_db_connection()
     if not conn: return None
@@ -176,7 +403,9 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         if col_excel: return linha_dict.get(col_excel, '')
         return ''
     
-    cpf_visual = limpar_formatar_cpf(get_val_db('cpf'))
+    # Tratamento para visualização
+    val_cpf = get_val_db('cpf')
+    cpf_visual = ValidadorDocumentos.cpf_para_tela(val_cpf) if val_cpf else ""
     nome_visual = get_val_db('nome')
     st.markdown(f"## 👤 {nome_visual}")
     st.caption(f"CPF: {cpf_visual}")
@@ -189,9 +418,7 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
         c2.text_input("RG", value=get_val_db('identidade'), disabled=True)
         
         raw_nasc = get_val_db('data_nascimento')
-        val_nasc = str(raw_nasc)
-        dt_obj = converter_data_iso(raw_nasc)
-        if dt_obj: val_nasc = dt_obj.strftime("%d/%m/%Y")
+        val_nasc = ValidadorData.para_tela(ValidadorData.para_sql(raw_nasc))
         c3.text_input("Data Nasc.", value=val_nasc, disabled=True)
         
         c4, c5 = st.columns(2)
@@ -207,7 +434,7 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
             st.markdown("##### 📞 Telefones")
             for i in range(1, 11):
                 raw = get_val_db(f'telefone_{i}')
-                fmt = limpar_formatar_telefone(raw)
+                fmt = ValidadorContato.telefone_para_tela(ValidadorContato.telefone_para_sql(raw))
                 if fmt: st.text_input(f"Telefone {i}", value=fmt, disabled=True, key=f"amostra_tel_{i}")
         with c_convenio:
             st.markdown("##### 💼 Convênio")
@@ -216,175 +443,15 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
     
     with tab3:
         st.markdown("##### 🏠 Endereço")
-        st.text_input("CEP", value=get_val_db('cep'), disabled=True)
+        cep_fmt = ValidadorContato.cep_para_tela(ValidadorDocumentos.limpar_numero(get_val_db('cep')))
+        st.text_input("CEP", value=cep_fmt, disabled=True)
         st.text_input("Rua", value=get_val_db('rua'), disabled=True)
         st.text_input("Bairro", value=get_val_db('bairro'), disabled=True)
         c_cid, c_uf = st.columns([3, 1])
         c_cid.text_input("Cidade", value=get_val_db('cidade'), disabled=True)
         c_uf.text_input("UF", value=get_val_db('uf'), disabled=True)
 
-# --- PROCESSAMENTO OTIMIZADO (MOTOR ELT) ---
-
-def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabela_destino):
-    """
-    Versão Otimizada:
-    1. Carrega para Staging como Texto.
-    2. SQL converte para BIGINT e insere nas tabelas finais.
-    """
-    conn = get_db_connection()
-    if not conn: return 0, 0, 0, []
-
-    sessao_id = str(uuid.uuid4())
-    lista_erros = []
-    
-    # Prepara Staging DF
-    cols_staging_esperadas = ['sessao_id', 'cpf', 'nome', 'identidade', 'data_nascimento', 'sexo', 'nome_mae', 
-                              'nome_pai', 'campanhas', 'cnh', 'titulo_eleitoral', 'convenio', 'cep', 'rua', 
-                              'bairro', 'cidade', 'uf', 'matricula', 'numero_contrato', 'valor_parcela']
-    
-    # Lista de colunas que devem ser tratadas como data
-    COLUNAS_DATA = ['data_nascimento', 'data_admissao', 'data_abertura_empresa', 'data_inicio_emprego']
-
-    # Adiciona colunas extras do mapeamento se houver
-    for col_db in mapeamento_usuario.keys():
-        if col_db not in cols_staging_esperadas: cols_staging_esperadas.append(col_db)
-
-    df_staging = pd.DataFrame()
-    df_staging['sessao_id'] = [sessao_id] * len(df)
-
-    # Preenche Staging (Mantém como texto para velocidade, o SQL converte depois)
-    for col_sys in cols_staging_esperadas:
-        if col_sys == 'sessao_id': continue
-        
-        col_excel = mapeamento_usuario.get(col_sys)
-        if col_excel:
-            serie = df.loc[df.index, col_excel]
-            
-            # Tratamento de Datas
-            if col_sys in COLUNAS_DATA:
-                df_staging[col_sys] = serie.apply(lambda x: converter_data_iso(x))
-                df_staging[col_sys] = df_staging[col_sys].apply(lambda x: x.strftime('%Y-%m-%d') if x else None)
-            else:
-                df_staging[col_sys] = serie.apply(lambda x: str(x).strip() if pd.notnull(x) else None)
-        else:
-            if col_sys not in df_staging.columns: df_staging[col_sys] = None
-
-    if df_staging.empty:
-        conn.close()
-        return 0, 0, 0, []
-
-    try:
-        cur = conn.cursor()
-        
-        # --- Verifica quais colunas REALMENTE existem no banco ---
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'sistema_consulta' AND table_name = 'importacao_staging'")
-        cols_reais_db = {r[0] for r in cur.fetchall()}
-        
-        csv_buffer = io.StringIO()
-        
-        # Filtra apenas colunas que existem na tabela staging real do banco E no DataFrame
-        cols_final = [c for c in cols_staging_esperadas if c in df_staging.columns and c in cols_reais_db]
-        
-        df_staging[cols_final].to_csv(csv_buffer, index=False, header=False, sep='\t', na_rep='\\N')
-        csv_buffer.seek(0)
-        
-        # 1. Carga Rápida (COPY)
-        cur.copy_expert(f"COPY sistema_consulta.importacao_staging ({','.join(cols_final)}) FROM STDIN WITH NULL '\\N'", csv_buffer)
-        
-        # 2. SQL Transformação e Carga Final
-        
-        # A) Dados Cadastrais (CPF como BIGINT)
-        cur.execute(f"""
-            INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
-            (cpf, nome, data_nascimento, identidade, sexo, nome_mae)
-            SELECT DISTINCT ON (CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT))
-                CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
-                UPPER(nome),
-                CAST(data_nascimento AS DATE),
-                identidade,
-                UPPER(sexo),
-                UPPER(nome_mae)
-            FROM sistema_consulta.importacao_staging
-            WHERE sessao_id = %s 
-              AND regexp_replace(cpf, '[^0-9]', '', 'g') <> ''
-            ON CONFLICT (cpf) DO UPDATE 
-            SET nome = EXCLUDED.nome;
-        """, (sessao_id,))
-        
-        # B) Tabela Índice Leve
-        cur.execute(f"""
-            INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf)
-            SELECT DISTINCT CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT)
-            FROM sistema_consulta.importacao_staging
-            WHERE sessao_id = %s AND regexp_replace(cpf, '[^0-9]', '', 'g') <> ''
-            ON CONFLICT DO NOTHING;
-        """, (sessao_id,))
-
-        # C) Contratos/Benefícios
-        # --- CORREÇÃO: Dinâmico para Matrícula OU Convênio ---
-        tem_matricula = 'matricula' in cols_reais_db
-        tem_convenio = 'convenio' in cols_reais_db
-        tem_contrato = 'numero_contrato' in cols_reais_db
-        tem_valor = 'valor_parcela' in cols_reais_db
-
-        if tem_matricula or tem_convenio:
-            sel_matricula = "CAST(NULLIF(regexp_replace(matricula, '[^0-9]', '', 'g'), '') AS BIGINT)" if tem_matricula else "NULL"
-            sel_convenio = "convenio" if tem_convenio else "NULL"
-            sel_contrato = "numero_contrato" if tem_contrato else "NULL"
-            sel_valor = "CAST(REPLACE(REPLACE(valor_parcela, '.', ''), ',', '.') AS NUMERIC)" if tem_valor else "NULL"
-            
-            filtros_extras = ""
-            if tem_matricula:
-                filtros_extras += " AND regexp_replace(matricula, '[^0-9]', '', 'g') <> ''"
-            
-            cur.execute(f"""
-                INSERT INTO sistema_consulta.sistema_consulta_contrato
-                (cpf, matricula, convenio, numero_contrato, valor_parcela)
-                SELECT DISTINCT
-                    CAST(NULLIF(regexp_replace(cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
-                    {sel_matricula},
-                    {sel_convenio},
-                    {sel_contrato},
-                    {sel_valor}
-                FROM sistema_consulta.importacao_staging
-                WHERE sessao_id = %s 
-                  AND regexp_replace(cpf, '[^0-9]', '', 'g') <> ''
-                  {filtros_extras}
-                ON CONFLICT DO NOTHING;
-            """, (sessao_id,))
-        # --------------------------------------------------------
-
-        # D) Telefones
-        cur.execute(f"""
-            INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
-            SELECT DISTINCT 
-                CAST(NULLIF(regexp_replace(s.cpf, '[^0-9]', '', 'g'), '') AS BIGINT),
-                t.tel
-            FROM sistema_consulta.importacao_staging s,
-            LATERAL (VALUES (telefone_1), (telefone_2), (telefone_3)) AS t(tel)
-            WHERE s.sessao_id = %s AND t.tel IS NOT NULL
-            ON CONFLICT DO NOTHING;
-        """, (sessao_id,))
-
-        # Contagem
-        cur.execute("SELECT count(*) FROM sistema_consulta.importacao_staging WHERE sessao_id = %s", (sessao_id,))
-        qtd_total = cur.fetchone()[0]
-        
-        # Limpeza
-        cur.execute("DELETE FROM sistema_consulta.importacao_staging WHERE sessao_id = %s", (sessao_id,))
-        conn.commit()
-        
-        return qtd_total, 0, 0, [] 
-
-    except Exception as e:
-        conn.rollback()
-        st.error(f"Erro SQL na carga: {e}")
-        return 0, 0, 0, []
-    finally:
-        conn.close()
-
 # --- INTERFACE ---
-
 def tela_importacao():
     
     tab_import, tab_config = st.tabs(["Importação", "Config"])
@@ -478,25 +545,46 @@ def tela_importacao():
                 if st.button("🎲 Gerar Amostra"): st.session_state['amostra_gerada'] = True; st.rerun()
             
             if st.session_state.get('amostra_gerada'):
+                st.subheader("Amostra (Clique para detalhes)")
                 amostra = df.head(5).copy()
-                st.dataframe(amostra)
                 
+                # Renderiza botões para ver detalhes da amostra
+                cols = st.columns(5)
+                for i, row in amostra.iterrows():
+                    with cols[i]:
+                        lbl = row[mapeamento_usuario.get('nome')] if mapeamento_usuario.get('nome') in row else f"Linha {i}"
+                        if st.button(f"🔍 {lbl}", key=f"btn_amostra_{i}"):
+                            modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
+
                 if st.button("✅ INICIAR IMPORTAÇÃO", type="primary"):
                     nome_arq = st.session_state['nome_arquivo_importacao']
                     tabela_destino = st.session_state['import_tipo_selecionado'][2]
                     
                     id_imp = registrar_inicio_importacao(nome_arq, "upload_direto", 0, "Usuario")
                     
-                    with st.spinner("Importando..."):
-                        novos, atualizados, erros, lista = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
+                    with st.spinner("Processando dados e importando..."):
+                        novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
                         
-                        st.success(f"Finalizado! {novos} registros processados.")
-                        time.sleep(3)
+                        msg = f"""
+                        ### Importação Concluída!
+                        - **Novos Cadastros:** {novos}
+                        - **Atualizados:** {atualizados}
+                        - **Erros:** {erros}
+                        """
+                        st.success("Sucesso!")
+                        st.markdown(msg)
+                        
+                        if erros > 0:
+                            st.warning("Houve erros durante a importação. Verifique o log.")
+                            # Botão para baixar erros seria ideal aqui, mas o fluxo pede salvamento em pasta
+
+                        time.sleep(5)
                         del st.session_state['df_importacao']
                         del st.session_state['etapa_importacao']
                         st.rerun()
 
     with tab_config:
+        # (Código da aba config mantido igual, apenas para garantir a estrutura do arquivo)
         if 'config_editando_id' not in st.session_state:
             st.session_state['config_editando_id'] = None
             st.session_state['config_convenio'] = ""
@@ -568,13 +656,10 @@ def tela_importacao():
             for item in lista_tipos:
                 with st.expander(f"📂 {item[1]}"):
                     st.write(f"**Tabela:** {item[2]}")
-                    
                     try:
                         cols_salvas = json.loads(item[3]) if item[3] else []
                         if cols_salvas:
                             st.multiselect("Colunas Selecionadas:", options=cols_salvas, default=cols_salvas, disabled=True, key=f"view_cols_{item[0]}")
-                        else:
-                            st.caption("Nenhuma coluna específica configurada.")
                     except:
                         st.caption("Erro ao ler dados das colunas.")
 
