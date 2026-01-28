@@ -162,13 +162,10 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                 
                 flag_atualizou = False
                 for campo_db, campo_item in mapa_campos.items():
-                    # Normaliza para comparação (remove None e espaços)
                     val_db = str(dados_db.get(campo_db)).strip() if dados_db.get(campo_db) is not None else ""
                     val_novo = str(item.get(campo_item)).strip() if item.get(campo_item) is not None else ""
                     
-                    # REGRA NOVA: Se a planilha tem valor e é diferente do banco, atualiza.
                     if val_novo != "" and val_novo != val_db:
-                        # Recupera o valor original (tipo correto) para o update
                         campos_atualizar[campo_db] = item.get(campo_item)
                         flag_atualizou = True
                 
@@ -261,7 +258,6 @@ def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
         return None
     try:
         with conn.cursor() as cur:
-            # Tenta inserir e retornar o ID.
             cur.execute("""
                 INSERT INTO sistema_consulta.sistema_consulta_importacao 
                 (nome_arquivo, caminho_arquivo_original, id_usuario, nome_usuario, data_importacao, qtd_novos, qtd_atualizados, qtd_erros)
@@ -285,7 +281,7 @@ def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
 
 def atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_err):
     if not id_imp:
-        st.warning("Relatório não salvo: ID da importação inválido (provavelmente falhou ao iniciar).")
+        st.warning("Relatório não salvo: ID da importação inválido.")
         return
 
     conn = get_db_connection()
@@ -316,26 +312,52 @@ def get_tipos_importacao():
 # --- UI DIALOGS ---
 @st.dialog("📋 Dados da Amostra")
 def modal_detalhes_amostra(linha_dict, mapeamento):
+    """
+    Mostra SOMENTE os campos que foram mapeados no arquivo.
+    Aplica formatação básica dependendo do nome do campo.
+    """
     def get_val_db(col_db):
         col_excel = mapeamento.get(col_db)
         if col_excel: return linha_dict.get(col_excel, '')
         return ''
     
+    # Header Fixo: CPF e Nome são essenciais para identificação
     val_cpf = get_val_db('cpf')
     cpf_visual = ValidadorDocumentos.cpf_para_tela(val_cpf) if val_cpf else ""
     st.markdown(f"## 👤 {get_val_db('nome')}")
     st.caption(f"CPF: {cpf_visual}")
     st.divider()
     
-    t1, t2 = st.tabs(["Dados", "Contatos/End"])
-    with t1:
-        c1, c2 = st.columns(2)
-        c1.text_input("RG", value=get_val_db('identidade'), disabled=True)
-        c2.text_input("Nasc.", value=ValidadorData.para_tela(ValidadorData.para_sql(get_val_db('data_nascimento'))), disabled=True)
-    with t2:
-        st.caption("Visualização Rápida")
-        st.text_input("Telefone 1", value=get_val_db('telefone_1'), disabled=True)
-        st.text_input("CEP", value=get_val_db('cep'), disabled=True)
+    # Identifica campos extras (exceto CPF e Nome que já mostramos)
+    campos_para_exibir = {k: v for k, v in mapeamento.items() if k not in ['cpf', 'nome']}
+    
+    if not campos_para_exibir:
+        st.info("Nenhum outro campo mapeado além de CPF e Nome.")
+        return
+
+    # Exibe em Grade (Grid)
+    cols = st.columns(2)
+    
+    for index, (campo_sys, col_excel) in enumerate(campos_para_exibir.items()):
+        valor_bruto = linha_dict.get(col_excel, '')
+        valor_visual = str(valor_bruto)
+
+        # Formatação Visual (Apenas para exibir bonito)
+        if 'data' in campo_sys:
+             val_dt = ValidadorData.para_sql(valor_bruto)
+             valor_visual = ValidadorData.para_tela(val_dt)
+        elif 'telefone' in campo_sys:
+             val_tel = ValidadorContato.telefone_para_sql(valor_bruto)
+             valor_visual = ValidadorContato.telefone_para_tela(val_tel)
+        elif 'cep' in campo_sys:
+             val_cep = ValidadorDocumentos.limpar_numero(valor_bruto)
+             valor_visual = ValidadorContato.cep_para_tela(val_cep)
+        
+        # Recupera o nome amigável ("Data Nascimento" em vez de "data_nascimento")
+        label_amigavel = ALIAS_INVERSO.get(campo_sys, campo_sys.replace("_", " ").title())
+        
+        with cols[index % 2]:
+            st.text_input(label_amigavel, value=valor_visual, disabled=True, key=f"view_{index}_{campo_sys}")
 
 # --- INTERFACE ---
 def tela_importacao():
