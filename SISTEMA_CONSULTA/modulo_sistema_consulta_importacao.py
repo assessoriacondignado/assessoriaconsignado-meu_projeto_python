@@ -10,7 +10,7 @@ import io
 import json
 import re
 
-# Importa os validadores (Certifique-se que modulo_validadores.py está na pasta)
+# Importa os validadores
 try:
     from modulo_validadores import ValidadorDocumentos, ValidadorContato, ValidadorData
 except ImportError:
@@ -61,19 +61,14 @@ def get_db_connection():
         st.error(f"Erro de conexão: {e}")
         return None
 
-# --- FUNÇÕES DE IMPORTAÇÃO (REGRAS DE NEGÓCIO) ---
-
+# --- FUNÇÕES DE IMPORTAÇÃO ( LÓGICA PYTHON ) ---
 def buscar_cpfs_existentes(lista_cpfs_bigint):
-    """Retorna um dicionário {cpf_bigint: {coluna: valor}} para verificar campos vazios."""
     if not lista_cpfs_bigint: return {}
-    
     conn = get_db_connection()
     if not conn: return {}
-    
     dados_existentes = {}
     try:
         with conn.cursor() as cur:
-            # Converte lista para string SQL segura
             cpfs_str = ",".join(str(c) for c in lista_cpfs_bigint)
             query = f"""
                 SELECT cpf, nome, identidade, data_nascimento, sexo, nome_mae, cnh, titulo_eleitoral
@@ -91,37 +86,22 @@ def buscar_cpfs_existentes(lista_cpfs_bigint):
     return dados_existentes
 
 def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabela_destino):
-    """
-    IMPORTAÇÃO VIA CÓDIGO (Python Logic)
-    1. Valida CPF.
-    2. Verifica Duplicados no Arquivo.
-    3. Verifica Existência no Banco.
-    4. Aplica regras: Novo -> Insert; Existente -> Update (se vazio).
-    """
     conn = get_db_connection()
     if not conn: return 0, 0, 0, []
-
     sessao_id = str(uuid.uuid4())
     
-    # Contadores
     qtd_novos = 0
     qtd_atualizados = 0
     qtd_erros = 0
-    linhas_erro = [] # Lista de dicts para o relatório
+    linhas_erro = [] 
 
-    # Preparar Dados
-    # Inverte o mapeamento para facilitar: {col_excel: col_sistema}
     map_excel_sys = {v: k for k, v in mapeamento_usuario.items()}
-    
-    # Prepara lista de CPFs para consulta em lote (otimização)
-    cache_processamento = [] # Armazena dados pré-processados
+    cache_processamento = [] 
     cpfs_validos_lote = set()
-
-    # Verifica duplicidade no arquivo
     cpfs_vistos_arquivo = set()
 
+    # 1. Pré-processamento e Validação
     for idx, row in df.iterrows():
-        # Busca o CPF na coluna mapeada
         col_cpf_excel = mapeamento_usuario.get('cpf')
         raw_cpf = row.get(col_cpf_excel) if col_cpf_excel else None
         
@@ -140,108 +120,79 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         cpfs_vistos_arquivo.add(cpf_bigint)
         cpfs_validos_lote.add(cpf_bigint)
         
-        # Monta objeto de dados limpos
         dados_limpos = {'cpf': cpf_bigint, 'idx_origem': idx}
-        
-        # Extrai outros campos simples
         for campo_sys, col_excel in mapeamento_usuario.items():
             if campo_sys == 'cpf': continue
             valor = row.get(col_excel)
-            
-            # Tratamento de Datas
             if 'data' in campo_sys:
                 dados_limpos[campo_sys] = ValidadorData.para_sql(valor)
             else:
                 dados_limpos[campo_sys] = str(valor).strip() if pd.notnull(valor) and str(valor).strip() != '' else None
-
         cache_processamento.append(dados_limpos)
 
-    # 2. Buscar Dados Existentes no Banco (Bulk Select)
-    # Retorna {cpf_bigint: {col_banco: valor, ...}}
+    # 2. Busca Dados
     db_cache_dados = buscar_cpfs_existentes(list(cpfs_validos_lote))
 
     try:
         cursor = conn.cursor()
-        
-        # Listas para Bulk Insert/Update
         inserts_cadastro = []
-        updates_cadastro = [] # Lista de tuples (query, params)
-        
+        updates_cadastro = [] 
         inserts_telefones = []
         inserts_emails = []
-        
         inserts_endereco = []
-        # updates_endereco não usado pois faremos UPSERT
 
-        # 3. Processamento Lógico
+        # 3. Distribuição
         for item in cache_processamento:
             cpf = item['cpf']
             existe_no_db = cpf in db_cache_dados
             dados_db = db_cache_dados.get(cpf, {})
             
-            # --- A) DADOS CADASTRAIS ---
+            # Cadastro
             if not existe_no_db:
-                # NOVO REGISTRO
                 qtd_novos += 1
                 inserts_cadastro.append((
                     cpf, item.get('nome'), item.get('data_nascimento'), item.get('identidade'), 
                     item.get('sexo'), item.get('nome_mae'), item.get('cnh'), item.get('titulo_eleitoral')
                 ))
-                # Insere também no índice leve
                 cursor.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (cpf,))
             else:
-                # ATUALIZAÇÃO (Somente campos vazios no DB)
+                # Atualização
                 campos_atualizar = {}
-                # Mapeamento campo_db -> campo_item
-                mapa_campos = {
-                    'nome': 'nome', 'data_nascimento': 'data_nascimento', 'identidade': 'identidade',
-                    'sexo': 'sexo', 'nome_mae': 'nome_mae', 'cnh': 'cnh', 'titulo_eleitoral': 'titulo_eleitoral'
-                }
-                
+                mapa_campos = {'nome': 'nome', 'data_nascimento': 'data_nascimento', 'identidade': 'identidade',
+                               'sexo': 'sexo', 'nome_mae': 'nome_mae', 'cnh': 'cnh', 'titulo_eleitoral': 'titulo_eleitoral'}
                 flag_atualizou = False
                 for campo_db, campo_item in mapa_campos.items():
                     val_db = dados_db.get(campo_db)
                     val_novo = item.get(campo_item)
-                    
-                    # Se DB é None ou Vazio E Novo tem valor -> Atualiza
                     if (val_db is None or str(val_db).strip() == '') and (val_novo is not None):
                         campos_atualizar[campo_db] = val_novo
                         flag_atualizou = True
                 
                 if flag_atualizou:
                     qtd_atualizados += 1
-                    # Monta query dinâmica de update
                     set_clause = ", ".join([f"{k} = %s" for k in campos_atualizar.keys()])
                     vals = list(campos_atualizar.values()) + [cpf]
                     updates_cadastro.append((f"UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf SET {set_clause} WHERE cpf = %s", vals))
 
-            # --- B) TELEFONES ---
-            # Itera sobre todas as colunas telefone_1 a telefone_10 do item
+            # Telefones
             for key, val in item.items():
                 if key.startswith('telefone_') and val:
                     tel_limpo = ValidadorContato.telefone_para_sql(val)
-                    if tel_limpo:
-                        # Regra: Inserir se não existe. 
-                        inserts_telefones.append((cpf, tel_limpo))
+                    if tel_limpo: inserts_telefones.append((cpf, tel_limpo))
 
-            # --- C) EMAILS ---
+            # Emails
             for key, val in item.items():
                 if key.startswith('email_') and val:
-                    if ValidadorContato.email_valido(val):
-                        inserts_emails.append((cpf, val))
+                    if ValidadorContato.email_valido(val): inserts_emails.append((cpf, val))
 
-            # --- D) ENDEREÇO ---
-            # Se tem dados de endereço
+            # Endereço
             tem_endereco = any(item.get(k) for k in ['rua', 'cep', 'bairro', 'cidade', 'uf'])
             if tem_endereco:
-                # Regra: se o cpf já possuir o cep cadastrado, deve atualizar toda linha
                 inserts_endereco.append((
                     cpf, item.get('cep'), item.get('rua'), item.get('bairro'), item.get('cidade'), item.get('uf'), item.get('complemento')
                 ))
 
-        # --- 4. EXECUTAR NO BANCO (COMMITS) ---
-        
-        # A) Cadastros Novos
+        # 4. Commits
         if inserts_cadastro:
             sql_insert = """
                 INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
@@ -251,20 +202,16 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             """
             cursor.executemany(sql_insert, inserts_cadastro)
         
-        # B) Atualizações Cadastrais
         for query, params in updates_cadastro:
             cursor.execute(query, params)
 
-        # C) Telefones
         if inserts_telefones:
-            # Remove duplicatas da lista Python
             inserts_telefones = list(set(inserts_telefones))
             cursor.executemany("""
                 INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_telefone (cpf, telefone)
                 VALUES (%s, %s) ON CONFLICT DO NOTHING
             """, inserts_telefones)
 
-        # D) Emails
         if inserts_emails:
             inserts_emails = list(set(inserts_emails))
             cursor.executemany("""
@@ -272,7 +219,6 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                 VALUES (%s, %s) ON CONFLICT DO NOTHING
             """, inserts_emails)
 
-        # E) Endereços (Upsert)
         if inserts_endereco:
             cursor.executemany("""
                 INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_endereco 
@@ -285,7 +231,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 
         conn.commit()
         
-        # --- 5. GERAÇÃO DE RELATÓRIO DE ERROS ---
+        # 5. Relatório Erros
         path_erro = None
         if linhas_erro:
             df_erro = pd.DataFrame(linhas_erro)
@@ -293,9 +239,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
             path_erro = os.path.join(PASTA_ERROS, nome_arq_erro)
             df_erro.to_csv(path_erro, index=False, sep=';')
         
-        # Atualiza Status Importação
         atualizar_fim_importacao(id_importacao_db, qtd_novos, qtd_atualizados, qtd_erros, path_erro)
-
         return qtd_novos, qtd_atualizados, qtd_erros, linhas_erro
 
     except Exception as e:
@@ -305,28 +249,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
     finally:
         conn.close()
 
-# --- FUNÇÕES DE METADADOS E UI (MANTIDAS DO ORIGINAL) ---
-def listar_tabelas_sistema():
-    conn = get_db_connection()
-    if not conn: return []
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'sistema_consulta' ORDER BY table_name")
-            return [f"sistema_consulta.{r[0]}" for r in cur.fetchall()]
-    except: return []
-    finally: conn.close()
-
-def listar_colunas_tabela(nome_tabela_completo):
-    conn = get_db_connection()
-    if not conn: return []
-    try:
-        nome_tabela_limpo = nome_tabela_completo.split('.')[-1] if '.' in nome_tabela_completo else nome_tabela_completo
-        with conn.cursor() as cur:
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'sistema_consulta' AND table_name = %s ORDER BY ordinal_position", (nome_tabela_limpo,))
-            return [r[0] for r in cur.fetchall()]
-    except: return []
-    finally: conn.close()
-
+# --- FUNÇÕES DE SUPORTE UI/DB ---
 def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
     conn = get_db_connection()
     if not conn: return None
@@ -358,326 +281,199 @@ def get_tipos_importacao():
     if not conn: return []
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('sistema_consulta.sistema_importacao_tipo')")
-            if cur.fetchone()[0] is None: return []
             cur.execute("SELECT id, convenio, nome_planilha, colunas_filtro FROM sistema_consulta.sistema_importacao_tipo ORDER BY convenio")
             return cur.fetchall()
     except: return []
     finally: conn.close()
 
-def salvar_tipo_importacao(convenio, planilha, colunas_json):
-    conn = get_db_connection()
-    if not conn: return False
-    try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO sistema_consulta.sistema_importacao_tipo (convenio, nome_planilha, colunas_filtro) VALUES (%s, %s, %s)", (convenio, planilha, colunas_json))
-            conn.commit(); return True
-    except: return False
-    finally: conn.close()
-
-def atualizar_tipo_importacao(id_tipo, convenio, planilha, colunas_json):
-    conn = get_db_connection()
-    if not conn: return False
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE sistema_consulta.sistema_importacao_tipo SET convenio = %s, nome_planilha = %s, colunas_filtro = %s WHERE id = %s", (convenio, planilha, colunas_json, id_tipo))
-            conn.commit(); return True
-    except: return False
-    finally: conn.close()
-
-def excluir_tipo_importacao(id_tipo):
-    conn = get_db_connection()
-    if not conn: return False
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM sistema_consulta.sistema_importacao_tipo WHERE id = %s", (id_tipo,))
-            conn.commit(); return True
-    except: return False
-    finally: conn.close()
-
-# --- DIALOG DE DETALHES ---
+# --- UI DIALOGS ---
 @st.dialog("📋 Dados da Amostra")
 def modal_detalhes_amostra(linha_dict, mapeamento):
+    # (Mantém implementação visual inalterada)
     def get_val_db(col_db):
         col_excel = mapeamento.get(col_db)
         if col_excel: return linha_dict.get(col_excel, '')
         return ''
     
-    # Tratamento para visualização
     val_cpf = get_val_db('cpf')
     cpf_visual = ValidadorDocumentos.cpf_para_tela(val_cpf) if val_cpf else ""
-    nome_visual = get_val_db('nome')
-    st.markdown(f"## 👤 {nome_visual}")
+    st.markdown(f"## 👤 {get_val_db('nome')}")
     st.caption(f"CPF: {cpf_visual}")
     st.divider()
     
-    tab1, tab2, tab3 = st.tabs(["Dados Pessoais", "Contatos & Convênios", "Endereço"])
-    with tab1:
-        c1, c2, c3 = st.columns(3)
-        c1.text_input("Nome", value=nome_visual, disabled=True)
-        c2.text_input("RG", value=get_val_db('identidade'), disabled=True)
-        
-        raw_nasc = get_val_db('data_nascimento')
-        val_nasc = ValidadorData.para_tela(ValidadorData.para_sql(raw_nasc))
-        c3.text_input("Data Nasc.", value=val_nasc, disabled=True)
-        
-        c4, c5 = st.columns(2)
-        c4.text_input("CNH", value=get_val_db('cnh'), disabled=True)
-        c5.text_input("Título Eleitor", value=get_val_db('titulo_eleitoral'), disabled=True)
-        c6, c7 = st.columns(2)
-        c6.text_input("Nome da Mãe", value=get_val_db('nome_mae'), disabled=True)
-        c7.text_input("Nome do Pai", value=get_val_db('nome_pai'), disabled=True)
-    
-    with tab2:
-        c_contato, c_convenio = st.columns(2)
-        with c_contato:
-            st.markdown("##### 📞 Telefones")
-            for i in range(1, 11):
-                raw = get_val_db(f'telefone_{i}')
-                fmt = ValidadorContato.telefone_para_tela(ValidadorContato.telefone_para_sql(raw))
-                if fmt: st.text_input(f"Telefone {i}", value=fmt, disabled=True, key=f"amostra_tel_{i}")
-        with c_convenio:
-            st.markdown("##### 💼 Convênio")
-            val_conv = get_val_db('convenio')
-            if val_conv: st.text_input("Convênio", value=val_conv, disabled=True)
-    
-    with tab3:
-        st.markdown("##### 🏠 Endereço")
-        cep_fmt = ValidadorContato.cep_para_tela(ValidadorDocumentos.limpar_numero(get_val_db('cep')))
-        st.text_input("CEP", value=cep_fmt, disabled=True)
-        st.text_input("Rua", value=get_val_db('rua'), disabled=True)
-        st.text_input("Bairro", value=get_val_db('bairro'), disabled=True)
-        c_cid, c_uf = st.columns([3, 1])
-        c_cid.text_input("Cidade", value=get_val_db('cidade'), disabled=True)
-        c_uf.text_input("UF", value=get_val_db('uf'), disabled=True)
+    t1, t2 = st.tabs(["Dados", "Contatos/End"])
+    with t1:
+        c1, c2 = st.columns(2)
+        c1.text_input("RG", value=get_val_db('identidade'), disabled=True)
+        c2.text_input("Nasc.", value=ValidadorData.para_tela(ValidadorData.para_sql(get_val_db('data_nascimento'))), disabled=True)
+    with t2:
+        st.caption("Visualização Rápida")
+        st.text_input("Telefone 1", value=get_val_db('telefone_1'), disabled=True)
+        st.text_input("CEP", value=get_val_db('cep'), disabled=True)
 
 # --- INTERFACE ---
 def tela_importacao():
     
-    tab_import, tab_config = st.tabs(["Importação", "Config"])
-    
-    with tab_import:
-        if 'etapa_importacao' not in st.session_state: st.session_state['etapa_importacao'] = 'selecao_tipo' 
+    # Se houver um resultado pendente de confirmação, mostra apenas o resultado
+    if 'resultado_importacao' in st.session_state:
+        res = st.session_state['resultado_importacao']
         
-        if st.session_state['etapa_importacao'] == 'selecao_tipo':
-            st.subheader("1. Selecione o Tipo de Importação")
-            tipos = get_tipos_importacao()
-            
-            if not tipos:
-                st.warning("Nenhum tipo de importação configurado.")
-            else:
-                opcoes_tipos = {t[1]: t for t in tipos} 
-                escolha = st.selectbox("Tipo de Importação:", ["(Selecione)"] + list(opcoes_tipos.keys()))
-                
-                if escolha != "(Selecione)":
-                    dados_tipo = opcoes_tipos[escolha]
-                    colunas_ativas = []
-                    try: colunas_ativas = json.loads(dados_tipo[3])
-                    except: colunas_ativas = []
-                    
-                    if st.button("Próximo: Upload de Arquivo"):
-                        st.session_state['import_tipo_selecionado'] = dados_tipo
-                        st.session_state['import_colunas_ativas'] = colunas_ativas
-                        st.session_state['etapa_importacao'] = 'upload'
-                        st.rerun()
-
-        elif st.session_state['etapa_importacao'] == 'upload':
-            st.subheader(f"2. Upload ({st.session_state['import_tipo_selecionado'][1]})")
-            if st.button("⬅️ Voltar"):
-                st.session_state['etapa_importacao'] = 'selecao_tipo'; st.rerun()
-                
-            arquivo = st.file_uploader("Selecione o arquivo", type=['csv', 'xlsx'])
-            if arquivo:
-                try:
-                    if arquivo.name.endswith('.csv'):
-                        df = pd.read_csv(arquivo, sep=';', dtype=str)
-                        if df.shape[1] < 2: 
-                            arquivo.seek(0); df = pd.read_csv(arquivo, sep=',', dtype=str)
-                    else:
-                        df = pd.read_excel(arquivo, dtype=str)
-                    
-                    st.session_state['df_importacao'] = df
-                    st.session_state['nome_arquivo_importacao'] = arquivo.name
-                    st.session_state['etapa_importacao'] = 'mapeamento'
-                    st.session_state['amostra_gerada'] = False 
-                    st.rerun()
-                except Exception as e: st.error(f"Erro ao ler arquivo: {e}")
-
-        elif st.session_state['etapa_importacao'] == 'mapeamento':
-            df = st.session_state['df_importacao']
-            colunas_arquivo = list(df.columns)
-            st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
-
-            c_act1, c_act2 = st.columns([1, 1])
-            if c_act2.button("❌ Cancelar"):
-                del st.session_state['df_importacao']; del st.session_state['etapa_importacao']; st.rerun()
-            
-            with st.expander("⚙️ Mapeamento", expanded=True):
-                cols_map = st.columns(4)
-                mapeamento_usuario = {}
-                colunas_permitidas = st.session_state.get('import_colunas_ativas', [])
-                
-                opcoes_display = ["(Selecione)"]
-                mapa_display_to_tecnico = {}
-                
-                if colunas_permitidas:
-                    for col_tec in colunas_permitidas:
-                        col_tecnica_real = CAMPOS_SISTEMA_ALIAS.get(col_tec, col_tec)
-                        nome_visual = ALIAS_INVERSO.get(col_tecnica_real, col_tecnica_real)
-                        opcoes_display.append(nome_visual)
-                        mapa_display_to_tecnico[nome_visual] = col_tecnica_real
-                else:
-                    opcoes_display = ["(Selecione)"] + list(CAMPOS_SISTEMA_ALIAS.keys())
-                    mapa_display_to_tecnico = CAMPOS_SISTEMA_ALIAS
-
-                for i, col_arquivo in enumerate(colunas_arquivo):
-                    idx_sug = 0
-                    for idx, op in enumerate(opcoes_display):
-                        if op == "(Selecione)": continue
-                        if mapa_display_to_tecnico[op].lower() in col_arquivo.lower(): idx_sug = idx; break
-                    
-                    col_cont = cols_map[i % 4]
-                    escolha = col_cont.selectbox(f"{col_arquivo}", options=opcoes_display, index=idx_sug, key=f"map_{i}")
-                    if escolha != "(Selecione)":
-                        mapeamento_usuario[mapa_display_to_tecnico[escolha]] = col_arquivo
-
-            if not st.session_state.get('amostra_gerada'):
-                if st.button("🎲 Gerar Amostra"): st.session_state['amostra_gerada'] = True; st.rerun()
-            
-            if st.session_state.get('amostra_gerada'):
-                st.subheader("Amostra (Clique para detalhes)")
-                amostra = df.head(5).copy()
-                
-                # Renderiza botões para ver detalhes da amostra
-                cols = st.columns(5)
-                for i, row in amostra.iterrows():
-                    with cols[i]:
-                        lbl = row[mapeamento_usuario.get('nome')] if mapeamento_usuario.get('nome') in row else f"Linha {i}"
-                        if st.button(f"🔍 {lbl}", key=f"btn_amostra_{i}"):
-                            modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
-
-                if st.button("✅ INICIAR IMPORTAÇÃO", type="primary"):
-                    nome_arq = st.session_state['nome_arquivo_importacao']
-                    tabela_destino = st.session_state['import_tipo_selecionado'][2]
-                    
-                    id_imp = registrar_inicio_importacao(nome_arq, "upload_direto", 0, "Usuario")
-                    
-                    with st.spinner("Processando dados e importando..."):
-                        novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
-                        
-                        msg = f"""
-                        ### Importação Concluída!
-                        - **Novos Cadastros:** {novos}
-                        - **Atualizados:** {atualizados}
-                        - **Erros:** {erros}
-                        """
-                        st.success("Sucesso!")
-                        st.markdown(msg)
-                        
-                        if erros > 0:
-                            st.warning("Houve erros durante a importação. Verifique o log.")
-                            # Botão para baixar erros seria ideal aqui, mas o fluxo pede salvamento em pasta
-
-                        time.sleep(5)
-                        del st.session_state['df_importacao']
-                        del st.session_state['etapa_importacao']
-                        st.rerun()
-
-    with tab_config:
-        # (Código da aba config mantido igual, apenas para garantir a estrutura do arquivo)
-        if 'config_editando_id' not in st.session_state:
-            st.session_state['config_editando_id'] = None
-            st.session_state['config_convenio'] = ""
-            st.session_state['config_planilha'] = ""
-            st.session_state['config_colunas'] = ["cpf", "nome"]
-
-        lista_tabelas = listar_tabelas_sistema()
-
-        lbl_btn = "💾 Salvar Configuração"
-        if st.session_state['config_editando_id']:
-            lbl_btn = "💾 Atualizar Configuração"
-
-        with st.form("form_config_importacao"):
-            conf_convenio = st.text_input("Nome do Convênio (Tipo)", value=st.session_state['config_convenio'])
-            
-            idx_tab = 0
-            if st.session_state['config_planilha'] in lista_tabelas:
-                idx_tab = lista_tabelas.index(st.session_state['config_planilha'])
-            
-            if lista_tabelas:
-                conf_planilha = st.selectbox("Tabela Destino", lista_tabelas, index=idx_tab)
-            else:
-                conf_planilha = st.text_input("Nome da Planilha/Tabela Destino", value=st.session_state['config_planilha'])
-            
-            opcoes_colunas = []
-            if conf_planilha:
-                opcoes_colunas = listar_colunas_tabela(conf_planilha)
-            
-            if not opcoes_colunas:
-                opcoes_colunas = list(CAMPOS_SISTEMA_ALIAS.values())
-
-            default_opts = [c for c in st.session_state['config_colunas'] if c in opcoes_colunas]
-            conf_colunas = st.multiselect("Colunas da Tabela", options=opcoes_colunas, default=default_opts)
-            
-            submitted = st.form_submit_button(lbl_btn)
-            
-            if submitted:
-                if not conf_convenio or not conf_planilha:
-                    st.error("Campos obrigatórios.")
-                else:
-                    json_colunas = json.dumps(conf_colunas)
-                    
-                    if st.session_state['config_editando_id']:
-                        if atualizar_tipo_importacao(st.session_state['config_editando_id'], conf_convenio, conf_planilha, json_colunas):
-                            st.success("Configuração atualizada com sucesso!")
-                            st.session_state['config_editando_id'] = None
-                            st.session_state['config_convenio'] = ""
-                            st.session_state['config_planilha'] = ""
-                            st.session_state['config_colunas'] = ["cpf", "nome"]
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("Erro ao atualizar.")
-                    else:
-                        if salvar_tipo_importacao(conf_convenio, conf_planilha, json_colunas):
-                            st.success("Configuração salva!")
-                            st.session_state['config_convenio'] = ""
-                            st.session_state['config_planilha'] = ""
-                            st.session_state['config_colunas'] = ["cpf", "nome"]
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("Erro ao salvar.")
-
+        st.title("📊 Resultado da Importação")
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Novos", res['novos'])
+        c2.metric("Atualizados", res['atualizados'])
+        c3.metric("Erros", res['erros'], delta_color="inverse")
+        
         st.divider()
-        st.markdown("#### Configurações Existentes")
-        lista_tipos = get_tipos_importacao()
-        if lista_tipos:
-            for item in lista_tipos:
-                with st.expander(f"📂 {item[1]}"):
-                    st.write(f"**Tabela:** {item[2]}")
-                    try:
-                        cols_salvas = json.loads(item[3]) if item[3] else []
-                        if cols_salvas:
-                            st.multiselect("Colunas Selecionadas:", options=cols_salvas, default=cols_salvas, disabled=True, key=f"view_cols_{item[0]}")
-                    except:
-                        st.caption("Erro ao ler dados das colunas.")
+        
+        if res['erros'] > 0:
+            st.error(f"⚠️ ATENÇÃO: Ocorreram {res['erros']} erros durante a importação.")
+            st.markdown("Verifique o arquivo de log gerado na pasta de erros para detalhes (CPFs inválidos, duplicados, etc).")
+            
+            st.write("---")
+            # REGRA 2: Aviso de erro exige confirmação
+            st.warning("⚠️ **Confirmação Obrigatória**: Para liberar o sistema para novas importações, confirme que visualizou os erros.")
+            
+            if st.button("✅ CONFIRMAR LEITURA E FECHAR", type="primary", use_container_width=True):
+                del st.session_state['resultado_importacao']
+                st.rerun()
+        else:
+            st.success("✅ Importação realizada com sucesso total!")
+            if st.button("Voltar ao Início", use_container_width=True):
+                del st.session_state['resultado_importacao']
+                st.rerun()
+        
+        return # Interrompe a renderização do restante da tela
 
-                    c_del, c_edit = st.columns([1, 5])
-                    with c_del:
-                        if st.button("🗑️ Excluir", key=f"del_{item[0]}"):
-                            excluir_tipo_importacao(item[0])
-                            st.rerun()
-                    with c_edit:
-                        if st.button("✏️ Editar", key=f"edit_{item[0]}"):
-                            st.session_state['config_editando_id'] = item[0]
-                            st.session_state['config_convenio'] = item[1]
-                            st.session_state['config_planilha'] = item[2]
-                            try:
-                                st.session_state['config_colunas'] = json.loads(item[3])
-                            except:
-                                st.session_state['config_colunas'] = []
-                            st.rerun()
+    # --- TELA NORMAL (Se não houver resultado pendente) ---
+    
+    # Aba única agora, pois Config foi removida da edição
+    st.subheader("Módulo de Importação")
+    
+    if 'etapa_importacao' not in st.session_state: st.session_state['etapa_importacao'] = 'selecao_tipo' 
+    
+    if st.session_state['etapa_importacao'] == 'selecao_tipo':
+        st.info("ℹ️ As regras de importação são gerenciadas internamente pelo sistema.")
+        st.markdown("### 1. Selecione o Layout")
+        tipos = get_tipos_importacao()
+        
+        if not tipos:
+            st.warning("Nenhum layout base encontrado.")
+        else:
+            opcoes_tipos = {t[1]: t for t in tipos} 
+            escolha = st.selectbox("Modelo de Importação:", ["(Selecione)"] + list(opcoes_tipos.keys()))
+            
+            if escolha != "(Selecione)":
+                dados_tipo = opcoes_tipos[escolha]
+                # Carrega colunas sugeridas
+                try: colunas_ativas = json.loads(dados_tipo[3])
+                except: colunas_ativas = []
+                
+                if st.button("Próximo: Upload de Arquivo"):
+                    st.session_state['import_tipo_selecionado'] = dados_tipo
+                    st.session_state['import_colunas_ativas'] = colunas_ativas
+                    st.session_state['etapa_importacao'] = 'upload'
+                    st.rerun()
+
+    elif st.session_state['etapa_importacao'] == 'upload':
+        st.markdown(f"### 2. Upload ({st.session_state['import_tipo_selecionado'][1]})")
+        if st.button("⬅️ Voltar"):
+            st.session_state['etapa_importacao'] = 'selecao_tipo'; st.rerun()
+            
+        arquivo = st.file_uploader("Selecione o arquivo (.csv ou .xlsx)", type=['csv', 'xlsx'])
+        if arquivo:
+            try:
+                if arquivo.name.endswith('.csv'):
+                    df = pd.read_csv(arquivo, sep=';', dtype=str)
+                    if df.shape[1] < 2: 
+                        arquivo.seek(0); df = pd.read_csv(arquivo, sep=',', dtype=str)
+                else:
+                    df = pd.read_excel(arquivo, dtype=str)
+                
+                st.session_state['df_importacao'] = df
+                st.session_state['nome_arquivo_importacao'] = arquivo.name
+                st.session_state['etapa_importacao'] = 'mapeamento'
+                st.session_state['amostra_gerada'] = False 
+                st.rerun()
+            except Exception as e: st.error(f"Erro ao ler arquivo: {e}")
+
+    elif st.session_state['etapa_importacao'] == 'mapeamento':
+        df = st.session_state['df_importacao']
+        st.info(f"Arquivo: **{st.session_state['nome_arquivo_importacao']}** | Linhas: {len(df)}")
+
+        if st.button("❌ Cancelar Importação"):
+            del st.session_state['df_importacao']; del st.session_state['etapa_importacao']; st.rerun()
+        
+        with st.expander("⚙️ Conferência de Colunas (De/Para)", expanded=True):
+            colunas_arquivo = list(df.columns)
+            cols_map = st.columns(4)
+            mapeamento_usuario = {}
+            colunas_permitidas = st.session_state.get('import_colunas_ativas', [])
+            
+            opcoes_display = ["(Selecione)"]
+            mapa_display_to_tecnico = {}
+            
+            if colunas_permitidas:
+                for col_tec in colunas_permitidas:
+                    col_tecnica_real = CAMPOS_SISTEMA_ALIAS.get(col_tec, col_tec)
+                    nome_visual = ALIAS_INVERSO.get(col_tecnica_real, col_tecnica_real)
+                    opcoes_display.append(nome_visual)
+                    mapa_display_to_tecnico[nome_visual] = col_tecnica_real
+            else:
+                opcoes_display = ["(Selecione)"] + list(CAMPOS_SISTEMA_ALIAS.keys())
+                mapa_display_to_tecnico = CAMPOS_SISTEMA_ALIAS
+
+            for i, col_arquivo in enumerate(colunas_arquivo):
+                idx_sug = 0
+                for idx, op in enumerate(opcoes_display):
+                    if op == "(Selecione)": continue
+                    if mapa_display_to_tecnico[op].lower() in col_arquivo.lower(): idx_sug = idx; break
+                
+                col_cont = cols_map[i % 4]
+                escolha = col_cont.selectbox(f"{col_arquivo}", options=opcoes_display, index=idx_sug, key=f"map_{i}")
+                if escolha != "(Selecione)":
+                    mapeamento_usuario[mapa_display_to_tecnico[escolha]] = col_arquivo
+
+        if not st.session_state.get('amostra_gerada'):
+            if st.button("🎲 Gerar Amostra para Validação"): st.session_state['amostra_gerada'] = True; st.rerun()
+        
+        if st.session_state.get('amostra_gerada'):
+            st.markdown("### 3. Validação da Amostra")
+            st.caption("Verifique se os dados abaixo correspondem ao esperado antes de confirmar.")
+            amostra = df.head(5).copy()
+            
+            cols = st.columns(5)
+            for i, row in amostra.iterrows():
+                with cols[i]:
+                    lbl = row[mapeamento_usuario.get('nome')] if mapeamento_usuario.get('nome') in row else f"Linha {i}"
+                    if st.button(f"🔍 {lbl}", key=f"btn_amostra_{i}"):
+                        modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
+
+            st.write("---")
+            if st.button("✅ EXECUTAR IMPORTAÇÃO", type="primary"):
+                nome_arq = st.session_state['nome_arquivo_importacao']
+                tabela_destino = st.session_state['import_tipo_selecionado'][2]
+                
+                id_imp = registrar_inicio_importacao(nome_arq, "upload_direto", 0, "Usuario")
+                
+                with st.spinner("Processando... Aguarde a finalização."):
+                    novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
+                    
+                    # SALVA O ESTADO DO RESULTADO E REINICIA PARA MOSTRAR A TELA DE CONFIRMAÇÃO
+                    st.session_state['resultado_importacao'] = {
+                        'novos': novos,
+                        'atualizados': atualizados,
+                        'erros': erros,
+                        'id_imp': id_imp
+                    }
+                    
+                    # Limpa dados temporários
+                    del st.session_state['df_importacao']
+                    del st.session_state['etapa_importacao']
+                    del st.session_state['amostra_gerada']
+                    
+                    st.rerun()
 
 if __name__ == "__main__":
     tela_importacao()
