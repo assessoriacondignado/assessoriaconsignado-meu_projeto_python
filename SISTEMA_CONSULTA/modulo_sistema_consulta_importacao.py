@@ -88,7 +88,6 @@ def buscar_cpfs_existentes(lista_cpfs_bigint):
 def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabela_destino):
     conn = get_db_connection()
     if not conn: return 0, 0, 0, []
-    sessao_id = str(uuid.uuid4())
     
     qtd_novos = 0
     qtd_atualizados = 0
@@ -257,29 +256,52 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
 # --- FUNÇÕES DE SUPORTE UI/DB ---
 def registrar_inicio_importacao(nome_arq, path_org, id_usr, nome_usr):
     conn = get_db_connection()
-    if not conn: return None
+    if not conn: 
+        st.error("Falha na conexão com o banco de dados ao tentar registrar importação.")
+        return None
     try:
         with conn.cursor() as cur:
+            # Tenta inserir e retornar o ID.
             cur.execute("""
                 INSERT INTO sistema_consulta.sistema_consulta_importacao 
                 (nome_arquivo, caminho_arquivo_original, id_usuario, nome_usuario, data_importacao, qtd_novos, qtd_atualizados, qtd_erros)
                 VALUES (%s, %s, %s, %s, NOW(), '0', '0', '0') RETURNING id
             """, (nome_arq, path_org, str(id_usr), str(nome_usr)))
-            id_gerado = cur.fetchone()[0]
-            conn.commit()
-            return id_gerado
-    except: return None
-    finally: conn.close()
+            
+            resultado = cur.fetchone()
+            if resultado:
+                id_gerado = resultado[0]
+                conn.commit()
+                return id_gerado
+            else:
+                st.error("Erro SQL: O banco de dados não retornou um ID para a nova importação. Verifique se a coluna 'id' é auto-incremento (SERIAL).")
+                return None
+    except Exception as e:
+        conn.rollback()
+        st.error(f"❌ Erro SQL ao criar registro de importação: {e}")
+        return None
+    finally: 
+        conn.close()
 
 def atualizar_fim_importacao(id_imp, novos, atualizados, erros, path_err):
+    if not id_imp:
+        st.warning("Relatório não salvo: ID da importação inválido (provavelmente falhou ao iniciar).")
+        return
+
     conn = get_db_connection()
     if not conn: return
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE sistema_consulta.sistema_consulta_importacao SET qtd_novos = %s, qtd_atualizados = %s, qtd_erros = %s, caminho_arquivo_erro = %s WHERE id = %s", (str(novos), str(atualizados), str(erros), path_err, id_imp))
+            cur.execute("""
+                UPDATE sistema_consulta.sistema_consulta_importacao 
+                SET qtd_novos = %s, qtd_atualizados = %s, qtd_erros = %s, caminho_arquivo_erro = %s 
+                WHERE id = %s
+            """, (str(novos), str(atualizados), str(erros), path_err, id_imp))
             conn.commit()
-    except: pass
-    finally: conn.close()
+    except Exception as e:
+        st.error(f"❌ Erro SQL ao atualizar relatório final: {e}")
+    finally: 
+        conn.close()
 
 def get_tipos_importacao():
     conn = get_db_connection()
