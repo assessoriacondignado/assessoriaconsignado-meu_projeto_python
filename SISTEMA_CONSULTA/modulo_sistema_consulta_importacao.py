@@ -141,7 +141,7 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
         inserts_emails = []
         inserts_endereco = []
 
-        # 3. Distribuição
+        # 3. Distribuição e Regras de Negócio
         for item in cache_processamento:
             cpf = item['cpf']
             existe_no_db = cpf in db_cache_dados
@@ -156,16 +156,21 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                 ))
                 cursor.execute("INSERT INTO sistema_consulta.sistema_consulta_cpf (cpf) VALUES (%s) ON CONFLICT DO NOTHING", (cpf,))
             else:
-                # Atualização
+                # --- ATUALIZAÇÃO (SOBRESCREVER DADOS) ---
                 campos_atualizar = {}
                 mapa_campos = {'nome': 'nome', 'data_nascimento': 'data_nascimento', 'identidade': 'identidade',
                                'sexo': 'sexo', 'nome_mae': 'nome_mae', 'cnh': 'cnh', 'titulo_eleitoral': 'titulo_eleitoral'}
+                
                 flag_atualizou = False
                 for campo_db, campo_item in mapa_campos.items():
-                    val_db = dados_db.get(campo_db)
-                    val_novo = item.get(campo_item)
-                    if (val_db is None or str(val_db).strip() == '') and (val_novo is not None):
-                        campos_atualizar[campo_db] = val_novo
+                    # Normaliza para comparação (remove None e espaços)
+                    val_db = str(dados_db.get(campo_db)).strip() if dados_db.get(campo_db) is not None else ""
+                    val_novo = str(item.get(campo_item)).strip() if item.get(campo_item) is not None else ""
+                    
+                    # REGRA NOVA: Se a planilha tem valor e é diferente do banco, atualiza.
+                    if val_novo != "" and val_novo != val_db:
+                        # Recupera o valor original (tipo correto) para o update
+                        campos_atualizar[campo_db] = item.get(campo_item)
                         flag_atualizou = True
                 
                 if flag_atualizou:
@@ -174,25 +179,25 @@ def executar_importacao_em_massa(df, mapeamento_usuario, id_importacao_db, tabel
                     vals = list(campos_atualizar.values()) + [cpf]
                     updates_cadastro.append((f"UPDATE sistema_consulta.sistema_consulta_dados_cadastrais_cpf SET {set_clause} WHERE cpf = %s", vals))
 
-            # Telefones
+            # Telefones (Insere se novo)
             for key, val in item.items():
                 if key.startswith('telefone_') and val:
                     tel_limpo = ValidadorContato.telefone_para_sql(val)
                     if tel_limpo: inserts_telefones.append((cpf, tel_limpo))
 
-            # Emails
+            # Emails (Insere se novo)
             for key, val in item.items():
                 if key.startswith('email_') and val:
                     if ValidadorContato.email_valido(val): inserts_emails.append((cpf, val))
 
-            # Endereço
+            # Endereço (Upsert - Atualiza sempre que vier na planilha)
             tem_endereco = any(item.get(k) for k in ['rua', 'cep', 'bairro', 'cidade', 'uf'])
             if tem_endereco:
                 inserts_endereco.append((
                     cpf, item.get('cep'), item.get('rua'), item.get('bairro'), item.get('cidade'), item.get('uf'), item.get('complemento')
                 ))
 
-        # 4. Commits
+        # 4. Commits (Execução no Banco)
         if inserts_cadastro:
             sql_insert = """
                 INSERT INTO sistema_consulta.sistema_consulta_dados_cadastrais_cpf 
@@ -289,7 +294,6 @@ def get_tipos_importacao():
 # --- UI DIALOGS ---
 @st.dialog("📋 Dados da Amostra")
 def modal_detalhes_amostra(linha_dict, mapeamento):
-    # (Mantém implementação visual inalterada)
     def get_val_db(col_db):
         col_excel = mapeamento.get(col_db)
         if col_excel: return linha_dict.get(col_excel, '')
@@ -314,7 +318,6 @@ def modal_detalhes_amostra(linha_dict, mapeamento):
 # --- INTERFACE ---
 def tela_importacao():
     
-    # Se houver um resultado pendente de confirmação, mostra apenas o resultado
     if 'resultado_importacao' in st.session_state:
         res = st.session_state['resultado_importacao']
         
@@ -332,7 +335,6 @@ def tela_importacao():
             st.markdown("Verifique o arquivo de log gerado na pasta de erros para detalhes (CPFs inválidos, duplicados, etc).")
             
             st.write("---")
-            # REGRA 2: Aviso de erro exige confirmação
             st.warning("⚠️ **Confirmação Obrigatória**: Para liberar o sistema para novas importações, confirme que visualizou os erros.")
             
             if st.button("✅ CONFIRMAR LEITURA E FECHAR", type="primary", use_container_width=True):
@@ -344,11 +346,10 @@ def tela_importacao():
                 del st.session_state['resultado_importacao']
                 st.rerun()
         
-        return # Interrompe a renderização do restante da tela
+        return 
 
-    # --- TELA NORMAL (Se não houver resultado pendente) ---
+    # --- TELA NORMAL ---
     
-    # Aba única agora, pois Config foi removida da edição
     st.subheader("Módulo de Importação")
     
     if 'etapa_importacao' not in st.session_state: st.session_state['etapa_importacao'] = 'selecao_tipo' 
@@ -366,7 +367,6 @@ def tela_importacao():
             
             if escolha != "(Selecione)":
                 dados_tipo = opcoes_tipos[escolha]
-                # Carrega colunas sugeridas
                 try: colunas_ativas = json.loads(dados_tipo[3])
                 except: colunas_ativas = []
                 
@@ -451,7 +451,7 @@ def tela_importacao():
                         modal_detalhes_amostra(row.to_dict(), mapeamento_usuario)
 
             st.write("---")
-            if st.button("✅ EXECUTAR IMPORTAÇÃO", type="primary"):
+            if st.button("✅ EXECUTAR IMPORTAÇÃO (Sobrescrever Dados)", type="primary"):
                 nome_arq = st.session_state['nome_arquivo_importacao']
                 tabela_destino = st.session_state['import_tipo_selecionado'][2]
                 
@@ -460,7 +460,6 @@ def tela_importacao():
                 with st.spinner("Processando... Aguarde a finalização."):
                     novos, atualizados, erros, lista_erros = executar_importacao_em_massa(df, mapeamento_usuario, id_imp, tabela_destino)
                     
-                    # SALVA O ESTADO DO RESULTADO E REINICIA PARA MOSTRAR A TELA DE CONFIRMAÇÃO
                     st.session_state['resultado_importacao'] = {
                         'novos': novos,
                         'atualizados': atualizados,
@@ -468,7 +467,6 @@ def tela_importacao():
                         'id_imp': id_imp
                     }
                     
-                    # Limpa dados temporários
                     del st.session_state['df_importacao']
                     del st.session_state['etapa_importacao']
                     del st.session_state['amostra_gerada']
